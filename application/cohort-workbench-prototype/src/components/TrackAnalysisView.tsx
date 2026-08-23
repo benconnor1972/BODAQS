@@ -1033,6 +1033,13 @@ export function TrackAnalysisView({
     if (!tracksToAdd.length) {
       return
     }
+    setWorkingTracks((current) => {
+      const existingPersistedIds = new Set(current.map((track) => track.persistedId).filter((id): id is string => Boolean(id)))
+      const additions = tracksToAdd
+        .filter((track) => !existingPersistedIds.has(track.id))
+        .map((track) => workingTrackFromRecord(track))
+      return additions.length ? [...current, ...additions] : current
+    })
     setLocalAddedTrackIds((current) => {
       const next = new Set(current)
       tracksToAdd.forEach((track) => next.add(track.id))
@@ -1281,12 +1288,14 @@ export function TrackAnalysisView({
     try {
       const preparedTrack = trimTracksOnSave ? trimWorkingTrackToTrackpoints(trackToSave) : trackToSave
       const generatedTrackpointIds: string[] = []
+      const savedTrackpointIds = new Map<string, string>()
       const sortedTrackpoints = [...preparedTrack.trackpoints]
         .map((trackpoint, index) => {
           const name = trackpoint.name.trim() || `Point ${index + 1}`
           const existingIds = [...preparedTrack.trackpoints.map((item) => item.id), ...generatedTrackpointIds]
           const id = trackpoint.id.startsWith('draft-') ? uniqueId(slugify(name), existingIds) : trackpoint.id
           generatedTrackpointIds.push(id)
+          savedTrackpointIds.set(trackpoint.id, id)
           return {
             id,
             name,
@@ -1296,6 +1305,14 @@ export function TrackAnalysisView({
           }
         })
         .sort((a, b) => a.stationM - b.stationM)
+      const segmentAliases = validSegmentAliasesForTrack({
+        trackpoints: sortedTrackpoints,
+        segmentAliases: preparedTrack.segmentAliases.map((alias) => ({
+          ...alias,
+          fromTrackpointId: savedTrackpointIds.get(alias.fromTrackpointId) ?? alias.fromTrackpointId,
+          toTrackpointId: savedTrackpointIds.get(alias.toTrackpointId) ?? alias.toTrackpointId,
+        })),
+      })
       const saved = await dataSource.saveTrack({
         id: trackToSave.persistedId ?? '',
         name: displayName,
@@ -1307,7 +1324,7 @@ export function TrackAnalysisView({
         points: preparedTrack.points.map((position) => copyPosition(position)),
         defaultPolicyId: preparedTrack.defaultPolicyId || 'default-geospatial-policy',
         trackpoints: sortedTrackpoints,
-        segmentAliases: validSegmentAliasesForTrack(preparedTrack),
+        segmentAliases,
         matchSummaries: preparedTrack.matchSummaries,
         source: preparedTrack.source,
       })
@@ -3947,7 +3964,10 @@ function interpolateAltitude(samples: AltitudeSample[], distanceM: number) {
   return sorted[sorted.length - 1].elevationM
 }
 
-function validSegmentAliasesForTrack(track: Pick<WorkingTrack, 'trackpoints' | 'segmentAliases'>): TrackSegmentAliasRecord[] {
+function validSegmentAliasesForTrack(track: {
+  trackpoints: Array<Pick<TrackpointRecord, 'id' | 'stationM'>>
+  segmentAliases: TrackSegmentAliasRecord[]
+}): TrackSegmentAliasRecord[] {
   const ordered = [...track.trackpoints].sort((a, b) => a.stationM - b.stationM)
   const adjacentPairs = new Set<string>()
   const pairDefaultNames = new Map<string, string>()

@@ -194,6 +194,9 @@ struct CurrentLimitSwitchProfile {
 struct LoggerPerfProfile {
   uint16_t queue_depth = 64;
   uint32_t ring_buffer_bytes = 8192;
+  // BDQ data payload target. The writer falls back to a smaller allocation if
+  // this cannot be reserved at log start.
+  uint32_t bdq_chunk_bytes = 16384;
 };
 
 // ---------- BoardProfile ----------

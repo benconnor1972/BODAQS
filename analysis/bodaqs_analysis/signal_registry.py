@@ -255,6 +255,9 @@ def build_signals_registry(
             "dataframe_column_disambiguation_token",
             "derivation",
             "origin",
+            "inspection_visibility",
+            "analysis_variant",
+            "display_name",
             "semantic_selection_excluded",
             "semantic_selection_exclusion_reason",
         ):
@@ -312,6 +315,9 @@ def build_signals_registry(
             "dataframe_column_disambiguation_token",
             "derivation",
             "origin",
+            "inspection_visibility",
+            "analysis_variant",
+            "display_name",
             "semantic_selection_excluded",
             "semantic_selection_exclusion_reason",
         ):
@@ -370,6 +376,8 @@ def build_signals_registry(
                 info["notes"] = "raw column missing unit; defaulted to [counts]"
 
             info = _apply_channel_info_hints(str(col), info)
+            if kind in {"raw", "qc"} and "inspection_visibility" not in info:
+                info["inspection_visibility"] = "diagnostic"
             signals[str(col)] = info
 
         except SignalNameError as e:

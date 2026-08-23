@@ -34,6 +34,13 @@ There is no active `SdFat`, `SdFs`, or SPI SD storage path in the firmware.
 - Call `SD_MMC.begin(...)`.
 - Verify card presence, card type, and capacity.
 - Open, write, flush, and close CSV log files.
+- Use the board performance profile's `bdq_chunk_bytes` target for compact BDQ
+  data chunks. The default production target is 16 KiB; the writer falls back
+  to smaller allocations at log start if necessary.
+- Write each completed BDQ data chunk as one contiguous filesystem write while
+  retaining the existing independently CRC-protected BDQ chunk format.
+- Record bounded storage-write stall evidence in the BDQ final summary when
+  timing instrumentation is enabled.
 - Provide common text-file helpers used by config and metadata:
   - `StorageManager_loadTextFile(...)`
   - `StorageManager_saveTextFile(...)`

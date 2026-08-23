@@ -38,7 +38,8 @@ static bool s_haveDetectPin = false;
 static uint32_t s_nextDetectPollMs = 0;
 static char s_lastStatus[48] = "not initialized";
 constexpr size_t kMinWriteBufferBytes = 1024;
-constexpr uint32_t kBdqTargetChunkBytes = 2048UL;
+constexpr uint32_t kDefaultBdqTargetChunkBytes = 16384UL;
+constexpr uint32_t kStorageWriteStallThresholdUs = 10000UL;
 
 static inline bool isSdmmcBackend() {
   return s_storage && (s_storage->type == board::StorageType::SDMMC);
@@ -816,6 +817,40 @@ static bool dequeueSample(SampleRow &out) {
   return true;
 }
 
+static uint16_t queueDepthSnapshot_() {
+#if defined(ESP32)
+  portENTER_CRITICAL(&s_qMux);
+#endif
+  const uint16_t depth = s_qCount;
+#if defined(ESP32)
+  portEXIT_CRITICAL(&s_qMux);
+#endif
+  return depth;
+}
+
+static void recordStorageWriteStall_(
+    uint8_t operation,
+    uint32_t sampleId,
+    uint32_t durationUs,
+    uint32_t bytesAttempted,
+    uint16_t dataFrameCount) {
+  if (durationUs < kStorageWriteStallThresholdUs) return;
+
+  ++s_storageTiming.writeStallCount;
+  if (s_storageTiming.writeStallStoredCount >= StorageTimingStats::kMaxWriteStallEvents) {
+    s_storageTiming.writeStallEventsTruncated = true;
+    return;
+  }
+
+  auto& event = s_storageTiming.writeStallEvents[s_storageTiming.writeStallStoredCount++];
+  event.sampleId = sampleId;
+  event.durationUs = durationUs;
+  event.bytesAttempted = bytesAttempted;
+  event.queueDepthRows = queueDepthSnapshot_();
+  event.dataFrameCount = dataFrameCount;
+  event.operation = operation;
+}
+
 
 
 bool StorageManager_loadTextFile(const char* path, String& out) {
@@ -980,6 +1015,10 @@ unsigned long StorageManager_getSampleIntervalMs() {
     return sampleIntervalMs;
 }
 
+unsigned int StorageManager_getSampleRateHz() {
+    return sampleRateHz;
+}
+
 // Set buffer size
 void StorageManager_setBufferSize(size_t bytes) {
     s_configuredBufferSize = bytes;
@@ -1075,6 +1114,7 @@ static void startLog() {
   s_flushMaxMs = 0;
   s_flushTotalMs = 0;
   s_storageTiming = StorageTimingStats{};
+  s_storageTiming.writeStallThresholdUs = kStorageWriteStallThresholdUs;
   s_rowsWritten = 0;
   s_currentLogPath = "";
   s_currentSessionId = "";
@@ -1164,7 +1204,9 @@ static void startLog() {
     info.createdUnixUs = rtcValid ? ((uint64_t)startEpoch * 1000000ULL) : 0;
     info.sampleRateHz = (uint16_t)sampleRateHz;
     info.samplePeriodUs = sampleRateHz ? (1000000UL / sampleRateHz) : 0;
-    info.targetChunkBytes = kBdqTargetChunkBytes;
+    info.targetChunkBytes = (s_perf && s_perf->bdq_chunk_bytes)
+                              ? s_perf->bdq_chunk_bytes
+                              : kDefaultBdqTargetChunkBytes;
 
     if (!BdqLogWriter::begin(logFileMMC, info)) {
       STOR_LOGE("BDQ writer begin failed\n");
@@ -1228,18 +1270,30 @@ static void StorageManager_logSampleRow_(const SampleRow& row) {
   const uint32_t t0 = micros();
 #endif
   if (isCompactBinaryFormat_()) {
-    if (BdqLogWriter::writeSample(row.sample_id, row.ts_ms, row.values, row.nValues, row.mark)) {
+    const bool wrote = BdqLogWriter::writeSample(
+        row.sample_id, row.ts_ms, row.values, row.nValues, row.mark);
+    if (wrote) {
       ++s_rowsWritten;
     }
 #if BODAQS_TIMING_INSTRUMENTATION
-    TimingStats_record(s_storageTiming.rowWriteUs, (uint32_t)(micros() - t0));
+    const uint32_t durationUs = (uint32_t)(micros() - t0);
+    TimingStats_record(s_storageTiming.rowWriteUs, durationUs);
+    const uint32_t bytesAttempted = BdqLogWriter::lastDataChunkBytes();
+    recordStorageWriteStall_(
+        bytesAttempted ? 1u : 0u,
+        row.sample_id,
+        durationUs,
+        bytesAttempted,
+        BdqLogWriter::lastDataChunkFrameCount());
 #endif
     return;
   }
 
   StorageManager_logCsvDynamic(row.sample_id, row.ts_ms, row.values, row.nValues, row.mark);
 #if BODAQS_TIMING_INSTRUMENTATION
-  TimingStats_record(s_storageTiming.rowWriteUs, (uint32_t)(micros() - t0));
+  const uint32_t durationUs = (uint32_t)(micros() - t0);
+  TimingStats_record(s_storageTiming.rowWriteUs, durationUs);
+  recordStorageWriteStall_(0u, row.sample_id, durationUs, 0u, 0u);
 #endif
 }
 
@@ -1728,6 +1782,9 @@ void StorageManager_loop() {
   if (loggingActive && isCompactBinaryFormat_()) {
     if ((now - lastFlush >= 5000) && BdqLogWriter::pendingFrameCount() > 0) {
       uint32_t t0 = millis();
+#if BODAQS_TIMING_INSTRUMENTATION
+      const uint32_t t0Us = micros();
+#endif
 
       if (g_sdTrackEnabled) {
         g_sdWriteSinceLastSample = true;
@@ -1741,6 +1798,14 @@ void StorageManager_loop() {
         s_flushTotalMs += dt;
         if (dt > s_flushMaxMs) s_flushMaxMs = dt;
       }
+#if BODAQS_TIMING_INSTRUMENTATION
+      recordStorageWriteStall_(
+          2u,
+          0u,
+          (uint32_t)(micros() - t0Us),
+          BdqLogWriter::lastDataChunkBytes(),
+          BdqLogWriter::lastDataChunkFrameCount());
+#endif
       lastFlush = now;
     }
     return;

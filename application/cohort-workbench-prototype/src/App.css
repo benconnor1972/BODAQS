@@ -1855,6 +1855,12 @@ tbody tr.primary-row td:first-child {
   user-select: none;
 }
 
+.session-row.deleting {
+  color: var(--muted);
+  cursor: progress;
+  pointer-events: none;
+}
+
 .session-row:focus-visible td {
   outline: 2px solid rgba(47, 125, 109, 0.32);
   outline-offset: -2px;
@@ -6126,6 +6132,35 @@ button {
   vector-effect: non-scaling-stroke;
 }
 
+.signal-inspector-altitude-selection-range {
+  fill: rgba(0, 140, 149, 0.1);
+  stroke: rgba(0, 140, 149, 0.55);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-inspector-altitude-selection-line {
+  fill: none;
+  stroke: var(--teal-strong);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-inspector-altitude-selection-point line {
+  stroke: var(--teal);
+  stroke-dasharray: 3 3;
+  stroke-width: 1.2;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-inspector-altitude-selection-point circle {
+  fill: var(--teal);
+  stroke: #ffffff;
+  stroke-width: 1.4;
+}
+
 .signal-inspector-altitude-chart text {
   fill: var(--muted);
   font-size: 11px;
@@ -6208,6 +6243,28 @@ button {
   height: 14px;
   margin: 0;
   accent-color: var(--teal);
+}
+
+.signal-inspector-primary-signals-filter select {
+  max-width: 170px;
+  font: inherit;
+}
+
+.signal-inspector-signal-group {
+  display: grid;
+  gap: 5px;
+}
+
+.signal-inspector-signal-group + .signal-inspector-signal-group {
+  border-top: 1px solid var(--border);
+  padding-top: 9px;
+}
+
+.signal-inspector-signal-group h4 {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-caption);
+  font-weight: 700;
 }
 
 .signal-inspector-check-list span {
@@ -7347,12 +7404,20 @@ button {
   padding: 0 0 10px;
 }
 
+.viz-sector-facet-stack.horizontal {
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+}
+
 .viz-sector-facet {
   display: grid;
   gap: 0;
   margin: 0 var(--space-4);
   border: var(--border-subtle);
   background: var(--surface-subtle);
+}
+
+.viz-sector-facet-stack.horizontal .viz-sector-facet {
+  margin: 0;
 }
 
 .viz-sector-facet .viz-entity-strip,

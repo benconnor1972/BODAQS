@@ -63,10 +63,26 @@ struct ExternalAdcTimingStats {
 };
 
 struct StorageTimingStats {
+  static constexpr uint8_t kMaxWriteStallEvents = 16;
+
+  struct WriteStallEvent {
+    uint32_t sampleId = 0;
+    uint32_t durationUs = 0;
+    uint32_t bytesAttempted = 0;
+    uint16_t queueDepthRows = 0;
+    uint16_t dataFrameCount = 0;
+    uint8_t operation = 0;
+  };
+
   TimingSummary rowWriteUs;
   TimingSummary drainLoopUs;
   uint32_t drainLoops = 0;
   uint32_t drainRows = 0;
+  uint32_t writeStallThresholdUs = 0;
+  uint32_t writeStallCount = 0;
+  uint8_t writeStallStoredCount = 0;
+  bool writeStallEventsTruncated = false;
+  WriteStallEvent writeStallEvents[kMaxWriteStallEvents];
 };
 
 struct SensorTimingStats {

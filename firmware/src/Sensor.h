@@ -169,6 +169,13 @@ struct SensorImuConfigDescriptor {
   uint8_t configFileMinor = 0;
   uint16_t loggerRateHz = 0;
   uint16_t imuRateHz = 0;
+  uint16_t maximumOutputRateHz = 0;
+  uint16_t outputRateHz = 0;
+  uint16_t outputDecimationFactor = 1;
+  char outputSelection[32] = {0};
+  char gyroBiasMode[24] = {0};
+  bool gyroHardwareOffsetApplied = false;
+  bool iocDiagnosticsEnabled = false;
   uint16_t fifoPollRateHz = 0;
   uint16_t temperatureRateHz = 0;
   uint32_t temperatureFreshnessUs = 0;
@@ -228,7 +235,15 @@ public:
   virtual void applyConfig(const LoggerConfig&) {}
   virtual void onLoggingStart() {}
   virtual void onLoggingStop() {}
-  virtual bool prepareLoggingStart(char*, size_t) { return true; }
+  // Called only after the completed log and its final diagnostics have been
+  // written. Sensors may perform deferred recovery here without changing the
+  // evidence recorded for the session that just ended.
+  virtual void onLoggingFinalized() {}
+  virtual bool prepareLoggingStart(
+      const LoggerConfig&,
+      uint16_t,
+      char*,
+      size_t) { return true; }
   virtual bool validateLoggingStart(
       const LoggerConfig&,
       uint16_t,

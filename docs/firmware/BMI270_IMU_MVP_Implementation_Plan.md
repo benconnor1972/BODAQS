@@ -90,7 +90,17 @@ The existing BODAQS logger expresses the row period as an integer number of mill
 
 Using the existing 500 Hz row rate gives the 200 Hz queue a strict average drain-rate margin without changing the global timebase. The validity channel is mandatory so that the 300 empty rows per second cannot be mistaken for repeated samples.
 
-Firmware should reject logging start, or clearly disable the IMU, if an active orientation_200 sensor is paired with a logger rate that is not safely above the effective IMU output data rate. For MVP, 500 Hz is the supported setting.
+Firmware resolves the highest safe sparse-row IMU output rate for the effective
+logger rate, up to the configured `max_output_rate_hz`; it must not reject a
+log solely because a low logger rate cannot carry the user's maximum. The
+current profile resolves 10/20/50/100/200/500+ Hz logger rates to
+5/10/25/50/100/200 Hz IMU output respectively. Integrity and hardware faults
+still reject log start.
+
+`gyro_bias_mode` remains an explicit advanced sensor choice because it changes
+the provenance of logged gyro counts. The optional `ioc_diagnostics` register
+trace is deliberately hidden from the normal configuration UI and API schema;
+it remains a persisted experimental setting for directed IOC experiments.
 
 ### 4.3 Sample record
 
@@ -655,7 +665,8 @@ Firmware implementation completed on 2026-08-06:
 
 - `bmi270_imu_i2c` is registered as a usable sensor and exposed by both the HTML configuration route and configuration API;
 - the adapter exposes stable identity, location, bus/address, the fixed `orientation_200` profile, body-axis mapping, startup observation duration, and host calibration-reference fields;
-- logging startup rejects unknown sensor types, more than one active BMI270 (the explicit MVP boundary), duplicate configured sensor names, duplicate active IMU identities, duplicate active BMI270 bus/address pairs, unsupported addresses or profiles, unavailable or non-400 kHz buses, invalid or left-handed mounting transforms, failed BMI270 initialization, and any effective logger rate other than 500 Hz;
+- logging startup rejects unknown sensor types, more than one active BMI270 (the explicit MVP boundary), duplicate configured sensor names, duplicate active IMU identities, duplicate active BMI270 bus/address pairs, unsupported addresses or profiles, unavailable or non-400 kHz buses, invalid or left-handed mounting transforms, and unsafe logger/output-rate combinations;
+- a physically absent BMI270 or a device lost during session preparation no longer blocks unrelated logging: its columns remain in the stable session schema with `sample_valid=0`, while initialization and transport diagnostics record the unavailable device;
 - a newly added or materially reconfigured BMI270 must be activated by restarting the logger; startup compares the live adapter with persisted configuration and refuses to record mismatched metadata;
 - a pure mounting-map validator requires a signed permutation of the three native axes with determinant +1; raw logged axes remain sensor-native and the body mapping is metadata only;
 - the adapter publishes the 12 canonical contract columns with explicit int16, uint16, uint32, and float32 BDQ storage, emits at most one queued native sample per logger row, and uses zero placeholders plus `NaN` sample age when `sample_valid=0`;

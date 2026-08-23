@@ -140,6 +140,7 @@ from .timeseries import (
     TIMESERIES_WINDOW_SCHEMA,
     TIMESERIES_WINDOW_VERSION,
     get_timeseries_window,
+    get_multistream_timeseries_window,
 )
 from .trackpoint_queries import (
     TRACKPOINT_MATCH_QUERY_RESULTS_SCHEMA,
@@ -246,6 +247,7 @@ __all__ = [
     "evaluate_analysis_view_adequacy",
     "get_analysis_view",
     "get_timeseries_window",
+    "get_multistream_timeseries_window",
     "get_session_gps_points",
     "is_valid_object_id",
     "list_geospatial_policies",

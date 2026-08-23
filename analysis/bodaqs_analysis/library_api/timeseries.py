@@ -18,6 +18,8 @@ from .ids import make_session_key, make_session_ref_id
 
 TIMESERIES_WINDOW_SCHEMA = "bodaqs.timeseries_window"
 TIMESERIES_WINDOW_VERSION = 1
+MULTISTREAM_TIMESERIES_WINDOW_SCHEMA = "bodaqs.multistream_timeseries_window"
+MULTISTREAM_TIMESERIES_WINDOW_VERSION = 1
 DEFAULT_TARGET_POINTS = 2000
 WINDOW_BOUNDARY_WARNING_TOLERANCE_S = 0.25
 
@@ -183,6 +185,274 @@ def get_timeseries_window(
         "marks": _mark_overlays(windowed, time_column=time_column, mark_column=mark_column) if mark_column else [],
         "warnings": warnings,
     }
+
+
+def get_multistream_timeseries_window(
+    library_root: str | Path,
+    request: Mapping[str, Any],
+    *,
+    library_id: str | None = None,
+) -> dict[str, Any]:
+    """Return independently sampled, stream-scoped time-series groups.
+
+    Unlike :func:`get_timeseries_window`, this endpoint never resamples one
+    materialised stream onto another stream's timebase.  Each returned group
+    carries its own native timestamps and signals.
+    """
+    if not isinstance(request, Mapping):
+        raise InvalidRequestError("Time-series request must be an object.")
+
+    store = ArtifactStore(Path(library_root))
+    session_ref = _parse_session_ref(request.get("session"))
+    request_library_id = session_ref.get("library_id")
+    if library_id is not None and request_library_id is not None and request_library_id != library_id:
+        raise InvalidRequestError(
+            "session.library_id does not match the request library.",
+            details={"library_id": library_id, "session_library_id": request_library_id},
+        )
+    run_id = session_ref["run_id"]
+    session_id = session_ref["session_id"]
+    session_key = session_ref["session_key"]
+    session_dir = store.session_dir(run_id, session_id)
+    if not session_dir.exists():
+        raise SessionNotFoundError(
+            "Session was not found.",
+            details={"run_id": run_id, "session_id": session_id, "session_key": session_key},
+        )
+    session_meta = _read_json_object(store.path_session_meta(run_id, session_id))
+    grouped_requests = _group_stream_signal_requests(request.get("signals"))
+    window_request = _parse_window(request.get("window"))
+    target_points = _parse_target_points(request.get("resolution"))
+
+    groups: list[dict[str, Any]] = []
+    for stream_name, stream_requests in grouped_requests.items():
+        stream_meta, dataframe_path, stream_kind = _stream_source(
+            store,
+            run_id=run_id,
+            session_id=session_id,
+            session_meta=session_meta,
+            stream_name=stream_name,
+        )
+        groups.append(
+            _stream_window_group(
+                dataframe_path=dataframe_path,
+                metadata=stream_meta,
+                stream_name=stream_name,
+                stream_kind=stream_kind,
+                signal_requests=stream_requests,
+                window_request=window_request,
+                target_points=target_points,
+            )
+        )
+
+    response_session = {
+        "library_id": library_id or request_library_id,
+        "session_key": session_key,
+        "run_id": run_id,
+        "session_id": session_id,
+    }
+    if response_session["library_id"] is not None:
+        response_session["session_ref_id"] = make_session_ref_id(response_session["library_id"], session_key)
+    returned_times = [
+        value
+        for group in groups
+        for value in (group["time"].get("values") or [])
+        if isinstance(value, (int, float)) and np.isfinite(value)
+    ]
+    primary_meta, primary_path, _ = _stream_source(
+        store,
+        run_id=run_id,
+        session_id=session_id,
+        session_meta=session_meta,
+        stream_name="primary",
+    )
+    return {
+        "schema": MULTISTREAM_TIMESERIES_WINDOW_SCHEMA,
+        "version": MULTISTREAM_TIMESERIES_WINDOW_VERSION,
+        "encoding": "json_arrays",
+        "session": response_session,
+        "window": {
+            "requested_start_s": window_request["start_s"],
+            "requested_end_s": window_request["end_s"],
+            "returned_start_s": min(returned_times) if returned_times else None,
+            "returned_end_s": max(returned_times) if returned_times else None,
+        },
+        "groups": groups,
+        "events": (
+            _event_overlays(
+                store,
+                run_id=run_id,
+                session_id=session_id,
+                requested_start_s=window_request["start_s"],
+                requested_end_s=window_request["end_s"],
+                returned_start_s=min(returned_times) if returned_times else None,
+                returned_end_s=max(returned_times) if returned_times else None,
+            )
+            if bool(request.get("include_events", False))
+            else []
+        ),
+        "marks": _primary_marks(
+            primary_path,
+            primary_meta,
+            window_request=window_request,
+        ) if bool(request.get("include_marks", False)) else [],
+        "warnings": [],
+    }
+
+
+def _group_stream_signal_requests(value: Any) -> dict[str, list[dict[str, Any]]]:
+    if not isinstance(value, list) or not value:
+        raise InvalidRequestError("Time-series request must include at least one signal.")
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise InvalidRequestError("Each requested signal must be an object.", details={"index": index})
+        stream_name = _optional_text(item.get("stream_name"))
+        if stream_name is None:
+            raise InvalidRequestError(
+                "Multi-stream signal requests must include stream_name.", details={"index": index}
+            )
+        request_item = {str(key): raw for key, raw in item.items() if str(key) != "stream_name"}
+        if request_item.get("column") is None and request_item.get("selector") is None:
+            raise InvalidRequestError(
+                "Requested signal must include column or selector.", details={"index": index}
+            )
+        grouped.setdefault(stream_name, []).append(request_item)
+    return grouped
+
+
+def _stream_source(
+    store: ArtifactStore,
+    *,
+    run_id: str,
+    session_id: str,
+    session_meta: Mapping[str, Any],
+    stream_name: str,
+) -> tuple[dict[str, Any], Path, str]:
+    if stream_name == "primary":
+        path = store.path_session_df(run_id, session_id)
+        if not path.exists():
+            raise TimeseriesUnavailableError("Session dataframe was not found.", details={"path": str(path)})
+        return dict(session_meta), path, "primary"
+    secondary = session_meta.get("secondary_streams")
+    registered = secondary.get(stream_name) if isinstance(secondary, Mapping) else None
+    if not isinstance(registered, Mapping):
+        raise SignalNotFoundError(
+            "Requested stream is not registered for the session.", details={"stream_name": stream_name}
+        )
+    path = store.path_session_stream_df(run_id, session_id, stream_name)
+    if not path.exists():
+        raise TimeseriesUnavailableError(
+            "Requested stream dataframe was not found.", details={"stream_name": stream_name, "path": str(path)}
+        )
+    persisted = _read_json_object(store.path_session_stream_meta(run_id, session_id, stream_name))
+    metadata = dict(registered)
+    metadata.update(persisted)
+    return metadata, path, _optional_text(metadata.get("kind")) or "secondary"
+
+
+def _stream_window_group(
+    *,
+    dataframe_path: Path,
+    metadata: Mapping[str, Any],
+    stream_name: str,
+    stream_kind: str,
+    signal_requests: list[dict[str, Any]],
+    window_request: Mapping[str, float | None],
+    target_points: int,
+) -> dict[str, Any]:
+    available_columns = _parquet_columns(dataframe_path)
+    time_column, time_unit = _resolve_time_column(metadata, available_columns)
+    signal_specs = _resolve_signal_requests(
+        signal_requests, meta=metadata, available_columns=available_columns
+    )
+    read_columns = list(dict.fromkeys([time_column, *[spec["column"] for spec in signal_specs]]))
+    try:
+        df = pd.read_parquet(dataframe_path, columns=read_columns)
+    except Exception as exc:
+        raise TimeseriesUnavailableError(
+            "Stream dataframe could not be read.", details={"path": str(dataframe_path), "error": f"{type(exc).__name__}: {exc}"}
+        ) from exc
+    windowed = _window_dataframe(
+        df,
+        time_column=time_column,
+        requested_start_s=window_request["start_s"],
+        requested_end_s=window_request["end_s"],
+    )
+    if windowed.empty:
+        raise TimeseriesUnavailableError(
+            "Requested window contains no stream samples.",
+            details={"stream_name": stream_name, **dict(window_request)},
+        )
+    signal_windowed = _rows_with_selected_signal_data(
+        windowed, signal_columns=[spec["column"] for spec in signal_specs]
+    )
+    if signal_windowed.empty:
+        raise TimeseriesUnavailableError(
+            "Requested window contains no finite stream signal samples.",
+            details={"stream_name": stream_name, **dict(window_request)},
+        )
+    selected, sampling_mode = _downsample_min_max(
+        signal_windowed,
+        time_column=time_column,
+        signal_columns=[spec["column"] for spec in signal_specs],
+        target_points=target_points,
+    )
+    time_values = _numeric_values(selected[time_column])
+    return {
+        "stream": {"stream_name": stream_name, "stream_kind": stream_kind, "time_column": time_column},
+        "sampling": {
+            "mode": sampling_mode,
+            "source_points": int(len(signal_windowed)),
+            "returned_points": int(len(selected)),
+            "target_points": int(target_points),
+        },
+        "time": {"column": time_column, "unit": time_unit, "values": time_values},
+        "signals": [
+            {
+                **_signal_payload(spec),
+                "stream_name": stream_name,
+                "stream_kind": stream_kind,
+                "time_column": time_column,
+                "values": _numeric_values(selected[spec["column"]]),
+            }
+            for spec in signal_specs
+        ],
+    }
+
+
+def _primary_marks(
+    dataframe_path: Path,
+    metadata: Mapping[str, Any],
+    *,
+    window_request: Mapping[str, float | None],
+) -> list[dict[str, Any]]:
+    available_columns = _parquet_columns(dataframe_path)
+    time_column, _ = _resolve_time_column(metadata, available_columns)
+    mark_column = _resolve_mark_column(metadata, available_columns)
+    if mark_column is None:
+        return []
+    try:
+        df = pd.read_parquet(dataframe_path, columns=[time_column, mark_column])
+    except Exception:
+        return []
+    windowed = _window_dataframe(
+        df,
+        time_column=time_column,
+        requested_start_s=window_request["start_s"],
+        requested_end_s=window_request["end_s"],
+    )
+    return _mark_overlays(windowed, time_column=time_column, mark_column=mark_column)
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return {str(key): value for key, value in raw.items()} if isinstance(raw, Mapping) else {}
 
 
 def _parse_session_ref(value: Any) -> dict[str, str]:

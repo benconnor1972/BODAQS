@@ -70,7 +70,10 @@ struct BMI270StartupObservationResult {
   BMI270StartupObservationState state = BMI270StartupObservationState::Disabled;
   uint16_t rejectionMask = 0;
   uint16_t configuredSeconds = 0;
+  uint16_t nativeSampleRateHz = 0;
+  float minimumValidFraction = 0.0f;
   uint32_t targetSampleSlots = 0;
+  uint32_t minimumValidSamples = 0;
   uint32_t validSamples = 0;
   uint32_t settlingSampleSlots = 0;
   uint32_t measurementStartSequence = 0;
@@ -89,7 +92,8 @@ struct BMI270StartupObservationResult {
 class BMI270StartupObservation {
 public:
   static constexpr uint16_t kNativeRateHz = 200;
-  static constexpr uint32_t kMinimumSamples = 800;
+  static constexpr float kMinimumValidFraction = 0.5f;
+  static constexpr uint32_t kMinimumSampleFloor = 100;
   static constexpr double kAccelCountsPerG = 2048.0;
   static constexpr double kGyroCountsPerDps = 16.384;
   static constexpr double kAccelMeanToleranceG = 0.15;
@@ -99,11 +103,23 @@ public:
   static constexpr uint32_t kSettlingCleanSamples = 20;
   static constexpr uint32_t kMaximumSettlingSlots = 200;
 
-  void begin(uint16_t configuredSeconds) {
+  void begin(
+      uint16_t configuredSeconds,
+      uint16_t nativeSampleRateHz = kNativeRateHz) {
     result_ = BMI270StartupObservationResult{};
     result_.configuredSeconds = configuredSeconds;
+    result_.nativeSampleRateHz = nativeSampleRateHz ? nativeSampleRateHz : kNativeRateHz;
+    result_.minimumValidFraction = kMinimumValidFraction;
     result_.targetSampleSlots =
-        static_cast<uint32_t>(configuredSeconds) * kNativeRateHz;
+        static_cast<uint32_t>(configuredSeconds) * result_.nativeSampleRateHz;
+    const uint32_t fractionalMinimum =
+        (result_.targetSampleSlots + 1u) / 2u;
+    const uint32_t flooredMinimum = fractionalMinimum < kMinimumSampleFloor
+        ? kMinimumSampleFloor
+        : fractionalMinimum;
+    result_.minimumValidSamples = flooredMinimum < result_.targetSampleSlots
+        ? flooredMinimum
+        : result_.targetSampleSlots;
     result_.state = configuredSeconds
         ? BMI270StartupObservationState::Collecting
         : BMI270StartupObservationState::Disabled;
@@ -209,7 +225,7 @@ public:
     result_.temperatureMaximumC = temperature_.maximum();
 
     uint16_t rejection = 0;
-    if (result_.validSamples < kMinimumSamples) {
+    if (result_.validSamples < result_.minimumValidSamples) {
       rejection |= BMI270StartupRejection::kInsufficientSamples;
     }
     if (qualityIncident_) rejection |= BMI270StartupRejection::kQualityIncident;

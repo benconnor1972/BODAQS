@@ -196,6 +196,65 @@ int runBMI270FifoTests() {
 
     {
         BMI270StartupObservation observation;
+        observation.begin(3);
+        for (uint32_t sequence = 0;
+             sequence < BMI270StartupObservation::kSettlingCleanSamples + 600;
+             ++sequence) {
+            observation.observe(
+                sequence,
+                0, 0, 2048,
+                2, -3, 1,
+                512, true,
+                BMI270ImuStatus::kSensorTimeEstimated);
+        }
+        const BMI270StartupObservationResult& result = observation.result();
+        check(result.state == BMI270StartupObservationState::Accepted &&
+              result.nativeSampleRateHz == 200 &&
+              result.minimumValidFraction == 0.5f &&
+              result.targetSampleSlots == 600 &&
+              result.minimumValidSamples == 300,
+              "startup minimum coverage scales with window and native rate");
+    }
+
+    {
+        BMI270StartupObservation observation;
+        observation.begin(3, 100);
+        for (uint32_t sequence = 0;
+             sequence < BMI270StartupObservation::kSettlingCleanSamples + 150;
+             ++sequence) {
+            observation.observe(
+                sequence,
+                0, 0, 2048,
+                0, 0, 0,
+                0, false,
+                0);
+        }
+        observation.finish();
+        check(observation.result().state == BMI270StartupObservationState::Accepted &&
+              observation.result().targetSampleSlots == 300 &&
+              observation.result().minimumValidSamples == 150,
+              "partial startup observations accept at the configured coverage threshold");
+
+        observation.begin(3, 100);
+        for (uint32_t sequence = 0;
+             sequence < BMI270StartupObservation::kSettlingCleanSamples + 149;
+             ++sequence) {
+            observation.observe(
+                sequence,
+                0, 0, 2048,
+                0, 0, 0,
+                0, false,
+                0);
+        }
+        observation.finish();
+        check(observation.result().state == BMI270StartupObservationState::Rejected &&
+              (observation.result().rejectionMask &
+               BMI270StartupRejection::kInsufficientSamples) != 0,
+              "partial startup observations below the coverage threshold are rejected");
+    }
+
+    {
+        BMI270StartupObservation observation;
         observation.begin(5);
         for (uint32_t sequence = 0;
              sequence < BMI270StartupObservation::kSettlingCleanSamples + 1000;

@@ -51,6 +51,12 @@ BMI270Device::~BMI270Device() {
   shutdown();
 }
 
+bool BMI270Device::setGyroBiasMode(BMI270GyroBiasMode mode) {
+  if (diagnostics_.state != BMI270DeviceState::Uninitialized) return false;
+  gyroBiasMode_ = mode;
+  return true;
+}
+
 bool BMI270Device::begin() {
   ++diagnostics_.beginCalls;
   if (ready()) return true;
@@ -293,13 +299,12 @@ bool BMI270Device::configureOrientation200_() {
   diagnostics_.configurationWriteOk = true;
 
   int8_t result = bmi2_set_accel_offset_comp(BMI2_DISABLE, &device_);
-  if (result == BMI2_OK) {
-    result = bmi2_set_gyro_offset_comp(BMI2_DISABLE, &device_);
-  }
+  if (result == BMI2_OK) result = bmi2_set_gyro_offset_comp(BMI2_DISABLE, &device_);
   if (!apiStepOk_(BMI270DeviceStep::DisableOffsetCompensation, result)) return false;
   diagnostics_.offsetCompensationDisabled = true;
 
   if (!enableSensors_(BMI270DeviceStep::EnableSensors)) return false;
+  if (!configureGyroBiasCorrection_()) return false;
 
   struct bmi2_sens_config effective[2] {};
   effective[0].type = BMI2_ACCEL;
@@ -322,6 +327,27 @@ bool BMI270Device::configureOrientation200_() {
   diagnostics_.failureStep = BMI270DeviceStep::None;
   diagnostics_.lastApiResult = BMI2_OK;
   return true;
+}
+
+bool BMI270Device::configureGyroBiasCorrection_() {
+  const uint8_t selfOffsetFeature[] = { BMI2_GYRO_SELF_OFF };
+  const bool enable = gyroBiasMode_ == BMI270GyroBiasMode::InUseOffsetCorrection;
+  int8_t result = bmi2_set_gyro_offset_comp(enable ? BMI2_ENABLE : BMI2_DISABLE, &device_);
+  if (result == BMI2_OK) {
+    result = enable
+        ? bmi270_sensor_enable(selfOffsetFeature, 1, &device_)
+        : bmi270_sensor_disable(selfOffsetFeature, 1, &device_);
+  }
+  if (!apiStepOk_(BMI270DeviceStep::ConfigureGyroBiasCorrection, result)) return false;
+  diagnostics_.gyroOffsetCompensationEnabled = enable;
+  diagnostics_.gyroSelfOffsetCorrectionEnabled = enable;
+  return true;
+}
+
+bool BMI270Device::readGyroOffsetCompensationAxes(struct bmi2_sens_axes_data& out) {
+  const int8_t result = bmi2_read_gyro_offset_comp_axes(&out, &device_);
+  diagnostics_.lastApiResult = result;
+  return result == BMI2_OK;
 }
 
 bool BMI270Device::disableSensors_(BMI270DeviceStep step) {

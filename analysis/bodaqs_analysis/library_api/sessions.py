@@ -105,8 +105,6 @@ def delete_session(
 def _remove_session_dir(session_dir: Path) -> None:
     """Remove a session tree, retrying Windows read-only/OneDrive placeholders."""
 
-    _make_tree_writable(session_dir)
-
     def handle_remove_error(func: Any, path_text: str, exc_info: Any) -> None:
         exc = exc_info[1]
         if not isinstance(exc, PermissionError):

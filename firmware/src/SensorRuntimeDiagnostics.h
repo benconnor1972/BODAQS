@@ -117,11 +117,15 @@ struct SensorRuntimeDiagnostics {
   uint64_t imuParserOutputDrops = 0;
   uint64_t imuSamplesEnqueued = 0;
   uint64_t imuSamplesEmitted = 0;
+  uint64_t imuSamplesIntentionallyDecimated = 0;
   uint64_t imuQueueDrops = 0;
   uint64_t imuPreSessionQueueDiscards = 0;
   uint64_t imuExplicitQueueDiscards = 0;
   uint64_t imuTemperatureReads = 0;
   uint64_t imuTemperatureReadFailures = 0;
+  uint64_t imuIocOffsetReadAttempts = 0;
+  uint64_t imuIocOffsetReadFailures = 0;
+  uint64_t imuIocOffsetSnapshotDrops = 0;
   uint64_t imuOperationalValidationAttempts = 0;
   uint64_t imuOperationalValidationFailures = 0;
   uint64_t imuSessionStartValidationAttempts = 0;
@@ -184,7 +188,10 @@ struct SensorRuntimeDiagnostics {
   uint8_t imuStartupObservationState = 0;
   uint16_t imuStartupRejectionMask = 0;
   uint16_t imuStartupConfiguredSeconds = 0;
+  uint16_t imuStartupNativeSampleRateHz = 0;
+  float imuStartupMinimumValidFraction = 0.0f;
   uint32_t imuStartupTargetSampleSlots = 0;
+  uint32_t imuStartupMinimumValidSamples = 0;
   uint32_t imuStartupValidSamples = 0;
   uint32_t imuStartupSettlingSampleSlots = 0;
   uint32_t imuStartupMeasurementStartSequence = 0;

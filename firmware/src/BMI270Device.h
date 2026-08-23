@@ -15,6 +15,11 @@ enum class BMI270DeviceState : uint8_t {
   Fault,
 };
 
+enum class BMI270GyroBiasMode : uint8_t {
+  Off = 0,
+  InUseOffsetCorrection,
+};
+
 enum class BMI270DeviceStep : uint8_t {
   None = 0,
   ValidateParameters,
@@ -26,6 +31,7 @@ enum class BMI270DeviceStep : uint8_t {
   WriteConfiguration,
   DisableOffsetCompensation,
   EnableSensors,
+  ConfigureGyroBiasCorrection,
   VerifyConfiguration,
   DisableSensors,
   ResumeSensors,
@@ -53,6 +59,8 @@ struct BMI270DeviceDiagnostics {
   bool configurationReadOk = false;
   bool configurationMatched = false;
   bool offsetCompensationDisabled = false;
+  bool gyroOffsetCompensationEnabled = false;
+  bool gyroSelfOffsetCorrectionEnabled = false;
   bool sensorsEnabled = false;
   bool failureCleanupAttempted = false;
   bool failureCleanupOk = false;
@@ -99,6 +107,8 @@ public:
   BMI270Device& operator=(const BMI270Device&) = delete;
 
   bool begin();
+  bool setGyroBiasMode(BMI270GyroBiasMode mode);
+  BMI270GyroBiasMode gyroBiasMode() const { return gyroBiasMode_; }
   bool suspend();
   bool resume();
   bool recover();
@@ -127,6 +137,7 @@ public:
   const BMI270Profile::EffectiveConfig& effectiveConfig() const {
     return effectiveConfig_;
   }
+  bool readGyroOffsetCompensationAxes(struct bmi2_sens_axes_data& out);
 
   struct bmi2_dev& nativeDevice() { return device_; }
   const struct bmi2_dev& nativeDevice() const { return device_; }
@@ -134,6 +145,7 @@ public:
 private:
   bool initializeOnce_();
   bool configureOrientation200_();
+  bool configureGyroBiasCorrection_();
   bool disableSensors_(BMI270DeviceStep step);
   bool enableSensors_(BMI270DeviceStep step);
   void quiesceAfterFailedInitialization_();
@@ -145,4 +157,5 @@ private:
   struct bmi2_dev device_ {};
   BMI270Profile::EffectiveConfig effectiveConfig_;
   BMI270DeviceDiagnostics diagnostics_;
+  BMI270GyroBiasMode gyroBiasMode_ = BMI270GyroBiasMode::Off;
 };

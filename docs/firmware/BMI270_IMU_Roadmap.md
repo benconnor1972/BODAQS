@@ -70,12 +70,19 @@ This is a robust first profile rather than a final optimum. It reduces clipping 
 The existing BODAQS logger has a single row timebase. The MVP will keep that architecture and use the following adapter:
 
 1. The I2C scheduler drains complete BMI270 FIFO frames into a bounded in-memory queue.
-2. A 500 Hz logger consumes at most one queued IMU sample per row.
-3. Each native 200 Hz IMU sample is emitted exactly once.
+2. A 500 Hz logger consumes at most one queued IMU sample per row for full
+   200 Hz output. Declared lower-rate streams decimate before the queue while
+   preserving 200 Hz FIFO draining and native timing.
+3. Each full-output native 200 Hz IMU sample is emitted exactly once; a
+   declared decimated stream emits every Nth native sample exactly once.
 4. Rows with no IMU sample are explicitly invalid; values are not held and presented as new samples.
 5. Sequence, BMI270 sensor time, acquisition age, and status fields make gaps and timing uncertainty observable.
 
-The 500 Hz logger rate is deliberate. A 200 Hz consumer is not safely faster than a nominally 200 Hz sensor with an independent clock. This sparse-row adapter is acceptable for one-IMU validation but is not the desired long-term multi-stream storage model.
+The 500 Hz logger rate remains deliberate for full 200 Hz output: a 200 Hz
+consumer is not safely faster than a nominally 200 Hz sensor with an
+independent clock. Declared lower-rate output needs only a two-to-one logger
+headroom. This sparse-row adapter is acceptable for one-IMU validation but is
+not the desired long-term multi-stream storage model.
 
 ### 3.4 Raw and derived data
 
@@ -102,7 +109,9 @@ The calibration progression is:
 1. MVP: device identity and health, mounting transform, stationary start observation, raw temperature, and an explicit calibration reference.
 2. Next: guided six-position accelerometer calibration and repeatable gyroscope zero checks.
 3. Later if justified: imported temperature-dependent bias models and optional Bosch component re-trimming.
-4. Research only until validated: gyro internal offset compensation and any automatic in-ride bias application.
+4. Experimental: gyro internal offset compensation and any automatic in-ride
+   bias application. IOC is configuration-default-off, provenance-recorded,
+   and must pass A/B thermal and dynamic validation before production use.
 
 The stationary start observation estimates gyro mean and variance only when stationarity tests pass. It is recorded for post-processing and quality control; it does not alter the raw log.
 

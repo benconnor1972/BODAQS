@@ -137,6 +137,10 @@ def create_app(
     def workbench_bootstrap() -> dict[str, Any]:
         return _current_adapter(app).get_workbench_bootstrap()
 
+    @app.get("/api/v1/signal-sets")
+    def get_signal_sets() -> dict[str, Any]:
+        return _current_adapter(app).get_signal_sets()
+
     @app.post("/api/v1/config/libraries-root")
     async def set_libraries_root(request: Request) -> dict[str, Any]:
         _assert_writable(app)
@@ -163,6 +167,10 @@ def create_app(
     def list_libraries() -> list[dict[str, Any]]:
         return _current_adapter(app).list_libraries()
 
+    @app.get("/api/v1/libraries/catalog-revisions")
+    def get_catalog_revisions() -> dict[str, Any]:
+        return _current_adapter(app).get_catalog_revisions()
+
     @app.get("/api/v1/libraries/{library_id}")
     def get_library(library_id: str) -> dict[str, Any]:
         return _current_adapter(app).get_library(library_id)
@@ -173,8 +181,18 @@ def create_app(
         return {"refreshed": True, "library": library}
 
     @app.post("/api/v1/libraries/{library_id}/catalog/invalidate")
-    def invalidate_library_catalog(library_id: str) -> dict[str, Any]:
-        return _current_adapter(app).invalidate_library_catalog(library_id)
+    async def invalidate_library_catalog(library_id: str, request: Request) -> dict[str, Any]:
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        body = _json_object_payload(payload)
+        changed_sessions = body.get("changed_sessions") if isinstance(body.get("changed_sessions"), list) else []
+        return _current_adapter(app).invalidate_library_catalog(
+            library_id,
+            warm=bool(body.get("warm", False)),
+            changed_sessions=[item for item in changed_sessions if isinstance(item, Mapping)],
+        )
 
     @app.get("/api/v1/libraries/{library_id}/catalog")
     def get_catalog(library_id: str) -> dict[str, Any]:
@@ -430,6 +448,11 @@ def create_app(
     async def get_timeseries_window(library_id: str, request: Request) -> dict[str, Any]:
         payload = await request.json()
         return _current_adapter(app).get_timeseries_window(library_id, payload)
+
+    @app.post("/api/v1/libraries/{library_id}/timeseries/multistream-window")
+    async def get_multistream_timeseries_window(library_id: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).get_multistream_timeseries_window(library_id, payload)
 
     @app.post("/api/v1/libraries/{library_id}/signals/query")
     async def query_signals(library_id: str, request: Request) -> dict[str, Any]:

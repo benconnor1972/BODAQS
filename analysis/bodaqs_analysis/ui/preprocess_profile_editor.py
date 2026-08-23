@@ -75,6 +75,13 @@ def _motion_defaults(raw: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
     return defaults
 
 
+def _imu_attitude_defaults(raw: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    defaults = copy.deepcopy(DEFAULT_PREPROCESS_PROFILE_CONFIG["imu_attitude"])
+    if isinstance(raw, Mapping):
+        defaults.update(copy.deepcopy(dict(raw)))
+    return defaults
+
+
 def _set_dropdown_value(widget: W.Dropdown, value: Any, fallback: str) -> None:
     allowed = [item[1] if isinstance(item, tuple) else item for item in widget.options]
     widget.value = str(value) if str(value) in allowed else fallback
@@ -179,6 +186,15 @@ class PreprocessProfileEditor:
         self.w_fit_resample_to_primary = W.Checkbox(description="Resample to primary")
         self.w_fit_resample_method = W.Dropdown(options=["linear"], description="Method", layout=W.Layout(width="220px"))
         self.w_fit_raw_stream_name = W.Text(description="Stream", layout=W.Layout(width="320px"))
+
+        # Estimator tuning remains package-defined; this policy controls which
+        # broadly reusable inertial products are materialised.
+        self.w_imu_attitude_enabled = W.Checkbox(description="Generate fused inertial stream")
+        self.w_imu_attitude_required = W.Checkbox(description="Require an inertial stream")
+        self.w_inertial_dynamics_enabled = W.Checkbox(description="Generate inertial dynamics vectors")
+        self.w_inertial_world_frame = W.Checkbox(description="Include world-frame vectors")
+        self.w_inertial_angular = W.Checkbox(description="Include angular kinematics")
+        self.w_inertial_magnitudes = W.Checkbox(description="Include magnitude scalars")
 
         # Signal processing policy
         self.w_zero_enabled = W.Checkbox(description="Enable zeroing")
@@ -287,6 +303,17 @@ class PreprocessProfileEditor:
                 ],
             ),
             self._section(
+                "Fused IMU Inertial Product",
+                "Optionally persist orientation plus gravity-compensated inertial dynamics. "
+                "When required, preprocessing fails if no eligible frame-mounted IMU can produce it.",
+                [
+                    self.w_imu_attitude_enabled,
+                    self.w_imu_attitude_required,
+                    self.w_inertial_dynamics_enabled,
+                    _row([self.w_inertial_world_frame, self.w_inertial_angular, self.w_inertial_magnitudes]),
+                ],
+            ),
+            self._section(
                 "Zeroing, Scaling & Smoothing",
                 "Set preprocessing operations applied to logger signals before event detection and metric extraction.",
                 [
@@ -348,6 +375,7 @@ class PreprocessProfileEditor:
         cfg = preprocess_config_from_profile(profile)
         fit = _fit_defaults(cfg.get("fit_import"))
         motion = _motion_defaults(cfg.get("motion_derivation"))
+        imu_attitude = _imu_attitude_defaults(cfg.get("imu_attitude"))
 
         self.current_profile_path = Path(path) if path is not None else self.current_profile_path
         if path is not None:
@@ -378,6 +406,13 @@ class PreprocessProfileEditor:
         self.w_fit_resample_to_primary.value = bool(fit.get("resample_to_primary", True))
         _set_dropdown_value(self.w_fit_resample_method, fit.get("resample_method") or "linear", "linear")
         self.w_fit_raw_stream_name.value = str(fit.get("raw_stream_name") or "gps_fit")
+        self.w_imu_attitude_enabled.value = bool(imu_attitude.get("enabled", False))
+        self.w_imu_attitude_required.value = bool(imu_attitude.get("required", False))
+        inertial_dynamics = imu_attitude.get("inertial_dynamics") if isinstance(imu_attitude.get("inertial_dynamics"), Mapping) else {}
+        self.w_inertial_dynamics_enabled.value = bool(inertial_dynamics.get("enabled", True))
+        self.w_inertial_world_frame.value = bool(inertial_dynamics.get("include_world_frame", True))
+        self.w_inertial_angular.value = bool(inertial_dynamics.get("include_angular_kinematics", True))
+        self.w_inertial_magnitudes.value = bool(inertial_dynamics.get("include_magnitudes", True))
 
         self.w_zero_enabled.value = bool(cfg.get("zeroing_enabled", False))
         self.w_zero_window_s.value = float(cfg.get("zero_window_s", 0.4))
@@ -460,6 +495,16 @@ class PreprocessProfileEditor:
                 "resample_to_primary": bool(self.w_fit_resample_to_primary.value),
                 "resample_method": str(self.w_fit_resample_method.value),
                 "raw_stream_name": str(self.w_fit_raw_stream_name.value or "").strip(),
+            },
+            "imu_attitude": {
+                "enabled": bool(self.w_imu_attitude_enabled.value),
+                "required": bool(self.w_imu_attitude_required.value),
+                "inertial_dynamics": {
+                    "enabled": bool(self.w_inertial_dynamics_enabled.value),
+                    "include_world_frame": bool(self.w_inertial_world_frame.value),
+                    "include_angular_kinematics": bool(self.w_inertial_angular.value),
+                    "include_magnitudes": bool(self.w_inertial_magnitudes.value),
+                },
             },
             "zeroing_enabled": bool(self.w_zero_enabled.value),
             "zero_window_s": float(self.w_zero_window_s.value),

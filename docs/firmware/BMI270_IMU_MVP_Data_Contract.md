@@ -1,7 +1,7 @@
 # BMI270 IMU MVP Data Contract
 
 - Status: Accepted
-- Contract ID: bodaqs.bmi270_imu_mvp.v2
+- Contract ID: bodaqs.bmi270_imu_mvp.v3
 - Scope: Normative data contract for the accepted BMI270 IMU MVP plan
 - Related plan: [BMI270 IMU MVP Implementation Plan](BMI270_IMU_MVP_Implementation_Plan.md)
 
@@ -63,9 +63,15 @@ The named orientation_200 profile expands to:
 | Acquisition service | Polling, initially scheduled at 200 Hz |
 | Temperature observation | 10 Hz register read, held between observations |
 | Temperature freshness limit | 250 milliseconds |
-| Logger row rate | 500 Hz |
+| Logger row rate | 500 Hz for full 200 Hz output; lower only for declared decimated output |
 
 Phase 2 must read back effective sensor configuration. Both requested profile name and effective values are recorded. If the Bosch API or device rejects a required value, initialization fails visibly rather than silently substituting another profile.
+
+Sensor availability is not a logger-start precondition. If a configured BMI270
+is absent or becomes unavailable while preparing a session, logging continues
+with its declared columns present, `sample_valid=0`, zero placeholders, and an
+unavailable sample age. Initialization and transport diagnostics preserve the
+reason. Invalid configuration remains a start-blocking error.
 
 The initial gyroscope noise-performance choice follows the Bosch example default and is deliberately recorded. Bench data may justify a revised named profile; it must not silently alter orientation_200.
 
@@ -95,13 +101,44 @@ The Phase 3 implementation reads die temperature independently at 10 Hz and hold
 
 ## 6. Row and channel contract
 
-The logger row rate is 500 Hz. The IMU native rate is 200 Hz.
+The IMU native rate is 200 Hz. Full native output uses a 500 Hz logger row
+rate. A user selects `max_output_rate_hz`, the maximum acceptable stored IMU
+rate, rather than an exact rate. At log start the firmware resolves the highest
+supported output rate at or below that maximum for the **effective** logger
+rate (after analogue-channel throttling). A session may therefore retain every
+Nth native frame without refusing a valid low-rate log. The current sparse-row
+adapter requires at least twice the emitted IMU rate (and 500 Hz for the full
+200 Hz stream); this is an adapter limit, not a future native-stream limit.
 
-- Each successfully queued native sample is emitted into exactly one logger row.
+- Each successfully queued output sample is emitted into exactly one logger row.
+- In full-output mode every native sample is queued. In decimated-output mode,
+  parsing, FIFO timing, temperature observation, and startup observation remain
+  at 200 Hz, while only every declared Nth native sample is queued.
 - sample_valid is 1 only when that row contains a new native IMU sample.
 - No IMU sample is repeated to fill later rows.
 - An invalid row contains the placeholders specified below.
 - Consumers must filter sample_valid before interpreting any other IMU sample column.
+- A native sequence increment equal to `output_decimation_factor` is expected,
+  not a continuity break. Other positive increments are evidence of loss.
+
+### 6.1 Output selection and gyro-bias provenance
+
+The required `imu_config` metadata records the requested maximum as
+`max_output_rate_hz`, the resolved `output_rate_hz`,
+`output_decimation_factor`, and `output_selection`. In an IOC experiment it
+also records `gyro_bias_correction.mode`, whether hardware offset application
+is active, and whether the optional one-hertz offset-register trace is present.
+
+Firmware accepts the former `output_rate_hz` sensor setting as a configuration
+migration alias for `max_output_rate_hz`. It is not emitted by new sensor
+schemas; after the configuration is next saved, `max_output_rate_hz` becomes
+the authoritative setting.
+
+When `gyro_bias_correction.hardware_offset_applied=true`, gyroscope channels
+remain sensor-native signed counts but are **hardware-offset-compensated**;
+they are not uncorrected gyro evidence and host processing must not subtract a
+second startup bias. Accelerometer offset compensation remains disabled. FOC,
+CRT, and BMI270 NVM programming are outside this contract.
 
 For a configured sensor name frame_imu, the fields are:
 
@@ -191,7 +228,7 @@ The host:
 4. reconstructs the nominal 200 Hz native timeline from sensor ticks;
 5. fits the native timeline to acquisition-age-corrected logger observations for each continuous sensor-clock epoch;
 6. uses the fitted logger-clock timeline as canonical analysis time while preserving the nominal native timeline;
-7. treats the 500 Hz row time as an emission observation, not the sample time.
+7. treats the logger row time as an emission observation, not the sample time.
 
 The configured ODR and 39.0625 microsecond sensor-time resolution are nominal values in the BMI270 clock domain. Consumers must not assume that nominal sensor seconds equal logger seconds. They should preserve and report both the native-grid ODR and the logger-relative ODR obtained from the clock fit.
 
@@ -236,9 +273,18 @@ The matrix rows are the `body_local` X, Y, and Z basis vectors expressed in sens
 
 ## 11. Startup stationary observation
 
-The default startup observation window is 5 seconds. The observation is valid only if:
+The default startup observation window is 5 seconds. The observer consumes the
+effective native IMU rate, even when stored IMU output is decimated. Its minimum
+coverage is half of the configured window at that native rate, subject to a
+100-sample floor capped at the target sample count:
 
-- at least 800 valid native samples are present;
+    target_sample_slots = configured_window_s * native_sample_rate_hz
+    minimum_valid_samples = min(target_sample_slots,
+                                max(100, ceil(target_sample_slots * 0.5)))
+
+The observation is valid only if:
+
+- at least `minimum_valid_samples` valid native samples are present;
 - no FIFO, queue, recovery, or timing-degraded event occurs in the window;
 - mean acceleration magnitude is within 0.15 g of 1 g;
 - standard deviation of acceleration magnitude is no greater than 0.03 g;
@@ -247,7 +293,8 @@ The default startup observation window is 5 seconds. The observation is valid on
 
 The session summary records:
 
-- configured window and thresholds;
+- configured window, native sample rate, 0.5 minimum-valid fraction, calculated
+  target and minimum sample counts, and stationarity thresholds;
 - accepted/rejected state and rejection reason;
 - valid sample count;
 - raw gyro mean and standard deviation per axis;
@@ -260,7 +307,7 @@ The `rejection_mask` is additive, so a window can report more than one cause:
 
 | Mask | Meaning |
 |---:|---|
-| `0x0001` | Fewer than 800 valid samples |
+| `0x0001` | Fewer than the calculated `minimum_valid_samples` |
 | `0x0002` | FIFO, queue, recovery, or degraded-timing incident |
 | `0x0004` | Mean acceleration magnitude outside the gravity band |
 | `0x0008` | Acceleration magnitude unstable |

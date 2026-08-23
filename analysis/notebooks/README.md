@@ -49,6 +49,13 @@ Naming convention:
 bodaqs_<workflow>_self_scoped.ipynb
 ```
 
+Current self-scoped consumers include:
+
+- `self_scoped/bodaqs_data_explorer_self_scoped.ipynb`
+- `self_scoped/bodaqs_session_browser_self_scoped.ipynb`
+- `self_scoped/bodaqs_imu_attitude_explorer_self_scoped.ipynb` — reads persisted
+  `attitude_<sensor>` streams for time-series and distribution inspection.
+
 ## Legacy Root-level Notebooks
 
 The existing root-level notebooks are left in place during remediation so

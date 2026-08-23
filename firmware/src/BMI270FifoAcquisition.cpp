@@ -9,6 +9,7 @@
 
 #include "DebugLog.h"
 #include "BMI270ImuTiming.h"
+#include "DisplayManager.h"
 #include "I2CManager.h"
 #include "esp_timer.h"
 
@@ -26,6 +27,7 @@ constexpr uint8_t kNormalDrainPasses = 2;
 constexpr uint8_t kFinalDrainPasses = 4;
 constexpr uint32_t kRecoveryFailureThreshold = 3;
 constexpr uint16_t kRecoveryBackoffPolls = 200;
+constexpr uint64_t kIocOffsetSnapshotPeriodUs = 1000000u;
 constexpr uint16_t kCarryStatusMask =
     BMI270ImuStatus::kFifoDiscontinuityBefore |
     BMI270ImuStatus::kQueueDropBefore |
@@ -63,6 +65,23 @@ void copyName_(char* destination, size_t capacity, const char* source) {
   destination[length] = '\0';
 }
 
+class ScopedOledTransferDeferral {
+public:
+  explicit ScopedOledTransferDeferral(uint8_t busIndex)
+      : busIndex_(busIndex), active_(DisplayManager::deferTransfersForBus(busIndex)) {}
+
+  ~ScopedOledTransferDeferral() {
+    if (active_) DisplayManager::resumeTransfersForBus(busIndex_);
+  }
+
+  ScopedOledTransferDeferral(const ScopedOledTransferDeferral&) = delete;
+  ScopedOledTransferDeferral& operator=(const ScopedOledTransferDeferral&) = delete;
+
+private:
+  uint8_t busIndex_;
+  bool active_;
+};
+
 } // namespace
 
 BMI270FifoAcquisition::BMI270FifoAcquisition(
@@ -78,8 +97,24 @@ BMI270FifoAcquisition::~BMI270FifoAcquisition() {
   shutdown();
 }
 
+bool BMI270FifoAcquisition::setOutputRateHz(uint16_t rateHz) {
+  // Output selection is a software row-materialisation choice.  It can be
+  // changed between sessions without resetting the physical 200 Hz FIFO.
+  if (sessionActive() || !BMI270Profile::isSupportedOutputRate(rateHz)) return false;
+  outputRateHz_ = rateHz;
+  outputDecimationFactor_ = BMI270Profile::outputDecimationFactor(rateHz);
+  return outputDecimationFactor_ != 0;
+}
+
+bool BMI270FifoAcquisition::setGyroBiasMode(BMI270GyroBiasMode mode) {
+  if (initialized_) return false;
+  gyroBiasMode_ = mode;
+  return device_.setGyroBiasMode(mode);
+}
+
 bool BMI270FifoAcquisition::begin() {
   if (initialized_) return true;
+  ScopedOledTransferDeferral deferOled(device_.busIndex());
   sessionActive_.store(false, std::memory_order_release);
 
   if (!I2CManager::ensureBufferCapacity(device_.busIndex(), kRawBufferBytes) ||
@@ -129,6 +164,10 @@ void BMI270FifoAcquisition::shutdown() {
 }
 
 bool BMI270FifoAcquisition::startSession(uint16_t startupObservationSeconds) {
+  // Session preparation may validate registers, flush the FIFO, or recover the
+  // device. Do not interleave a full OLED transfer with that sequence when the
+  // panel and IMU share a bus.
+  ScopedOledTransferDeferral deferOled(device_.busIndex());
   if (!initialized_ && !begin()) return false;
   if (sessionActive()) return true;
 
@@ -140,7 +179,7 @@ bool BMI270FifoAcquisition::startSession(uint16_t startupObservationSeconds) {
   // Keep the observer disabled until validation/recovery and the final FIFO
   // flush have completed. Those operations belong to the session boundary,
   // not to the stationary measurement window.
-  startupObservation_.begin(0);
+  startupObservation_.begin(0, kTargetRateHz);
   device_.resetTransportDiagnostics();
 
   addCounter_(diagnostics_.sessionStartValidationAttempts);
@@ -161,7 +200,7 @@ bool BMI270FifoAcquisition::startSession(uint16_t startupObservationSeconds) {
   // known pre-session boundary status.
   preSessionBoundaryStatus_ = pendingStatus_ & kCarryStatusMask;
   pendingStatus_ &= static_cast<uint16_t>(~kCarryStatusMask);
-  startupObservation_.begin(startupObservationSeconds);
+  startupObservation_.begin(startupObservationSeconds, kTargetRateHz);
 
   progressWatchdog_.arm(micros());
   sessionActive_.store(true, std::memory_order_release);
@@ -195,13 +234,17 @@ size_t BMI270FifoAcquisition::discardQueuedSamples() {
 bool BMI270FifoAcquisition::pop(BMI270ImuSample& sample) {
   if (!queue_.pop(sample)) return false;
   if (havePreviousDequeuedSequence_ &&
-      sample.sequence != previousDequeuedSequence_ + 1u) {
+      sample.sequence != previousDequeuedSequence_ + outputDecimationFactor_) {
     addCounter_(diagnostics_.sequenceDiscontinuityEvents);
   }
   previousDequeuedSequence_ = sample.sequence;
   havePreviousDequeuedSequence_ = true;
   addCounter_(diagnostics_.samplesDequeued);
   return true;
+}
+
+bool BMI270FifoAcquisition::popIocOffsetSnapshot(BMI270IocOffsetSnapshot& snapshot) {
+  return iocOffsetSnapshots_.pop(snapshot);
 }
 
 void BMI270FifoAcquisition::recordRowEmission(uint32_t ageUs, bool ageValid) {
@@ -516,10 +559,12 @@ BMI270FifoAcquisition::DrainPassResult BMI270FifoAcquisition::drainOnePass_(
       acquisitionEndUs,
       bytesToRead,
       spanUs);
+  maybeCaptureIocOffsetSnapshot_(acquisitionEndUs);
   return DrainPassResult::Data;
 }
 
 bool BMI270FifoAcquisition::recoverAcquisition_(BMI270RecoveryReason reason) {
+  ScopedOledTransferDeferral deferOled(device_.busIndex());
   if (reason != BMI270RecoveryReason::SessionStartValidation) {
     if (!recoveryBudget_.reserveAttempt()) {
       enterTerminalFault_(reason);
@@ -621,6 +666,8 @@ void BMI270FifoAcquisition::resetSessionState_(uint64_t preSessionDiscards) {
   lastTemperatureRaw_ = 0;
   lastTemperatureHostUs_ = 0;
   nextTemperatureReadUs_ = 0;
+  nextIocOffsetReadUs_ = 0;
+  iocOffsetSnapshots_.clear();
   ageHistogram_.reset();
   temperatureStats_.reset();
   havePreviousDequeuedSequence_ = false;
@@ -754,6 +801,16 @@ void BMI270FifoAcquisition::enqueueParsed_(
         sample.temperatureRaw,
         temperatureFresh,
         sample.measurementStatusFlags());
+    const bool retainForOutput =
+        outputDecimationFactor_ == 1 ||
+        (sample.sequence % outputDecimationFactor_) == (outputDecimationFactor_ - 1u);
+    if (!retainForOutput) {
+      addCounter_(diagnostics_.samplesIntentionallyDecimated);
+      continue;
+    }
+    if (outputDecimationFactor_ > 1) {
+      sample.statusFlags |= BMI270ImuStatus::kOutputDecimated;
+    }
     size_t depth = 0;
     if (queue_.push(sample, &depth)) {
       addCounter_(diagnostics_.samplesEnqueued);
@@ -774,6 +831,29 @@ void BMI270FifoAcquisition::enqueueParsed_(
   nextSequence_ += parsed.outputDrops;
   pendingStatus_ |= parserFutureStatus;
   diagnostics_.nextSequence = nextSequence_;
+}
+
+void BMI270FifoAcquisition::maybeCaptureIocOffsetSnapshot_(uint64_t nowUs) {
+  if (!iocDiagnosticsEnabled_ ||
+      gyroBiasMode_ != BMI270GyroBiasMode::InUseOffsetCorrection ||
+      (nextIocOffsetReadUs_ != 0 && nowUs < nextIocOffsetReadUs_)) {
+    return;
+  }
+  nextIocOffsetReadUs_ = nowUs + kIocOffsetSnapshotPeriodUs;
+  addCounter_(diagnostics_.iocOffsetReadAttempts);
+  struct bmi2_sens_axes_data axes {};
+  if (!device_.readGyroOffsetCompensationAxes(axes)) {
+    addCounter_(diagnostics_.iocOffsetReadFailures);
+    return;
+  }
+  BMI270IocOffsetSnapshot snapshot;
+  snapshot.x = axes.x;
+  snapshot.y = axes.y;
+  snapshot.z = axes.z;
+  snapshot.nativeSequence = nextSequence_;
+  if (!iocOffsetSnapshots_.push(snapshot)) {
+    addCounter_(diagnostics_.iocOffsetSnapshotDrops);
+  }
 }
 
 void BMI270FifoAcquisition::addCounter_(uint64_t& counter, uint64_t amount) {

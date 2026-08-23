@@ -40,6 +40,22 @@ struct ParamStore {
       if (strcasecmp(keys[i], key) == 0) return vals[i];
     return nullptr;
   }
+
+  bool remove(const char* key) {
+    if (!key || !*key) return false;
+    for (uint8_t i = 0; i < count; ++i) {
+      if (strcasecmp(keys[i], key) != 0) continue;
+      for (uint8_t j = i + 1; j < count; ++j) {
+        memcpy(keys[j - 1], keys[j], sizeof(keys[j - 1]));
+        memcpy(vals[j - 1], vals[j], sizeof(vals[j - 1]));
+      }
+      --count;
+      keys[count][0] = '\0';
+      vals[count][0] = '\0';
+      return true;
+    }
+    return false;
+  }
 };
 
 // Small schema for per-sensor parameters

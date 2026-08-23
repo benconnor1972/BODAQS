@@ -51,6 +51,8 @@ namespace BdqLogWriter {
   bool isActive();
   uint16_t frameSizeBytes();
   uint16_t pendingFrameCount();
+  uint16_t lastDataChunkFrameCount();
+  uint32_t lastDataChunkBytes();
   uint32_t samplesWritten();
   uint32_t dataChunksWritten();
 }

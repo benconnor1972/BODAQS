@@ -41,6 +41,7 @@ public:
   void applyConfig(const LoggerConfig&) override {}
   void onLoggingStart() override;
   void onLoggingStop() override;
+  void onLoggingFinalized() override;
 
   bool muted() const override { return m_muted; }
   void setMuted(bool m) override { m_muted = m; }
@@ -232,6 +233,7 @@ private:
   mutable uint32_t m_runtimeReadFailureStreak = 0;
   mutable bool m_runtimeReadFailureActive = false;
   mutable bool m_runtimeConfigFailureActive = false;
+  bool m_deferredRecoveryPending = false;
 
   mutable bool m_calUnwrapInit = false;
   mutable int32_t m_calLastUnwrapped = 0;

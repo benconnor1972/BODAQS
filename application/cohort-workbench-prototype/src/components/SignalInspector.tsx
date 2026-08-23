@@ -29,7 +29,7 @@ import {
   SkipForward,
   Trash2,
 } from 'lucide-react'
-import type { LibraryDataSource } from '../data/LibraryDataSource'
+import type { LibraryDataSource, SignalSetDefinition } from '../data/LibraryDataSource'
 import { sessionToStudyRef } from '../domain/studySets'
 import { InfoTip } from './Common'
 import { MapRoutePreview, type HighlightPathOverlay } from './MapRoutePreview'
@@ -58,6 +58,7 @@ const COMPACT_NAVIGATOR_SELECTION_THRESHOLD_PX = 42
 const SIGNAL_INSPECTOR_CHART_MODE_STORAGE_KEY = 'bodaqs.signalInspector.chartMode.v1'
 const SIGNAL_INSPECTOR_SESSION_COLUMNS_STORAGE_KEY = 'bodaqs.signalInspector.sessionColumns.v1'
 const SIGNAL_INSPECTOR_SESSION_PINNED_TIME_STORAGE_KEY = 'bodaqs.signalInspector.sessionPinnedTime.v1'
+const SIGNAL_INSPECTOR_SIGNAL_SET_STORAGE_KEY = 'bodaqs.signalInspector.signalSet.v1'
 const SIGNAL_INSPECTOR_VIEW_STORAGE_KEY = 'bodaqs.signalInspector.view.v1'
 const SIGNAL_INSPECTOR_SIDEBAR_MIN_WIDTH_PX = 320
 const SIGNAL_INSPECTOR_SIDEBAR_MAX_WIDTH_PX = 560
@@ -332,29 +333,36 @@ export function SignalInspector({
 }) {
   const durationS = Math.max(1, session.gpsSummary.sessionDurationS || session.durationMin * 60 || 1)
   const signalOptions = useMemo(() => inspectorSignalOptions(session), [session])
-  const signalOptionColumns = useMemo(() => new Set(signalOptions.map((signal) => signal.column)), [signalOptions])
-  const primarySignalOptionColumns = useMemo(
-    () => new Set(signalOptions.filter(isPrimaryAnalysisSignal).map((signal) => signal.column)),
-    [signalOptions],
-  )
-  const initialColumns = useMemo(
-    () => primarySignalColumns(
-      loadStoredSignalColumns(session, signalOptionColumns) ?? defaultSignalColumns(signalOptions),
-      primarySignalOptionColumns,
-    ),
-    [session.libraryId, session.sessionKey, primarySignalOptionColumns, signalOptionColumns, signalOptions],
-  )
+  const signalOptionColumns = useMemo(() => new Set(signalOptions.map(signalReferenceKey)), [signalOptions])
   const initialViewPreferences = useMemo(() => loadStoredViewPreferences(), [])
   const [chartMode, setChartMode] = useState<SignalInspectorChartMode>(() => loadStoredChartMode())
-  const [selectedColumns, setSelectedColumns] = useState<string[]>(initialColumns)
-  const [primarySignalsOnly, setPrimarySignalsOnly] = useState(true)
-  const visibleSignalOptions = useMemo(
-    () => (primarySignalsOnly ? signalOptions.filter(isPrimaryAnalysisSignal) : signalOptions),
-    [primarySignalsOnly, signalOptions],
+  const [signalSets, setSignalSets] = useState<SignalSetDefinition[]>(FALLBACK_SIGNAL_SETS)
+  const [activeSignalSetId, setActiveSignalSetId] = useState(() => loadStoredSignalSet())
+  const [selectedColumns, setSelectedColumns] = useState<string[]>(() => {
+    const initialSignalSet = FALLBACK_SIGNAL_SETS.find((signalSet) => signalSet.id === loadStoredSignalSet()) ?? FALLBACK_SIGNAL_SETS[0]
+    return loadOrDefaultSignalSetColumns(session, initialSignalSet, FALLBACK_SIGNAL_SETS, signalOptions)
+  })
+  const selectedSignalRequests = useMemo(
+    () => selectedColumns
+      .map((reference) => signalRequestForReference(signalOptions, reference))
+      .filter((signal): signal is { column: string; streamName: string } => signal !== null),
+    [selectedColumns, signalOptions],
   )
-  const visibleSignalOptionLabels = useMemo(
-    () => duplicateAwareSignalLabels(visibleSignalOptions),
-    [visibleSignalOptions],
+  const availableSignalSets = useMemo(
+    () => signalSets.filter((signalSet) => signalOptions.some((signal) => signalIsInSet(signal, signalSet))),
+    [signalOptions, signalSets],
+  )
+  const activeSignalSet = useMemo(
+    () => availableSignalSets.find((signalSet) => signalSet.id === activeSignalSetId) ?? availableSignalSets[0] ?? null,
+    [activeSignalSetId, availableSignalSets],
+  )
+  const visibleSignalOptions = useMemo(
+    () => activeSignalSet ? signalOptions.filter((signal) => signalIsInSet(signal, activeSignalSet)) : [],
+    [activeSignalSet, signalOptions],
+  )
+  const visibleSignalGroups = useMemo(
+    () => inspectorSignalGroups(visibleSignalOptions, activeSignalSet?.id ?? ''),
+    [activeSignalSet?.id, visibleSignalOptions],
   )
   const initialPinnedTimeS = useMemo(
     () => loadStoredPinnedTime(session, durationS),
@@ -414,11 +422,23 @@ export function SignalInspector({
   const bookmarkContextMenuRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
-    setSelectedColumns(primarySignalColumns(
-      loadStoredSignalColumns(session, signalOptionColumns) ?? defaultSignalColumns(signalOptions),
-      primarySignalOptionColumns,
-    ))
-    setPrimarySignalsOnly(true)
+    if (!dataSource.loadSignalSets) return
+    let cancelled = false
+    void dataSource.loadSignalSets()
+      .then((loadedSignalSets) => {
+        if (!cancelled && loadedSignalSets.length) setSignalSets(loadedSignalSets)
+      })
+      .catch(() => {
+        // Keep the bundled fallback available while the local service is older or unavailable.
+      })
+    return () => { cancelled = true }
+  }, [dataSource])
+
+  useEffect(() => {
+    const storedSetId = loadStoredSignalSet()
+    const nextSignalSet = availableSignalSets.find((signalSet) => signalSet.id === storedSetId) ?? availableSignalSets[0] ?? null
+    setActiveSignalSetId(nextSignalSet?.id ?? '')
+    setSelectedColumns(nextSignalSet ? loadOrDefaultSignalSetColumns(session, nextSignalSet, signalSets, signalOptions) : [])
     timeInteraction.reset(initialWindow, loadStoredPinnedTime(session, durationS))
     setActiveBookmarkId(null)
     setBookmarkTitle('')
@@ -445,11 +465,11 @@ export function SignalInspector({
     durationS,
     initialWindow?.endS,
     initialWindow?.startS,
-    primarySignalOptionColumns,
+    availableSignalSets,
     session.libraryId,
     session.sessionKey,
-    signalOptionColumns,
     signalOptions,
+    signalSets,
   ])
 
   useEffect(() => {
@@ -461,8 +481,14 @@ export function SignalInspector({
   }, [chartMode])
 
   useEffect(() => {
-    storeSignalColumns(session, selectedColumns.filter((column) => signalOptionColumns.has(column)))
-  }, [selectedColumns, session.libraryId, session.sessionKey, signalOptionColumns])
+    storeSignalSet(activeSignalSetId)
+  }, [activeSignalSetId])
+
+  useEffect(() => {
+    if (activeSignalSetId) {
+      storeSignalColumns(session, activeSignalSetId, selectedColumns.filter((column) => signalOptionColumns.has(column)))
+    }
+  }, [activeSignalSetId, selectedColumns, session.libraryId, session.sessionKey, signalOptionColumns])
 
   useEffect(() => {
     storeViewPreferences({
@@ -686,7 +712,7 @@ export function SignalInspector({
       try {
         const data = await dataSource.loadTimeseriesWindow(session.libraryId, {
           session: sessionToStudyRef(session),
-          signals: selectedColumns.map((column) => ({ column })),
+          signals: selectedSignalRequests,
           window: fetchWindow,
           resolution: { targetPoints },
           includeEvents: true,
@@ -732,6 +758,7 @@ export function SignalInspector({
     requestWindow.endS,
     requestWindow.startS,
     selectedColumns,
+    selectedSignalRequests,
     session,
     signalFetchCycle,
     videoScrollWithPlayback,
@@ -755,9 +782,13 @@ export function SignalInspector({
         return
       }
       try {
+        const eventSignalRequest = signalRequestForReference(signalOptions, eventSignalColumn)
+        if (!eventSignalRequest) {
+          return
+        }
         const data = await dataSource.loadTimeseriesWindow(session.libraryId, {
           session: sessionToStudyRef(session),
-          signals: [{ column: eventSignalColumn }],
+          signals: [eventSignalRequest],
           window: { startS: 0, endS: durationS },
           resolution: { targetPoints: 2 },
           includeEvents: true,
@@ -787,7 +818,7 @@ export function SignalInspector({
     return () => {
       cancelled = true
     }
-  }, [dataSource, durationS, eventSignalColumn, session.libraryId, session.sessionKey])
+  }, [dataSource, durationS, eventSignalColumn, session.libraryId, session.sessionKey, signalOptions])
 
   useEffect(() => {
     if (eventGroups.length > 0 || fallbackEventGroups.length === 0) {
@@ -812,9 +843,16 @@ export function SignalInspector({
       }
       setNavigatorState({ status: 'loading', message: 'Loading full-session navigator...' })
       try {
+        const navigatorSignals = navigatorColumns
+          .map((reference) => signalRequestForReference(signalOptions, reference))
+          .filter((signal): signal is { column: string; streamName: string } => signal !== null)
+        if (navigatorSignals.length === 0) {
+          setNavigatorState({ status: 'idle', message: 'No selected navigator signal is available for this session.' })
+          return
+        }
         const data = await dataSource.loadTimeseriesWindow(session.libraryId, {
           session: sessionToStudyRef(session),
-          signals: navigatorColumns.map((column) => ({ column })),
+          signals: navigatorSignals,
           window: { startS: 0, endS: durationS },
           resolution: { targetPoints: NAVIGATOR_POINTS },
           includeEvents: false,
@@ -834,7 +872,7 @@ export function SignalInspector({
     return () => {
       cancelled = true
     }
-  }, [dataSource, durationS, navigatorColumnKey, session.libraryId, session.sessionKey])
+  }, [dataSource, durationS, navigatorColumnKey, session.libraryId, session.sessionKey, signalOptions])
 
   useEffect(() => {
     const data = loadStateData(loadState)
@@ -854,14 +892,14 @@ export function SignalInspector({
         bookmark &&
         nearlyEqual(bookmark.window.startS, bookmarkWindow.startS) &&
         nearlyEqual(bookmark.window.endS, bookmarkWindow.endS) &&
-        sameStringSet(bookmark.viewState.signalInspector?.signalColumns ?? [], selectedColumns) &&
+        sameStringSet(bookmarkSignalReferences(bookmark, signalOptions), selectedColumns) &&
         (bookmark.viewState.signalInspector?.showMarks ?? true) === showMarks
       ) {
         return current
       }
       return null
     })
-  }, [bookmarks, bookmarkWindow.endS, bookmarkWindow.startS, selectedColumns, showMarks])
+  }, [bookmarks, bookmarkWindow.endS, bookmarkWindow.startS, selectedColumns, showMarks, signalOptions])
 
   useEffect(() => {
     if (!videoScrubToCursor || !activeVideo || timeInteraction.hoverTimeS === null) {
@@ -958,11 +996,14 @@ export function SignalInspector({
     )
   }
 
-  function setPrimarySignalsFilter(checked: boolean) {
-    setPrimarySignalsOnly(checked)
-    if (checked) {
-      setSelectedColumns((current) => primarySignalColumns(current, primarySignalOptionColumns))
+  function selectSignalSet(signalSetId: string) {
+    const nextSignalSet = availableSignalSets.find((signalSet) => signalSet.id === signalSetId)
+    if (!nextSignalSet) return
+    if (activeSignalSetId) {
+      storeSignalColumns(session, activeSignalSetId, selectedColumns.filter((column) => signalOptionColumns.has(column)))
     }
+    setActiveSignalSetId(nextSignalSet.id)
+    setSelectedColumns(loadOrDefaultSignalSetColumns(session, nextSignalSet, signalSets, signalOptions))
   }
 
   function toggleEventGroup(groupKey: string) {
@@ -1167,7 +1208,16 @@ export function SignalInspector({
       window,
       viewState: {
         signalInspector: {
-          signalColumns: [...selectedColumns],
+          // Keep the legacy field useful to older clients while serialising the
+          // authoritative stream-qualified selection separately.
+          signalColumns: selectedColumns
+            .map((reference) => signalForReference(signalOptions, reference))
+            .filter((signal): signal is SessionSignalSummary => signal !== null && signalStreamName(signal) === 'primary')
+            .map((signal) => signal.column),
+          signalRefs: selectedColumns
+            .map((reference) => signalForReference(signalOptions, reference))
+            .filter((signal): signal is SessionSignalSummary => signal !== null)
+            .map((signal) => ({ streamName: signalStreamName(signal), column: signal.column })),
           showMarks,
         },
       },
@@ -1197,9 +1247,7 @@ export function SignalInspector({
     timeInteraction.setWindow(bookmark.window)
     timeInteraction.setPinnedTime(bookmark.window.startS)
     seekActiveVideoToSessionTime(bookmark.window.startS)
-    const restoredColumns = (bookmark.viewState.signalInspector?.signalColumns ?? []).filter((column) =>
-      signalOptionColumns.has(column),
-    )
+    const restoredColumns = bookmarkSignalReferences(bookmark, signalOptions).filter((reference) => signalOptionColumns.has(reference))
     if (restoredColumns.length > 0) {
       setSelectedColumns(restoredColumns)
     }
@@ -1540,32 +1588,35 @@ export function SignalInspector({
             <div className="signal-inspector-card-header">
               <h3>Signals</h3>
               <label className="signal-inspector-primary-signals-filter">
-                <input
-                  checked={primarySignalsOnly}
-                  onChange={(event) => setPrimarySignalsFilter(event.target.checked)}
-                  type="checkbox"
-                />
-                <span>Primary signals only</span>
+                <span>Signal set</span>
+                <select value={activeSignalSet?.id ?? ''} onChange={(event) => selectSignalSet(event.target.value)} disabled={!availableSignalSets.length}>
+                  {availableSignalSets.map((signalSet) => <option key={signalSet.id} value={signalSet.id}>{signalSet.displayName}</option>)}
+                </select>
               </label>
             </div>
             {visibleSignalOptions.length === 0 ? (
-              <p>{primarySignalsOnly ? 'No primary analysis signals are available for this session.' : 'No signal catalog is available for this session.'}</p>
+              <p>No signals in this set are available for this session.</p>
             ) : (
               <div className="signal-inspector-check-list">
-                {visibleSignalOptions.map((signal, index) => (
-                  <label key={signal.column}>
-                    <input
-                      checked={selectedColumns.includes(signal.column)}
-                      onChange={() => toggleColumn(signal.column)}
-                      type="checkbox"
-                    />
-                    <span>
-                      <strong title={visibleSignalOptionLabels[index]}>{visibleSignalOptionLabels[index]}</strong>
-                      <small>
-                        {[signal.end, signal.quantity, signal.unit].filter(Boolean).join(' / ') || signal.column}
-                      </small>
-                    </span>
-                  </label>
+                {visibleSignalGroups.map((group) => (
+                  <div key={group.label} className="signal-inspector-signal-group">
+                    <h4>{group.label}</h4>
+                    {group.signals.map((signal, index) => (
+                      <label key={signalReferenceKey(signal)}>
+                        <input
+                          checked={selectedColumns.includes(signalReferenceKey(signal))}
+                          onChange={() => toggleColumn(signalReferenceKey(signal))}
+                          type="checkbox"
+                        />
+                        <span>
+                          <strong title={group.labels[index]}>{group.labels[index]}</strong>
+                          <small>
+                            {[signal.end, signal.quantity, signal.unit].filter(Boolean).join(' / ') || signal.column}
+                          </small>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
                 ))}
               </div>
             )}
@@ -2426,7 +2477,7 @@ function GpsAltitudeChart({
   pointSet: SessionGpsPointSet | null
   videoHeadTimeS: number | null
 }) {
-  const samples = useMemo(() => gpsAltitudeSamplesForWindow(pointSet?.points ?? [], activeWindow), [activeWindow.endS, activeWindow.startS, pointSet])
+  const samples = useMemo(() => gpsAltitudeSamples(pointSet?.points ?? []), [pointSet])
   if (!pointSet?.present) {
     return <div className="signal-inspector-altitude-empty">No GPS altitude data.</div>
   }
@@ -2437,8 +2488,8 @@ function GpsAltitudeChart({
   const width = 420
   const height = 148
   const padding = { top: 14, right: 16, bottom: 38, left: 50 }
-  const minTime = Math.min(activeWindow.startS, activeWindow.endS)
-  const maxTime = Math.max(activeWindow.startS, activeWindow.endS)
+  const minTime = samples[0].timeS
+  const maxTime = samples.at(-1)?.timeS ?? minTime
   const elevations = samples.map((sample) => sample.elevationM)
   const minElevation = Math.min(...elevations)
   const maxElevation = Math.max(...elevations)
@@ -2468,6 +2519,30 @@ function GpsAltitudeChart({
           y: yForElevation(interpolateGpsAltitude(samples, videoHeadTimeS)),
         }
       : null
+  const selectedStartS = clamp(Math.min(activeWindow.startS, activeWindow.endS), minTime, maxTime)
+  const selectedEndS = clamp(Math.max(activeWindow.startS, activeWindow.endS), minTime, maxTime)
+  const selectionIsFullProfile = selectedStartS <= minTime + 0.01 && selectedEndS >= maxTime - 0.01
+  const selectionIsRange = !selectionIsFullProfile && selectedEndS - selectedStartS > 0.1
+  const selectionIsPoint = !selectionIsFullProfile && !selectionIsRange
+  const selectedSamples = selectionIsRange
+    ? gpsAltitudeSamplesForWindow(samples, { startS: selectedStartS, endS: selectedEndS })
+    : []
+  const selectedPath = selectionIsRange
+    ? [
+        { timeS: selectedStartS, elevationM: interpolateGpsAltitude(samples, selectedStartS) },
+        ...selectedSamples,
+        { timeS: selectedEndS, elevationM: interpolateGpsAltitude(samples, selectedEndS) },
+      ]
+        .filter((sample, index, values) => index === 0 || sample.timeS > values[index - 1].timeS)
+        .map((sample, index) => `${index === 0 ? 'M' : 'L'} ${xForTime(sample.timeS).toFixed(1)} ${yForElevation(sample.elevationM).toFixed(1)}`)
+        .join(' ')
+    : ''
+  const pointMarker = selectionIsPoint
+    ? {
+        x: xForTime(selectedStartS),
+        y: yForElevation(interpolateGpsAltitude(samples, selectedStartS)),
+      }
+    : null
 
   return (
     <div className="signal-inspector-altitude-chart">
@@ -2494,9 +2569,25 @@ function GpsAltitudeChart({
             </g>
           )
         })}
+        {selectionIsRange && (
+          <rect
+            className="signal-inspector-altitude-selection-range"
+            x={xForTime(selectedStartS)}
+            y={padding.top}
+            width={Math.max(1, xForTime(selectedEndS) - xForTime(selectedStartS))}
+            height={plotHeight}
+          />
+        )}
         <line className="signal-inspector-altitude-axis" x1={padding.left} x2={width - padding.right} y1={height - padding.bottom} y2={height - padding.bottom} />
         <line className="signal-inspector-altitude-axis" x1={padding.left} x2={padding.left} y1={padding.top} y2={height - padding.bottom} />
         <path className="signal-inspector-altitude-line" d={path} />
+        {selectionIsRange && <path className="signal-inspector-altitude-selection-line" d={selectedPath} />}
+        {pointMarker && (
+          <g className="signal-inspector-altitude-selection-point">
+            <line x1={pointMarker.x} x2={pointMarker.x} y1={padding.top} y2={height - padding.bottom} />
+            <circle cx={pointMarker.x} cy={pointMarker.y} r={3.8} />
+          </g>
+        )}
         {playbackMarker && (
           <g className="signal-inspector-altitude-playback-marker">
             <line x1={playbackMarker.x} x2={playbackMarker.x} y1={padding.top} y2={height - padding.bottom} />
@@ -2913,7 +3004,7 @@ function SignalChartLegend({
   return (
     <div className="signal-inspector-legend">
       {chartModel.chartSignals.map((signal, index) => (
-        <span key={signal.column}>
+        <span key={signalReferenceKey(signal)}>
           <i style={{ background: SIGNAL_COLORS[(signal.originalIndex ?? index) % SIGNAL_COLORS.length] }} />
           {signal.displayLabel}
           {signal.unit ? ` (${signal.unit})` : ''}
@@ -3075,7 +3166,7 @@ function SignalMultiChartStack({
             externalHover
             height={190}
             inlineLegend
-            key={signal.column}
+            key={signalReferenceKey(signal)}
             selectedEventId={selectedEventId}
             showFullSessionControl={isFirstChart}
             showMarks={isFirstChart && showMarks}
@@ -3358,7 +3449,10 @@ function signalUPlotOptions({
       stroke: SIGNAL_COLORS[(signal.originalIndex ?? index) % SIGNAL_COLORS.length],
       width: 1.35,
       points: { show: false },
-      spanGaps: false,
+      // The multi-stream response is display-aligned to a sparse union of
+      // native timestamps.  Its nulls mark another stream's samples, not a
+      // gap in this signal, so they must not make the line intermittent.
+      spanGaps: signal.connectAlignmentGaps ?? false,
     })),
   ]
   return {
@@ -3885,16 +3979,181 @@ function inspectorSignalOptions(session: SessionRecord): SessionSignalSummary[] 
   const signals = session.availableSignals ?? []
   const seen = new Set<string>()
   return signals
-    .filter((signal) => signal.column && !seen.has(signal.column))
+    .filter((signal) => signal.column && !seen.has(signalReferenceKey(signal)))
     .map((signal) => {
-      seen.add(signal.column)
+      seen.add(signalReferenceKey(signal))
       return signal
     })
     .sort(compareSignalsBySensor)
 }
 
-function isPrimaryAnalysisSignal(signal: SessionSignalSummary) {
-  return normalizeSignalText(signal.processingRole) === 'primary_analysis'
+function signalInspectionVisibility(signal: SessionSignalSummary): 'standard' | 'advanced' | 'diagnostic' {
+  if (signal.inspectionVisibility === 'standard' || signal.inspectionVisibility === 'advanced' || signal.inspectionVisibility === 'diagnostic') {
+    return signal.inspectionVisibility
+  }
+  if (normalizeSignalText(signal.kind) === 'raw' || normalizeSignalText(signal.kind) === 'qc') return 'diagnostic'
+  if (normalizeSignalText(signal.processingRole) === 'primary_analysis') return 'standard'
+  if (normalizeSignalText(signal.processingRole) === 'diagnostic' || normalizeSignalText(signal.processingRole) === 'qc_metric') return 'diagnostic'
+  return 'advanced'
+}
+
+function signalIsInSet(signal: SessionSignalSummary, signalSet: SignalSetDefinition) {
+  return signalSet.rules.some((rule) => signalMatchesSetRule(signal, rule))
+}
+
+function defaultSignalSetColumns(
+  signalSet: SignalSetDefinition,
+  allSignalSets: SignalSetDefinition[],
+  signalOptions: SessionSignalSummary[],
+) {
+  const defaultSet = allSignalSets.find((candidate) => candidate.id === signalSet.defaultSelectionSetId) ?? signalSet
+  const exclusionRules = defaultSet.defaultExclusionRules ?? []
+  return new Set(
+    signalOptions
+      .filter((signal) => signalIsInSet(signal, defaultSet))
+      .filter((signal) => !exclusionRules.some((rule) => signalMatchesSetRule(signal, rule)))
+      .map(signalReferenceKey),
+  )
+}
+
+function loadOrDefaultSignalSetColumns(
+  session: SessionRecord,
+  signalSet: SignalSetDefinition,
+  allSignalSets: SignalSetDefinition[],
+  signalOptions: SessionSignalSummary[],
+) {
+  const availableColumns = new Set(signalOptions.map(signalReferenceKey))
+  return loadStoredSignalColumns(session, availableColumns, signalSet.id)
+    ?? [...defaultSignalSetColumns(signalSet, allSignalSets, signalOptions)]
+}
+
+function signalMatchesSetRule(signal: SessionSignalSummary, rule: Record<string, unknown>) {
+  const fieldValues: Record<string, string> = {
+    column: signal.column,
+    stream_name: signalStreamName(signal),
+    stream_kind: signal.streamKind ?? '',
+    display_name: signal.displayName,
+    end: signal.end,
+    domain: signal.domain,
+    quantity: signal.quantity,
+    unit: signal.unit,
+    processing_role: signal.processingRole,
+    inspection_visibility: signalInspectionVisibility(signal),
+    analysis_variant: signal.analysisVariant ?? '',
+    kind: signal.kind,
+    sensor: signal.sensor,
+    component: signal.component ?? '',
+    coordinate_frame: signal.coordinateFrame ?? '',
+    vector_group: signal.vectorGroup ?? '',
+  }
+  for (const [field, expected] of Object.entries(rule)) {
+    if (field === 'sensor_prefix') {
+      if (!ruleTextValues(expected).some((value) => normalizeSignalText(signal.sensor).startsWith(value))) return false
+      continue
+    }
+    if (field === 'sensor_or_stream_contains') {
+      const text = normalizeSignalText(`${signal.sensor} ${signalStreamName(signal)}`)
+      if (!ruleTextValues(expected).some((value) => text.includes(value))) return false
+      continue
+    }
+    const actual = fieldValues[field]
+    if (actual === undefined || !ruleTextValues(expected).includes(normalizeSignalText(actual))) return false
+  }
+  return true
+}
+
+function ruleTextValues(value: unknown) {
+  const values = Array.isArray(value) ? value : [value]
+  return values.map((item) => normalizeSignalText(String(item)))
+}
+
+function inspectorSignalGroups(signals: SessionSignalSummary[], setId: string) {
+  const grouped = new Map<string, SessionSignalSummary[]>()
+  for (const signal of signals) {
+    const label = signalGroupLabel(signal, setId)
+    const group = grouped.get(label) ?? []
+    group.push(signal)
+    grouped.set(label, group)
+  }
+  return [...grouped.entries()].map(([label, groupSignals]) => ({
+    label,
+    signals: groupSignals,
+    labels: duplicateAwareSignalLabels(groupSignals),
+  }))
+}
+
+function signalGroupLabel(signal: SessionSignalSummary, setId: string) {
+  const sensor = signal.sensor?.trim() || signalStreamName(signal)
+  if (setId === 'imu_diagnostics') return normalizeSignalText(signal.kind) === 'raw' ? `Raw evidence — ${sensor}` : `Diagnostics — ${sensor}`
+  if (normalizeSignalText(signal.quantity).startsWith('orientation_')) return `World orientation — ${sensor}`
+  if (normalizeSignalText(signal.domain) === 'frame') return `Frame dynamics — ${sensor}`
+  if (['wheel', 'suspension', 'unsprung'].includes(normalizeSignalText(signal.domain))) return 'Bike dynamics'
+  return signal.domain ? `${signal.domain} — ${sensor}` : sensor
+}
+
+const FALLBACK_SIGNAL_SETS: SignalSetDefinition[] = [
+  {
+    id: 'wheel-movement',
+    displayName: 'Wheel movement',
+    description: 'Wheel displacement, normalized displacement, velocity, and GPS speed.',
+    defaultExclusionRules: [{ domain: 'wheel', quantity: 'disp', unit: 'mm' }],
+    rules: [
+      { domain: 'wheel', end: ['front', 'rear'], quantity: ['disp', 'disp_norm', 'vel'], kind: '' },
+      { domain: 'world', quantity: 'speed', inspection_visibility: 'standard', kind: '' },
+    ],
+  },
+  {
+    id: 'bike-orientation',
+    displayName: 'Bike orientation',
+    description: 'Corrected world pitch, roll, heading, and GPS speed.',
+    rules: [
+      { domain: 'world', quantity: ['orientation_pitch', 'orientation_roll', 'orientation_yaw'], processing_role: 'primary_analysis', kind: '' },
+      { domain: 'world', quantity: 'speed', inspection_visibility: 'standard', kind: '' },
+    ],
+  },
+  {
+    id: 'imu-diagnostics',
+    displayName: 'IMU diagnostics',
+    description: 'Raw IMU evidence and IMU quality or processing diagnostics.',
+    rules: [{ sensor_or_stream_contains: 'imu', inspection_visibility: 'diagnostic' }],
+  },
+  {
+    id: 'all-signals',
+    displayName: 'All signals',
+    description: 'Every catalogued signal, including raw and QC evidence.',
+    defaultSelectionSetId: 'wheel-movement',
+    rules: [{}],
+  },
+]
+
+function signalStreamName(signal: Pick<SessionSignalSummary, 'streamName'>) {
+  return signal.streamName?.trim() || 'primary'
+}
+
+function signalReferenceKey(signal: Pick<SessionSignalSummary, 'streamName' | 'column'>) {
+  return `${signalStreamName(signal)}::${signal.column}`
+}
+
+function signalForReference(signals: SessionSignalSummary[], reference: string) {
+  return signals.find((signal) => signalReferenceKey(signal) === reference)
+    ?? signals.find((signal) => signalStreamName(signal) === 'primary' && signal.column === reference)
+    ?? null
+}
+
+function signalRequestForReference(signals: SessionSignalSummary[], reference: string) {
+  const signal = signalForReference(signals, reference)
+  return signal ? { column: signal.column, streamName: signalStreamName(signal) } : null
+}
+
+function bookmarkSignalReferences(bookmark: SessionBookmarkRecord, signals: SessionSignalSummary[]) {
+  const inspector = bookmark.viewState.signalInspector
+  if (inspector?.signalRefs?.length) {
+    return inspector.signalRefs.map((signal) => signalReferenceKey(signal))
+  }
+  return (inspector?.signalColumns ?? [])
+    .map((column) => signalForReference(signals, column))
+    .filter((signal): signal is SessionSignalSummary => signal !== null)
+    .map(signalReferenceKey)
 }
 
 function compareSignalsBySensor(left: SessionSignalSummary, right: SessionSignalSummary) {
@@ -3926,10 +4185,6 @@ function signalQuantityRank(signal: SessionSignalSummary) {
   return 4
 }
 
-function primarySignalColumns(columns: string[], primaryColumns: ReadonlySet<string>) {
-  return columns.filter((column) => primaryColumns.has(column))
-}
-
 function defaultSignalColumns(signals: SessionSignalSummary[]) {
   const primary = signals.filter((signal) => signal.processingRole === 'primary_analysis')
   const source = primary.length ? primary : signals
@@ -3937,10 +4192,10 @@ function defaultSignalColumns(signals: SessionSignalSummary[]) {
   const fallbackWheelDisplacement = wheelDisplacement.length ? wheelDisplacement : signals.filter(isWheelDisplacementSignal)
   const displacement = fallbackWheelDisplacement.length ? fallbackWheelDisplacement : source.filter(isDisplacementSignal)
   const preferred = displacement.length ? preferEngineeringDisplacementSignals(displacement) : source
-  const defaults = preferred.slice(0, 4).map((signal) => signal.column)
+  const defaults = preferred.slice(0, 4).map(signalReferenceKey)
   const speedSignal = signals.find(isWorldSpeedSignal)
-  if (speedSignal && !defaults.includes(speedSignal.column)) {
-    defaults.push(speedSignal.column)
+  if (speedSignal && !defaults.includes(signalReferenceKey(speedSignal))) {
+    defaults.push(signalReferenceKey(speedSignal))
   }
   return defaults
 }
@@ -4175,21 +4430,26 @@ function gpsPathForWindow(points: SessionGpsPoint[], window: { startS: number; e
   )
 }
 
-function gpsAltitudeSamplesForWindow(points: SessionGpsPoint[], window: { startS: number; endS: number }) {
-  const startS = Math.min(window.startS, window.endS)
-  const endS = Math.max(window.startS, window.endS)
+function gpsAltitudeSamples(points: SessionGpsPoint[]) {
   return points
     .filter(
       (point) =>
         typeof point.timeS === 'number' &&
         Number.isFinite(point.timeS) &&
         typeof point.elevationM === 'number' &&
-        Number.isFinite(point.elevationM) &&
-        point.timeS >= startS &&
-        point.timeS <= endS,
+        Number.isFinite(point.elevationM),
     )
     .map((point) => ({ timeS: point.timeS as number, elevationM: point.elevationM as number }))
     .sort((a, b) => a.timeS - b.timeS)
+}
+
+function gpsAltitudeSamplesForWindow(
+  samples: Array<{ timeS: number; elevationM: number }>,
+  window: { startS: number; endS: number },
+) {
+  const startS = Math.min(window.startS, window.endS)
+  const endS = Math.max(window.startS, window.endS)
+  return samples.filter((sample) => sample.timeS >= startS && sample.timeS <= endS)
 }
 
 function signalInspectorGridStep(span: number, candidates: number[], minimumGridlines = 3) {
@@ -4244,6 +4504,20 @@ function timeseriesWindowForSignal(
   data: TimeseriesWindowResponse,
   signal: TimeseriesWindowResponse['signals'][number],
 ): TimeseriesWindowResponse {
+  // A stacked chart does not need an artificial common time array.  Keeping
+  // each chart on its signal's native timestamps avoids both null-gap breaks
+  // and the visual artefacts of mixing independently downsampled streams.
+  if (signal.nativeTimeValues && signal.nativeValues) {
+    return {
+      ...data,
+      time: {
+        ...data.time,
+        column: signal.timeColumn ?? data.time.column,
+        values: signal.nativeTimeValues,
+      },
+      signals: [{ ...signal, values: signal.nativeValues, connectAlignmentGaps: false }],
+    }
+  }
   return {
     ...data,
     signals: [signal],
@@ -4254,7 +4528,7 @@ function loadStoredChartMode(): SignalInspectorChartMode {
   if (typeof window === 'undefined') {
     return 'multi'
   }
-  const raw = window.localStorage.getItem(SIGNAL_INSPECTOR_CHART_MODE_STORAGE_KEY)
+  const raw = window.sessionStorage.getItem(SIGNAL_INSPECTOR_CHART_MODE_STORAGE_KEY)
   return raw === 'single' || raw === 'multi' ? raw : 'multi'
 }
 
@@ -4262,7 +4536,21 @@ function storeChartMode(mode: SignalInspectorChartMode) {
   if (typeof window === 'undefined') {
     return
   }
-  window.localStorage.setItem(SIGNAL_INSPECTOR_CHART_MODE_STORAGE_KEY, mode)
+  window.sessionStorage.setItem(SIGNAL_INSPECTOR_CHART_MODE_STORAGE_KEY, mode)
+}
+
+function loadStoredSignalSet(): string {
+  if (typeof window === 'undefined') return 'wheel-movement'
+  return window.sessionStorage.getItem(SIGNAL_INSPECTOR_SIGNAL_SET_STORAGE_KEY) || 'wheel-movement'
+}
+
+function storeSignalSet(signalSetId: string) {
+  if (typeof window === 'undefined') return
+  try {
+    window.sessionStorage.setItem(SIGNAL_INSPECTOR_SIGNAL_SET_STORAGE_KEY, signalSetId)
+  } catch {
+    // A default signal set remains available when browser storage is unavailable.
+  }
 }
 
 function defaultViewPreferences(): SignalInspectorViewPreferences {
@@ -4290,7 +4578,7 @@ function loadStoredViewPreferences(): SignalInspectorViewPreferences {
     return defaults
   }
   try {
-    const raw = window.localStorage.getItem(SIGNAL_INSPECTOR_VIEW_STORAGE_KEY)
+    const raw = window.sessionStorage.getItem(SIGNAL_INSPECTOR_VIEW_STORAGE_KEY)
     const parsed = raw ? JSON.parse(raw) : null
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return defaults
@@ -4337,39 +4625,50 @@ function storeViewPreferences(preferences: SignalInspectorViewPreferences) {
     return
   }
   try {
-    window.localStorage.setItem(SIGNAL_INSPECTOR_VIEW_STORAGE_KEY, JSON.stringify(preferences))
+    window.sessionStorage.setItem(SIGNAL_INSPECTOR_VIEW_STORAGE_KEY, JSON.stringify(preferences))
   } catch {
     // Ignore preference write failures; the inspector should remain usable.
   }
 }
 
-function loadStoredSignalColumns(session: SessionRecord, availableColumns: Set<string>) {
+function loadStoredSignalColumns(session: SessionRecord, availableColumns: Set<string>, signalSetId: string) {
   if (typeof window === 'undefined') {
     return null
   }
   try {
-    const raw = window.localStorage.getItem(SIGNAL_INSPECTOR_SESSION_COLUMNS_STORAGE_KEY)
+    const raw = window.sessionStorage.getItem(SIGNAL_INSPECTOR_SESSION_COLUMNS_STORAGE_KEY)
     const parsed = raw ? JSON.parse(raw) : null
-    const columns = Array.isArray(parsed?.[signalInspectorSessionPreferenceKey(session)])
-      ? parsed[signalInspectorSessionPreferenceKey(session)]
+    const columns = Array.isArray(parsed?.[signalInspectorSignalSetPreferenceKey(session, signalSetId)])
+      ? parsed[signalInspectorSignalSetPreferenceKey(session, signalSetId)]
       : null
-    const validColumns = columns?.filter((column: unknown): column is string => typeof column === 'string' && availableColumns.has(column)) ?? []
-    return validColumns.length > 0 ? validColumns : null
+    const validColumns = columns
+      ?.map((column: unknown) => {
+        if (typeof column !== 'string') {
+          return null
+        }
+        if (availableColumns.has(column)) {
+          return column
+        }
+        const legacyPrimaryReference = `primary::${column}`
+        return availableColumns.has(legacyPrimaryReference) ? legacyPrimaryReference : null
+      })
+      .filter((column: string | null): column is string => column !== null) ?? []
+    return columns === null ? null : validColumns
   } catch {
     return null
   }
 }
 
-function storeSignalColumns(session: SessionRecord, columns: string[]) {
-  if (typeof window === 'undefined' || columns.length === 0) {
+function storeSignalColumns(session: SessionRecord, signalSetId: string, columns: string[]) {
+  if (typeof window === 'undefined') {
     return
   }
   try {
-    const raw = window.localStorage.getItem(SIGNAL_INSPECTOR_SESSION_COLUMNS_STORAGE_KEY)
+    const raw = window.sessionStorage.getItem(SIGNAL_INSPECTOR_SESSION_COLUMNS_STORAGE_KEY)
     const parsed = raw ? JSON.parse(raw) : null
     const preferences = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? { ...parsed } : {}
-    preferences[signalInspectorSessionPreferenceKey(session)] = columns
-    window.localStorage.setItem(SIGNAL_INSPECTOR_SESSION_COLUMNS_STORAGE_KEY, JSON.stringify(preferences))
+    preferences[signalInspectorSignalSetPreferenceKey(session, signalSetId)] = columns
+    window.sessionStorage.setItem(SIGNAL_INSPECTOR_SESSION_COLUMNS_STORAGE_KEY, JSON.stringify(preferences))
   } catch {
     // Ignore preference write failures; the inspector should remain usable.
   }
@@ -4380,7 +4679,7 @@ function loadStoredPinnedTime(session: SessionRecord, durationS: number) {
     return null
   }
   try {
-    const raw = window.localStorage.getItem(SIGNAL_INSPECTOR_SESSION_PINNED_TIME_STORAGE_KEY)
+    const raw = window.sessionStorage.getItem(SIGNAL_INSPECTOR_SESSION_PINNED_TIME_STORAGE_KEY)
     const parsed = raw ? JSON.parse(raw) : null
     const value = parsed?.[signalInspectorSessionPreferenceKey(session)]
     return typeof value === 'number' && Number.isFinite(value) ? sanitizeWindowBoundary(value, durationS) : null
@@ -4394,7 +4693,7 @@ function storePinnedTime(session: SessionRecord, pinnedTimeS: number | null) {
     return
   }
   try {
-    const raw = window.localStorage.getItem(SIGNAL_INSPECTOR_SESSION_PINNED_TIME_STORAGE_KEY)
+    const raw = window.sessionStorage.getItem(SIGNAL_INSPECTOR_SESSION_PINNED_TIME_STORAGE_KEY)
     const parsed = raw ? JSON.parse(raw) : null
     const preferences = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? { ...parsed } : {}
     const key = signalInspectorSessionPreferenceKey(session)
@@ -4403,7 +4702,7 @@ function storePinnedTime(session: SessionRecord, pinnedTimeS: number | null) {
     } else {
       preferences[key] = pinnedTimeS
     }
-    window.localStorage.setItem(SIGNAL_INSPECTOR_SESSION_PINNED_TIME_STORAGE_KEY, JSON.stringify(preferences))
+    window.sessionStorage.setItem(SIGNAL_INSPECTOR_SESSION_PINNED_TIME_STORAGE_KEY, JSON.stringify(preferences))
   } catch {
     // Ignore preference write failures; the inspector should remain usable.
   }
@@ -4431,6 +4730,10 @@ function isEditableKeyboardTarget(target: EventTarget | null) {
 
 function signalInspectorSessionPreferenceKey(session: SessionRecord) {
   return `${session.libraryId}::${session.sessionKey}`
+}
+
+function signalInspectorSignalSetPreferenceKey(session: SessionRecord, signalSetId: string) {
+  return `${signalInspectorSessionPreferenceKey(session)}::${signalSetId}`
 }
 
 function useElementWidth(ref: RefObject<HTMLElement | null>, observeKey?: unknown) {
@@ -4472,7 +4775,7 @@ function signalInspectorPlotToken(name: string, fallback: number) {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
-function duplicateAwareSignalLabels<T extends Pick<SessionSignalSummary, 'column' | 'displayName' | 'motionSourceId' | 'sensor'>>(
+function duplicateAwareSignalLabels<T extends Pick<SessionSignalSummary, 'column' | 'displayName' | 'motionSourceId' | 'sensor' | 'streamName' | 'analysisVariant'>>(
   signals: T[],
 ) {
   const baseLabels = signals.map((signal) => signal.displayName || signal.column)
@@ -4485,7 +4788,7 @@ function duplicateAwareSignalLabels<T extends Pick<SessionSignalSummary, 'column
     if ((counts.get(label) ?? 0) <= 1) {
       return label
     }
-    const sourceId = signal.motionSourceId?.trim() || signal.sensor?.trim()
+    const sourceId = signal.analysisVariant?.trim() || signal.motionSourceId?.trim() || signal.sensor?.trim() || signalStreamName(signal)
     return sourceId ? `${label} (${sourceId})` : label
   })
 }
@@ -4577,10 +4880,17 @@ function nearestTimeIndex(times: number[], timeS: number) {
 }
 
 function chartDisplaySignal(signal: TimeseriesWindowResponse['signals'][number]): TimeseriesWindowResponse['signals'][number] {
+  const compactUnit = normalizeSignalText(signal.unit).replace(/\s+/g, '')
+  if (compactUnit === 'rad') {
+    return {
+      ...signal,
+      unit: 'deg',
+      values: signal.values.map((value) => (typeof value === 'number' && Number.isFinite(value) ? (value * 180) / Math.PI : value)),
+    }
+  }
   if (!isWorldSpeedSignal(signal)) {
     return signal
   }
-  const compactUnit = normalizeSignalText(signal.unit).replace(/\s+/g, '')
   if (['km/h', 'kph', 'kmh'].includes(compactUnit)) {
     return { ...signal, unit: 'km/h' }
   }
@@ -4883,7 +5193,7 @@ function timeseriesDataMatchesSelectedSignals(
     return false
   }
   const requestedColumns = new Set(selectedColumns)
-  const returnedColumns = new Set(data.signals.map((signal) => signal.column))
+  const returnedColumns = new Set(data.signals.map(signalReferenceKey))
   return (
     requestedColumns.size === selectedColumns.length &&
     returnedColumns.size === data.signals.length &&

@@ -44,6 +44,24 @@ int runBMI270ProfileTests() {
     check(BMI270Profile::kOdrHz == 200, "native ODR remains 200 Hz");
     check(BMI270Profile::kLoggerRateHz == 500, "logger rate remains 500 Hz");
     check(BMI270Profile::kInitializationAttempts == 5, "initialization retry count remains bounded");
+    check(BMI270Profile::minimumSparseRowLoggerRateHz(200) == 500,
+          "full IMU output retains the 500 Hz logger requirement");
+    check(BMI270Profile::minimumSparseRowLoggerRateHz(10) == 20,
+          "10 Hz decimated IMU output supports low-rate logging");
+    check(BMI270Profile::resolveSparseRowOutputRateHz(200, 10) == 5,
+          "10 Hz logger resolves a 5 Hz IMU stream");
+    check(BMI270Profile::resolveSparseRowOutputRateHz(200, 20) == 10,
+          "20 Hz logger resolves a 10 Hz IMU stream");
+    check(BMI270Profile::resolveSparseRowOutputRateHz(200, 50) == 25,
+          "50 Hz logger resolves a 25 Hz IMU stream");
+    check(BMI270Profile::resolveSparseRowOutputRateHz(200, 100) == 50,
+          "100 Hz logger resolves a 50 Hz IMU stream");
+    check(BMI270Profile::resolveSparseRowOutputRateHz(200, 200) == 100,
+          "200 Hz logger resolves a 100 Hz IMU stream");
+    check(BMI270Profile::resolveSparseRowOutputRateHz(200, 500) == 200,
+          "500 Hz logger resolves full 200 Hz IMU output");
+    check(BMI270Profile::resolveSparseRowOutputRateHz(50, 100) == 50,
+          "user maximum output rate constrains the resolved rate");
 
     BMI270MountTransform mount;
     check(BMI270Mount::parseTransform("+x", "+y", "+z", mount),

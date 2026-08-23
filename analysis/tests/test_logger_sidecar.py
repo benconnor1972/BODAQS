@@ -26,6 +26,7 @@ from bodaqs_analysis.io_fit import (
     upsert_fit_binding_records,
 )
 from bodaqs_analysis.gps_semantics import build_logger_gps_route_stream, resolve_gps_columns
+from bodaqs_analysis.attitude import AttitudeConfig, build_attitude_streams, estimate_attitude
 from bodaqs_analysis.model import validate_session
 from bodaqs_analysis.pipeline import (
     build_session_from_dataframe,
@@ -42,6 +43,60 @@ from bodaqs_analysis.timebase import register_stream_metadata
 from bodaqs_analysis.ui.fit_bindings_editor import build_fit_candidate_summary
 from bodaqs_analysis.ui.preprocess_file_selector import PreprocessLogSelector
 from bodaqs_analysis.ui.preprocess_controls import PreprocessControls, PreprocessDefaults
+
+
+def test_build_session_exposes_normalized_storage_qc() -> None:
+    session = build_session_from_dataframe(
+        pd.DataFrame({"time_s": [0.0, 0.002], "signal": [1.0, 2.0]}),
+        firmware_stats={
+            "samples_dropped": 3,
+            "queue_depth": 256,
+            "queue_max": 256,
+            "flush_count": 7,
+            "flush_max_ms": 41,
+            "storage_row_write_us": {
+                "count": 10,
+                "min_us": 20,
+                "avg_us": 900.5,
+                "max_us": 468165,
+                "total_us": 9005,
+                "buckets_us": {"ge_2000": 2},
+            },
+            "storage_write_stalls": {
+                "threshold_us": 10000,
+                "count": 1,
+                "events_truncated": False,
+                "events": [{
+                    "operation": "data_chunk",
+                    "sample_id": 100,
+                    "duration_us": 12000,
+                    "bytes_attempted": 16320,
+                    "data_frame_count": 145,
+                    "queue_depth_rows": 42,
+                }],
+            },
+        },
+    )
+
+    storage = session["qc"]["storage"]
+    assert storage["schema"] == "bodaqs.storage_qc.v1"
+    assert storage["status"] == "warning"
+    assert storage["samples_dropped"] == 3
+    assert storage["queue"] == {
+        "capacity_rows": 256,
+        "high_water_rows": 256,
+        "full": True,
+    }
+    assert storage["flush"] == {"count": 7, "maximum_ms": 41.0}
+    assert storage["timing"]["row_write_us"]["max_us"] == 468165
+    assert storage["write_stalls"]["events"] == [{
+        "operation": "data_chunk",
+        "sample_id": 100,
+        "duration_us": 12000,
+        "bytes_attempted": 16320,
+        "data_frame_count": 145,
+        "queue_depth_rows": 42,
+    }]
 
 
 def _write_csv_and_sidecar(tmp_path):
@@ -865,14 +920,14 @@ def test_load_session_repairs_out_of_order_time_with_initial_gps_nan(tmp_path):
                 "quantity": "speed",
                 "unit": "m/s",
             },
-            "gps0_heading": {
+            "gps0_course_over_ground": {
                 "csv_ref": {"by": "header", "header": "GPS0_heading [deg]"},
                 "class": "signal",
                 "stream": "primary",
                 "sensor": "gps0",
                 "domain": "world",
                 "source": "async_snapshot",
-                "quantity": "heading",
+                "quantity": "course_over_ground",
                 "unit": "deg",
             },
             "gps0_valid": {
@@ -924,6 +979,7 @@ def test_load_session_repairs_out_of_order_time_with_initial_gps_nan(tmp_path):
     (tmp_path / "gps_nan_out_of_order.json").write_text(json.dumps(log_metadata, indent=2), encoding="utf-8")
 
     session = load_session(str(csv_path))
+    session = build_signals_registry(session, strict=False)
 
     time_s = session["df"]["time_s"].to_numpy(dtype=float)
     assert np.all(np.isfinite(time_s))
@@ -2472,12 +2528,12 @@ def test_preprocess_resolved_preserves_logger_and_fit_gps_sources():
 
 def test_gps_resolution_keeps_position_and_qc_on_the_same_sensor():
     columns = {
-        "gps0_lat [deg]": {"sensor": "gps0", "quantity": "position_latitude"},
-        "gps0_lon [deg]": {"sensor": "gps0", "quantity": "position_longitude"},
-        "gps0_valid": {"sensor": "gps0", "quantity": "valid", "kind": "qc"},
-        "gps1_lat [deg]": {"sensor": "gps1", "quantity": "position_latitude"},
-        "gps1_lon [deg]": {"sensor": "gps1", "quantity": "position_longitude"},
-        "gps1_valid": {"sensor": "gps1", "quantity": "valid", "kind": "qc"},
+        "gps0_lat [deg]": {"sensor": "gps0", "source_kind": "logger_sensor", "quantity": "position_latitude"},
+        "gps0_lon [deg]": {"sensor": "gps0", "source_kind": "logger_sensor", "quantity": "position_longitude"},
+        "gps0_valid": {"sensor": "gps0", "source_kind": "logger_sensor", "quantity": "valid", "kind": "qc"},
+        "gps1_lat [deg]": {"sensor": "gps1", "source_kind": "logger_sensor", "quantity": "position_latitude"},
+        "gps1_lon [deg]": {"sensor": "gps1", "source_kind": "logger_sensor", "quantity": "position_longitude"},
+        "gps1_valid": {"sensor": "gps1", "source_kind": "logger_sensor", "quantity": "valid", "kind": "qc"},
     }
 
     resolved = resolve_gps_columns(
@@ -2499,6 +2555,199 @@ def test_gps_resolution_rejects_cross_sensor_position_pair():
     }
 
     assert resolve_gps_columns({"signals": columns}, known_columns=set(columns)) is None
+
+
+def test_gps_resolution_uses_registry_quantities_not_accuracy_column_names():
+    columns = {
+        "position_one": {
+            "sensor": "gps0",
+            "origin": "logger",
+            "domain": "world",
+            "quantity": "position_latitude",
+            "unit": "deg",
+        },
+        "position_two": {
+            "sensor": "gps0",
+            "origin": "logger",
+            "domain": "world",
+            "quantity": "position_longitude",
+            "unit": "deg",
+        },
+        "speed_accuracy_named_first": {
+            "sensor": "gps0",
+            "origin": "logger",
+            "domain": "world",
+            "quantity": "speed_accuracy",
+            "unit": "m/s",
+            "kind": "qc",
+            "semantic_selection_excluded": True,
+        },
+        "speed_actual_named_last": {
+            "sensor": "gps0",
+            "origin": "logger",
+            "domain": "world",
+            "quantity": "speed",
+            "unit": "m/s",
+        },
+        "course_accuracy_named_first": {
+            "sensor": "gps0",
+            "origin": "logger",
+            "domain": "world",
+            "quantity": "course_accuracy",
+            "unit": "deg",
+            "kind": "qc",
+            "semantic_selection_excluded": True,
+        },
+        "course_actual_named_last": {
+            "sensor": "gps0",
+            "origin": "logger",
+            "domain": "world",
+            "quantity": "course_over_ground",
+            "unit": "deg",
+        },
+    }
+
+    resolved = resolve_gps_columns(
+        {"signals": columns},
+        known_columns=set(columns),
+        require_logger_source=True,
+    )
+
+    assert resolved is not None
+    assert resolved.speed == "speed_actual_named_last"
+    assert resolved.heading == "course_actual_named_last"
+    assert resolved.speed_accuracy == "speed_accuracy_named_first"
+    assert resolved.course_accuracy == "course_accuracy_named_first"
+    assert resolve_gps_columns({"channel_info": columns}, known_columns=set(columns)) is None
+
+
+def test_gps_resolution_prefers_derived_receiver_time_over_raw_carrier():
+    columns = {
+        "latitude": {
+            "sensor": "gps0",
+            "source_kind": "logger_sensor",
+            "quantity": "position_latitude",
+        },
+        "longitude": {
+            "sensor": "gps0",
+            "source_kind": "logger_sensor",
+            "quantity": "position_longitude",
+        },
+        "receiver_time_of_week_cs": {
+            "sensor": "gps0",
+            "source_kind": "logger_sensor",
+            "kind": "qc",
+            "quantity": "receiver_time_of_week_raw",
+            "unit": "cs",
+            "semantic_selection_excluded": True,
+        },
+        "receiver_time_of_week_s": {
+            "sensor": "gps0",
+            "source_kind": "logger_sensor",
+            "kind": "qc",
+            "quantity": "receiver_time_of_week",
+            "unit": "s",
+            "semantic_selection_excluded": True,
+        },
+    }
+
+    resolved = resolve_gps_columns({"signals": columns}, known_columns=set(columns))
+
+    assert resolved is not None
+    assert resolved.receiver_time_of_week == "receiver_time_of_week_s"
+    assert resolved.receiver_time_of_week_unit == "s"
+
+
+def test_attitude_stream_registers_world_yaw_for_registry_first_clients():
+    imu = pd.DataFrame(
+        {
+            "time_s": [0.0, 0.01, 0.02],
+            "continuity_segment": [0, 0, 0],
+            "body_accel_x_m_s2": [0.0, 0.0, 0.0],
+            "body_accel_y_m_s2": [0.0, 0.0, 0.0],
+            "body_accel_z_m_s2": [9.80665, 9.80665, 9.80665],
+            "body_gyro_x_rad_s": [0.0, 0.0, 0.0],
+            "body_gyro_y_rad_s": [0.0, 0.0, 0.0],
+            "body_gyro_z_rad_s": [0.0, 0.0, 0.0],
+        }
+    )
+    session = {
+        "df": pd.DataFrame({"time_s": imu["time_s"]}),
+        "stream_dfs": {"imu_imu0": imu},
+        "meta": {
+            "imu_configs": {"imu0": {"domain": "frame"}},
+            "secondary_streams": {
+                "imu_imu0": {
+                    "schema": "bodaqs.imu_stream.v1",
+                    "sensor": "imu0",
+                    "domain": "frame",
+                }
+            },
+        },
+        "qc": {},
+    }
+
+    build_attitude_streams(session)
+
+    signals = session["meta"]["secondary_streams"]["inertial_imu0"]["signals"]
+    assert signals["yaw_enu_rad"].items() >= {
+        "sensor": "imu0",
+        "domain": "world",
+        "source": "inertial_estimate",
+        "coordinate_frame": "enu",
+        "derivation": "bodaqs.inertial_stream.v1",
+        "quantity": "orientation_yaw",
+        "unit": "rad",
+        "component": "yaw",
+        "vector_group": "body_to_world_enu_euler_zyx",
+        "smoothing": "fixed_interval",
+        "processing_role": "primary_analysis",
+        "analysis_variant": "fixed_interval_smoothed",
+    }.items()
+
+
+def test_offline_world_yaw_smoother_backfills_and_bridges_short_imu_gap():
+    time_s = np.concatenate((np.arange(50, dtype=float) * 0.01, 0.70 + np.arange(50, dtype=float) * 0.01))
+    imu = pd.DataFrame(
+        {
+            "time_s": time_s,
+            "continuity_segment": [0] * 50 + [1] * 50,
+            "body_accel_x_m_s2": np.zeros(100),
+            "body_accel_y_m_s2": np.zeros(100),
+            "body_accel_z_m_s2": np.full(100, 9.80665),
+            "body_gyro_x_rad_s": np.zeros(100),
+            "body_gyro_y_rad_s": np.zeros(100),
+            "body_gyro_z_rad_s": np.zeros(100),
+        }
+    )
+    gps = pd.DataFrame(
+        {
+            "time_s": [0.75],
+            "heading_deg": [0.0],
+            "speed_mps": [5.0],
+            "valid": [1.0],
+            "course_accuracy_deg": [2.0],
+            "speed_accuracy_mps": [0.2],
+        }
+    )
+
+    output, report = estimate_attitude(imu, gps=gps)
+
+    assert np.isfinite(output["yaw_enu_rad"]).all()
+    assert report["world_yaw_smoother"]["bridged_gaps"][0]["gap_s"] == pytest.approx(0.21)
+    assert {"specific_force_body_x_m_s2", "gravity_body_z_m_s2", "linear_accel_body_z_m_s2"} <= set(output.columns)
+    assert {"specific_force_enu_x_m_s2", "linear_accel_enu_horizontal_g", "turn_rate_world_up_rad_s"} <= set(output.columns)
+    assert np.allclose(output["linear_accel_body_z_m_s2"], 0.0, atol=1.0e-6)
+    assert np.allclose(output["linear_accel_enu_z_m_s2"], 0.0, atol=1.0e-6)
+
+    gated, gated_report = estimate_attitude(
+        imu,
+        gps=gps,
+        config=AttitudeConfig(inertial_dynamics_enabled=False),
+    )
+    assert "q_body_to_world_enu_w" in gated
+    assert "linear_accel_body_z_m_s2" not in gated
+    assert gated_report["inertial_dynamics"]["enabled"] is False
 
 
 def test_signal_registry_preserves_vector_coordinate_semantics():

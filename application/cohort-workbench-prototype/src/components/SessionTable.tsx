@@ -129,6 +129,7 @@ export function SessionTable({
   onCopyNote,
   onPasteNote,
   notePasteSavingIds,
+  deletingSessionIds,
   canPasteNote = false,
 }: {
   sessions: SessionRecord[]
@@ -153,6 +154,7 @@ export function SessionTable({
   onCopyNote?: (session: SessionRecord) => void
   onPasteNote?: (session: SessionRecord) => void
   notePasteSavingIds?: ReadonlySet<string>
+  deletingSessionIds?: ReadonlySet<string>
   canPasteNote?: boolean
 }) {
   const [openFilterColumnId, setOpenFilterColumnId] = useState<ColumnId | null>(null)
@@ -497,6 +499,7 @@ export function SessionTable({
               const id = candidateId(session)
               const isSelected = selectedIds.includes(id)
               const isPrimary = primaryId === id
+              const isDeleting = deletingSessionIds?.has(id) ?? false
               return (
                 <tr
                   aria-current={isPrimary ? 'true' : undefined}
@@ -505,9 +508,11 @@ export function SessionTable({
                     'session-row',
                     isSelected ? 'selected' : '',
                     isPrimary ? 'primary-row' : '',
+                    isDeleting ? 'deleting' : '',
                   ].join(' ')}
                   key={id}
                   onContextMenu={(event) => {
+                    if (isDeleting) return
                     if (!hasContextMenu) {
                       return
                     }
@@ -515,11 +520,12 @@ export function SessionTable({
                     setContextMenu({ session, x: event.clientX, y: event.clientY })
                   }}
                   onDoubleClick={(event) => {
+                    if (isDeleting) return
                     clearPendingRename()
                     handleRowDoubleClick(event, session, onAnalyzeSession)
                   }}
-                  onKeyDown={(event) => handleRowKeyDown(event, session, onSelect, startRename)}
-                  tabIndex={0}
+                  onKeyDown={(event) => { if (!isDeleting) handleRowKeyDown(event, session, onSelect, startRename) }}
+                  tabIndex={isDeleting ? -1 : 0}
                 >
                   {row.getVisibleCells().map((cell) => {
                     const isInfoCell = cell.column.id === 'rowActions'
@@ -532,6 +538,7 @@ export function SessionTable({
                         ].filter(Boolean).join(' ')}
                         key={cell.id}
                         onClick={(event) => {
+                          if (isDeleting) { event.preventDefault(); event.stopPropagation(); return }
                           if (isInfoCell) {
                             event.stopPropagation()
                             return

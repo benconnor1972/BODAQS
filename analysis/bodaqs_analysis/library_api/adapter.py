@@ -22,7 +22,7 @@ from .catalog import (
     discover_libraries,
     get_session_gps_points as catalog_get_session_gps_points,
 )
-from .catalog_revision import catalog_revision_dependency, ensure_catalog_revision, touch_catalog_revision
+from .catalog_revision import catalog_revision_dependency, ensure_catalog_revision, load_catalog_revision, touch_catalog_revision
 from .errors import InvalidRequestError, InvalidStudySetError, LibraryApiError, LibraryNotFoundError, SessionNotFoundError
 from .geospatial import (
     DEFAULT_GEOSPATIAL_POLICY_ID,
@@ -53,6 +53,7 @@ from .queries import (
     query_signals,
 )
 from .selection import study_set_to_selection_snapshot
+from .signal_sets import load_signal_sets
 from .session_filters import (
     create_session_filter,
     delete_session_filter,
@@ -75,7 +76,7 @@ from .study_sets import (
     load_study_set,
     update_study_set,
 )
-from .timeseries import get_timeseries_window
+from .timeseries import get_multistream_timeseries_window, get_timeseries_window as build_timeseries_window
 from .trackpoint_queries import (
     cancel_trackpoint_match_query,
     complete_trackpoint_match_query,
@@ -94,6 +95,7 @@ class LibraryAdapter:
     _ANALYSIS_ADEQUACY_CACHE_NAMESPACE = "analysis_adequacy"
     _ANALYSIS_INPUT_CACHE_NAMESPACE = "analysis_input"
     _GPS_POINTS_CACHE_NAMESPACE = "gps_points"
+    _TIMESERIES_PREVIEW_CACHE_NAMESPACE = "timeseries_preview"
     _SESSION_CATALOG_CACHE_NAMESPACE = "session_catalog"
     _ANALYSIS_ADEQUACY_CACHE_TTL_S = 900.0
     _ANALYSIS_INPUT_CACHE_TTL_S = 900.0
@@ -101,6 +103,7 @@ class LibraryAdapter:
     _ANALYSIS_ADEQUACY_PERSISTENT_CACHE_TTL_S = 86400.0
     _ANALYSIS_ADEQUACY_PERSISTENT_CACHE_MAX_ENTRIES = 512
     _SESSION_CATALOG_PERSISTENT_CACHE_MAX_ENTRIES = 128
+    _TIMESERIES_PREVIEW_PERSISTENT_CACHE_MAX_ENTRIES = 256
     _SERVICE_CACHE_DIR_NAME = ".bodaqs_library_api_cache"
 
     def __init__(self, libraries_root: str | Path, *, write_catalog_revision: bool = True) -> None:
@@ -108,6 +111,7 @@ class LibraryAdapter:
         self.write_catalog_revision = bool(write_catalog_revision)
         self._libraries_cache: list[dict[str, Any]] | None = None
         self._catalog_cache: dict[str, dict[str, Any]] = {}
+        self._catalog_cache_keys: dict[str, str] = {}
         self._cache = InMemoryLruCache(max_entries=1024, default_ttl_s=900.0)
         self._persistent_cache = PersistentJsonCache(self.libraries_root / self._SERVICE_CACHE_DIR_NAME)
         self._timing_samples: list[dict[str, Any]] = []
@@ -117,6 +121,11 @@ class LibraryAdapter:
 
     def capabilities(self) -> dict[str, Any]:
         return default_capabilities()
+
+    def get_signal_sets(self) -> dict[str, Any]:
+        """Return the root-scoped, user-managed Signal Inspector definitions."""
+
+        return load_signal_sets(self.libraries_root)
 
     def cache_diagnostics(self) -> dict[str, Any]:
         persistent_catalog_summary = self._persistent_cache.prune_namespace(
@@ -164,18 +173,44 @@ class LibraryAdapter:
         self._invalidate_gps_points_cache()
         return self.get_library(library_id)
 
-    def invalidate_library_catalog(self, library_id: str) -> dict[str, Any]:
+    def invalidate_library_catalog(
+        self,
+        library_id: str,
+        *,
+        warm: bool = False,
+        changed_sessions: Sequence[Mapping[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         wanted = str(library_id).strip()
         library = self.get_library(wanted)
         self._invalidate_catalog_cache(wanted)
         self._invalidate_analysis_adequacy_cache()
         self._invalidate_analysis_input_cache()
         self._invalidate_gps_points_cache()
-        return {
+        response = {
             "invalidated": True,
             "library_id": wanted,
             "library": library,
         }
+        if warm:
+            catalog = self.get_catalog(wanted)
+            response["warm"] = self._warm_standard_previews(wanted, catalog, changed_sessions or [])
+        return response
+
+    def get_catalog_revisions(self) -> dict[str, Any]:
+        libraries: list[dict[str, Any]] = []
+        for library in self.list_libraries():
+            library_id = str(library.get("library_id") or "").strip()
+            if not library_id:
+                continue
+            revision = load_catalog_revision(self._library_root(library_id)) or {}
+            libraries.append(
+                {
+                    "library_id": library_id,
+                    "revision": int(revision.get("revision") or 0),
+                    "updated_at_utc": revision.get("updated_at_utc"),
+                }
+            )
+        return {"schema": "bodaqs.library_api.catalog_revisions", "version": 1, "libraries": libraries}
 
     def get_catalog(self, library_id: str, *, refresh: bool = False) -> dict[str, Any]:
         wanted = str(library_id).strip()
@@ -185,13 +220,6 @@ class LibraryAdapter:
             "library_id": wanted,
             "refresh": bool(refresh),
         }
-        if not refresh and wanted in self._catalog_cache:
-            timing["cache_status"] = "memory_hit"
-            self._record_catalog_cache_event("memory_hit")
-            timing["total_ms"] = self._elapsed_ms(total_start)
-            self._record_timing_sample(timing)
-            return copy.deepcopy(self._catalog_cache[wanted])
-
         library_root = self._library_root(wanted)
         if self.write_catalog_revision:
             ensure_catalog_revision(library_root, reason="catalog_revision_backfill", actor="library_api")
@@ -203,12 +231,23 @@ class LibraryAdapter:
         if isinstance(catalog_revision, Mapping):
             timing["catalog_revision"] = catalog_revision.get("revision")
         cache_key = stable_cache_digest(dependency)
+        if not refresh and wanted in self._catalog_cache:
+            if self._catalog_cache_keys.get(wanted) == cache_key:
+                timing["cache_status"] = "memory_hit"
+                self._record_catalog_cache_event("memory_hit")
+                timing["total_ms"] = self._elapsed_ms(total_start)
+                self._record_timing_sample(timing)
+                return copy.deepcopy(self._catalog_cache[wanted])
+            self._catalog_cache.pop(wanted, None)
+            self._catalog_cache_keys.pop(wanted, None)
+            self._record_catalog_cache_event("memory_stale")
         if not refresh:
             persistent_start = time.perf_counter()
             persisted = self._persistent_cache.get(self._SESSION_CATALOG_CACHE_NAMESPACE, cache_key)
             timing["persistent_read_ms"] = self._elapsed_ms(persistent_start)
             if persisted is not None and isinstance(persisted.value, dict):
                 self._catalog_cache[wanted] = copy.deepcopy(persisted.value)
+                self._catalog_cache_keys[wanted] = cache_key
                 timing["cache_status"] = "persistent_hit"
                 self._record_catalog_cache_event("persistent_hit")
                 timing["row_count"] = len(self._catalog_cache[wanted].get("rows") or [])
@@ -221,6 +260,7 @@ class LibraryAdapter:
             library_root,
             library_id=wanted,
         )
+        self._catalog_cache_keys[wanted] = cache_key
         timing["build_ms"] = self._elapsed_ms(build_start)
         persistent_write_start = time.perf_counter()
         self._persistent_cache.set(
@@ -297,7 +337,33 @@ class LibraryAdapter:
         return payload
 
     def get_timeseries_window(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
-        return get_timeseries_window(self._library_root(library_id), request, library_id=library_id)
+        if not self._is_standard_preview_request(request):
+            return build_timeseries_window(self._library_root(library_id), request, library_id=library_id)
+        cache_key = self._timeseries_preview_cache_key(library_id, request)
+        cached = self._cache.get(self._TIMESERIES_PREVIEW_CACHE_NAMESPACE, cache_key)
+        if isinstance(cached, dict):
+            return cached
+        persisted = self._persistent_cache.get(self._TIMESERIES_PREVIEW_CACHE_NAMESPACE, cache_key)
+        if persisted is not None and isinstance(persisted.value, dict):
+            self._cache.set(self._TIMESERIES_PREVIEW_CACHE_NAMESPACE, cache_key, persisted.value, ttl_s=None)
+            return persisted.value
+        response = build_timeseries_window(self._library_root(library_id), request, library_id=library_id)
+        self._cache.set(self._TIMESERIES_PREVIEW_CACHE_NAMESPACE, cache_key, response, ttl_s=None)
+        self._persistent_cache.set(
+            self._TIMESERIES_PREVIEW_CACHE_NAMESPACE,
+            cache_key,
+            response,
+            ttl_s=None,
+            metadata={"library_id": str(library_id), "cache_schema": "bodaqs.timeseries_preview_cache_key", "cache_version": 1},
+        )
+        self._persistent_cache.prune_namespace(
+            self._TIMESERIES_PREVIEW_CACHE_NAMESPACE,
+            max_entries=self._TIMESERIES_PREVIEW_PERSISTENT_CACHE_MAX_ENTRIES,
+        )
+        return response
+
+    def get_multistream_timeseries_window(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        return get_multistream_timeseries_window(self._library_root(library_id), request, library_id=library_id)
 
     def query_signals(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
         session_refs = self._query_session_refs(library_id, request)
@@ -1261,6 +1327,112 @@ class LibraryAdapter:
             }
         )
 
+    def _timeseries_preview_cache_key(self, library_id: str, request: Mapping[str, Any]) -> str:
+        session = request.get("session") if isinstance(request.get("session"), Mapping) else {}
+        run_id = str(session.get("run_id") or "")
+        session_id = str(session.get("session_id") or "")
+        dataframe_path = self._library_root(library_id) / "runs" / run_id / "sessions" / session_id / "session" / "df.parquet"
+        meta_path = self._library_root(library_id) / "runs" / run_id / "sessions" / session_id / "session" / "meta.json"
+        return stable_cache_digest(
+            {
+                "cache_schema": "bodaqs.timeseries_preview_cache_key",
+                "cache_version": 1,
+                "library_id": str(library_id),
+                "request": request,
+                "dataframe": self._file_stat_dependency(dataframe_path, self._library_root(library_id)),
+                "meta": self._file_stat_dependency(meta_path, self._library_root(library_id)),
+            }
+        )
+
+    @staticmethod
+    def _is_standard_preview_request(request: Mapping[str, Any]) -> bool:
+        if bool(request.get("include_events", False)) or bool(request.get("include_marks", False)):
+            return False
+        resolution = request.get("resolution") if isinstance(request.get("resolution"), Mapping) else {}
+        if int(resolution.get("target_points") or 0) != 900:
+            return False
+        signals = request.get("signals")
+        return isinstance(signals, list) and 1 <= len(signals) <= 2 and all(
+            isinstance(signal, Mapping) and str(signal.get("column") or "").strip() and not signal.get("stream_name")
+            for signal in signals
+        )
+
+    def _warm_standard_previews(
+        self,
+        library_id: str,
+        catalog: Mapping[str, Any],
+        changed_sessions: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        wanted_keys = {
+            str(item.get("session_key") or "")
+            for item in changed_sessions
+            if isinstance(item, Mapping) and str(item.get("session_key") or "")
+        }
+        rows = [row for row in catalog.get("rows") or [] if isinstance(row, Mapping)]
+        if wanted_keys:
+            rows = [row for row in rows if str(row.get("session_key") or "") in wanted_keys]
+        warmed = 0
+        skipped = 0
+        failed = 0
+        for row in rows[:16]:
+            signals = self._standard_preview_signals(row)
+            if not signals:
+                skipped += 1
+                continue
+            summary = row.get("summary") if isinstance(row.get("summary"), Mapping) else {}
+            gps_summary = row.get("gps_summary") if isinstance(row.get("gps_summary"), Mapping) else {}
+            duration_s = float(gps_summary.get("session_duration_s") or 0)
+            if duration_s <= 0:
+                duration_s = float(summary.get("duration_min") or 0) * 60
+            if duration_s <= 0:
+                skipped += 1
+                continue
+            request = {
+                "session": {
+                    "library_id": library_id,
+                    "session_key": row.get("session_key"),
+                    "run_id": row.get("run_id"),
+                    "session_id": row.get("session_id"),
+                },
+                "signals": [{"column": signal} for signal in signals],
+                "window": {"start_s": 0, "end_s": duration_s},
+                "resolution": {"target_points": 900},
+                "include_events": False,
+                "include_marks": False,
+            }
+            try:
+                self.get_timeseries_window(library_id, request)
+                warmed += 1
+            except Exception:
+                failed += 1
+        return {"attempted": len(rows[:16]), "warmed": warmed, "skipped": skipped, "failed": failed, "limit": 16}
+
+    @staticmethod
+    def _standard_preview_signals(row: Mapping[str, Any]) -> list[str]:
+        selected: list[str] = []
+        signals = row.get("available_signals") if isinstance(row.get("available_signals"), list) else []
+        for end in ("front", "rear"):
+            candidates = [
+                signal
+                for signal in signals
+                if isinstance(signal, Mapping)
+                and str(signal.get("domain") or "").lower() == "wheel"
+                and str(signal.get("quantity") or "").lower() == "disp_norm"
+                and str(signal.get("unit") or "") == "1"
+                and str(signal.get("end") or "").lower() == end
+                and str(signal.get("column") or "").strip()
+            ]
+            candidates.sort(
+                key=lambda signal: (
+                    0 if str(signal.get("processing_role") or "").lower() == "primary_analysis" else 1,
+                    0 if str(signal.get("origin") or "").lower() == "analysis" else 1,
+                    str(signal.get("column") or ""),
+                )
+            )
+            if candidates:
+                selected.append(str(candidates[0].get("column")))
+        return selected
+
     @staticmethod
     def _gps_points_window_dependency(window: Mapping[str, Any] | None) -> dict[str, Any] | None:
         if not isinstance(window, Mapping):
@@ -1686,6 +1858,7 @@ class LibraryAdapter:
                     if isinstance(signal, Mapping)
                 ],
                 key=lambda signal: (
+                    str(signal.get("stream_name") or ""),
                     str(signal.get("end") or ""),
                     str(signal.get("domain") or ""),
                     str(signal.get("quantity") or ""),
@@ -1711,11 +1884,16 @@ class LibraryAdapter:
             "signal_id": signal.get("signal_id"),
             "column": signal.get("column"),
             "display_name": signal.get("display_name"),
+            "stream_name": signal.get("stream_name"),
+            "stream_kind": signal.get("stream_kind"),
+            "time_column": signal.get("time_column"),
             "end": signal.get("end"),
             "domain": signal.get("domain"),
             "quantity": signal.get("quantity"),
             "unit": signal.get("unit"),
             "processing_role": signal.get("processing_role"),
+            "inspection_visibility": signal.get("inspection_visibility"),
+            "analysis_variant": signal.get("analysis_variant"),
             "kind": signal.get("kind"),
             "motion_source_id": signal.get("motion_source_id"),
             "origin": signal.get("origin"),
@@ -1724,7 +1902,8 @@ class LibraryAdapter:
     def _session_catalog_cache_dependency(self, library_id: str, library_root: Path) -> dict[str, Any]:
         dependency: dict[str, Any] = {
             "cache_schema": "bodaqs.session_catalog_cache_key",
-            "cache_version": 3,
+            # Visibility and variant metadata were added in catalog v4.
+            "cache_version": 5,
             "library_id": str(library_id),
             "library_root": str(library_root.resolve()),
             "library_definition": self._file_stat_dependency(library_root / "library_definition.json", library_root),
@@ -1750,9 +1929,12 @@ class LibraryAdapter:
     def _invalidate_catalog_cache(self, library_id: str | None = None) -> None:
         self._catalog_cache_invalidations += 1
         if library_id:
-            self._catalog_cache.pop(str(library_id).strip(), None)
+            wanted = str(library_id).strip()
+            self._catalog_cache.pop(wanted, None)
+            self._catalog_cache_keys.pop(wanted, None)
         else:
             self._catalog_cache.clear()
+            self._catalog_cache_keys.clear()
         self._persistent_cache.invalidate_namespace(self._SESSION_CATALOG_CACHE_NAMESPACE)
 
     def _catalog_cache_library_diagnostics(self) -> list[dict[str, Any]]:

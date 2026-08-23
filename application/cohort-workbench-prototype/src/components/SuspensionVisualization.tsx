@@ -2022,6 +2022,7 @@ function SectorDistributionScaffold({
   valueTransform?: (values: number[]) => number[]
 }) {
   const [facetsCollapsed, setFacetsCollapsed] = useState(false)
+  const horizontalFacets = entities.length === 1 && entities[0].kind === 'session'
 
   if (!selectedTrack) {
     return (
@@ -2116,12 +2117,12 @@ function SectorDistributionScaffold({
         <button className="viz-sector-facet-toggle" type="button" onClick={() => setFacetsCollapsed((current) => !current)}>
           <span>
             <strong>Sector facets</strong>
-            <small>{facetsCollapsed ? 'Collapsed' : `${sectors.length} vertical sector view(s)`}</small>
+            <small>{facetsCollapsed ? 'Collapsed' : `${sectors.length} ${horizontalFacets ? 'horizontal' : 'vertical'} sector view(s)`}</small>
           </span>
           {facetsCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
         </button>
         {!facetsCollapsed && (
-          <div className="viz-sector-facet-stack">
+          <div className={`viz-sector-facet-stack${horizontalFacets ? ' horizontal' : ''}`}>
             {sectors.map((sector) => (
               <article className="viz-sector-facet" key={sector.id}>
                 <header className="viz-sector-section-heading">
@@ -2191,6 +2192,7 @@ function SectorMetricDistributionScaffold({
   trackMatchesLoading: boolean
 }) {
   const [facetsCollapsed, setFacetsCollapsed] = useState(false)
+  const horizontalFacets = entities.length === 1 && entities[0].kind === 'session'
   const empty = sectorPanelEmptyState(selectedTrack, sectors, allSectors, 'metric distribution')
   if (empty) {
     return empty
@@ -2249,12 +2251,12 @@ function SectorMetricDistributionScaffold({
         <button className="viz-sector-facet-toggle" type="button" onClick={() => setFacetsCollapsed((current) => !current)}>
           <span>
             <strong>Sector facets</strong>
-            <small>{facetsCollapsed ? 'Collapsed' : `${sectors.length} vertical sector view(s)`}</small>
+            <small>{facetsCollapsed ? 'Collapsed' : `${sectors.length} ${horizontalFacets ? 'horizontal' : 'vertical'} sector view(s)`}</small>
           </span>
           {facetsCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
         </button>
         {!facetsCollapsed && (
-          <div className="viz-sector-facet-stack">
+          <div className={`viz-sector-facet-stack${horizontalFacets ? ' horizontal' : ''}`}>
             {sectors.map((sector) => {
               const rowsForEntity = (entity: VisualizationEntity) => rowsInSectorsForEntity(entity, data.metrics, data, track, [sector])
               return (
@@ -2317,6 +2319,7 @@ function SectorScatterScaffold({
   trackMatchesLoading: boolean
 }) {
   const [facetsCollapsed, setFacetsCollapsed] = useState(false)
+  const horizontalFacets = entities.length === 1 && entities[0].kind === 'session'
   const empty = sectorPanelEmptyState(selectedTrack, sectors, allSectors, 'metric scatter')
   if (empty) {
     return empty
@@ -2360,12 +2363,12 @@ function SectorScatterScaffold({
         <button className="viz-sector-facet-toggle" type="button" onClick={() => setFacetsCollapsed((current) => !current)}>
           <span>
             <strong>Sector facets</strong>
-            <small>{facetsCollapsed ? 'Collapsed' : `${sectors.length} vertical sector view(s)`}</small>
+            <small>{facetsCollapsed ? 'Collapsed' : `${sectors.length} ${horizontalFacets ? 'horizontal' : 'vertical'} sector view(s)`}</small>
           </span>
           {facetsCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
         </button>
         {!facetsCollapsed && (
-          <div className="viz-sector-facet-stack">
+          <div className={`viz-sector-facet-stack${horizontalFacets ? ' horizontal' : ''}`}>
             {sectors.map((sector) => {
               const rowsForEntity = (entity: VisualizationEntity) => rowsInSectorsForEntity(entity, data.metrics, data, track, [sector])
               return (
@@ -2414,6 +2417,7 @@ function SectorEventCountScaffold({
   trackMatchesLoading: boolean
 }) {
   const [facetsCollapsed, setFacetsCollapsed] = useState(false)
+  const horizontalFacets = entities.length === 1 && entities[0].kind === 'session'
   const empty = sectorPanelEmptyState(selectedTrack, sectors, allSectors, 'event counts')
   if (empty) {
     return empty
@@ -2446,12 +2450,12 @@ function SectorEventCountScaffold({
         <button className="viz-sector-facet-toggle" type="button" onClick={() => setFacetsCollapsed((current) => !current)}>
           <span>
             <strong>Sector facets</strong>
-            <small>{facetsCollapsed ? 'Collapsed' : `${sectors.length} vertical sector view(s)`}</small>
+            <small>{facetsCollapsed ? 'Collapsed' : `${sectors.length} ${horizontalFacets ? 'horizontal' : 'vertical'} sector view(s)`}</small>
           </span>
           {facetsCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
         </button>
         {!facetsCollapsed && (
-          <div className="viz-sector-facet-stack">
+          <div className={`viz-sector-facet-stack${horizontalFacets ? ' horizontal' : ''}`}>
             {sectors.map((sector) => {
               const rowsForEntity = (entity: VisualizationEntity) => rowsInSectorsForEntity(entity, data.events, data, track, [sector])
               return (
@@ -5522,13 +5526,20 @@ function scatterPoints(rows: TableQueryRow[], eventType: string, xMetric: string
 
 function trackSectors(track: TrackRecord): TrackSector[] {
   const points = [...track.trackpoints].sort((a, b) => a.stationM - b.stationM)
+  const aliasesByPair = new Map(
+    (track.segmentAliases ?? []).map((alias) => [`${alias.fromTrackpointId}:${alias.toTrackpointId}`, alias]),
+  )
   const sectors: TrackSector[] = []
   for (let index = 0; index < points.length - 1; index += 1) {
     const start = points[index]
     const end = points[index + 1]
+    const alias = aliasesByPair.get(`${start.id}:${end.id}`)
+    if (alias?.timingRole === 'untimed') {
+      continue
+    }
     sectors.push({
       id: `${start.id}:${end.id}`,
-      label: `${start.name} to ${end.name}`,
+      label: alias?.name.trim() || `${start.name} to ${end.name}`,
       order: index,
       startTrackpoint: start,
       endTrackpoint: end,

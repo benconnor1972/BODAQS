@@ -451,7 +451,7 @@ bool validateLoggingStart(
 
   for (auto* sensor : s_list) {
     if (!sensor || sensor->muted()) continue;
-    if (!sensor->prepareLoggingStart(error, errorCapacity)) return false;
+    if (!sensor->prepareLoggingStart(cfg, effectiveRateHz, error, errorCapacity)) return false;
     if (!sensor->validateLoggingStart(cfg, effectiveRateHz, error, errorCapacity)) return false;
   }
   return true;
@@ -477,6 +477,10 @@ bool onLoggingStart(char* error, size_t errorCapacity) {
 void onLoggingStop() {
   I2CBusScheduler::stop();
   for (auto* s : s_list) if (s) s->onLoggingStop();
+}
+
+void onLoggingFinalized() {
+  for (auto* s : s_list) if (s) s->onLoggingFinalized();
 }
 
 size_t pendingLoggingRows() {

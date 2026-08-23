@@ -35,7 +35,7 @@ from bodaqs_analysis.library_api import (
     parse_session_key,
 )
 from bodaqs_analysis.library_api.catalog import discover_libraries
-from bodaqs_analysis.library_api.catalog_revision import catalog_revision_path, load_catalog_revision
+from bodaqs_analysis.library_api.catalog_revision import catalog_revision_path, load_catalog_revision, touch_catalog_revision
 from bodaqs_analysis.library_api_service import create_app
 from bodaqs_analysis.library_api_service.app import _mp4_creation_time_unix_s
 import bodaqs_analysis.library_api.adapter as adapter_module
@@ -53,6 +53,43 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def _read_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_library_adapter_loads_root_scoped_signal_sets(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    _write_json(
+        libraries_root / "signal_sets.json",
+        {
+            "schema": "bodaqs.signal_sets",
+            "version": 1,
+            "sets": [
+                {
+                    "id": "wheel-movement",
+                    "display_name": "Wheel movement",
+                    "description": "Wheel signals and GPS speed.",
+                    "rules": [{"domain": "wheel"}],
+                },
+            ],
+        },
+    )
+
+    payload = LibraryAdapter(libraries_root).get_signal_sets()
+
+    assert payload["configured"] is True
+    assert payload["sets"] == [
+        {
+            "id": "wheel-movement",
+            "display_name": "Wheel movement",
+            "description": "Wheel signals and GPS speed.",
+            "default_selection_set": "",
+            "default_exclusion_rules": [],
+            "rules": [{"domain": "wheel"}],
+        },
+    ]
+    client = TestClient(create_app(libraries_root))
+    response = client.get("/api/v1/signal-sets")
+    assert response.status_code == 200
+    assert response.json()["sets"] == payload["sets"]
 
 
 def _mp4_box(box_type: bytes, payload: bytes) -> bytes:
@@ -1449,7 +1486,7 @@ def test_library_adapter_builds_catalog_rows_from_artifacts(tmp_path: Path) -> N
     catalog = adapter.get_catalog("default-library")
 
     assert catalog["schema"] == "bodaqs.session_catalog"
-    assert catalog["version"] == 2
+    assert catalog["version"] == 4
     assert catalog["library_id"] == "default-library"
     assert catalog["row_count"] == 1
     row = catalog["rows"][0]
@@ -1490,6 +1527,7 @@ def test_library_adapter_builds_catalog_rows_from_artifacts(tmp_path: Path) -> N
     assert signal_columns == {
         "front_wheel_disp_dom_wheel [mm]",
         "rear_wheel_disp_dom_wheel [mm]",
+        "active_mask_qc",
         "time_s",
     }
     front_signal = next(
@@ -1500,6 +1538,67 @@ def test_library_adapter_builds_catalog_rows_from_artifacts(tmp_path: Path) -> N
     assert front_signal["signal_id"] == "front-wheel-disp-mm"
     assert front_signal["display_name"] == "Front Wheel Disp"
     assert front_signal["processing_role"] == "primary_analysis"
+    assert front_signal["stream_name"] == "primary"
+    assert front_signal["stream_kind"] == "primary"
+    assert front_signal["time_column"] == "time_s"
+
+
+def test_library_catalog_discovers_registry_defined_secondary_stream_signals(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    session_ref = _write_catalog_fixture_session(library_root)
+    session_root = (
+        library_root / "runs" / session_ref["run_id"] / "sessions" / session_ref["session_id"]
+    )
+    meta_path = session_root / "session" / "meta.json"
+    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    metadata["secondary_streams"] = {
+        "inertial_frame_imu": {
+            "schema": "bodaqs.inertial_stream.v1",
+            "kind": "inertial",
+            "stream_name": "inertial_frame_imu",
+            "time_col": "time_s",
+            "signals": {
+                "yaw_enu_rad": {
+                    "sensor": "frame_imu",
+                    "domain": "world",
+                    "quantity": "orientation_yaw",
+                        "unit": "rad",
+                        "processing_role": "derived_analysis",
+                        "inspection_visibility": "advanced",
+                        "analysis_variant": "forward_estimate",
+                    "source": "inertial_estimate",
+                },
+                "continuity_segment": {
+                    "kind": "qc",
+                    "quantity": "continuity_segment",
+                    "unit": "count",
+                },
+            },
+        }
+    }
+    _write_json(meta_path, metadata)
+    stream_root = session_root / "session" / "streams" / "inertial_frame_imu"
+    _write_json(stream_root / "meta.json", metadata["secondary_streams"]["inertial_frame_imu"])
+    pd.DataFrame(
+        {"time_s": [0.0, 0.5, 1.0], "yaw_enu_rad": [0.1, 0.2, 0.3], "continuity_segment": [0, 0, 0]}
+    ).to_parquet(stream_root / "df.parquet", index=False)
+
+    row = LibraryAdapter(libraries_root).get_catalog("default-library")["rows"][0]
+    inertial = [signal for signal in row["available_signals"] if signal["stream_name"] == "inertial_frame_imu"]
+
+    assert [signal["column"] for signal in inertial] == ["continuity_segment", "yaw_enu_rad"]
+    assert inertial[0]["stream_kind"] == "inertial"
+    assert inertial[1]["time_column"] == "time_s"
+    assert inertial[1]["sensor"] == "frame_imu"
+    assert inertial[0]["kind"] == "qc"
+    assert inertial[1]["inspection_visibility"] == "advanced"
+    assert inertial[1]["analysis_variant"] == "forward_estimate"
 
 
 def test_library_adapter_catalog_reports_gps_summary_quality(tmp_path: Path) -> None:
@@ -2471,6 +2570,32 @@ def test_library_adapter_catalog_cache_refreshes_explicitly(tmp_path: Path) -> N
     assert adapter.get_catalog("default-library", refresh=True)["row_count"] == 2
 
 
+def test_library_adapter_catalog_cache_detects_revision_change_without_notification(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    _write_catalog_fixture_session(library_root)
+    adapter = LibraryAdapter(libraries_root)
+
+    assert adapter.get_catalog("default-library")["row_count"] == 1
+
+    _make_session(library_root, "run_2", "session_2")
+    touch_catalog_revision(
+        library_root,
+        reason="import_agent_sessions_imported",
+        actor="import_agent",
+    )
+
+    assert adapter.get_catalog("default-library")["row_count"] == 2
+    diagnostics = adapter.cache_diagnostics()
+    assert diagnostics["catalog_cache"]["event_counts"]["memory_stale"] == 1
+    assert diagnostics["catalog_cache"]["event_counts"]["rebuilt"] == 2
+
+
 def test_library_adapter_reuses_persisted_catalog_on_restart(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2650,15 +2775,99 @@ def test_library_adapter_returns_timeseries_window_for_semantic_signals(
     ]
     assert payload["signals"][0]["values"] == [0.0, 10.0, 20.0]
     assert payload["signals"][1]["values"] == [0.0, 12.0, 24.0]
-    assert [event["event_type"] for event in payload["events"]] == [
-        "bottom_out",
-        "jump",
-        "jump",
-    ]
+    assert [event["event_type"] for event in payload["events"]] == ["bottom_out", "jump", "jump"]
     assert payload["events"][0]["display_name"] == "Bottom out"
     assert payload["events"][0]["metrics"] == {"peak_force": 123.0, "duration_s": 0.2}
     assert "metrics" not in payload["events"][1]
     assert payload["warnings"] == []
+
+
+def test_library_adapter_caches_standard_preview_and_reports_catalog_revisions(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(library_root, library_id="default-library", display_name="Default Library")
+    session_ref = _write_catalog_fixture_session(library_root)
+    adapter = LibraryAdapter(libraries_root)
+
+    payload = adapter.get_timeseries_window(
+        "default-library",
+        {
+            "session": session_ref,
+            "signals": [
+                {"column": "front_wheel_disp_dom_wheel [mm]"},
+                {"column": "rear_wheel_disp_dom_wheel [mm]"},
+            ],
+            "window": {"start_s": 0.0, "end_s": 2.0},
+            "resolution": {"target_points": 900},
+            "include_events": False,
+            "include_marks": False,
+        },
+    )
+
+    assert payload["sampling"]["target_points"] == 900
+    diagnostics = adapter.cache_diagnostics()
+    assert diagnostics["persistent_cache"]["namespaces"]["timeseries_preview"]["entry_count"] == 1
+    adapter.get_catalog("default-library")
+    revisions = adapter.get_catalog_revisions()
+    assert revisions["libraries"][0]["library_id"] == "default-library"
+    assert revisions["libraries"][0]["revision"] >= 1
+    response = TestClient(create_app(libraries_root)).get("/api/v1/libraries/catalog-revisions")
+    assert response.status_code == 200
+    assert response.json()["libraries"][0]["library_id"] == "default-library"
+
+
+def test_library_adapter_returns_native_groups_for_multistream_window(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(library_root, library_id="default-library", display_name="Default Library")
+    session_ref = _write_catalog_fixture_session(library_root)
+    session_root = library_root / "runs" / session_ref["run_id"] / "sessions" / session_ref["session_id"]
+    meta_path = session_root / "session" / "meta.json"
+    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    inertial_meta = {
+        "schema": "bodaqs.inertial_stream.v1",
+        "kind": "inertial",
+        "stream_name": "inertial_frame_imu",
+        "time_col": "time_s",
+        "signals": {
+            "yaw_enu_rad": {
+                "sensor": "frame_imu",
+                "domain": "world",
+                "quantity": "orientation_yaw",
+                "unit": "rad",
+                "processing_role": "derived_analysis",
+            }
+        },
+    }
+    metadata["secondary_streams"] = {"inertial_frame_imu": inertial_meta}
+    _write_json(meta_path, metadata)
+    stream_root = session_root / "session" / "streams" / "inertial_frame_imu"
+    _write_json(stream_root / "meta.json", inertial_meta)
+    pd.DataFrame({"time_s": [0.0, 0.25, 0.5, 0.75, 1.0], "yaw_enu_rad": [0.0, 0.1, 0.2, 0.3, 0.4]}).to_parquet(
+        stream_root / "df.parquet", index=False
+    )
+
+    payload = LibraryAdapter(libraries_root).get_multistream_timeseries_window(
+        "default-library",
+        {
+            "session": session_ref,
+            "signals": [
+                {"stream_name": "primary", "column": "front_wheel_disp_dom_wheel [mm]"},
+                {"stream_name": "inertial_frame_imu", "column": "yaw_enu_rad"},
+            ],
+            "window": {"start_s": 0.0, "end_s": 1.0},
+            "resolution": {"target_points": 10},
+            "include_events": True,
+        },
+    )
+
+    assert payload["schema"] == "bodaqs.multistream_timeseries_window"
+    assert [group["stream"]["stream_name"] for group in payload["groups"]] == ["primary", "inertial_frame_imu"]
+    assert payload["groups"][0]["time"]["values"] == [0.0, 1.0]
+    assert payload["groups"][1]["time"]["values"] == [0.0, 0.25, 0.5, 0.75, 1.0]
+    assert payload["groups"][1]["signals"][0]["stream_kind"] == "inertial"
+    assert payload["groups"][1]["signals"][0]["values"] == [0.0, 0.1, 0.2, 0.3, 0.4]
+    assert [event["event_type"] for event in payload["events"]] == ["bottom_out", "jump"]
 
 
 def test_library_adapter_queries_raw_signals_events_and_metrics(tmp_path: Path) -> None:
@@ -3881,6 +4090,18 @@ def test_library_api_service_timeseries_window_and_error_envelope(
         "jump",
         "jump",
     ]
+
+    multistream_response = client.post(
+        "/api/v1/libraries/default-library/timeseries/multistream-window",
+        json={
+            "session": session_ref,
+            "signals": [{"stream_name": "primary", "column": "front_wheel_disp_dom_wheel [mm]"}],
+        },
+    )
+    assert multistream_response.status_code == 200
+    multistream = multistream_response.json()
+    assert multistream["schema"] == "bodaqs.multistream_timeseries_window"
+    assert multistream["groups"][0]["stream"]["stream_name"] == "primary"
 
     signal_response = client.post(
         "/api/v1/libraries/default-library/signals/query",

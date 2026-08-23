@@ -131,7 +131,8 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
 
   .perf = {
     .queue_depth = 256,
-    .ring_buffer_bytes = 32768
+    .ring_buffer_bytes = 32768,
+    .bdq_chunk_bytes = 16384
   }
 };
 
@@ -374,7 +375,8 @@ static const BoardProfile V1RC3_PROFILE = {
 
   .perf = {
     .queue_depth = 256,
-    .ring_buffer_bytes = 32768
+    .ring_buffer_bytes = 32768,
+    .bdq_chunk_bytes = 16384
   }
 };
 

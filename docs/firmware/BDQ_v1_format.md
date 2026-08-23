@@ -471,6 +471,8 @@ Example fields:
   "path": "/260603_122104.bdq",
   "samples_written": 15000,
   "data_chunks_written": 30,
+  "data_chunk_buffer_bytes": 16340,
+  "data_chunk_frames": 146,
   "samples_dropped": 0,
   "queue_max": 12,
   "queue_depth": 256,
@@ -479,6 +481,11 @@ Example fields:
   "flush_total_ms": 31
 }
 ```
+
+`data_chunk_buffer_bytes` and `data_chunk_frames` describe the effective
+in-memory data-chunk capacity, which may be smaller than the board target when
+the writer uses its allocation fallback. They are diagnostic only; data-chunk
+payload lengths remain authoritative for parsing.
 
 Current firmware may also append optional diagnostic objects. In particular,
 `sensor_runtime_diagnostics` contains bounded, transition-only runtime evidence
@@ -506,6 +513,14 @@ I2C scheduler client summaries may include:
 
 As with all final-summary fields, these diagnostics can be absent after an
 unclean shutdown.
+
+`storage_write_stalls` is a bounded recorder-write diagnostic object. It is
+present when timing instrumentation is enabled and contains a threshold, total
+event count, truncation indication, and up to 16 events. Each event identifies
+the writing operation (`data_chunk`, `periodic_flush`, or `row_write`), its
+duration, attempted byte count, queued-row depth, and, where applicable, the
+sample ID and data-frame count. It is intended to correlate row loss with
+storage latency without adding data-frame columns or per-row logging overhead.
 
 ## 16. Parser Acceptance Criteria
 
