@@ -174,6 +174,13 @@ Residual naming note:
     simultaneously inspectable variants; for example, `"World yaw — smoothed"`
     and `"World yaw — forward estimate"`.
 
+  - A vector-component name SHOULD include a frame-appropriate direction while
+    retaining `quantity` and `component` as separate machine semantics:
+    `sensor_native` uses `Sensor X/Y/Z`; a main-frame `body_local` or
+    `bike_body` vector uses `Forward/Left/Up`; and `world_enu` uses
+    `East/North/Up`. An articulated assembly's `body_local` vector uses
+    `Local X/Y/Z` unless a more specific frame convention is documented.
+
 - `sensor`: `str | None`
   - Logger/source sensor identifier, if supplied by log metadata.
   - This is not an analysis selector field. For front/rear bike-location

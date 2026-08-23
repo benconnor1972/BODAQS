@@ -55,7 +55,7 @@ import type {
   TrackpointMatchQueryStatus,
   TrackRecord,
 } from '../domain/types'
-import type { LibraryDataSource, SessionNoteSaveResult, SignalSetDefinition, WorkbenchBootstrapData } from './LibraryDataSource'
+import type { CatalogRevision, LibraryDataSource, SessionNoteSaveResult, SignalSetDefinition, WorkbenchBootstrapData } from './LibraryDataSource'
 
 const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8765'
 const VITE_DEV_PORTS = new Set(['5173', '4173'])
@@ -126,6 +126,14 @@ export class LocalApiDataSource implements LibraryDataSource {
   async listLibraries() {
     const libraries = await requestJson<ApiObject[]>(`${this.baseUrl}/api/v1/libraries`)
     return libraries.map(mapLibrary)
+  }
+
+  async listCatalogRevisions(): Promise<CatalogRevision[]> {
+    const response = await requestJson<ApiObject>(`${this.baseUrl}/api/v1/libraries/catalog-revisions`)
+    return arrayValue(response.libraries)
+      .filter(isObject)
+      .map((item) => ({ libraryId: textValue(item.library_id), revision: numberValue(item.revision) }))
+      .filter((item) => item.libraryId)
   }
 
   async refreshLibrary(libraryId: string) {

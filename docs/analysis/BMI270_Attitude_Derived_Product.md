@@ -1,7 +1,7 @@
 # BMI270 fused inertial derived product, first slice
 
 - Stream schema: `bodaqs.inertial_stream.v1`
-- QC schema: `bodaqs.attitude_qc.v1`
+- QC schema: `bodaqs.attitude_qc.v2`
 - Scope: offline orientation and attitude-dependent inertial vectors for an
   accepted frame-mounted BMI270
 - Excluded: on-device fusion and position/velocity integration
@@ -18,7 +18,10 @@ only admits `domain=frame`; steering and unsprung IMUs do not yet have the
 kinematics needed to represent the main bicycle body in ENU.
 
 GPS `course_over_ground` is explicitly distinct from direct bicycle heading.
-It is used only as a conditional yaw observation.
+It is used as a conditional yaw observation and, when valid speed/course
+evidence is sufficiently well timed and accurate, to estimate horizontal
+translational acceleration for gravity compensation. GPS altitude is not
+differentiated for this purpose.
 
 ## Output convention
 
@@ -63,22 +66,29 @@ The profile can omit costly optional families through
 `include_angular_kinematics`, and `include_magnitudes`. The smoothed
 orientation itself remains available when dynamics are disabled.
 
-## Offline world-yaw smoother
+## Fixed-interval attitude solution
 
-The persisted stream also provides an acausal, fixed-interval yaw product:
+The persisted orientation is an acausal, fixed-interval quaternion solution.
+The former forward estimate is an internal propagation pass and is not
+materialised as a competing user-facing series. The canonical quaternion and
+`roll_rad`, `pitch_rad`, and `yaw_enu_rad` are registered as
+`analysis_variant=fixed_interval_smoothed`.
 
-- `yaw_world_enu_smoothed_rad`;
-- `yaw_world_enu_smoothed_sigma_deg`;
-- `yaw_world_enu_smoothed_state_code`; and
-- `yaw_world_enu_smoothed_group` plus
-  `yaw_world_enu_gap_bridged_before` provenance.
+Its yaw sub-solution first removes the internal causal world-Z corrections to
+recover a gravity/gyro-relative trajectory, then uses every accepted GPS-course
+observation in a logical continuity group to estimate world-Z phase across the
+whole group. Pitch and roll use a six-state error-state Rauch-Tung-Striebel
+smoother over quaternion attitude error and residual body-frame gyro bias.
+When qualified GPS exists, it subtracts GPS-derived horizontal
+acceleration, transformed into the body frame, before testing the remainder as
+gravity evidence. GPS altitude is not differentiated.
 
-It first removes the causal world-Z course corrections to recover the
-gravity/gyro-relative attitude, then uses every accepted GPS-course observation
-in a logical continuity group to estimate a world-Z phase correction across
-the whole group. This backfills samples preceding the first usable course and
-extrapolates after the last one. Its state codes are `unobserved`,
-`course_smoothed`, `course_backfilled`, and `course_extrapolated`.
+Gyro propagation and the persisted output remain on the native IMU timestamps.
+Every native-rate gyro increment is preintegrated exactly between the 25 Hz
+correction nodes; the smoothed low-frequency attitude and bias corrections are
+then interpolated back to the native grid. This prevents fixed-interval
+covariance storage from growing impractically at future 800 Hz or 1600 Hz IMU
+rates without subsampling angular motion.
 
 Adjacent IMU continuity segments are joined only where the physical timestamp
 gap is at most 250 ms and the nearby gyro samples imply no more than 45 degrees
@@ -86,21 +96,23 @@ of rotation across the gap. The bridge is recorded; it does not manufacture
 missing IMU samples. Larger or implausible gaps remain separate, and a group
 without an accepted GPS-course observation remains unobserved.
 
-## First-slice estimator
+## Estimator
 
-The estimator is a conservative quaternion propagation/correction filter:
+The estimator combines an internal causal propagation pass with an offline
+error-state forward filter and RTS backward pass:
 
 1. Start each IMU continuity segment by aligning measured acceleration to ENU
    up, leaving yaw arbitrary.
 2. Propagate on actual reconstructed IMU timestamps using IOC-compensated gyro
    output plus the accepted startup stationary residual when available.
-3. Apply a small gravity correction only when acceleration magnitude, local
-   magnitude variance, and jerk pass the configured gates.
+3. Build centred gravity observations from acceleration after optional,
+   qualified GPS horizontal-translational-acceleration compensation.
 4. Apply a bounded world-Z correction from GPS course only when the observation
    is valid, fresh, above the speed threshold, and passes course/speed accuracy
    gates.
-5. Keep causal yaw evidence separate from the offline smoother; the latter may
-   bridge only conservative, explicitly recorded short continuity gaps.
+5. Estimate residual body-frame gyro bias jointly with tilt, then apply the RTS
+   pass so later gravity evidence can improve earlier attitude and bias
+   estimates. Continuity groups remain explicit and independently smoothed.
 
 The stream retains correction weights, innovation, rejection codes, yaw sigma,
 and continuity segment so a consumer can distinguish evidence from inference.

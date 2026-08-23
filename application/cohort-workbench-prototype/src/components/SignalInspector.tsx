@@ -2477,7 +2477,7 @@ function GpsAltitudeChart({
   pointSet: SessionGpsPointSet | null
   videoHeadTimeS: number | null
 }) {
-  const samples = useMemo(() => gpsAltitudeSamplesForWindow(pointSet?.points ?? [], activeWindow), [activeWindow.endS, activeWindow.startS, pointSet])
+  const samples = useMemo(() => gpsAltitudeSamples(pointSet?.points ?? []), [pointSet])
   if (!pointSet?.present) {
     return <div className="signal-inspector-altitude-empty">No GPS altitude data.</div>
   }
@@ -2488,8 +2488,8 @@ function GpsAltitudeChart({
   const width = 420
   const height = 148
   const padding = { top: 14, right: 16, bottom: 38, left: 50 }
-  const minTime = Math.min(activeWindow.startS, activeWindow.endS)
-  const maxTime = Math.max(activeWindow.startS, activeWindow.endS)
+  const minTime = samples[0].timeS
+  const maxTime = samples.at(-1)?.timeS ?? minTime
   const elevations = samples.map((sample) => sample.elevationM)
   const minElevation = Math.min(...elevations)
   const maxElevation = Math.max(...elevations)
@@ -2519,6 +2519,30 @@ function GpsAltitudeChart({
           y: yForElevation(interpolateGpsAltitude(samples, videoHeadTimeS)),
         }
       : null
+  const selectedStartS = clamp(Math.min(activeWindow.startS, activeWindow.endS), minTime, maxTime)
+  const selectedEndS = clamp(Math.max(activeWindow.startS, activeWindow.endS), minTime, maxTime)
+  const selectionIsFullProfile = selectedStartS <= minTime + 0.01 && selectedEndS >= maxTime - 0.01
+  const selectionIsRange = !selectionIsFullProfile && selectedEndS - selectedStartS > 0.1
+  const selectionIsPoint = !selectionIsFullProfile && !selectionIsRange
+  const selectedSamples = selectionIsRange
+    ? gpsAltitudeSamplesForWindow(samples, { startS: selectedStartS, endS: selectedEndS })
+    : []
+  const selectedPath = selectionIsRange
+    ? [
+        { timeS: selectedStartS, elevationM: interpolateGpsAltitude(samples, selectedStartS) },
+        ...selectedSamples,
+        { timeS: selectedEndS, elevationM: interpolateGpsAltitude(samples, selectedEndS) },
+      ]
+        .filter((sample, index, values) => index === 0 || sample.timeS > values[index - 1].timeS)
+        .map((sample, index) => `${index === 0 ? 'M' : 'L'} ${xForTime(sample.timeS).toFixed(1)} ${yForElevation(sample.elevationM).toFixed(1)}`)
+        .join(' ')
+    : ''
+  const pointMarker = selectionIsPoint
+    ? {
+        x: xForTime(selectedStartS),
+        y: yForElevation(interpolateGpsAltitude(samples, selectedStartS)),
+      }
+    : null
 
   return (
     <div className="signal-inspector-altitude-chart">
@@ -2545,9 +2569,25 @@ function GpsAltitudeChart({
             </g>
           )
         })}
+        {selectionIsRange && (
+          <rect
+            className="signal-inspector-altitude-selection-range"
+            x={xForTime(selectedStartS)}
+            y={padding.top}
+            width={Math.max(1, xForTime(selectedEndS) - xForTime(selectedStartS))}
+            height={plotHeight}
+          />
+        )}
         <line className="signal-inspector-altitude-axis" x1={padding.left} x2={width - padding.right} y1={height - padding.bottom} y2={height - padding.bottom} />
         <line className="signal-inspector-altitude-axis" x1={padding.left} x2={padding.left} y1={padding.top} y2={height - padding.bottom} />
         <path className="signal-inspector-altitude-line" d={path} />
+        {selectionIsRange && <path className="signal-inspector-altitude-selection-line" d={selectedPath} />}
+        {pointMarker && (
+          <g className="signal-inspector-altitude-selection-point">
+            <line x1={pointMarker.x} x2={pointMarker.x} y1={padding.top} y2={height - padding.bottom} />
+            <circle cx={pointMarker.x} cy={pointMarker.y} r={3.8} />
+          </g>
+        )}
         {playbackMarker && (
           <g className="signal-inspector-altitude-playback-marker">
             <line x1={playbackMarker.x} x2={playbackMarker.x} y1={padding.top} y2={height - padding.bottom} />
@@ -4390,21 +4430,26 @@ function gpsPathForWindow(points: SessionGpsPoint[], window: { startS: number; e
   )
 }
 
-function gpsAltitudeSamplesForWindow(points: SessionGpsPoint[], window: { startS: number; endS: number }) {
-  const startS = Math.min(window.startS, window.endS)
-  const endS = Math.max(window.startS, window.endS)
+function gpsAltitudeSamples(points: SessionGpsPoint[]) {
   return points
     .filter(
       (point) =>
         typeof point.timeS === 'number' &&
         Number.isFinite(point.timeS) &&
         typeof point.elevationM === 'number' &&
-        Number.isFinite(point.elevationM) &&
-        point.timeS >= startS &&
-        point.timeS <= endS,
+        Number.isFinite(point.elevationM),
     )
     .map((point) => ({ timeS: point.timeS as number, elevationM: point.elevationM as number }))
     .sort((a, b) => a.timeS - b.timeS)
+}
+
+function gpsAltitudeSamplesForWindow(
+  samples: Array<{ timeS: number; elevationM: number }>,
+  window: { startS: number; endS: number },
+) {
+  const startS = Math.min(window.startS, window.endS)
+  const endS = Math.max(window.startS, window.endS)
+  return samples.filter((sample) => sample.timeS >= startS && sample.timeS <= endS)
 }
 
 function signalInspectorGridStep(span: number, candidates: number[], minimumGridlines = 3) {
@@ -4835,10 +4880,17 @@ function nearestTimeIndex(times: number[], timeS: number) {
 }
 
 function chartDisplaySignal(signal: TimeseriesWindowResponse['signals'][number]): TimeseriesWindowResponse['signals'][number] {
+  const compactUnit = normalizeSignalText(signal.unit).replace(/\s+/g, '')
+  if (compactUnit === 'rad') {
+    return {
+      ...signal,
+      unit: 'deg',
+      values: signal.values.map((value) => (typeof value === 'number' && Number.isFinite(value) ? (value * 180) / Math.PI : value)),
+    }
+  }
   if (!isWorldSpeedSignal(signal)) {
     return signal
   }
-  const compactUnit = normalizeSignalText(signal.unit).replace(/\s+/g, '')
   if (['km/h', 'kph', 'kmh'].includes(compactUnit)) {
     return { ...signal, unit: 'km/h' }
   }

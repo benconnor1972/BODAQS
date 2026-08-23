@@ -1033,6 +1033,13 @@ export function TrackAnalysisView({
     if (!tracksToAdd.length) {
       return
     }
+    setWorkingTracks((current) => {
+      const existingPersistedIds = new Set(current.map((track) => track.persistedId).filter((id): id is string => Boolean(id)))
+      const additions = tracksToAdd
+        .filter((track) => !existingPersistedIds.has(track.id))
+        .map((track) => workingTrackFromRecord(track))
+      return additions.length ? [...current, ...additions] : current
+    })
     setLocalAddedTrackIds((current) => {
       const next = new Set(current)
       tracksToAdd.forEach((track) => next.add(track.id))

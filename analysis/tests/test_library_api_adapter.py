@@ -35,7 +35,7 @@ from bodaqs_analysis.library_api import (
     parse_session_key,
 )
 from bodaqs_analysis.library_api.catalog import discover_libraries
-from bodaqs_analysis.library_api.catalog_revision import catalog_revision_path, load_catalog_revision
+from bodaqs_analysis.library_api.catalog_revision import catalog_revision_path, load_catalog_revision, touch_catalog_revision
 from bodaqs_analysis.library_api_service import create_app
 from bodaqs_analysis.library_api_service.app import _mp4_creation_time_unix_s
 import bodaqs_analysis.library_api.adapter as adapter_module
@@ -2570,6 +2570,32 @@ def test_library_adapter_catalog_cache_refreshes_explicitly(tmp_path: Path) -> N
     assert adapter.get_catalog("default-library", refresh=True)["row_count"] == 2
 
 
+def test_library_adapter_catalog_cache_detects_revision_change_without_notification(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(
+        library_root,
+        library_id="default-library",
+        display_name="Default Library",
+    )
+    _write_catalog_fixture_session(library_root)
+    adapter = LibraryAdapter(libraries_root)
+
+    assert adapter.get_catalog("default-library")["row_count"] == 1
+
+    _make_session(library_root, "run_2", "session_2")
+    touch_catalog_revision(
+        library_root,
+        reason="import_agent_sessions_imported",
+        actor="import_agent",
+    )
+
+    assert adapter.get_catalog("default-library")["row_count"] == 2
+    diagnostics = adapter.cache_diagnostics()
+    assert diagnostics["catalog_cache"]["event_counts"]["memory_stale"] == 1
+    assert diagnostics["catalog_cache"]["event_counts"]["rebuilt"] == 2
+
+
 def test_library_adapter_reuses_persisted_catalog_on_restart(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2749,15 +2775,45 @@ def test_library_adapter_returns_timeseries_window_for_semantic_signals(
     ]
     assert payload["signals"][0]["values"] == [0.0, 10.0, 20.0]
     assert payload["signals"][1]["values"] == [0.0, 12.0, 24.0]
-    assert [event["event_type"] for event in payload["events"]] == [
-        "bottom_out",
-        "jump",
-        "jump",
-    ]
+    assert [event["event_type"] for event in payload["events"]] == ["bottom_out", "jump", "jump"]
     assert payload["events"][0]["display_name"] == "Bottom out"
     assert payload["events"][0]["metrics"] == {"peak_force": 123.0, "duration_s": 0.2}
     assert "metrics" not in payload["events"][1]
     assert payload["warnings"] == []
+
+
+def test_library_adapter_caches_standard_preview_and_reports_catalog_revisions(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(library_root, library_id="default-library", display_name="Default Library")
+    session_ref = _write_catalog_fixture_session(library_root)
+    adapter = LibraryAdapter(libraries_root)
+
+    payload = adapter.get_timeseries_window(
+        "default-library",
+        {
+            "session": session_ref,
+            "signals": [
+                {"column": "front_wheel_disp_dom_wheel [mm]"},
+                {"column": "rear_wheel_disp_dom_wheel [mm]"},
+            ],
+            "window": {"start_s": 0.0, "end_s": 2.0},
+            "resolution": {"target_points": 900},
+            "include_events": False,
+            "include_marks": False,
+        },
+    )
+
+    assert payload["sampling"]["target_points"] == 900
+    diagnostics = adapter.cache_diagnostics()
+    assert diagnostics["persistent_cache"]["namespaces"]["timeseries_preview"]["entry_count"] == 1
+    adapter.get_catalog("default-library")
+    revisions = adapter.get_catalog_revisions()
+    assert revisions["libraries"][0]["library_id"] == "default-library"
+    assert revisions["libraries"][0]["revision"] >= 1
+    response = TestClient(create_app(libraries_root)).get("/api/v1/libraries/catalog-revisions")
+    assert response.status_code == 200
+    assert response.json()["libraries"][0]["library_id"] == "default-library"
 
 
 def test_library_adapter_returns_native_groups_for_multistream_window(tmp_path: Path) -> None:

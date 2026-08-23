@@ -188,7 +188,10 @@ struct SensorRuntimeDiagnostics {
   uint8_t imuStartupObservationState = 0;
   uint16_t imuStartupRejectionMask = 0;
   uint16_t imuStartupConfiguredSeconds = 0;
+  uint16_t imuStartupNativeSampleRateHz = 0;
+  float imuStartupMinimumValidFraction = 0.0f;
   uint32_t imuStartupTargetSampleSlots = 0;
+  uint32_t imuStartupMinimumValidSamples = 0;
   uint32_t imuStartupValidSamples = 0;
   uint32_t imuStartupSettlingSampleSlots = 0;
   uint32_t imuStartupMeasurementStartSequence = 0;

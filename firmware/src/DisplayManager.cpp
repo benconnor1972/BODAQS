@@ -12,6 +12,8 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
+#include <atomic>
+
 // 128x64 0.96" common panel
 static constexpr uint8_t  OLED_W = 128;
 static constexpr uint8_t  OLED_H = 64;
@@ -38,7 +40,12 @@ static bool     s_dimmed       = false;
 static uint8_t  s_busIndex     = 0;
 static uint32_t s_busClockHz   = 400000UL;
 static uint32_t s_lastPresentMs = 0;
-static bool     s_presentPending = false;
+static std::atomic<bool> s_presentPending { false };
+static std::atomic<uint8_t> s_transferDeferralDepth { 0 };
+static std::atomic<uint32_t> s_deferredPresentRequests { 0 };
+static std::atomic<uint32_t> s_mutexDeferrals { 0 };
+static std::atomic<uint32_t> s_schedulerWindowDeferrals { 0 };
+static std::atomic<uint32_t> s_deferredRefreshesScheduled { 0 };
 
 
 
@@ -298,7 +305,12 @@ bool DisplayManager::begin(const LoggerConfig& cfg,
   s_lastRate    = 0;
   s_lastActive  = 255;
   s_lastPresentMs = 0;
-  s_presentPending = false;
+  s_presentPending.store(false, std::memory_order_release);
+  s_transferDeferralDepth.store(0, std::memory_order_release);
+  s_deferredPresentRequests.store(0, std::memory_order_release);
+  s_mutexDeferrals.store(0, std::memory_order_release);
+  s_schedulerWindowDeferrals.store(0, std::memory_order_release);
+  s_deferredRefreshesScheduled.store(0, std::memory_order_release);
 
   drawAll();
   LOGI_TAG("DISP", "begin: complete\n");
@@ -387,7 +399,13 @@ void DisplayManager::setBrightness(uint8_t b) {
 
 void DisplayManager::present() {
   if (!available()) return;
+  if (s_transferDeferralDepth.load(std::memory_order_acquire) != 0) {
+    s_deferredPresentRequests.fetch_add(1, std::memory_order_relaxed);
+    s_presentPending.store(true, std::memory_order_release);
+    return;
+  }
   const bool logging = LoggingManager::isRunning();
+  const bool schedulerRunning = I2CBusScheduler::isRunning();
   const uint32_t nowMs = millis();
   if (logging) {
     if (s_lastPresentMs != 0 &&
@@ -396,35 +414,73 @@ void DisplayManager::present() {
       s_presentPending = true;
       return;
     }
-    if (I2CBusScheduler::isRunning() &&
-        !I2CBusScheduler::lowPriorityWindowAvailable(
-            s_busIndex,
-            OLED_TRANSFER_BUDGET_US,
-            OLED_TRANSFER_GUARD_US)) {
-      s_presentPending = true;
-      return;
-    }
   }
-  // A low-priority refresh must never block loopTask/storage behind a sensor
-  // reservation. Outside logging, retain the normal UI lock timeout.
-  if (!I2CManager::lock(s_wire, logging ? 1u : 50u)) {
-    s_presentPending = true;
+  if (schedulerRunning &&
+      !I2CBusScheduler::lowPriorityWindowAvailable(
+          s_busIndex,
+          OLED_TRANSFER_BUDGET_US,
+          OLED_TRANSFER_GUARD_US)) {
+    s_schedulerWindowDeferrals.fetch_add(1, std::memory_order_relaxed);
+    s_presentPending.store(true, std::memory_order_release);
+    return;
+  }
+  // A low-priority refresh must never block a scheduler task behind a sensor
+  // reservation. This also applies to non-logging uses such as orientation
+  // capture, which run the scheduler while LoggingManager remains idle.
+  if (!I2CManager::lock(s_wire, (logging || schedulerRunning) ? 1u : 50u)) {
+    s_mutexDeferrals.fetch_add(1, std::memory_order_relaxed);
+    s_presentPending.store(true, std::memory_order_release);
     return;
   }
   // Recheck after waiting for the mutex: another device may have consumed the
   // window between the optimistic check above and the actual bus reservation.
-  if (logging && I2CBusScheduler::isRunning() &&
+  if (schedulerRunning &&
       !I2CBusScheduler::lowPriorityWindowAvailable(
           s_busIndex,
           OLED_TRANSFER_BUDGET_US,
           OLED_TRANSFER_GUARD_US)) {
     I2CManager::unlock(s_wire);
-    s_presentPending = true;
+    s_schedulerWindowDeferrals.fetch_add(1, std::memory_order_relaxed);
+    s_presentPending.store(true, std::memory_order_release);
     return;
   }
   s_wire->setClock(s_busClockHz);
   s_oled->display();
   I2CManager::unlock(s_wire);
   s_lastPresentMs = millis();
-  s_presentPending = false;
+  s_presentPending.store(false, std::memory_order_release);
+}
+
+bool DisplayManager::deferTransfersForBus(uint8_t busIndex) {
+  if (!s_present || busIndex != s_busIndex) return false;
+  uint8_t depth = s_transferDeferralDepth.load(std::memory_order_relaxed);
+  while (true) {
+    if (depth == UINT8_MAX) return false;
+    if (s_transferDeferralDepth.compare_exchange_weak(
+            depth, static_cast<uint8_t>(depth + 1), std::memory_order_acq_rel)) {
+      return true;
+    }
+  }
+}
+
+void DisplayManager::resumeTransfersForBus(uint8_t busIndex) {
+  if (!s_present || busIndex != s_busIndex) return;
+  uint8_t depth = s_transferDeferralDepth.load(std::memory_order_acquire);
+  while (depth != 0 &&
+         !s_transferDeferralDepth.compare_exchange_weak(
+             depth, static_cast<uint8_t>(depth - 1), std::memory_order_acq_rel)) {
+  }
+  if (depth == 1 && s_presentPending.load(std::memory_order_acquire)) {
+    s_deferredRefreshesScheduled.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+DisplayManager::Diagnostics DisplayManager::diagnostics() {
+  Diagnostics out;
+  out.deferredPresentRequests = s_deferredPresentRequests.load(std::memory_order_relaxed);
+  out.mutexDeferrals = s_mutexDeferrals.load(std::memory_order_relaxed);
+  out.schedulerWindowDeferrals = s_schedulerWindowDeferrals.load(std::memory_order_relaxed);
+  out.deferredRefreshesScheduled = s_deferredRefreshesScheduled.load(std::memory_order_relaxed);
+  out.transferDeferralDepth = s_transferDeferralDepth.load(std::memory_order_acquire);
+  return out;
 }

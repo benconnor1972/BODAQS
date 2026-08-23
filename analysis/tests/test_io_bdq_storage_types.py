@@ -129,8 +129,17 @@ def _bdq_bytes(*, accel_storage_type: str = "int16") -> bytes:
         "log_format": "bodaqs_compact_binary",
         "imu_configs": {
             "frame_imu": {
-                "contract_id": "bodaqs.bmi270_imu_mvp.v1",
+                "contract_id": "bodaqs.bmi270_imu_mvp.v3",
                 "imu_rate_hz": 200,
+                "max_output_rate_hz": 50,
+                "output_rate_hz": 50,
+                "output_decimation_factor": 4,
+                "output_selection": "every_nth_native_sample",
+                "gyro_bias_correction": {
+                    "mode": "bmi270_ioc",
+                    "hardware_offset_applied": True,
+                    "offset_register_trace_enabled": False,
+                },
             }
         },
     }
@@ -231,9 +240,19 @@ def test_bdq_metadata_preserves_vector_and_mount_semantics(tmp_path: Path) -> No
     assert accel_x["coordinate_frame"] == "sensor_native"
     assert accel_x["vector_group"] == "accel_raw"
     assert metadata["imu_configs"]["frame_imu"]["imu_rate_hz"] == 200
+    assert metadata["imu_configs"]["frame_imu"]["max_output_rate_hz"] == 50
+    assert metadata["imu_configs"]["frame_imu"]["output_rate_hz"] == 50
+    assert metadata["imu_configs"]["frame_imu"]["output_decimation_factor"] == 4
+    assert metadata["imu_configs"]["frame_imu"]["output_selection"] == "every_nth_native_sample"
+    assert metadata["imu_configs"]["frame_imu"]["gyro_bias_correction"] == {
+        "mode": "bmi270_ioc",
+        "hardware_offset_applied": True,
+        "offset_register_trace_enabled": False,
+    }
 
     session = load_bdq_session(path)
-    assert session["meta"]["imu_configs"]["frame_imu"]["contract_id"] == "bodaqs.bmi270_imu_mvp.v1"
+    assert session["meta"]["imu_configs"]["frame_imu"]["contract_id"] == "bodaqs.bmi270_imu_mvp.v3"
+    assert session["meta"]["imu_configs"]["frame_imu"]["gyro_bias_correction"]["hardware_offset_applied"] is True
 
 
 def test_phase_4_5_frame_domain_passes_strict_signal_validation(tmp_path: Path) -> None:

@@ -43,6 +43,10 @@ DEFAULT_PREPROCESS_PROFILE_CONFIG: Dict[str, Any] = {
     "imu_attitude": {
         "enabled": False,
         "required": False,
+        "fixed_interval_tilt_smoother": {
+            "enabled": True,
+            "gps_translational_compensation": "when_qualified",
+        },
         "inertial_dynamics": {
             "enabled": True,
             "include_world_frame": True,
@@ -513,7 +517,7 @@ def _validate_imu_attitude(value: Any, *, label: str) -> None:
     if not isinstance(value, Mapping):
         raise ValueError(f"Preprocess config 'imu_attitude' must be object or null{label}")
 
-    unknown = sorted(set(value) - {"enabled", "required", "inertial_dynamics"})
+    unknown = sorted(set(value) - {"enabled", "required", "fixed_interval_tilt_smoother", "inertial_dynamics"})
     if unknown:
         raise ValueError(
             "Preprocess config 'imu_attitude' has unsupported field(s)"
@@ -522,6 +526,25 @@ def _validate_imu_attitude(value: Any, *, label: str) -> None:
     for field in ("enabled", "required"):
         if field in value and not isinstance(value.get(field), bool):
             raise ValueError(f"Preprocess config 'imu_attitude.{field}' must be boolean{label}")
+    tilt_smoother = value.get("fixed_interval_tilt_smoother")
+    if tilt_smoother is not None:
+        if not isinstance(tilt_smoother, Mapping):
+            raise ValueError(f"Preprocess config 'imu_attitude.fixed_interval_tilt_smoother' must be object or null{label}")
+        allowed_tilt = {"enabled", "gps_translational_compensation"}
+        unknown_tilt = sorted(set(tilt_smoother) - allowed_tilt)
+        if unknown_tilt:
+            raise ValueError(
+                "Preprocess config 'imu_attitude.fixed_interval_tilt_smoother' has unsupported field(s)"
+                f"{label}: {', '.join(unknown_tilt)}"
+            )
+        if "enabled" in tilt_smoother and not isinstance(tilt_smoother.get("enabled"), bool):
+            raise ValueError(f"Preprocess config 'imu_attitude.fixed_interval_tilt_smoother.enabled' must be boolean{label}")
+        gps_compensation = tilt_smoother.get("gps_translational_compensation", "when_qualified")
+        if gps_compensation not in {"when_qualified", "disabled"}:
+            raise ValueError(
+                "Preprocess config 'imu_attitude.fixed_interval_tilt_smoother.gps_translational_compensation' "
+                f"must be 'when_qualified' or 'disabled'{label}"
+            )
     dynamics = value.get("inertial_dynamics")
     if dynamics is None:
         return

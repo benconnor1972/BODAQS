@@ -24,7 +24,7 @@ LEGACY_ATTITUDE_STREAM_SCHEMA = "bodaqs.attitude_stream.v1"
 # Retained as a Python-level compatibility name for callers that imported it
 # before the stream became the broader inertial product.
 ATTITUDE_STREAM_SCHEMA = INERTIAL_STREAM_SCHEMA
-ATTITUDE_QC_SCHEMA = "bodaqs.attitude_qc.v1"
+ATTITUDE_QC_SCHEMA = "bodaqs.attitude_qc.v2"
 STANDARD_GRAVITY_M_S2 = 9.80665
 
 _STATE_GRAVITY_ALIGNED = 0
@@ -50,7 +50,13 @@ _WORLD_YAW_STATE_NAMES = {
 
 @dataclass(frozen=True)
 class AttitudeConfig:
-    """First-slice, deliberately conservative correction settings."""
+    """Offline frame-attitude estimation settings.
+
+    The forward estimate remains an internal propagation pass.  Persisted
+    orientation is the fixed-interval solution, so later gravity evidence can
+    improve earlier samples without presenting a causal alternative as a
+    competing engineering signal.
+    """
 
     gravity_norm_tolerance_g: float = 0.12
     gravity_window_s: float = 0.5
@@ -70,6 +76,18 @@ class AttitudeConfig:
     world_yaw_max_bridge_gap_s: float = 0.25
     world_yaw_bridge_max_rotation_deg: float = 45.0
     world_yaw_drift_deg_s: float = 0.5
+    fixed_interval_tilt_smoother_enabled: bool = True
+    fixed_interval_tilt_rate_hz: float = 25.0
+    fixed_interval_gravity_sigma_deg: float = 3.0
+    fixed_interval_initial_tilt_sigma_deg: float = 20.0
+    fixed_interval_initial_bias_sigma_deg_s: float = 0.20
+    fixed_interval_bias_random_walk_deg_s_sqrt_s: float = 0.005
+    fixed_interval_gravity_window_s: float = 0.5
+    fixed_interval_gravity_norm_tolerance_g: float = 0.20
+    fixed_interval_gravity_std_max_g: float = 0.12
+    gps_translational_compensation_enabled: bool = True
+    gps_acceleration_max_m_s2: float = 12.0
+    gps_acceleration_max_gap_s: float = 0.75
     inertial_dynamics_enabled: bool = True
     inertial_dynamics_include_world_frame: bool = True
     inertial_dynamics_include_angular_kinematics: bool = True
@@ -145,6 +163,34 @@ def _euler_zyx(q: np.ndarray) -> tuple[float, float, float]:
     return roll, pitch, yaw
 
 
+def _quaternion_from_euler_zyx(roll: float, pitch: float, yaw: float) -> np.ndarray:
+    """Return the body-to-world quaternion for the displayed ZYX convention."""
+    cr, sr = math.cos(roll * 0.5), math.sin(roll * 0.5)
+    cp, sp = math.cos(pitch * 0.5), math.sin(pitch * 0.5)
+    cy, sy = math.cos(yaw * 0.5), math.sin(yaw * 0.5)
+    return _normalise_quaternion(
+        np.array(
+            [
+                cy * cp * cr + sy * sp * sr,
+                cy * cp * sr - sy * sp * cr,
+                cy * sp * cr + sy * cp * sr,
+                sy * cp * cr - cy * sp * sr,
+            ],
+            dtype=float,
+        )
+    )
+
+
+def _rotation_vector_from_quaternion(q: np.ndarray) -> np.ndarray:
+    q = _normalise_quaternion(q)
+    if q[0] < 0.0:
+        q = -q
+    sin_half = float(np.linalg.norm(q[1:]))
+    if sin_half < 1.0e-12:
+        return np.zeros(3, dtype=float)
+    return q[1:] * (2.0 * math.atan2(sin_half, float(q[0])) / sin_half)
+
+
 def _numeric_column(frame: pd.DataFrame, name: str) -> np.ndarray:
     if name not in frame.columns:
         return np.full(len(frame.index), np.nan)
@@ -211,6 +257,457 @@ def _course_observations(gps: Optional[pd.DataFrame], config: AttitudeConfig) ->
             }
         )
     return sorted(rows, key=lambda row: row["time_s"])
+
+
+def _gps_translational_acceleration(
+    *,
+    imu_time: np.ndarray,
+    gps: Optional[pd.DataFrame],
+    config: AttitudeConfig,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Estimate low-frequency horizontal ENU acceleration from qualified GPS.
+
+    Course-over-ground supplies a horizontal velocity vector, not bicycle
+    heading.  This deliberately shares the yaw evidence quality gates and
+    never differentiates GPS altitude.  The returned series is only populated
+    near valid GPS observations; callers retain ordinary gravity evidence in
+    the remaining samples.
+    """
+    output = np.full((len(imu_time), 3), np.nan)
+    report: dict[str, Any] = {
+        "enabled": bool(config.gps_translational_compensation_enabled),
+        "gps_rows_qualified": 0,
+        "gps_acceleration_rows": 0,
+        "imu_samples_compensable": 0,
+        "status": "unavailable",
+    }
+    if not config.gps_translational_compensation_enabled or not isinstance(gps, pd.DataFrame) or gps.empty:
+        return output, report
+
+    gps_time = _numeric_column(gps, "snapshot_received_time_s")
+    if not np.isfinite(gps_time).any():
+        gps_time = _numeric_column(gps, "time_s")
+    heading = _numeric_column(gps, "heading_deg")
+    speed = _numeric_column(gps, "speed_mps")
+    valid = _numeric_column(gps, "valid")
+    course_accuracy = _numeric_column(gps, "course_accuracy_deg")
+    speed_accuracy = _numeric_column(gps, "speed_accuracy_mps")
+    qualified = np.isfinite(gps_time) & np.isfinite(heading) & np.isfinite(speed)
+    qualified &= speed >= config.course_min_speed_mps
+    qualified &= ~np.isfinite(valid) | (valid == 1.0)
+    if config.require_course_accuracy:
+        qualified &= np.isfinite(course_accuracy)
+    if config.require_speed_accuracy:
+        qualified &= np.isfinite(speed_accuracy)
+    qualified &= ~np.isfinite(course_accuracy) | (course_accuracy <= config.course_max_accuracy_deg)
+    qualified &= ~np.isfinite(speed_accuracy) | (speed_accuracy <= config.course_max_speed_accuracy_mps)
+    report["gps_rows_qualified"] = int(np.count_nonzero(qualified))
+    if np.count_nonzero(qualified) < 3:
+        report["status"] = "insufficient_qualified_gps"
+        return output, report
+
+    rows = np.flatnonzero(qualified)
+    order = rows[np.argsort(gps_time[rows])]
+    unique = np.r_[True, np.diff(gps_time[order]) > 1.0e-6]
+    order = order[unique]
+    if len(order) < 3:
+        report["status"] = "insufficient_distinct_gps_times"
+        return output, report
+    times = gps_time[order]
+    heading_rad = np.radians(heading[order])
+    velocity = np.column_stack((speed[order] * np.sin(heading_rad), speed[order] * np.cos(heading_rad)))
+    # A centred three-point mean is intentionally low bandwidth before the
+    # finite-difference operation.  The fixed-interval attitude solution can
+    # use future GPS evidence, whereas the causal estimate cannot.
+    velocity_smooth = velocity.copy()
+    velocity_smooth[1:-1] = (velocity[:-2] + velocity[1:-1] + velocity[2:]) / 3.0
+    acceleration = np.column_stack(
+        (np.gradient(velocity_smooth[:, 0], times), np.gradient(velocity_smooth[:, 1], times))
+    )
+    acceleration_norm = np.linalg.norm(acceleration, axis=1)
+    usable = np.isfinite(acceleration).all(axis=1) & (acceleration_norm <= config.gps_acceleration_max_m_s2)
+    if np.count_nonzero(usable) < 2:
+        report["status"] = "gps_acceleration_rejected"
+        return output, report
+    times = times[usable]
+    acceleration = acceleration[usable]
+    report["gps_acceleration_rows"] = int(len(times))
+
+    within = (imu_time >= times[0]) & (imu_time <= times[-1]) & np.isfinite(imu_time)
+    if np.any(within):
+        nearest_distance = np.minimum(
+            np.abs(imu_time[within] - times[np.searchsorted(times, imu_time[within], side="left").clip(0, len(times) - 1)]),
+            np.abs(imu_time[within] - times[(np.searchsorted(times, imu_time[within], side="left") - 1).clip(0, len(times) - 1)]),
+        )
+        eligible_indices = np.flatnonzero(within)[nearest_distance <= config.gps_acceleration_max_gap_s]
+        for component in range(2):
+            output[eligible_indices, component] = np.interp(imu_time[eligible_indices], times, acceleration[:, component])
+        output[eligible_indices, 2] = 0.0
+    report["imu_samples_compensable"] = int(np.count_nonzero(np.isfinite(output).all(axis=1)))
+    report["status"] = "ok" if report["imu_samples_compensable"] else "gps_acceleration_not_time_aligned"
+    return output, report
+
+
+def _centred_vector_mean_and_norm_std(
+    values: np.ndarray,
+    segment: np.ndarray,
+    time: np.ndarray,
+    window_s: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return segment-local centred vector means and norm standard deviations."""
+    mean = np.full_like(values, np.nan)
+    norm_std = np.full(len(values), np.nan)
+    for segment_id in np.unique(segment):
+        indices = np.flatnonzero(segment == segment_id)
+        if not len(indices):
+            continue
+        local_time = time[indices]
+        finite_steps = np.diff(local_time)
+        finite_steps = finite_steps[np.isfinite(finite_steps) & (finite_steps > 0.0)]
+        sample_window = max(3, int(round(window_s / float(np.median(finite_steps)))) if len(finite_steps) else 3)
+        local = pd.DataFrame(values[indices])
+        mean[indices] = local.rolling(sample_window, center=True, min_periods=max(3, sample_window // 3)).mean().to_numpy()
+        norm_std[indices] = (
+            pd.Series(np.linalg.norm(values[indices], axis=1))
+            .rolling(sample_window, center=True, min_periods=max(3, sample_window // 3))
+            .std()
+            .to_numpy()
+        )
+    return mean, norm_std
+
+
+def _preintegrate_gyro_interval(
+    *,
+    time: np.ndarray,
+    gyro_body: np.ndarray,
+    start_index: int,
+    end_index: int,
+    bias_body_rad_s: np.ndarray,
+) -> tuple[np.ndarray, float]:
+    """Integrate every native-rate gyro increment between two correction nodes."""
+    delta_q = np.array([1.0, 0.0, 0.0, 0.0])
+    total_dt = 0.0
+    for index in range(start_index + 1, end_index + 1):
+        dt = float(time[index] - time[index - 1])
+        if not math.isfinite(dt) or dt <= 0.0 or dt > 0.5:
+            continue
+        previous = gyro_body[index - 1]
+        current = gyro_body[index]
+        if not (np.isfinite(previous).all() and np.isfinite(current).all()):
+            continue
+        omega = (previous + current) * 0.5 - bias_body_rad_s
+        delta_q = _normalise_quaternion(
+            _quaternion_multiply(delta_q, _quaternion_from_rotation_vector(omega * dt))
+        )
+        total_dt += dt
+    return delta_q, total_dt
+
+
+def _fixed_interval_tilt_smoother(
+    *,
+    time: np.ndarray,
+    segment: np.ndarray,
+    accel_body: np.ndarray,
+    gyro_body: np.ndarray,
+    reference_quaternions: np.ndarray,
+    yaw: np.ndarray,
+    gps_acceleration_enu: np.ndarray,
+    config: AttitudeConfig,
+) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    """Bias-aware manifold RTS smoother for fixed-interval pitch and roll."""
+    count = len(time)
+    compensated = accel_body.copy()
+    compensation_used = np.zeros(count, dtype=bool)
+    for index in range(count):
+        if (
+            np.isfinite(accel_body[index]).all()
+            and np.isfinite(reference_quaternions[index]).all()
+            and np.isfinite(yaw[index])
+            and np.isfinite(gps_acceleration_enu[index]).all()
+        ):
+            compensated[index] -= _rotation_matrix(reference_quaternions[index]).T @ gps_acceleration_enu[index]
+            compensation_used[index] = True
+
+    observation, norm_std = _centred_vector_mean_and_norm_std(
+        compensated, segment, time, config.fixed_interval_gravity_window_s
+    )
+    norm = np.linalg.norm(observation, axis=1)
+    norm_error_g = np.abs(norm - STANDARD_GRAVITY_M_S2) / STANDARD_GRAVITY_M_S2
+    accepted = (
+        np.isfinite(observation).all(axis=1)
+        & np.isfinite(norm_std)
+        & (norm_error_g <= config.fixed_interval_gravity_norm_tolerance_g)
+        & (norm_std / STANDARD_GRAVITY_M_S2 <= config.fixed_interval_gravity_std_max_g)
+    )
+
+    grid_parts: list[np.ndarray] = []
+    for segment_id in np.unique(segment):
+        indices = np.flatnonzero(segment == segment_id)
+        if not len(indices):
+            continue
+        steps = np.diff(time[indices])
+        steps = steps[np.isfinite(steps) & (steps > 0.0)]
+        stride = max(
+            1,
+            int(round(1.0 / (config.fixed_interval_tilt_rate_hz * float(np.median(steps)))))
+            if len(steps)
+            else 1,
+        )
+        selected = indices[::stride]
+        if selected[-1] != indices[-1]:
+            selected = np.append(selected, indices[-1])
+        grid_parts.append(selected)
+    grid_indices = np.concatenate(grid_parts) if grid_parts else np.empty(0, dtype=int)
+    grid_time = time[grid_indices]
+    grid_segment = segment[grid_indices]
+    node_observation = np.full((len(grid_indices), 3), np.nan)
+    node_norm_error_g = np.full(len(grid_indices), np.nan)
+    node_norm_std_g = np.full(len(grid_indices), np.nan)
+    node_accepted = np.zeros(len(grid_indices), dtype=bool)
+
+    # Pool all accepted native-rate observations into their nearest correction
+    # node so short valid intervals are not missed by decimation.
+    for segment_id in np.unique(grid_segment):
+        positions = np.flatnonzero(grid_segment == segment_id)
+        source_indices = np.flatnonzero(segment == segment_id)
+        for local_position, position in enumerate(positions):
+            left = source_indices[0] if local_position == 0 else (grid_indices[positions[local_position - 1]] + grid_indices[position]) // 2 + 1
+            right = source_indices[-1] + 1 if local_position == len(positions) - 1 else (grid_indices[position] + grid_indices[positions[local_position + 1]]) // 2 + 1
+            candidates = np.arange(left, right, dtype=int)
+            candidates = candidates[accepted[candidates]]
+            if not len(candidates):
+                continue
+            vectors = observation[candidates]
+            vector = np.mean(vectors, axis=0)
+            vector_norm = float(np.linalg.norm(vector))
+            if vector_norm <= 0.0 or not math.isfinite(vector_norm):
+                continue
+            node_observation[position] = vector / vector_norm
+            node_norm_error_g[position] = float(np.mean(norm_error_g[candidates]))
+            node_norm_std_g[position] = float(np.mean(norm_std[candidates]) / STANDARD_GRAVITY_M_S2)
+            node_accepted[position] = True
+
+    node_count = len(grid_indices)
+    filtered_q = np.full((node_count, 4), np.nan)
+    filtered_bias = np.full((node_count, 3), np.nan)
+    filtered_covariance = np.full((node_count, 6, 6), np.nan)
+    predicted_q = np.full((node_count, 4), np.nan)
+    predicted_bias = np.full((node_count, 3), np.nan)
+    predicted_covariance = np.full((node_count, 6, 6), np.nan)
+    transition = np.full((node_count, 6, 6), np.nan)
+    node_innovation = np.full(node_count, np.nan)
+
+    initial_tilt_sigma = math.radians(config.fixed_interval_initial_tilt_sigma_deg)
+    initial_yaw_sigma = math.radians(180.0)
+    initial_bias_sigma = math.radians(config.fixed_interval_initial_bias_sigma_deg_s)
+    bias_random_walk = math.radians(config.fixed_interval_bias_random_walk_deg_s_sqrt_s)
+    gravity_sigma = math.radians(config.fixed_interval_gravity_sigma_deg)
+    identity6 = np.eye(6)
+    measurement_matrix = np.zeros((2, 6))
+    measurement_matrix[0, 0] = 1.0
+    measurement_matrix[1, 1] = 1.0
+
+    def measurement_update(
+        q: np.ndarray,
+        bias: np.ndarray,
+        covariance: np.ndarray,
+        position: int,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if not node_accepted[position]:
+            return q, bias, covariance
+        observed_world = _rotation_matrix(q) @ node_observation[position]
+        correction_world = np.cross(observed_world, np.array([0.0, 0.0, 1.0]))
+        node_innovation[position] = math.asin(min(1.0, float(np.linalg.norm(correction_world))))
+        quality_scale = 1.0 + 4.0 * float(node_norm_error_g[position]) + 2.0 * float(node_norm_std_g[position])
+        measurement_covariance = np.eye(2) * (gravity_sigma * quality_scale) ** 2
+        innovation_covariance = measurement_matrix @ covariance @ measurement_matrix.T + measurement_covariance
+        gain = covariance @ measurement_matrix.T @ np.linalg.pinv(innovation_covariance)
+        correction = gain @ correction_world[:2]
+        updated_q = _normalise_quaternion(
+            _quaternion_multiply(_quaternion_from_rotation_vector(correction[:3]), q)
+        )
+        updated_bias = bias + correction[3:]
+        residual = identity6 - gain @ measurement_matrix
+        updated_covariance = (
+            residual @ covariance @ residual.T + gain @ measurement_covariance @ gain.T
+        )
+        return updated_q, updated_bias, updated_covariance
+
+    for segment_id in np.unique(grid_segment):
+        positions = np.flatnonzero(grid_segment == segment_id)
+        if not len(positions):
+            continue
+        first = int(positions[0])
+        q = reference_quaternions[grid_indices[first]].copy()
+        bias = np.zeros(3, dtype=float)
+        covariance = np.diag(
+            [initial_tilt_sigma**2, initial_tilt_sigma**2, initial_yaw_sigma**2]
+            + [initial_bias_sigma**2] * 3
+        )
+        predicted_q[first] = q
+        predicted_bias[first] = bias
+        predicted_covariance[first] = covariance
+        transition[first] = identity6
+        q, bias, covariance = measurement_update(q, bias, covariance, first)
+        filtered_q[first] = q
+        filtered_bias[first] = bias
+        filtered_covariance[first] = covariance
+
+        for position in positions[1:]:
+            position = int(position)
+            previous = position - 1
+            delta_q, dt = _preintegrate_gyro_interval(
+                time=time,
+                gyro_body=gyro_body,
+                start_index=int(grid_indices[previous]),
+                end_index=int(grid_indices[position]),
+                bias_body_rad_s=bias,
+            )
+            q_pred = _normalise_quaternion(_quaternion_multiply(q, delta_q))
+            bias_pred = bias.copy()
+            state_transition = identity6.copy()
+            state_transition[:3, 3:] = -_rotation_matrix(q_pred) * dt
+            process_covariance = np.diag(
+                [max(1.0e-12, config.gyro_noise_rad_s**2 * dt)] * 3
+                + [max(1.0e-14, bias_random_walk**2 * dt)] * 3
+            )
+            covariance_pred = state_transition @ covariance @ state_transition.T + process_covariance
+            predicted_q[position] = q_pred
+            predicted_bias[position] = bias_pred
+            predicted_covariance[position] = covariance_pred
+            transition[position] = state_transition
+            q, bias, covariance = measurement_update(q_pred, bias_pred, covariance_pred, position)
+            filtered_q[position] = q
+            filtered_bias[position] = bias
+            filtered_covariance[position] = covariance
+
+    smoothed_q = filtered_q.copy()
+    smoothed_bias = filtered_bias.copy()
+    smoothed_covariance = filtered_covariance.copy()
+    if config.fixed_interval_tilt_smoother_enabled:
+        for segment_id in np.unique(grid_segment):
+            positions = np.flatnonzero(grid_segment == segment_id)
+            for local_position in range(len(positions) - 2, -1, -1):
+                position = int(positions[local_position])
+                following = int(positions[local_position + 1])
+                smoother_gain = (
+                    filtered_covariance[position]
+                    @ transition[following].T
+                    @ np.linalg.pinv(predicted_covariance[following])
+                )
+                next_error = np.concatenate(
+                    (
+                        _rotation_vector_from_quaternion(
+                            _quaternion_multiply(
+                                smoothed_q[following], _quaternion_inverse(predicted_q[following])
+                            )
+                        ),
+                        smoothed_bias[following] - predicted_bias[following],
+                    )
+                )
+                correction = smoother_gain @ next_error
+                smoothed_q[position] = _normalise_quaternion(
+                    _quaternion_multiply(
+                        _quaternion_from_rotation_vector(correction[:3]), filtered_q[position]
+                    )
+                )
+                smoothed_bias[position] = filtered_bias[position] + correction[3:]
+                smoothed_covariance[position] = (
+                    filtered_covariance[position]
+                    + smoother_gain
+                    @ (smoothed_covariance[following] - predicted_covariance[following])
+                    @ smoother_gain.T
+                )
+
+    final = reference_quaternions.copy()
+    bias_full = np.zeros((count, 3), dtype=float)
+    tilt_sigma_deg = np.full(count, np.nan)
+    innovation = np.full(count, np.nan)
+    innovation[grid_indices] = node_innovation
+    for segment_id in np.unique(segment):
+        local_indices = np.flatnonzero(segment == segment_id)
+        positions = np.flatnonzero(grid_segment == segment_id)
+        if not len(local_indices) or not len(positions):
+            continue
+        grid_times = grid_time[positions]
+        corrections = np.array(
+            [
+                _rotation_vector_from_quaternion(
+                    _quaternion_multiply(
+                        smoothed_q[position],
+                        _quaternion_inverse(reference_quaternions[grid_indices[position]]),
+                    )
+                )
+                for position in positions
+            ]
+        )
+        interpolated_correction = np.column_stack(
+            [np.interp(time[local_indices], grid_times, corrections[:, axis]) for axis in range(3)]
+        )
+        for row, index in enumerate(local_indices):
+            if np.isfinite(final[index]).all():
+                final[index] = _normalise_quaternion(
+                    _quaternion_multiply(
+                        _quaternion_from_rotation_vector(interpolated_correction[row]),
+                        reference_quaternions[index],
+                    )
+                )
+        for axis in range(3):
+            bias_full[local_indices, axis] = np.interp(
+                time[local_indices], grid_times, smoothed_bias[positions, axis]
+            )
+        node_sigma = np.degrees(
+            np.sqrt(
+                np.maximum(
+                    0.0,
+                    smoothed_covariance[positions, 0, 0] + smoothed_covariance[positions, 1, 1],
+                )
+            )
+        )
+        tilt_sigma_deg[local_indices] = np.interp(time[local_indices], grid_times, node_sigma)
+
+    for index in range(count):
+        if np.isfinite(final[index]).all() and np.isfinite(yaw[index]):
+            roll, pitch, _ = _euler_zyx(final[index])
+            final[index] = _quaternion_from_euler_zyx(roll, pitch, yaw[index])
+    euler = np.array(
+        [_euler_zyx(q) if np.isfinite(q).all() else (np.nan, np.nan, np.nan) for q in final]
+    )
+    finite_bias = np.isfinite(bias_full).all(axis=1)
+    report = {
+        "enabled": bool(config.fixed_interval_tilt_smoother_enabled),
+        "method": "error_state_rts",
+        "correction_rate_hz": float(config.fixed_interval_tilt_rate_hz),
+        "correction_nodes": int(node_count),
+        "gravity_observations_accepted": int(np.count_nonzero(accepted)),
+        "gravity_observation_nodes": int(np.count_nonzero(node_accepted)),
+        "gps_compensation_samples": int(np.count_nonzero(compensation_used)),
+        "output_samples": int(np.count_nonzero(np.isfinite(final).all(axis=1))),
+        "estimated_residual_gyro_bias_median_rad_s": (
+            np.median(bias_full[finite_bias], axis=0).tolist() if np.any(finite_bias) else [0.0, 0.0, 0.0]
+        ),
+    }
+    return {
+        "quaternions": final,
+        "euler": euler,
+        "gravity_observation": observation,
+        "gravity_observation_accepted": accepted,
+        "gravity_innovation_rad": innovation,
+        "gps_compensation_used": compensation_used,
+        "gyro_bias_body_rad_s": bias_full,
+        "tilt_sigma_deg": tilt_sigma_deg,
+    }, report
+
+
+def _vector_display_name(subject: str, quantity: str, axis: str, coordinate_frame: str) -> str:
+    """Return a human label while retaining component/frame semantics in metadata."""
+    direction = {
+        "body_local": {"x": "forward", "y": "left", "z": "up"},
+        "bike_body": {"x": "forward", "y": "left", "z": "up"},
+        "enu": {"x": "east", "y": "north", "z": "up"},
+        "world_enu": {"x": "east", "y": "north", "z": "up"},
+    }.get(coordinate_frame, {}).get(axis, axis.upper())
+    return f"{subject} {quantity} — {direction}"
 
 
 def _inertial_signal_registry(sensor_id: str, config: AttitudeConfig) -> dict[str, dict[str, Any]]:
@@ -288,39 +785,37 @@ def _inertial_signal_registry(sensor_id: str, config: AttitudeConfig) -> dict[st
             "unit": "count",
             "processing_role": "qc_metric",
         },
-        "yaw_world_enu_smoothed_sigma_deg": {
-            **world,
-            "kind": "qc",
-            "quantity": "orientation_yaw_uncertainty",
-            "unit": "deg",
-            "processing_role": "qc_metric",
-            "smoothing": "fixed_interval",
+        "fixed_interval_gravity_observation_accepted": {
+            **world, "kind": "qc", "quantity": "gravity_observation_accepted", "unit": "1",
+            "processing_role": "qc_metric", "smoothing": "fixed_interval",
         },
-        "yaw_world_enu_smoothed_state_code": {
-            **world,
-            "kind": "qc",
-            "quantity": "orientation_yaw_smoother_state",
-            "unit": "count",
-            "processing_role": "qc_metric",
-            "smoothing": "fixed_interval",
+        "fixed_interval_gravity_innovation_rad": {
+            **world, "kind": "qc", "quantity": "gravity_innovation", "unit": "rad",
+            "processing_role": "qc_metric", "smoothing": "fixed_interval",
         },
-        "yaw_world_enu_smoothed_group": {
-            **world,
-            "kind": "qc",
-            "quantity": "orientation_yaw_smoother_group",
-            "unit": "count",
-            "processing_role": "qc_metric",
-            "smoothing": "fixed_interval",
+        "gps_translational_compensation_used": {
+            **world, "kind": "qc", "quantity": "gps_translational_acceleration_compensation", "unit": "1",
+            "processing_role": "qc_metric", "smoothing": "fixed_interval",
         },
-        "yaw_world_enu_gap_bridged_before": {
-            **world,
-            "kind": "qc",
-            "quantity": "orientation_gap_bridged_before",
-            "unit": "1",
-            "processing_role": "qc_metric",
-            "smoothing": "fixed_interval",
+        "fixed_interval_tilt_sigma_deg": {
+            **world, "kind": "qc", "quantity": "orientation_tilt_uncertainty", "unit": "deg",
+            "processing_role": "qc_metric", "smoothing": "fixed_interval",
         },
     }
+    for axis in "xyz":
+        registry[f"fixed_interval_gyro_bias_body_{axis}_rad_s"] = {
+            "sensor": sensor_id,
+            "domain": "frame",
+            "coordinate_frame": "body_local",
+            "source": "inertial_estimate",
+            "kind": "qc",
+            "quantity": "angular_velocity_bias",
+            "unit": "rad/s",
+            "component": axis,
+            "vector_group": "fixed_interval_gyro_bias_body",
+            "processing_role": "qc_metric",
+            "smoothing": "fixed_interval",
+        }
     for axis in "wxyz":
         registry[f"q_body_to_world_enu_{axis}"] = {
             **world,
@@ -328,8 +823,10 @@ def _inertial_signal_registry(sensor_id: str, config: AttitudeConfig) -> dict[st
             "unit": "1",
             "component": axis,
             "vector_group": "body_to_world_enu_quaternion",
-            "processing_role": "secondary_analysis",
+            "smoothing": "fixed_interval",
+            "processing_role": "primary_analysis",
             "inspection_visibility": "advanced",
+            "analysis_variant": "fixed_interval_smoothed",
         }
     for axis, column in (("roll", "roll_rad"), ("pitch", "pitch_rad"), ("yaw", "yaw_enu_rad")):
         registry[column] = {
@@ -338,31 +835,11 @@ def _inertial_signal_registry(sensor_id: str, config: AttitudeConfig) -> dict[st
             "unit": "rad",
             "component": axis,
             "vector_group": "body_to_world_enu_euler_zyx",
-            "processing_role": "secondary_analysis" if axis == "yaw" else "primary_analysis",
-            "inspection_visibility": "advanced" if axis == "yaw" else "standard",
-            "analysis_variant": "forward_estimate" if axis == "yaw" else "",
-            "display_name": f"World orientation {axis}" + (" — forward estimate" if axis == "yaw" else ""),
-        }
-    registry["yaw_world_enu_smoothed_rad"] = {
-        **world,
-        "quantity": "orientation_yaw",
-        "unit": "rad",
-        "component": "yaw",
-        "vector_group": "body_to_world_enu_euler_zyx",
-        "smoothing": "fixed_interval",
-        "processing_role": "primary_analysis",
-        "inspection_visibility": "standard",
-        "analysis_variant": "fixed_interval_smoothed",
-        "display_name": "World orientation yaw — smoothed",
-    }
-    for axis in "wxyz":
-        registry[f"q_body_to_world_enu_smoothed_{axis}"] = {
-            **world,
-            "quantity": "orientation_quaternion",
-            "unit": "1",
-            "component": axis,
-            "vector_group": "body_to_world_enu_smoothed_quaternion",
             "smoothing": "fixed_interval",
+            "processing_role": "primary_analysis",
+            "inspection_visibility": "standard",
+            "analysis_variant": "fixed_interval_smoothed",
+            "display_name": f"World orientation {axis} — fixed interval",
         }
     if config.inertial_dynamics_enabled:
         for axis in "xyz":
@@ -370,16 +847,19 @@ def _inertial_signal_registry(sensor_id: str, config: AttitudeConfig) -> dict[st
                 "sensor": sensor_id, "domain": "frame", "coordinate_frame": "body_local",
                 "source": "inertial_estimate", "quantity": "specific_force", "unit": "m/s^2",
                 "component": axis, "vector_group": "specific_force_body",
+                "display_name": _vector_display_name("Frame", "specific force", axis, "body_local"),
             }
             registry[f"gravity_body_{axis}_m_s2"] = {
                 "sensor": sensor_id, "domain": "frame", "coordinate_frame": "body_local",
                 "source": "inertial_estimate", "quantity": "gravity", "unit": "m/s^2",
                 "component": axis, "vector_group": "gravity_body",
+                "display_name": _vector_display_name("Frame", "gravity", axis, "body_local"),
             }
             registry[f"linear_accel_body_{axis}_m_s2"] = {
                 "sensor": sensor_id, "domain": "frame", "coordinate_frame": "body_local",
                 "source": "inertial_estimate", "quantity": "linear_acceleration", "unit": "m/s^2",
                 "component": axis, "vector_group": "linear_acceleration_body",
+                "display_name": _vector_display_name("Frame", "linear acceleration", axis, "body_local"),
             }
         if config.inertial_dynamics_include_magnitudes:
             for column, quantity in (
@@ -401,11 +881,13 @@ def _inertial_signal_registry(sensor_id: str, config: AttitudeConfig) -> dict[st
                     registry[f"{prefix}_{axis}_m_s2"] = {
                         **world, "source": "inertial_estimate", "quantity": quantity,
                         "unit": "m/s^2", "component": axis, "vector_group": prefix,
+                        "display_name": _vector_display_name("World", quantity.replace("_", " "), axis, "enu"),
                     }
                 if config.inertial_dynamics_include_angular_kinematics:
                     registry[f"angular_velocity_enu_{axis}_rad_s"] = {
                         **world, "source": "inertial_estimate", "quantity": "angular_velocity",
                         "unit": "rad/s", "component": axis, "vector_group": "angular_velocity_enu",
+                        "display_name": _vector_display_name("World", "angular velocity", axis, "enu"),
                     }
             if config.inertial_dynamics_include_magnitudes:
                 registry["linear_accel_enu_horizontal_g"] = {
@@ -633,47 +1115,28 @@ def _inertial_dynamics(
     *,
     accel_body: np.ndarray,
     gyro_body: np.ndarray,
-    causal_quaternions: np.ndarray,
-    causal_yaw: np.ndarray,
-    smoothed_yaw: np.ndarray,
+    quaternions: np.ndarray,
     config: AttitudeConfig,
 ) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
     """Materialise attitude-dependent inertial vectors without changing evidence."""
     count = len(accel_body)
-    smoothed_quaternions = np.full((count, 4), np.nan)
-    smooth_valid = (
-        np.isfinite(causal_quaternions).all(axis=1)
-        & np.isfinite(causal_yaw)
-        & np.isfinite(smoothed_yaw)
-    )
-    for index in np.flatnonzero(smooth_valid):
-        phase = _wrap_pi(smoothed_yaw[index] - causal_yaw[index])
-        smoothed_quaternions[index] = _normalise_quaternion(
-            _quaternion_multiply(
-                _quaternion_from_rotation_vector(np.array([0.0, 0.0, phase])),
-                causal_quaternions[index],
-            )
-        )
-
-    output: dict[str, np.ndarray] = {
-        f"q_body_to_world_enu_smoothed_{axis}": smoothed_quaternions[:, component]
-        for component, axis in enumerate("wxyz")
-    }
+    output: dict[str, np.ndarray] = {}
+    orientation_valid = np.isfinite(quaternions).all(axis=1)
     report: dict[str, Any] = {
         "enabled": bool(config.inertial_dynamics_enabled),
         "world_frame_enabled": bool(config.inertial_dynamics_include_world_frame),
         "angular_kinematics_enabled": bool(config.inertial_dynamics_include_angular_kinematics),
         "magnitudes_enabled": bool(config.inertial_dynamics_include_magnitudes),
-        "smoothed_orientation_samples": int(np.count_nonzero(smooth_valid)),
+        "fixed_interval_orientation_samples": int(np.count_nonzero(orientation_valid)),
         "world_frame_samples": 0,
     }
     if not config.inertial_dynamics_enabled:
         return output, report
 
-    causal_valid = np.isfinite(causal_quaternions).all(axis=1) & np.isfinite(accel_body).all(axis=1)
+    causal_valid = orientation_valid & np.isfinite(accel_body).all(axis=1)
     gravity_body = np.full((count, 3), np.nan)
     for index in np.flatnonzero(causal_valid):
-        gravity_body[index] = _rotation_matrix(causal_quaternions[index]).T @ np.array(
+        gravity_body[index] = _rotation_matrix(quaternions[index]).T @ np.array(
             [0.0, 0.0, STANDARD_GRAVITY_M_S2]
         )
     linear_body = accel_body - gravity_body
@@ -691,8 +1154,8 @@ def _inertial_dynamics(
         specific_force_enu = np.full((count, 3), np.nan)
         linear_enu = np.full((count, 3), np.nan)
         angular_velocity_enu = np.full((count, 3), np.nan)
-        for index in np.flatnonzero(smooth_valid):
-            rotation = _rotation_matrix(smoothed_quaternions[index])
+        for index in np.flatnonzero(orientation_valid):
+            rotation = _rotation_matrix(quaternions[index])
             specific_force_enu[index] = rotation @ accel_body[index]
             linear_enu[index] = specific_force_enu[index] - np.array([0.0, 0.0, STANDARD_GRAVITY_M_S2])
             if config.inertial_dynamics_include_angular_kinematics and np.isfinite(gyro_body[index]).all():
@@ -708,7 +1171,7 @@ def _inertial_dynamics(
         if config.inertial_dynamics_include_angular_kinematics:
             output["turn_rate_world_up_rad_s"] = angular_velocity_enu[:, 2]
             output["angular_speed_body_rad_s"] = np.linalg.norm(gyro_body, axis=1)
-        report["world_frame_samples"] = int(np.count_nonzero(smooth_valid))
+        report["world_frame_samples"] = int(np.count_nonzero(orientation_valid))
     elif config.inertial_dynamics_include_angular_kinematics:
         output["angular_speed_body_rad_s"] = np.linalg.norm(gyro_body, axis=1)
 
@@ -766,35 +1229,20 @@ def estimate_attitude(
             continue
         boundary = index == 0 or segment[index] != last_segment
         accel_norm = float(np.linalg.norm(accel[index]))
-        if boundary:
-            q = _quaternion_from_two_vectors(accel[index], np.array([0.0, 0.0, STANDARD_GRAVITY_M_S2]))
-            last_time = time[index]
-            last_segment = segment[index]
-            last_accel = accel[index]
-            accel_norm_history = []
-            yaw_variance = math.radians(180.0) ** 2
-            yaw_observed = False
-            last_course_time = math.nan
-            cumulative_correction = 0.0
-        else:
-            dt = float(time[index] - last_time)
-            if not math.isfinite(dt) or dt <= 0.0 or dt > 0.5:
-                q = _quaternion_from_two_vectors(accel[index], np.array([0.0, 0.0, STANDARD_GRAVITY_M_S2]))
-                yaw_variance = math.radians(180.0) ** 2
-                yaw_observed = False
-                cumulative_correction = 0.0
-            else:
-                q = _normalise_quaternion(_quaternion_multiply(q, _quaternion_from_rotation_vector((gyro[index] - bias) * dt)))
-                yaw_variance += (settings.gyro_noise_rad_s * dt) ** 2
-            last_time = time[index]
-
         norm_error_g = abs(accel_norm - STANDARD_GRAVITY_M_S2) / STANDARD_GRAVITY_M_S2
+        boundary_dt = float(time[index] - last_time) if index > 0 else math.nan
+        short_boundary_gap = boundary and math.isfinite(boundary_dt) and 0.0 < boundary_dt <= 0.5
+        # Preserve short-gap history so the first post-gap sample is assessed
+        # by the normal gravity gate, including variance and jerk. A long gap
+        # has no meaningful acceleration continuity and starts afresh.
+        if boundary and not short_boundary_gap:
+            accel_norm_history = []
         accel_norm_history.append((float(time[index]), accel_norm))
         while accel_norm_history and time[index] - accel_norm_history[0][0] > settings.gravity_window_s:
             accel_norm_history.pop(0)
         norm_std_g = float(np.std([value for _, value in accel_norm_history]) / STANDARD_GRAVITY_M_S2)
         jerk = 0.0
-        if index > 0 and segment[index] == segment[index - 1]:
+        if index > 0 and (not boundary or short_boundary_gap):
             dt_for_jerk = max(float(time[index] - time[index - 1]), 1.0e-3)
             jerk = float(np.linalg.norm(accel[index] - last_accel) / dt_for_jerk)
         if norm_error_g > settings.gravity_norm_tolerance_g:
@@ -803,7 +1251,42 @@ def estimate_attitude(
             gravity_rejection[index] = 3
         elif jerk > settings.gravity_jerk_max_m_s3:
             gravity_rejection[index] = 4
+        accel_initialisation_valid = gravity_rejection[index] == 0
+        if boundary:
+            # A discontinuity marks missing evidence, not necessarily a new
+            # physical attitude.  Do not turn a dynamic first sample after a
+            # short gap into a new attitude reference: propagate the prior
+            # state when possible and reserve accelerometer initialisation for
+            # samples that pass the same magnitude gate as gravity correction.
+            if accel_initialisation_valid:
+                q = _quaternion_from_two_vectors(accel[index], np.array([0.0, 0.0, STANDARD_GRAVITY_M_S2]))
+            elif index > 0:
+                dt = float(time[index] - last_time)
+                if math.isfinite(dt) and 0.0 < dt <= 0.5:
+                    q = _normalise_quaternion(
+                        _quaternion_multiply(q, _quaternion_from_rotation_vector((gyro[index] - bias) * dt))
+                    )
+            last_time = time[index]
+            last_segment = segment[index]
+            last_accel = accel[index]
+            yaw_variance = math.radians(180.0) ** 2
+            yaw_observed = False
+            last_course_time = math.nan
+            cumulative_correction = 0.0
         else:
+            dt = float(time[index] - last_time)
+            if not math.isfinite(dt) or dt <= 0.0 or dt > 0.5:
+                if accel_initialisation_valid:
+                    q = _quaternion_from_two_vectors(accel[index], np.array([0.0, 0.0, STANDARD_GRAVITY_M_S2]))
+                yaw_variance = math.radians(180.0) ** 2
+                yaw_observed = False
+                cumulative_correction = 0.0
+            else:
+                q = _normalise_quaternion(_quaternion_multiply(q, _quaternion_from_rotation_vector((gyro[index] - bias) * dt)))
+                yaw_variance += (settings.gyro_noise_rad_s * dt) ** 2
+            last_time = time[index]
+
+        if gravity_rejection[index] == 0:
             weight = settings.gravity_gain * (1.0 - norm_error_g / settings.gravity_norm_tolerance_g)
             observed_world = _rotation_matrix(q) @ (accel[index] / accel_norm)
             error_world = np.cross(observed_world, np.array([0.0, 0.0, 1.0]))
@@ -864,26 +1347,44 @@ def estimate_attitude(
         accepted_observations=accepted_course_observations,
         config=settings,
     )
+    yaw_for_tilt = np.where(np.isfinite(smoother["yaw"]), smoother["yaw"], roll_pitch_yaw[:, 2])
+    reference_quaternions = result.copy()
+    for index in np.flatnonzero(np.isfinite(result).all(axis=1) & np.isfinite(yaw_for_tilt)):
+        roll, pitch, _ = _euler_zyx(result[index])
+        reference_quaternions[index] = _quaternion_from_euler_zyx(roll, pitch, yaw_for_tilt[index])
+    gps_acceleration_enu, gps_acceleration_report = _gps_translational_acceleration(
+        imu_time=time,
+        gps=gps,
+        config=settings,
+    )
+    tilt, tilt_report = _fixed_interval_tilt_smoother(
+        time=time,
+        segment=segment,
+        accel_body=accel,
+        gyro_body=gyro - bias,
+        reference_quaternions=reference_quaternions,
+        yaw=yaw_for_tilt,
+        gps_acceleration_enu=gps_acceleration_enu,
+        config=settings,
+    )
 
     dynamics, dynamics_report = _inertial_dynamics(
         accel_body=accel,
-        gyro_body=gyro - bias,
-        causal_quaternions=result,
-        causal_yaw=roll_pitch_yaw[:, 2],
-        smoothed_yaw=smoother["yaw"],
+        gyro_body=gyro - bias - tilt["gyro_bias_body_rad_s"],
+        quaternions=tilt["quaternions"],
         config=settings,
     )
 
     output_columns: dict[str, np.ndarray] = {
             "time_s": time,
             "continuity_segment": segment,
-            "q_body_to_world_enu_w": result[:, 0],
-            "q_body_to_world_enu_x": result[:, 1],
-            "q_body_to_world_enu_y": result[:, 2],
-            "q_body_to_world_enu_z": result[:, 3],
-            "roll_rad": roll_pitch_yaw[:, 0],
-            "pitch_rad": roll_pitch_yaw[:, 1],
-            "yaw_enu_rad": roll_pitch_yaw[:, 2],
+            "q_body_to_world_enu_w": tilt["quaternions"][:, 0],
+            "q_body_to_world_enu_x": tilt["quaternions"][:, 1],
+            "q_body_to_world_enu_y": tilt["quaternions"][:, 2],
+            "q_body_to_world_enu_z": tilt["quaternions"][:, 3],
+            "roll_rad": tilt["euler"][:, 0],
+            "pitch_rad": tilt["euler"][:, 1],
+            "yaw_enu_rad": tilt["euler"][:, 2],
             "yaw_sigma_deg": yaw_sigma,
             "gravity_update_weight": gravity_weight,
             "gravity_rejection_code": gravity_rejection,
@@ -891,11 +1392,13 @@ def estimate_attitude(
             "course_innovation_rad": course_innovation,
             "course_rejection_code": course_rejection,
             "attitude_state_code": state,
-            "yaw_world_enu_smoothed_rad": smoother["yaw"],
-            "yaw_world_enu_smoothed_sigma_deg": smoother["sigma_deg"],
-            "yaw_world_enu_smoothed_state_code": smoother["state"],
-            "yaw_world_enu_smoothed_group": smoother["group"],
-            "yaw_world_enu_gap_bridged_before": smoother["bridged_before"],
+            "fixed_interval_gravity_observation_accepted": tilt["gravity_observation_accepted"],
+            "fixed_interval_gravity_innovation_rad": tilt["gravity_innovation_rad"],
+            "gps_translational_compensation_used": tilt["gps_compensation_used"],
+            "fixed_interval_tilt_sigma_deg": tilt["tilt_sigma_deg"],
+            "fixed_interval_gyro_bias_body_x_rad_s": tilt["gyro_bias_body_rad_s"][:, 0],
+            "fixed_interval_gyro_bias_body_y_rad_s": tilt["gyro_bias_body_rad_s"][:, 1],
+            "fixed_interval_gyro_bias_body_z_rad_s": tilt["gyro_bias_body_rad_s"][:, 2],
     }
     output_columns.update(dynamics)
     output = pd.DataFrame(output_columns)
@@ -919,6 +1422,8 @@ def estimate_attitude(
         "state_names": dict(_STATE_NAMES),
         "config": asdict(settings),
         "world_yaw_smoother": smoother_report,
+        "fixed_interval_tilt_smoother": tilt_report,
+        "gps_translational_acceleration": gps_acceleration_report,
         "inertial_dynamics": dynamics_report,
     }
     return output, report

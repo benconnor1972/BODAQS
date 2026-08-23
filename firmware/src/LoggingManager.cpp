@@ -374,6 +374,7 @@ bool LoggingManager::start() {
     AnalogInputManager::onLoggingStop();
     SensorManager::onLoggingStop();
     StorageManager_stopLog();
+    SensorManager::onLoggingFinalized();
     WiFiManager::resumeAfterLogging();
     UI::toast("Sensor start", 1800, 1);
     UI::status("Sensor error");
@@ -491,6 +492,9 @@ void LoggingManager::stop() {
   }
   IndicatorManager::ledOff();
   StorageManager_stopLog();
+  // Recovery is deliberately later than StorageManager_stopLog(): the BDQ
+  // final summary must observe the session's original sensor diagnostics.
+  SensorManager::onLoggingFinalized();
   PowerManager::restoreCpuFreqAfterLogging();
   WiFiManager::resumeAfterLogging();
 

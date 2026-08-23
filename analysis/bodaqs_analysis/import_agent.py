@@ -204,7 +204,11 @@ def _library_id_for_api_notification(source: "ImportSourceConfig") -> Optional[s
     return None
 
 
-def _notify_library_api_catalog_changed(source: "ImportSourceConfig") -> Dict[str, Any]:
+def _notify_library_api_catalog_changed(
+    source: "ImportSourceConfig",
+    *,
+    changed_sessions: Sequence[Mapping[str, Any]] | None = None,
+) -> Dict[str, Any]:
     library_id = _library_id_for_api_notification(source)
     if library_id is None:
         return {
@@ -215,7 +219,18 @@ def _notify_library_api_catalog_changed(source: "ImportSourceConfig") -> Dict[st
     base_url = _library_api_base_url()
     quoted_library_id = urllib.parse.quote(library_id, safe="")
     url = f"{base_url}/api/v1/libraries/{quoted_library_id}/catalog/invalidate"
-    request = urllib.request.Request(url, method="POST")
+    payload = json.dumps(
+        {
+            "warm": True,
+            "changed_sessions": [dict(item) for item in changed_sessions or []],
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=payload,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
     try:
         with urllib.request.urlopen(request, timeout=LIBRARY_API_NOTIFICATION_TIMEOUT_S) as response:
             status_code = int(getattr(response, "status", 0) or response.getcode())
@@ -2600,13 +2615,17 @@ class ImportSourceRunner:
             )
 
         if summary["imported"]:
+            changed_sessions = _imported_session_revision_records(self.source, summary["imported"])
             summary["library_catalog_revision"] = touch_catalog_revision(
                 self.source.artifacts_dir,
                 reason="import_agent_sessions_imported",
                 actor="import_agent",
-                changed_sessions=_imported_session_revision_records(self.source, summary["imported"]),
+                changed_sessions=changed_sessions,
             )
-            summary["library_api_notification"] = _notify_library_api_catalog_changed(self.source)
+            summary["library_api_notification"] = _notify_library_api_catalog_changed(
+                self.source,
+                changed_sessions=changed_sessions,
+            )
         self._emit_progress(
             progress_callback,
             "source_scan_completed",

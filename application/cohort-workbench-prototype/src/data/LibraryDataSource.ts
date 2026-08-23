@@ -33,6 +33,11 @@ export type WorkbenchBootstrapData = {
   timings?: Record<string, unknown>
 }
 
+export type CatalogRevision = {
+  libraryId: string
+  revision: number
+}
+
 export type SignalSetDefinition = {
   id: string
   displayName: string
@@ -50,6 +55,7 @@ export interface LibraryDataSource {
   listLibraries(): Promise<LibraryRecord[]>
   refreshLibrary?(libraryId: string): Promise<LibraryRecord | void>
   loadWorkbenchBootstrap?(): Promise<WorkbenchBootstrapData>
+  listCatalogRevisions?(): Promise<CatalogRevision[]>
   loadSignalSets?(): Promise<SignalSetDefinition[]>
   listSessions(libraries?: LibraryRecord[]): Promise<SessionRecord[]>
   listTracks(): Promise<TrackRecord[]>

@@ -9,6 +9,7 @@
 
 #include "DebugLog.h"
 #include "BMI270ImuTiming.h"
+#include "DisplayManager.h"
 #include "I2CManager.h"
 #include "esp_timer.h"
 
@@ -64,6 +65,23 @@ void copyName_(char* destination, size_t capacity, const char* source) {
   destination[length] = '\0';
 }
 
+class ScopedOledTransferDeferral {
+public:
+  explicit ScopedOledTransferDeferral(uint8_t busIndex)
+      : busIndex_(busIndex), active_(DisplayManager::deferTransfersForBus(busIndex)) {}
+
+  ~ScopedOledTransferDeferral() {
+    if (active_) DisplayManager::resumeTransfersForBus(busIndex_);
+  }
+
+  ScopedOledTransferDeferral(const ScopedOledTransferDeferral&) = delete;
+  ScopedOledTransferDeferral& operator=(const ScopedOledTransferDeferral&) = delete;
+
+private:
+  uint8_t busIndex_;
+  bool active_;
+};
+
 } // namespace
 
 BMI270FifoAcquisition::BMI270FifoAcquisition(
@@ -96,6 +114,7 @@ bool BMI270FifoAcquisition::setGyroBiasMode(BMI270GyroBiasMode mode) {
 
 bool BMI270FifoAcquisition::begin() {
   if (initialized_) return true;
+  ScopedOledTransferDeferral deferOled(device_.busIndex());
   sessionActive_.store(false, std::memory_order_release);
 
   if (!I2CManager::ensureBufferCapacity(device_.busIndex(), kRawBufferBytes) ||
@@ -145,6 +164,10 @@ void BMI270FifoAcquisition::shutdown() {
 }
 
 bool BMI270FifoAcquisition::startSession(uint16_t startupObservationSeconds) {
+  // Session preparation may validate registers, flush the FIFO, or recover the
+  // device. Do not interleave a full OLED transfer with that sequence when the
+  // panel and IMU share a bus.
+  ScopedOledTransferDeferral deferOled(device_.busIndex());
   if (!initialized_ && !begin()) return false;
   if (sessionActive()) return true;
 
@@ -156,7 +179,7 @@ bool BMI270FifoAcquisition::startSession(uint16_t startupObservationSeconds) {
   // Keep the observer disabled until validation/recovery and the final FIFO
   // flush have completed. Those operations belong to the session boundary,
   // not to the stationary measurement window.
-  startupObservation_.begin(0);
+  startupObservation_.begin(0, kTargetRateHz);
   device_.resetTransportDiagnostics();
 
   addCounter_(diagnostics_.sessionStartValidationAttempts);
@@ -177,7 +200,7 @@ bool BMI270FifoAcquisition::startSession(uint16_t startupObservationSeconds) {
   // known pre-session boundary status.
   preSessionBoundaryStatus_ = pendingStatus_ & kCarryStatusMask;
   pendingStatus_ &= static_cast<uint16_t>(~kCarryStatusMask);
-  startupObservation_.begin(startupObservationSeconds);
+  startupObservation_.begin(startupObservationSeconds, kTargetRateHz);
 
   progressWatchdog_.arm(micros());
   sessionActive_.store(true, std::memory_order_release);
@@ -541,6 +564,7 @@ BMI270FifoAcquisition::DrainPassResult BMI270FifoAcquisition::drainOnePass_(
 }
 
 bool BMI270FifoAcquisition::recoverAcquisition_(BMI270RecoveryReason reason) {
+  ScopedOledTransferDeferral deferOled(device_.busIndex());
   if (reason != BMI270RecoveryReason::SessionStartValidation) {
     if (!recoveryBudget_.reserveAttempt()) {
       enterTerminalFault_(reason);

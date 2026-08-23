@@ -88,5 +88,6 @@ private:
   BMI270FifoAcquisition acquisition_;
   bool muted_ = false;
   bool initialized_ = false;
+  bool sessionAvailable_ = false;
   uint32_t lastInitializationAttemptUptimeMs_ = 0;
 };

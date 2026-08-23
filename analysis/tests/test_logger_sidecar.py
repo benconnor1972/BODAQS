@@ -45,6 +45,60 @@ from bodaqs_analysis.ui.preprocess_file_selector import PreprocessLogSelector
 from bodaqs_analysis.ui.preprocess_controls import PreprocessControls, PreprocessDefaults
 
 
+def test_build_session_exposes_normalized_storage_qc() -> None:
+    session = build_session_from_dataframe(
+        pd.DataFrame({"time_s": [0.0, 0.002], "signal": [1.0, 2.0]}),
+        firmware_stats={
+            "samples_dropped": 3,
+            "queue_depth": 256,
+            "queue_max": 256,
+            "flush_count": 7,
+            "flush_max_ms": 41,
+            "storage_row_write_us": {
+                "count": 10,
+                "min_us": 20,
+                "avg_us": 900.5,
+                "max_us": 468165,
+                "total_us": 9005,
+                "buckets_us": {"ge_2000": 2},
+            },
+            "storage_write_stalls": {
+                "threshold_us": 10000,
+                "count": 1,
+                "events_truncated": False,
+                "events": [{
+                    "operation": "data_chunk",
+                    "sample_id": 100,
+                    "duration_us": 12000,
+                    "bytes_attempted": 16320,
+                    "data_frame_count": 145,
+                    "queue_depth_rows": 42,
+                }],
+            },
+        },
+    )
+
+    storage = session["qc"]["storage"]
+    assert storage["schema"] == "bodaqs.storage_qc.v1"
+    assert storage["status"] == "warning"
+    assert storage["samples_dropped"] == 3
+    assert storage["queue"] == {
+        "capacity_rows": 256,
+        "high_water_rows": 256,
+        "full": True,
+    }
+    assert storage["flush"] == {"count": 7, "maximum_ms": 41.0}
+    assert storage["timing"]["row_write_us"]["max_us"] == 468165
+    assert storage["write_stalls"]["events"] == [{
+        "operation": "data_chunk",
+        "sample_id": 100,
+        "duration_us": 12000,
+        "bytes_attempted": 16320,
+        "data_frame_count": 145,
+        "queue_depth_rows": 42,
+    }]
+
+
 def _write_csv_and_sidecar(tmp_path):
     csv_path = tmp_path / "session.csv"
     csv_path.write_text(
@@ -2636,7 +2690,7 @@ def test_attitude_stream_registers_world_yaw_for_registry_first_clients():
     build_attitude_streams(session)
 
     signals = session["meta"]["secondary_streams"]["inertial_imu0"]["signals"]
-    assert signals["yaw_enu_rad"] == {
+    assert signals["yaw_enu_rad"].items() >= {
         "sensor": "imu0",
         "domain": "world",
         "source": "inertial_estimate",
@@ -2646,7 +2700,10 @@ def test_attitude_stream_registers_world_yaw_for_registry_first_clients():
         "unit": "rad",
         "component": "yaw",
         "vector_group": "body_to_world_enu_euler_zyx",
-    }
+        "smoothing": "fixed_interval",
+        "processing_role": "primary_analysis",
+        "analysis_variant": "fixed_interval_smoothed",
+    }.items()
 
 
 def test_offline_world_yaw_smoother_backfills_and_bridges_short_imu_gap():
@@ -2676,9 +2733,7 @@ def test_offline_world_yaw_smoother_backfills_and_bridges_short_imu_gap():
 
     output, report = estimate_attitude(imu, gps=gps)
 
-    assert np.isfinite(output["yaw_world_enu_smoothed_rad"]).all()
-    assert output["yaw_world_enu_smoothed_state_code"].iloc[0] == 2
-    assert output["yaw_world_enu_gap_bridged_before"].sum() == 1
+    assert np.isfinite(output["yaw_enu_rad"]).all()
     assert report["world_yaw_smoother"]["bridged_gaps"][0]["gap_s"] == pytest.approx(0.21)
     assert {"specific_force_body_x_m_s2", "gravity_body_z_m_s2", "linear_accel_body_z_m_s2"} <= set(output.columns)
     assert {"specific_force_enu_x_m_s2", "linear_accel_enu_horizontal_g", "turn_rate_world_up_rad_s"} <= set(output.columns)
@@ -2690,7 +2745,7 @@ def test_offline_world_yaw_smoother_backfills_and_bridges_short_imu_gap():
         gps=gps,
         config=AttitudeConfig(inertial_dynamics_enabled=False),
     )
-    assert "q_body_to_world_enu_smoothed_w" in gated
+    assert "q_body_to_world_enu_w" in gated
     assert "linear_accel_body_z_m_s2" not in gated
     assert gated_report["inertial_dynamics"]["enabled"] is False
 

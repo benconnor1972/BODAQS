@@ -479,6 +479,10 @@ void onLoggingStop() {
   for (auto* s : s_list) if (s) s->onLoggingStop();
 }
 
+void onLoggingFinalized() {
+  for (auto* s : s_list) if (s) s->onLoggingFinalized();
+}
+
 size_t pendingLoggingRows() {
   size_t pending = 0;
   for (auto* sensor : s_list) {

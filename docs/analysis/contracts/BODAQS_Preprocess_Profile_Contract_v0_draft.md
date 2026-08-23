@@ -194,6 +194,11 @@ class FitImportConfigV1(TypedDict, total=False):
 class ImuAttitudeConfigV1(TypedDict, total=False):
     enabled: bool
     required: bool
+    fixed_interval_tilt_smoother: FixedIntervalTiltSmootherConfigV1
+
+class FixedIntervalTiltSmootherConfigV1(TypedDict, total=False):
+    enabled: bool
+    gps_translational_compensation: Literal["when_qualified", "disabled"]
 
 class MotionDerivationSourceConfigV1(TypedDict):
     id: str
@@ -307,6 +312,10 @@ When present, `imu_attitude` has the shape:
 {
   "enabled": false,
   "required": false,
+  "fixed_interval_tilt_smoother": {
+    "enabled": true,
+    "gps_translational_compensation": "when_qualified"
+  },
   "inertial_dynamics": {
     "enabled": true,
     "include_world_frame": true,
@@ -316,13 +325,18 @@ When present, `imu_attitude` has the shape:
 }
 ```
 
-The first slice deliberately keeps estimator tuning out of the profile. The
+The profile keeps estimator tuning out of the profile. The
 effective estimator configuration and QC report are stored with each derived
-inertial stream. `inertial_dynamics` only controls materialisation cost:
+inertial stream. `fixed_interval_tilt_smoother` controls the persisted
+orientation estimator. `gps_translational_compensation` removes horizontal
+GPS speed/course-derived acceleration only when the GPS evidence passes the
+estimator's validity, accuracy, cadence, and timing gates; it never makes GPS
+mandatory and never differentiates altitude. `inertial_dynamics` only controls
+materialisation cost:
 `enabled` writes attitude-dependent dynamics at all, while the three include
 flags independently omit world-frame vectors, angular kinematics, and scalar
-magnitudes. Orientation and the offline smoothed-yaw product remain available
-whenever `imu_attitude` itself is enabled.
+magnitudes. Fixed-interval orientation remains available whenever
+`imu_attitude` itself is enabled.
 
 ### 6.6 `fit_import` block
 

@@ -1750,8 +1750,27 @@ def _signal_display_name(column: str, info: Mapping[str, Any]) -> str:
     ]
     text = " ".join(part for part in semantic_parts if part)
     if text:
-        return text.replace("_", " ").title()
+        component_label = _vector_component_label(info)
+        text = text.replace("_", " ").title()
+        return f"{text} — {component_label}" if component_label else text
     return str(column).split("[", 1)[0].replace("_", " ").strip().title() or str(column)
+
+
+def _vector_component_label(info: Mapping[str, Any]) -> str | None:
+    component = _optional_text(info.get("component"))
+    if component not in {"x", "y", "z"}:
+        return None
+    coordinate_frame = (_optional_text(info.get("coordinate_frame")) or "").lower()
+    domain = (_optional_text(info.get("domain")) or "").lower()
+    if coordinate_frame == "sensor_native":
+        return f"Sensor {component.upper()}"
+    if coordinate_frame == "bike_body" or (coordinate_frame == "body_local" and domain == "frame"):
+        return {"x": "Forward", "y": "Left", "z": "Up"}[component]
+    if coordinate_frame in {"enu", "world_enu"}:
+        return {"x": "East", "y": "North", "z": "Up"}[component]
+    if coordinate_frame == "body_local":
+        return f"Local {component.upper()}"
+    return component.upper()
 
 
 def _optional_text(value: Any) -> str | None:

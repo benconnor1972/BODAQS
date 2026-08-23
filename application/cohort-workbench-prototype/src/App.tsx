@@ -218,6 +218,7 @@ function App() {
   const [sortColumn, setSortColumn] = useState<ColumnId>('started')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([])
+  const [deletingCandidateIds, setDeletingCandidateIds] = useState<Set<string>>(() => new Set())
   const [primaryCandidateId, setPrimaryCandidateId] = useState<string | null>(null)
   const [selectionAnchorCandidateId, setSelectionAnchorCandidateId] = useState<string | null>(null)
   const [selectedStudySessionIds, setSelectedStudySessionIds] = useState<string[]>([])
@@ -259,6 +260,7 @@ function App() {
   const workbenchRefreshInFlightRef = useRef(false)
   const studySetSaveInFlightRef = useRef(false)
   const lastAutomaticWorkbenchRefreshMs = useRef(0)
+  const catalogRevisionsRef = useRef<Record<string, number>>({})
   const demoWelcomeEvaluatedRef = useRef(false)
 
   const considerDemoWelcome = useCallback((health: { web_app?: { demo_welcome_enabled?: boolean } }) => {
@@ -425,6 +427,40 @@ function App() {
       document.removeEventListener('visibilitychange', refreshIfReturningToWorkbench)
     }
   }, [activeDataSource, connectionMode, libraries.length, refreshWorkbenchData, selectedLibraryIds, sessions.length])
+
+  useEffect(() => {
+    if (connectionMode !== 'local-api' || !activeDataSource.listCatalogRevisions) {
+      return
+    }
+    let cancelled = false
+    async function refreshWhenCatalogChanges() {
+      if (document.visibilityState !== 'visible') {
+        return
+      }
+      try {
+        const revisions = await activeDataSource.listCatalogRevisions?.()
+        if (cancelled || !revisions) {
+          return
+        }
+        const next = Object.fromEntries(revisions.map((item) => [item.libraryId, item.revision]))
+        const changed = Object.entries(next).some(
+          ([libraryId, revision]) => catalogRevisionsRef.current[libraryId] !== undefined && catalogRevisionsRef.current[libraryId] !== revision,
+        )
+        catalogRevisionsRef.current = next
+        if (changed) {
+          void refreshWorkbenchData({ quiet: true, automatic: true })
+        }
+      } catch {
+        // The normal health check reports an unavailable service; revision polling stays quiet.
+      }
+    }
+    void refreshWhenCatalogChanges()
+    const intervalId = window.setInterval(() => void refreshWhenCatalogChanges(), LIBRARY_API_HEARTBEAT_MS)
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
+  }, [activeDataSource, connectionMode, refreshWorkbenchData])
 
   useEffect(() => {
     if (!analysisRoute?.studySetId) {
@@ -1176,6 +1212,7 @@ function App() {
       setStatusMessage('The current data source does not support session deletes.')
       return
     }
+    const deleteSession = activeDataSource.deleteSession.bind(activeDataSource)
     if (
       !window.confirm(
         `Delete processed session "${session.name}" from ${session.libraryId}? Source files will not be deleted.`,
@@ -1185,7 +1222,7 @@ function App() {
     }
 
     try {
-      await activeDataSource.deleteSession(session)
+      await deleteSession(session)
       applyOptimisticSessionDeletes([session])
       void reconcileAfterSessionDeletes([session])
       setStatusMessage(`Deleted session "${session.name}".`)
@@ -1204,7 +1241,7 @@ function App() {
         return
       }
       try {
-        await activeDataSource.deleteSession(session, { cleanupMemberships: true })
+        await deleteSession(session, { cleanupMemberships: true })
         applyOptimisticSessionDeletes([session])
         void reconcileAfterSessionDeletes([session])
         setStatusMessage(`Deleted session "${session.name}" and cleaned saved Study Set memberships.`)
@@ -1224,6 +1261,7 @@ function App() {
       setStatusMessage('The current data source does not support session deletes.')
       return
     }
+    const deleteSession = activeDataSource.deleteSession.bind(activeDataSource)
     if (selectedCandidateSessions.length === 0) {
       setStatusMessage('Select one or more sessions before deleting.')
       return
@@ -1242,20 +1280,22 @@ function App() {
     const deletedSessions: SessionRecord[] = []
     const referencedSessions: SessionRecord[] = []
     const failedDeletes: Array<{ session: SessionRecord; message: string }> = []
-
-    for (const session of selectedCandidateSessions) {
-      try {
-        await activeDataSource.deleteSession(session)
-        deletedSessions.push(session)
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        if (isReferencedSessionDeleteError(message)) {
-          referencedSessions.push(session)
-        } else {
-          failedDeletes.push({ session, message })
+    setDeletingCandidateIds(new Set(selectedCandidateSessions.map(candidateId)))
+    try {
+      const initialResults = await mapWithConcurrency(selectedCandidateSessions, 3, async (session) => {
+        try {
+          await deleteSession(session)
+          return { session, status: 'deleted' as const, message: '' }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          return { session, status: isReferencedSessionDeleteError(message) ? 'referenced' as const : 'failed' as const, message }
         }
-      }
-    }
+      })
+      initialResults.forEach((result) => {
+        if (result.status === 'deleted') deletedSessions.push(result.session)
+        else if (result.status === 'referenced') referencedSessions.push(result.session)
+        else failedDeletes.push({ session: result.session, message: result.message })
+      })
 
     if (deletedSessions.length > 0) {
       applyOptimisticSessionDeletes(deletedSessions)
@@ -1270,17 +1310,18 @@ function App() {
         )
       ) {
         const cleanupDeletedSessions: SessionRecord[] = []
-        for (const session of referencedSessions) {
+        const cleanupResults = await mapWithConcurrency(referencedSessions, 3, async (session) => {
           try {
-            await activeDataSource.deleteSession(session, { cleanupMemberships: true })
-            cleanupDeletedSessions.push(session)
+            await deleteSession(session, { cleanupMemberships: true })
+            return { session, message: '' }
           } catch (error) {
-            failedDeletes.push({
-              session,
-              message: error instanceof Error ? error.message : String(error),
-            })
+            return { session, message: error instanceof Error ? error.message : String(error) }
           }
-        }
+        })
+        cleanupResults.forEach((result) => {
+          if (result.message) failedDeletes.push(result)
+          else cleanupDeletedSessions.push(result.session)
+        })
         if (cleanupDeletedSessions.length > 0) {
           applyOptimisticSessionDeletes(cleanupDeletedSessions)
           deletedSessions.push(...cleanupDeletedSessions)
@@ -1310,7 +1351,10 @@ function App() {
       return
     }
 
-    setStatusMessage(`Deleted ${deletedCount} selected ${deletedCount === 1 ? 'session' : 'sessions'}.`)
+      setStatusMessage(`Deleted ${deletedCount} selected ${deletedCount === 1 ? 'session' : 'sessions'}.`)
+    } finally {
+      setDeletingCandidateIds(new Set())
+    }
   }
 
   function applyOptimisticSessionDeletes(deletedSessions: SessionRecord[]) {
@@ -2400,6 +2444,7 @@ function App() {
                   onAnalyzeSession={analyzeSessionNow}
                   onInspect={inspectSession}
                   onDeleteSession={canWriteLibraryState ? deleteLibrarySession : undefined}
+                  deletingSessionIds={deletingCandidateIds}
                   onRenameSession={canWriteLibraryState && activeDataSource.renameSession ? renameLibrarySession : undefined}
                   onCopyNote={copySessionNote}
                   onPasteNote={pasteSessionNote}

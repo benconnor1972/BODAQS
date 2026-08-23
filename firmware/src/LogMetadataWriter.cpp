@@ -252,8 +252,10 @@ void appendImuQualityDiagnostics_(
                                             diagnostics.imuStartupRejectionMask));
   appendKeyHex16_(out, depth + 1, "rejection_mask", diagnostics.imuStartupRejectionMask);
   appendKeyUInt_(out, depth + 1, "configured_window_s", diagnostics.imuStartupConfiguredSeconds);
+  appendKeyUInt_(out, depth + 1, "native_sample_rate_hz", diagnostics.imuStartupNativeSampleRateHz);
+  appendKeyFloat_(out, depth + 1, "minimum_valid_fraction", diagnostics.imuStartupMinimumValidFraction);
   appendKeyUInt_(out, depth + 1, "target_sample_slots", diagnostics.imuStartupTargetSampleSlots);
-  appendKeyUInt_(out, depth + 1, "minimum_valid_samples", 800);
+  appendKeyUInt_(out, depth + 1, "minimum_valid_samples", diagnostics.imuStartupMinimumValidSamples);
   appendKeyUInt_(out, depth + 1, "valid_samples", diagnostics.imuStartupValidSamples);
   appendKeyUInt_(out, depth + 1, "settling_sample_slots", diagnostics.imuStartupSettlingSampleSlots);
   appendKeyUInt_(out, depth + 1, "measurement_start_sequence", diagnostics.imuStartupMeasurementStartSequence);

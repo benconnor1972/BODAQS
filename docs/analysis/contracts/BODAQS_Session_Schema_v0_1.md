@@ -236,6 +236,55 @@ end-of-file footer stats are still parsed for older logs.
 
 This is intentionally a flexible “bag of numbers” to allow future expansion.
 
+### storage (Normalized Logger Storage QC)
+
+When the logger provides final run statistics with storage metrics, preprocessing
+also exposes a stable normalized view at `qc.storage`. The original summary is
+retained unchanged in `qc.firmware_stats` for provenance and forward
+compatibility.
+
+```python
+"storage": {
+    "schema": "bodaqs.storage_qc.v1",
+    "source": "firmware_run_stats",
+    "status": "ok" | "warning",
+    "samples_dropped": int,
+    "queue": {
+        "capacity_rows": int | None,
+        "high_water_rows": int | None,
+        "full": bool,
+    },
+    "flush": {
+        "count": int | None,
+        "maximum_ms": float | None,
+        "total_ms": float | None,
+    },
+    "timing": {
+        "row_write_us": {"count": int, "min_us": int, "avg_us": float,
+                         "max_us": int, "total_us": int, "buckets_us": dict},
+        "drain_loop_us": {"count": int, "min_us": int, "avg_us": float,
+                           "max_us": int, "total_us": int, "buckets_us": dict},
+    },
+    "write_stalls": {
+        "threshold_us": int,
+        "count": int,
+        "events_truncated": bool,
+        "events": [{
+            "operation": str,
+            "sample_id": int,
+            "duration_us": int,
+            "bytes_attempted": int,
+            "data_frame_count": int,
+            "queue_depth_rows": int,
+        }],
+    },
+}
+```
+
+`status` is `warning` when the logger dropped samples or the row queue reached
+its declared capacity. The timing fields are omitted when unsupported by the
+source firmware.
+
 ---
 
 ### parse (Optional Parsing Info)

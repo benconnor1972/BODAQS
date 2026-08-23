@@ -1,4 +1,268 @@
 {
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260807_102215_d8c4329c9c17.bdq|8826737|1786260958": {
+    "input_kind": "bdq",
+    "sha256": "76fe67671e1b924da866d522e28239ef5308cb3e1f42cf7fa53f5fe3fe4ef3ed",
+    "source_identity": "76fe67671e1b924da866d522e28239ef5308cb3e1f42cf7fa53f5fe3fe4ef3ed",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260807_104447_2416ae52b13c.bdq|2099743|1786260915": {
+    "input_kind": "bdq",
+    "sha256": "27882ac1d555971b2b847d763b24b5fb905de01debd1e0a800feb2e57ba6d1f8",
+    "source_identity": "27882ac1d555971b2b847d763b24b5fb905de01debd1e0a800feb2e57ba6d1f8",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260807_111207_bf1b75c1c7d4.bdq|14495564|1786260910": {
+    "input_kind": "bdq",
+    "sha256": "c38b18e155ca7b9bd42e77525a9ff0a580c55c3969dfde469f759f73785f2af3",
+    "source_identity": "c38b18e155ca7b9bd42e77525a9ff0a580c55c3969dfde469f759f73785f2af3",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260807_114021_531528767bcf.bdq|11678476|1786260883": {
+    "input_kind": "bdq",
+    "sha256": "5d9256c0144b229dfa6eea1b2587b5cd7bbf94c8622b86ea5459b6cb82e7de0a",
+    "source_identity": "5d9256c0144b229dfa6eea1b2587b5cd7bbf94c8622b86ea5459b6cb82e7de0a",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260814_101822_c4563d8c0f11.bdq|11653540|1786698299": {
+    "input_kind": "bdq",
+    "sha256": "04c6faf506a11f8a720add137e85180dd9986cf2b71c3072dba2d67937c924ee",
+    "source_identity": "04c6faf506a11f8a720add137e85180dd9986cf2b71c3072dba2d67937c924ee",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260814_101822_c4563d8c0f11_01.bdq|11653540|1786767050": {
+    "input_kind": "bdq",
+    "sha256": "04c6faf506a11f8a720add137e85180dd9986cf2b71c3072dba2d67937c924ee",
+    "source_identity": "04c6faf506a11f8a720add137e85180dd9986cf2b71c3072dba2d67937c924ee",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260814_105417_dc8bad97fd99.bdq|10643647|1786698270": {
+    "input_kind": "bdq",
+    "sha256": "64416a8f7f56308ba95e865d70e91901bd02c4e7eefb8eb02a691f0a5be1244f",
+    "source_identity": "64416a8f7f56308ba95e865d70e91901bd02c4e7eefb8eb02a691f0a5be1244f",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260814_105417_dc8bad97fd99_01.bdq|10643647|1786767021": {
+    "input_kind": "bdq",
+    "sha256": "64416a8f7f56308ba95e865d70e91901bd02c4e7eefb8eb02a691f0a5be1244f",
+    "source_identity": "64416a8f7f56308ba95e865d70e91901bd02c4e7eefb8eb02a691f0a5be1244f",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260814_112629_6ecfbcfaad42.bdq|1974387|1786698241": {
+    "input_kind": "bdq",
+    "sha256": "22ef530a7e7a934c9f8cb3281315ca0fcb3e6e9fbf145f732717c4829b5d99c2",
+    "source_identity": "22ef530a7e7a934c9f8cb3281315ca0fcb3e6e9fbf145f732717c4829b5d99c2",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260814_112629_6ecfbcfaad42_01.bdq|1974387|1786766992": {
+    "input_kind": "bdq",
+    "sha256": "22ef530a7e7a934c9f8cb3281315ca0fcb3e6e9fbf145f732717c4829b5d99c2",
+    "source_identity": "22ef530a7e7a934c9f8cb3281315ca0fcb3e6e9fbf145f732717c4829b5d99c2",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260814_113628_b4cc9979c5f7.bdq|5177327|1786698237": {
+    "input_kind": "bdq",
+    "sha256": "971519a85a29346f9df218b01807b061d4609af1625fcc050aec9bf506bfa720",
+    "source_identity": "971519a85a29346f9df218b01807b061d4609af1625fcc050aec9bf506bfa720",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260814_113628_b4cc9979c5f7_01.bdq|5177327|1786766988": {
+    "input_kind": "bdq",
+    "sha256": "971519a85a29346f9df218b01807b061d4609af1625fcc050aec9bf506bfa720",
+    "source_identity": "971519a85a29346f9df218b01807b061d4609af1625fcc050aec9bf506bfa720",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260815_120710_a9b2d267f617.bdq|1771389|1786766975": {
+    "input_kind": "bdq",
+    "sha256": "49a8646ec42ebd9194d457f536b3cf47c5b63516d28dc760e1a7546133d8ef74",
+    "source_identity": "49a8646ec42ebd9194d457f536b3cf47c5b63516d28dc760e1a7546133d8ef74",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260815_124931_afbbf9437b8c.bdq|192850|1786770538": {
+    "input_kind": "bdq",
+    "sha256": "1fcef219b276b38af2da8523320856094c9a5939d8c2a7dfde5286ab4bf3db7d",
+    "source_identity": "1fcef219b276b38af2da8523320856094c9a5939d8c2a7dfde5286ab4bf3db7d",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260815_130753_d0d61e9676bd.bdq|876936|1786770537": {
+    "input_kind": "bdq",
+    "sha256": "acf9cded251ebefefeea18f198d46bb86c91358e7069073b54443a92b12e4a57",
+    "source_identity": "acf9cded251ebefefeea18f198d46bb86c91358e7069073b54443a92b12e4a57",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260815_141957_960ef378b7d9.bdq|6846501|1786775059": {
+    "input_kind": "bdq",
+    "sha256": "ee75e90a51ef6c794283f3c813979bb2b55d4ba1c5981f1d6881b6fe8a1d93f0",
+    "source_identity": "ee75e90a51ef6c794283f3c813979bb2b55d4ba1c5981f1d6881b6fe8a1d93f0",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260816_083214_7796137a6c03.bdq|8846175|1787023461": {
+    "input_kind": "bdq",
+    "sha256": "8b734beccffdd64281a7ed39805045d60688e52bc4b4655eb4417e06311a23bb",
+    "source_identity": "8b734beccffdd64281a7ed39805045d60688e52bc4b4655eb4417e06311a23bb",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260816_085024_261b4b8c0365.bdq|7014218|1787023442": {
+    "input_kind": "bdq",
+    "sha256": "c752fa437acb91bc923a67a967454c2669f4a73e49afc1b4c718da98b8306c9d",
+    "source_identity": "c752fa437acb91bc923a67a967454c2669f4a73e49afc1b4c718da98b8306c9d",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260816_092952_ab07bc2b55e1.bdq|3876092|1787023428": {
+    "input_kind": "bdq",
+    "sha256": "b2dfbe4dd6f3507f1dab77d1022dd38c9f816948bd71561357b5b555de57e8bf",
+    "source_identity": "b2dfbe4dd6f3507f1dab77d1022dd38c9f816948bd71561357b5b555de57e8bf",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260816_093307_c479498b523a.bdq|19486057|1787023421": {
+    "input_kind": "bdq",
+    "sha256": "5c59dbc8e5fc1f6536cd76ca21f35c5726eba93aef2f61ec369ffd910e1ceeb1",
+    "source_identity": "5c59dbc8e5fc1f6536cd76ca21f35c5726eba93aef2f61ec369ffd910e1ceeb1",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260816_100753_1f29284657be.bdq|26874853|1787023370": {
+    "input_kind": "bdq",
+    "sha256": "94386e68a0d67e644fc9967efc737f235c756097adf913bb39d7d79f77f824d2",
+    "source_identity": "94386e68a0d67e644fc9967efc737f235c756097adf913bb39d7d79f77f824d2",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260816_110336_985e2cb471ac.bdq|1004488|1787023285": {
+    "input_kind": "bdq",
+    "sha256": "889f9b8abc41cf283db2129535faafe4bbba103f84f74bffe4f911ba0dbb8d6b",
+    "source_identity": "889f9b8abc41cf283db2129535faafe4bbba103f84f74bffe4f911ba0dbb8d6b",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260816_110423_f5fd2182f750.bdq|19557100|1787023283": {
+    "input_kind": "bdq",
+    "sha256": "e9219995c2893ab12eebc4a777b771b7902eda9f67ac901db8e1256a26673632",
+    "source_identity": "e9219995c2893ab12eebc4a777b771b7902eda9f67ac901db8e1256a26673632",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260818_201719_4d68ea6ecd58.bdq|131558675|1787063161": {
+    "input_kind": "bdq",
+    "sha256": "d1341e5aa6591cf938aac85e09d719fc15d8f3e8de6f59b606dc8dc1839c41ff",
+    "source_identity": "d1341e5aa6591cf938aac85e09d719fc15d8f3e8de6f59b606dc8dc1839c41ff",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260820_083123_52c320bc2eb3.bdq|6038602|1787310320": {
+    "input_kind": "bdq",
+    "sha256": "0ac6fed817483cb9393539ae8ee4ae9da32443b6e5ae04ab36e368c139bd3d83",
+    "source_identity": "0ac6fed817483cb9393539ae8ee4ae9da32443b6e5ae04ab36e368c139bd3d83",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260820_083123_52c320bc2eb3_01.bdq|6038602|1787315359": {
+    "input_kind": "bdq",
+    "sha256": "0ac6fed817483cb9393539ae8ee4ae9da32443b6e5ae04ab36e368c139bd3d83",
+    "source_identity": "0ac6fed817483cb9393539ae8ee4ae9da32443b6e5ae04ab36e368c139bd3d83",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260820_095200_afb5ff623a4a.bdq|7419831|1787310314": {
+    "input_kind": "bdq",
+    "sha256": "aabb66f3db977e03a81db66a4ab9ccce96e6897914e26ba6da612fc1ee98f508",
+    "source_identity": "aabb66f3db977e03a81db66a4ab9ccce96e6897914e26ba6da612fc1ee98f508",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260820_095200_afb5ff623a4a_01.bdq|7419831|1787315353": {
+    "input_kind": "bdq",
+    "sha256": "aabb66f3db977e03a81db66a4ab9ccce96e6897914e26ba6da612fc1ee98f508",
+    "source_identity": "aabb66f3db977e03a81db66a4ab9ccce96e6897914e26ba6da612fc1ee98f508",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260821_093502_d3faa2f06e28.bdq|401230|1787310308": {
+    "input_kind": "bdq",
+    "sha256": "873f6cd6e853078452fb327273b2312db400c2f7c58bbff4800563066d1646e6",
+    "source_identity": "873f6cd6e853078452fb327273b2312db400c2f7c58bbff4800563066d1646e6",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260821_093502_d3faa2f06e28_01.bdq|401230|1787315344": {
+    "input_kind": "bdq",
+    "sha256": "873f6cd6e853078452fb327273b2312db400c2f7c58bbff4800563066d1646e6",
+    "source_identity": "873f6cd6e853078452fb327273b2312db400c2f7c58bbff4800563066d1646e6",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260821_093602_1232af67c1f4.bdq|10875358|1787310307": {
+    "input_kind": "bdq",
+    "sha256": "07f7e3234520a52197c73448982651c2202249c373ebff28fb37ab0334e4958d",
+    "source_identity": "07f7e3234520a52197c73448982651c2202249c373ebff28fb37ab0334e4958d",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260821_093602_1232af67c1f4_01.bdq|10875358|1787315344": {
+    "input_kind": "bdq",
+    "sha256": "07f7e3234520a52197c73448982651c2202249c373ebff28fb37ab0334e4958d",
+    "source_identity": "07f7e3234520a52197c73448982651c2202249c373ebff28fb37ab0334e4958d",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260821_094933_dffeb5b30ab0.bdq|10732446|1787310290": {
+    "input_kind": "bdq",
+    "sha256": "58a66437ed552cddb7da298ab72ff0bdd62d822b2db5c1d67bf418840a034f60",
+    "source_identity": "58a66437ed552cddb7da298ab72ff0bdd62d822b2db5c1d67bf418840a034f60",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260821_094933_dffeb5b30ab0_01.bdq|10732446|1787315324": {
+    "input_kind": "bdq",
+    "sha256": "58a66437ed552cddb7da298ab72ff0bdd62d822b2db5c1d67bf418840a034f60",
+    "source_identity": "58a66437ed552cddb7da298ab72ff0bdd62d822b2db5c1d67bf418840a034f60",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260821_102114_09b6ced30a0a.bdq|2555621|1787310277": {
+    "input_kind": "bdq",
+    "sha256": "9a001e365caf538f4cf1ddf00f54e2530aa4dbc769da80d5da6197bb33982300",
+    "source_identity": "9a001e365caf538f4cf1ddf00f54e2530aa4dbc769da80d5da6197bb33982300",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260821_102114_09b6ced30a0a_01.bdq|2555621|1787315308": {
+    "input_kind": "bdq",
+    "sha256": "9a001e365caf538f4cf1ddf00f54e2530aa4dbc769da80d5da6197bb33982300",
+    "source_identity": "9a001e365caf538f4cf1ddf00f54e2530aa4dbc769da80d5da6197bb33982300",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260821_102441_d479d8dcedf7.bdq|24593972|1787310274": {
+    "input_kind": "bdq",
+    "sha256": "4b7186ff3cf4dc644b79904b7149ec0058e59f343b6597a336acebcdf28ca3da",
+    "source_identity": "4b7186ff3cf4dc644b79904b7149ec0058e59f343b6597a336acebcdf28ca3da",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260821_102441_d479d8dcedf7_01.bdq|24593972|1787315304": {
+    "input_kind": "bdq",
+    "sha256": "4b7186ff3cf4dc644b79904b7149ec0058e59f343b6597a336acebcdf28ca3da",
+    "source_identity": "4b7186ff3cf4dc644b79904b7149ec0058e59f343b6597a336acebcdf28ca3da",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260821_104257_efb91d16b4c3.bdq|13473369|1787310230": {
+    "input_kind": "bdq",
+    "sha256": "869ae9393391ee68d9869ac178f0031a854754d62fa32501b0b272e09d7dad68",
+    "source_identity": "869ae9393391ee68d9869ac178f0031a854754d62fa32501b0b272e09d7dad68",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260821_104257_efb91d16b4c3_01.bdq|13473369|1787315259": {
+    "input_kind": "bdq",
+    "sha256": "869ae9393391ee68d9869ac178f0031a854754d62fa32501b0b272e09d7dad68",
+    "source_identity": "869ae9393391ee68d9869ac178f0031a854754d62fa32501b0b272e09d7dad68",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260821_104805_5f7cb17cc7ad.bdq|24368967|1787310217": {
+    "input_kind": "bdq",
+    "sha256": "b54916a58779e14e39a7b0e187dfdd1f2f926827ccdd9bdfaec353d05f9a37f6",
+    "source_identity": "b54916a58779e14e39a7b0e187dfdd1f2f926827ccdd9bdfaec353d05f9a37f6",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260821_104805_5f7cb17cc7ad_01.bdq|24368967|1787315239": {
+    "input_kind": "bdq",
+    "sha256": "b54916a58779e14e39a7b0e187dfdd1f2f926827ccdd9bdfaec353d05f9a37f6",
+    "source_identity": "b54916a58779e14e39a7b0e187dfdd1f2f926827ccdd9bdfaec353d05f9a37f6",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260821_104805_5f7cb17cc7ad_01_01.bdq|24368967|1787375647": {
+    "input_kind": "bdq",
+    "sha256": "b54916a58779e14e39a7b0e187dfdd1f2f926827ccdd9bdfaec353d05f9a37f6",
+    "source_identity": "b54916a58779e14e39a7b0e187dfdd1f2f926827ccdd9bdfaec353d05f9a37f6",
+    "source_identity_kind": "bdq_session_identity"
+  },
+  "C:\\Users\\benco\\OneDrive\\BODAQS-data\\sources\\ben-stevo-rc3001\\done\\260821_104805_5f7cb17cc7ad_01_01_01.bdq|24368967|1787382635": {
+    "input_kind": "bdq",
+    "sha256": "b54916a58779e14e39a7b0e187dfdd1f2f926827ccdd9bdfaec353d05f9a37f6",
+    "source_identity": "b54916a58779e14e39a7b0e187dfdd1f2f926827ccdd9bdfaec353d05f9a37f6",
+    "source_identity_kind": "bdq_session_identity"
+  },
   "C:\\Users\\benco\\OneDrive\\BODAQS-private\\Test\\Attitude\\260820_083123.bdq|6038602|1787186387": {
     "input_kind": "bdq",
     "sha256": "0ac6fed817483cb9393539ae8ee4ae9da32443b6e5ae04ab36e368c139bd3d83",

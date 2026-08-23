@@ -657,7 +657,10 @@ bool BMI270ImuSensor::describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out) 
   out.imuStartupObservationState = static_cast<uint8_t>(startup.state);
   out.imuStartupRejectionMask = startup.rejectionMask;
   out.imuStartupConfiguredSeconds = startup.configuredSeconds;
+  out.imuStartupNativeSampleRateHz = startup.nativeSampleRateHz;
+  out.imuStartupMinimumValidFraction = startup.minimumValidFraction;
   out.imuStartupTargetSampleSlots = startup.targetSampleSlots;
+  out.imuStartupMinimumValidSamples = startup.minimumValidSamples;
   out.imuStartupValidSamples = startup.validSamples;
   out.imuStartupSettlingSampleSlots = startup.settlingSampleSlots;
   out.imuStartupMeasurementStartSequence = startup.measurementStartSequence;
@@ -726,9 +729,6 @@ bool BMI270ImuSensor::validateLoggingStart(
   if (!busProfile || busProfile->hz != 400000u) {
     return fail_(error, errorCapacity, "%s requires a 400 kHz I2C bus", params_.name);
   }
-  if (!initialized_) {
-    return fail_(error, errorCapacity, "%s BMI270 initialization failed", params_.name);
-  }
   return true;
 }
 
@@ -738,7 +738,7 @@ bool BMI270ImuSensor::prepareLoggingStart(
     char* error,
     size_t errorCapacity) {
   if (muted_) return true;
-  if (!ensureInitialized_(error, errorCapacity)) return false;
+  sessionAvailable_ = false;
   const uint16_t resolvedOutputRate = BMI270Profile::resolveSparseRowOutputRateHz(
       params_.maximumOutputRateHz, effectiveRateHz);
   if (resolvedOutputRate == 0) {
@@ -751,6 +751,16 @@ bool BMI270ImuSensor::prepareLoggingStart(
                  "%s could not select %u Hz IMU output",
                  params_.name, (unsigned)resolvedOutputRate);
   }
+  if (!ensureInitialized_(error, errorCapacity)) {
+    BMI270_SENSOR_LOGW(
+        "sensor unavailable at logging start; continuing without IMU data sensor=%s bus=%u address=0x%02X\n",
+        params_.name,
+        (unsigned)params_.busIndex,
+        (unsigned)params_.address);
+    if (error && errorCapacity) error[0] = '\0';
+    return true;
+  }
+  sessionAvailable_ = true;
   BMI270_SENSOR_LOGI(
       "logging rate plan sensor=%s max_output_rate_hz=%u effective_output_rate_hz=%u logger_rate_hz=%u\n",
       params_.name,
@@ -762,21 +772,30 @@ bool BMI270ImuSensor::prepareLoggingStart(
 
 bool BMI270ImuSensor::startLoggingSession(char* error, size_t errorCapacity) {
   if (muted_) return true;
+  if (!sessionAvailable_ || !initialized_) return true;
   if (!acquisition_.startSession(params_.startupBiasCaptureSeconds)) {
-    return fail_(error, errorCapacity, "%s BMI270 session start failed", params_.name);
+    initialized_ = false;
+    sessionAvailable_ = false;
+    BMI270_SENSOR_LOGW(
+        "session start failed; continuing without IMU data sensor=%s bus=%u address=0x%02X\n",
+        params_.name,
+        (unsigned)params_.busIndex,
+        (unsigned)params_.address);
+    if (error && errorCapacity) error[0] = '\0';
+    return true;
   }
   return true;
 }
 
 void BMI270ImuSensor::onLoggingStop() {
-  if (!acquisition_.sessionActive()) return;
-  if (!acquisition_.stopSession()) {
+  if (acquisition_.sessionActive() && !acquisition_.stopSession()) {
     BMI270_SENSOR_LOGW("final FIFO drain failed sensor=%s\n", params_.name);
   }
+  sessionAvailable_ = false;
 }
 
 size_t BMI270ImuSensor::pendingLoggingRows() const {
-  return muted_ ? 0 : acquisition_.queuedSamples();
+  return (muted_ || !sessionAvailable_) ? 0 : acquisition_.queuedSamples();
 }
 
 bool BMI270ImuSensor::captureImuOrientation(

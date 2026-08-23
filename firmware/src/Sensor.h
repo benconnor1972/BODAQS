@@ -235,6 +235,10 @@ public:
   virtual void applyConfig(const LoggerConfig&) {}
   virtual void onLoggingStart() {}
   virtual void onLoggingStop() {}
+  // Called only after the completed log and its final diagnostics have been
+  // written. Sensors may perform deferred recovery here without changing the
+  // evidence recorded for the session that just ended.
+  virtual void onLoggingFinalized() {}
   virtual bool prepareLoggingStart(
       const LoggerConfig&,
       uint16_t,

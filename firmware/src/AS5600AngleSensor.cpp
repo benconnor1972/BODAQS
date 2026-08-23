@@ -37,6 +37,7 @@ static constexpr uint8_t kDiagnosticColumnCount = 7;
 static constexpr uint16_t kConfSlowFilterMask = 0x0300;
 static constexpr uint8_t kConfSlowFilterShift = 8;
 static constexpr uint16_t kMaxAsyncRateHz = 1000;
+static constexpr uint32_t kDeferredRecoveryFailureStreak = 3;
 
 static constexpr uint8_t kStatusMagnetTooStrong = 0x08;
 static constexpr uint8_t kStatusMagnetTooWeak = 0x10;
@@ -347,6 +348,7 @@ void AS5600AngleSensor::updateReadTransition_(bool readOk) const {
 }
 
 void AS5600AngleSensor::begin() {
+  m_deferredRecoveryPending = false;
   resetRuntimeDiagnostics_();
   m_wire = I2CManager::bus(m_busIndex);
   m_warnedNoBus = false;
@@ -461,6 +463,48 @@ void AS5600AngleSensor::onLoggingStart() {
 void AS5600AngleSensor::onLoggingStop() {
   recordRuntimeEvent_(SensorRuntimeEventType::LoggingStop);
   m_asyncLoggingActive = false;
+  const bool sustainedReadFailure =
+    m_runtimeReadFailureActive &&
+    m_runtimeReadFailureStreak >= kDeferredRecoveryFailureStreak;
+  const bool configFailure =
+    (m_configWriteAttempted && !m_configWriteOk) ||
+    (m_deviceConfigReadAttempted && !m_deviceConfigReadOk);
+  if (sustainedReadFailure || configFailure) {
+    m_deferredRecoveryPending = true;
+    AS5600A_LOGW("sensor '%s': recovery deferred until log finalization read_streak=%lu config_failure=%d\n",
+                 name(),
+                 (unsigned long)m_runtimeReadFailureStreak,
+                 configFailure ? 1 : 0);
+  }
+}
+
+void AS5600AngleSensor::onLoggingFinalized() {
+  if (!m_deferredRecoveryPending) return;
+
+  // begin() performs a sensor-level probe, reapplies the configured volatile
+  // filter setting, reads a fresh sample/configuration, and resets the async
+  // snapshot. The scheduler is stopped and the previous BDQ is closed here.
+  m_deferredRecoveryPending = false;
+  AS5600A_LOGI("sensor '%s': attempting deferred post-session recovery\n", name());
+  begin();
+
+  const bool sampleRecovered = m_runtimeDiagnostics.initialProbeOk && m_lastReadOk;
+  const bool configRecovered =
+    (!m_configWriteAttempted || m_configWriteOk) && m_deviceConfigReadOk;
+  if (sampleRecovered && configRecovered) {
+    AS5600A_LOGI("sensor '%s': deferred post-session recovery complete\n", name());
+    return;
+  }
+
+  // Keep the request armed so a later session boundary provides another safe
+  // retry. Ordinary reads may still recover naturally during that session.
+  m_deferredRecoveryPending = true;
+  AS5600A_LOGW("sensor '%s': deferred recovery incomplete probe=%d read=%d config_write=%d config_read=%d\n",
+               name(),
+               m_runtimeDiagnostics.initialProbeOk ? 1 : 0,
+               m_lastReadOk ? 1 : 0,
+               (!m_configWriteAttempted || m_configWriteOk) ? 1 : 0,
+               m_deviceConfigReadOk ? 1 : 0);
 }
 
 uint16_t AS5600AngleSensor::asyncTargetRateHz() const {
@@ -737,6 +781,10 @@ bool AS5600AngleSensor::applyVolatileConfig_() const {
 bool AS5600AngleSensor::maybeApplyVolatileConfig_() const {
   if (m_slowFilterCode < 0) return true;
   if (m_configWriteOk) return true;
+
+  // A failed initialization/configuration is recovered after the BDQ has been
+  // finalized. Do not inject sensor writes into the active acquisition path.
+  if (m_asyncLoggingActive) return false;
 
   const uint32_t now = millis();
   if (m_nextConfigWriteMs != 0 &&

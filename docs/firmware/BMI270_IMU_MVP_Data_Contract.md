@@ -67,6 +67,12 @@ The named orientation_200 profile expands to:
 
 Phase 2 must read back effective sensor configuration. Both requested profile name and effective values are recorded. If the Bosch API or device rejects a required value, initialization fails visibly rather than silently substituting another profile.
 
+Sensor availability is not a logger-start precondition. If a configured BMI270
+is absent or becomes unavailable while preparing a session, logging continues
+with its declared columns present, `sample_valid=0`, zero placeholders, and an
+unavailable sample age. Initialization and transport diagnostics preserve the
+reason. Invalid configuration remains a start-blocking error.
+
 The initial gyroscope noise-performance choice follows the Bosch example default and is deliberately recorded. Bench data may justify a revised named profile; it must not silently alter orientation_200.
 
 ## 5. Scale contract
@@ -267,9 +273,18 @@ The matrix rows are the `body_local` X, Y, and Z basis vectors expressed in sens
 
 ## 11. Startup stationary observation
 
-The default startup observation window is 5 seconds. The observation is valid only if:
+The default startup observation window is 5 seconds. The observer consumes the
+effective native IMU rate, even when stored IMU output is decimated. Its minimum
+coverage is half of the configured window at that native rate, subject to a
+100-sample floor capped at the target sample count:
 
-- at least 800 valid native samples are present;
+    target_sample_slots = configured_window_s * native_sample_rate_hz
+    minimum_valid_samples = min(target_sample_slots,
+                                max(100, ceil(target_sample_slots * 0.5)))
+
+The observation is valid only if:
+
+- at least `minimum_valid_samples` valid native samples are present;
 - no FIFO, queue, recovery, or timing-degraded event occurs in the window;
 - mean acceleration magnitude is within 0.15 g of 1 g;
 - standard deviation of acceleration magnitude is no greater than 0.03 g;
@@ -278,7 +293,8 @@ The default startup observation window is 5 seconds. The observation is valid on
 
 The session summary records:
 
-- configured window and thresholds;
+- configured window, native sample rate, 0.5 minimum-valid fraction, calculated
+  target and minimum sample counts, and stationarity thresholds;
 - accepted/rejected state and rejection reason;
 - valid sample count;
 - raw gyro mean and standard deviation per axis;
@@ -291,7 +307,7 @@ The `rejection_mask` is additive, so a window can report more than one cause:
 
 | Mask | Meaning |
 |---:|---|
-| `0x0001` | Fewer than 800 valid samples |
+| `0x0001` | Fewer than the calculated `minimum_valid_samples` |
 | `0x0002` | FIFO, queue, recovery, or degraded-timing incident |
 | `0x0004` | Mean acceleration magnitude outside the gravity band |
 | `0x0008` | Acceleration magnitude unstable |

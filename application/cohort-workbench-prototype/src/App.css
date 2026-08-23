@@ -1855,6 +1855,12 @@ tbody tr.primary-row td:first-child {
   user-select: none;
 }
 
+.session-row.deleting {
+  color: var(--muted);
+  cursor: progress;
+  pointer-events: none;
+}
+
 .session-row:focus-visible td {
   outline: 2px solid rgba(47, 125, 109, 0.32);
   outline-offset: -2px;
@@ -6124,6 +6130,35 @@ button {
   stroke-linejoin: round;
   stroke-width: 2;
   vector-effect: non-scaling-stroke;
+}
+
+.signal-inspector-altitude-selection-range {
+  fill: rgba(0, 140, 149, 0.1);
+  stroke: rgba(0, 140, 149, 0.55);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-inspector-altitude-selection-line {
+  fill: none;
+  stroke: var(--teal-strong);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-inspector-altitude-selection-point line {
+  stroke: var(--teal);
+  stroke-dasharray: 3 3;
+  stroke-width: 1.2;
+  vector-effect: non-scaling-stroke;
+}
+
+.signal-inspector-altitude-selection-point circle {
+  fill: var(--teal);
+  stroke: #ffffff;
+  stroke-width: 1.4;
 }
 
 .signal-inspector-altitude-chart text {

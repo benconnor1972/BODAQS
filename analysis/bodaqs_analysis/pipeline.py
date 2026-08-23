@@ -130,6 +130,149 @@ def _firmware_dropped_sample_count(stats: Any) -> int:
         return 0
 
 
+def _optional_int(value: Any) -> Optional[int]:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_float(value: Any) -> Optional[float]:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _timing_summary(stats: Mapping[str, Any], key: str) -> Optional[Dict[str, Any]]:
+    value = stats.get(key)
+    if not isinstance(value, Mapping):
+        return None
+    summary = {
+        field: converted
+        for field, converted in (
+            ("count", _optional_int(value.get("count"))),
+            ("min_us", _optional_int(value.get("min_us"))),
+            ("avg_us", _optional_float(value.get("avg_us"))),
+            ("max_us", _optional_int(value.get("max_us"))),
+            ("total_us", _optional_int(value.get("total_us"))),
+        )
+        if converted is not None
+    }
+    buckets = value.get("buckets_us")
+    if isinstance(buckets, Mapping):
+        summary["buckets_us"] = {
+            str(bucket): count
+            for bucket, raw_count in buckets.items()
+            if (count := _optional_int(raw_count)) is not None
+        }
+    return summary or None
+
+
+def _expose_firmware_storage_qc(session: Dict[str, Any]) -> None:
+    """Publish stable storage QC while retaining the raw firmware summary."""
+    stats = session.get("qc", {}).get("firmware_stats")
+    if not isinstance(stats, Mapping):
+        return
+
+    samples_dropped = _firmware_dropped_sample_count(stats)
+    queue_capacity = _optional_int(stats.get("queue_depth"))
+    queue_high_water = _optional_int(stats.get("queue_max"))
+    queue_full = (
+        queue_capacity is not None
+        and queue_capacity > 0
+        and queue_high_water is not None
+        and queue_high_water >= queue_capacity
+    )
+    has_storage_metrics = any(
+        key in stats
+        for key in (
+            "samples_dropped", "samplesDropped", "queue_depth", "queue_max",
+            "flush_count", "storage_row_write_us", "storage_drain_loop_us",
+        )
+    )
+    if not has_storage_metrics:
+        return
+
+    storage: Dict[str, Any] = {
+        "schema": "bodaqs.storage_qc.v1",
+        "source": "firmware_run_stats",
+        "status": "warning" if samples_dropped > 0 or queue_full else "ok",
+        "samples_dropped": samples_dropped,
+    }
+    queue = {
+        key: value
+        for key, value in (
+            ("capacity_rows", queue_capacity),
+            ("high_water_rows", queue_high_water),
+        )
+        if value is not None
+    }
+    if queue:
+        queue["full"] = queue_full
+        storage["queue"] = queue
+
+    flush = {
+        key: value
+        for key, value in (
+            ("count", _optional_int(stats.get("flush_count"))),
+            ("maximum_ms", _optional_float(stats.get("flush_max_ms", stats.get("max_flush_ms")))),
+            ("total_ms", _optional_float(stats.get("flush_total_ms"))),
+        )
+        if value is not None
+    }
+    if flush:
+        storage["flush"] = flush
+
+    timing = {
+        key: value
+        for key, value in (
+            ("row_write_us", _timing_summary(stats, "storage_row_write_us")),
+            ("drain_loop_us", _timing_summary(stats, "storage_drain_loop_us")),
+        )
+        if value is not None
+    }
+    if timing:
+        storage["timing"] = timing
+
+    raw_stalls = stats.get("storage_write_stalls")
+    if isinstance(raw_stalls, Mapping):
+        write_stalls = {
+            key: value
+            for key, value in (
+                ("threshold_us", _optional_int(raw_stalls.get("threshold_us"))),
+                ("count", _optional_int(raw_stalls.get("count"))),
+                ("events_truncated", raw_stalls.get("events_truncated")),
+            )
+            if value is not None
+        }
+        raw_events = raw_stalls.get("events")
+        if isinstance(raw_events, Sequence) and not isinstance(raw_events, (str, bytes)):
+            events = []
+            for raw_event in raw_events:
+                if not isinstance(raw_event, Mapping):
+                    continue
+                event = {
+                    key: value
+                    for key, value in (
+                        ("operation", _optional_nonempty_str(raw_event.get("operation"))),
+                        ("sample_id", _optional_int(raw_event.get("sample_id"))),
+                        ("duration_us", _optional_int(raw_event.get("duration_us"))),
+                        ("bytes_attempted", _optional_int(raw_event.get("bytes_attempted"))),
+                        ("data_frame_count", _optional_int(raw_event.get("data_frame_count"))),
+                        ("queue_depth_rows", _optional_int(raw_event.get("queue_depth_rows"))),
+                    )
+                    if value is not None
+                }
+                if event:
+                    events.append(event)
+            write_stalls["events"] = events
+        if write_stalls:
+            storage["write_stalls"] = write_stalls
+
+    session.setdefault("qc", {})["storage"] = storage
+
+
 def _source_identity_token(*values: Any) -> str:
     for value in values:
         token = canonical_sensor_id(value)
@@ -752,6 +895,7 @@ def build_session_from_dataframe(
             log_metadata=log_metadata_obj,
             log_metadata_path=str(log_metadata_path) if log_metadata_path is not None else None,
         )
+    _expose_firmware_storage_qc(session)
     _warn_on_firmware_dropped_samples(session)
     if source_ref is not None:
         _apply_filename_stem_time_anchor(session, csv_path=source_ref)
@@ -2884,7 +3028,13 @@ def _apply_imu_attitude_preprocessing(
     required = bool(configured.get("required", False))
     dynamics_policy = configured.get("inertial_dynamics")
     dynamics_policy = dict(dynamics_policy) if isinstance(dynamics_policy, Mapping) else {}
+    tilt_smoother_policy = configured.get("fixed_interval_tilt_smoother")
+    tilt_smoother_policy = dict(tilt_smoother_policy) if isinstance(tilt_smoother_policy, Mapping) else {}
     attitude_config = AttitudeConfig(
+        fixed_interval_tilt_smoother_enabled=bool(tilt_smoother_policy.get("enabled", True)),
+        gps_translational_compensation_enabled=(
+            tilt_smoother_policy.get("gps_translational_compensation", "when_qualified") == "when_qualified"
+        ),
         inertial_dynamics_enabled=bool(dynamics_policy.get("enabled", True)),
         inertial_dynamics_include_world_frame=bool(dynamics_policy.get("include_world_frame", True)),
         inertial_dynamics_include_angular_kinematics=bool(dynamics_policy.get("include_angular_kinematics", True)),
@@ -2905,6 +3055,12 @@ def _apply_imu_attitude_preprocessing(
         "policy": {
             "enabled": enabled,
             "required": required,
+            "fixed_interval_tilt_smoother": {
+                "enabled": attitude_config.fixed_interval_tilt_smoother_enabled,
+                "gps_translational_compensation": (
+                    "when_qualified" if attitude_config.gps_translational_compensation_enabled else "disabled"
+                ),
+            },
             "inertial_dynamics": {
                 "enabled": attitude_config.inertial_dynamics_enabled,
                 "include_world_frame": attitude_config.inertial_dynamics_include_world_frame,

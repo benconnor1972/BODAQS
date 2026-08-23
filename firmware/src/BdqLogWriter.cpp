@@ -24,6 +24,7 @@ constexpr uint16_t kFormatMinor = 0;
 constexpr uint32_t kFileHeaderLen = 32;
 constexpr uint8_t kChunkMagic[4] = { 'B', 'D', 'Q', 'C' };
 constexpr uint16_t kChunkHeaderVersion = 1;
+constexpr uint16_t kChunkHeaderLen = 20;
 constexpr uint16_t kMaxColumns = LoggerLimits::kMaxDynamicColumns;
 constexpr uint16_t kMaxFramesPerChunk = 512;
 constexpr uint16_t kDataPayloadHeaderLen = 20;
@@ -82,10 +83,13 @@ uint32_t s_sequence = 0;
 uint16_t s_columnCount = 0;
 ColumnLayout s_columns[kMaxColumns];
 uint16_t s_frameSize = 0;
+uint8_t* s_chunkBuffer = nullptr;
 uint8_t* s_chunkPayload = nullptr;
 uint32_t s_chunkPayloadCapacity = 0;
 uint16_t s_framesPerChunk = 0;
 uint16_t s_pendingFrames = 0;
+uint16_t s_lastDataChunkFrameCount = 0;
+uint32_t s_lastDataChunkBytes = 0;
 uint32_t s_firstPendingSampleId = 0;
 uint64_t s_pendingChunkStartUnixUs = 0;
 uint32_t s_samplesWritten = 0;
@@ -354,8 +358,10 @@ void appendImuQualityDiagnostics_(
                                             diagnostics.imuStartupRejectionMask));
   appendKeyHex16_(out, depth + 1, "rejection_mask", diagnostics.imuStartupRejectionMask);
   appendKeyUInt_(out, depth + 1, "configured_window_s", diagnostics.imuStartupConfiguredSeconds);
+  appendKeyUInt_(out, depth + 1, "native_sample_rate_hz", diagnostics.imuStartupNativeSampleRateHz);
+  appendKeyFloat_(out, depth + 1, "minimum_valid_fraction", diagnostics.imuStartupMinimumValidFraction);
   appendKeyUInt_(out, depth + 1, "target_sample_slots", diagnostics.imuStartupTargetSampleSlots);
-  appendKeyUInt_(out, depth + 1, "minimum_valid_samples", 800);
+  appendKeyUInt_(out, depth + 1, "minimum_valid_samples", diagnostics.imuStartupMinimumValidSamples);
   appendKeyUInt_(out, depth + 1, "valid_samples", diagnostics.imuStartupValidSamples);
   appendKeyUInt_(out, depth + 1, "settling_sample_slots", diagnostics.imuStartupSettlingSampleSlots);
   appendKeyUInt_(out, depth + 1, "measurement_start_sequence", diagnostics.imuStartupMeasurementStartSequence);
@@ -417,6 +423,41 @@ void appendTimingSummary_(String& out, uint8_t depth, const char* key, const Tim
   out += F("}\n");
   appendIndent_(out, depth);
   out += comma ? F("},\n") : F("}\n");
+}
+
+const char* storageWriteOperationName_(uint8_t operation) {
+  switch (operation) {
+    case 1: return "data_chunk";
+    case 2: return "periodic_flush";
+    default: return "row_write";
+  }
+}
+
+void appendStorageWriteStalls_(String& out, uint8_t depth, const StorageTimingStats& stats) {
+  appendKey_(out, depth, "storage_write_stalls");
+  out += F("{\n");
+  appendKeyUInt_(out, depth + 1, "threshold_us", stats.writeStallThresholdUs);
+  appendKeyUInt_(out, depth + 1, "count", stats.writeStallCount);
+  appendKeyBool_(out, depth + 1, "events_truncated", stats.writeStallEventsTruncated);
+  appendKey_(out, depth + 1, "events");
+  out += F("[\n");
+  for (uint8_t index = 0; index < stats.writeStallStoredCount; ++index) {
+    const auto& event = stats.writeStallEvents[index];
+    appendIndent_(out, depth + 2);
+    out += F("{\n");
+    appendKeyString_(out, depth + 3, "operation", storageWriteOperationName_(event.operation));
+    appendKeyUInt_(out, depth + 3, "sample_id", event.sampleId);
+    appendKeyUInt_(out, depth + 3, "duration_us", event.durationUs);
+    appendKeyUInt_(out, depth + 3, "bytes_attempted", event.bytesAttempted);
+    appendKeyUInt_(out, depth + 3, "data_frame_count", event.dataFrameCount);
+    appendKeyUInt_(out, depth + 3, "queue_depth_rows", event.queueDepthRows, false);
+    appendIndent_(out, depth + 2);
+    out += (index + 1u < stats.writeStallStoredCount) ? F("},\n") : F("}\n");
+  }
+  appendIndent_(out, depth + 1);
+  out += F("]\n");
+  appendIndent_(out, depth);
+  out += F("},\n");
 }
 
 void appendAdcTiming_(String& out, uint8_t depth, const ExternalAdcTimingStats& stats, bool comma = true) {
@@ -1057,6 +1098,17 @@ void appendImuConfigObject_(
   appendKeyString_(out, depth + 1, "calibration_ref", imu.calibrationRef);
   appendKeyUInt_(out, depth + 1, "logger_rate_hz", imu.loggerRateHz);
   appendKeyUInt_(out, depth + 1, "imu_rate_hz", imu.imuRateHz);
+  appendKeyUInt_(out, depth + 1, "max_output_rate_hz", imu.maximumOutputRateHz);
+  appendKeyUInt_(out, depth + 1, "output_rate_hz", imu.outputRateHz);
+  appendKeyUInt_(out, depth + 1, "output_decimation_factor", imu.outputDecimationFactor);
+  appendKeyString_(out, depth + 1, "output_selection", imu.outputSelection);
+  appendKey_(out, depth + 1, "gyro_bias_correction");
+  out += F("{\n");
+  appendKeyString_(out, depth + 2, "mode", imu.gyroBiasMode);
+  appendKeyBool_(out, depth + 2, "hardware_offset_applied", imu.gyroHardwareOffsetApplied);
+  appendKeyBool_(out, depth + 2, "offset_register_trace_enabled", imu.iocDiagnosticsEnabled, false);
+  appendIndent_(out, depth + 1);
+  out += F("},\n");
 
   appendKeyString_(out, depth + 1, "orientation_status",
                    imu.orientationValid ? "accepted" : "unset");
@@ -1387,17 +1439,44 @@ bool writeChunk_(ChunkType type, const uint8_t* payload, uint32_t payloadLen) {
   const uint32_t crc = payloadLen ? crc32Update_(0, payload, payloadLen) : 0;
   const uint32_t seq = s_sequence++;
 
-  const bool ok = writeBytes_(kChunkMagic, sizeof(kChunkMagic)) &&
-                  writeU16_(kChunkHeaderVersion) &&
-                  writeU16_((uint16_t)type) &&
-                  writeU32_(seq) &&
-                  writeU32_(payloadLen) &&
-                  writeU32_(crc) &&
+  uint8_t header[kChunkHeaderLen];
+  memcpy(header, kChunkMagic, sizeof(kChunkMagic));
+  putU16_(header + 4, kChunkHeaderVersion);
+  putU16_(header + 6, (uint16_t)type);
+  putU32_(header + 8, seq);
+  putU32_(header + 12, payloadLen);
+  putU32_(header + 16, crc);
+
+  const bool ok = writeBytes_(header, sizeof(header)) &&
                   writeBytes_(payload, payloadLen);
 
   if (!ok) {
     BDQ_LOGW("chunk write failed type=%u seq=%lu len=%lu\n",
              (unsigned)type,
+             (unsigned long)seq,
+             (unsigned long)payloadLen);
+  }
+  return ok;
+}
+
+bool writeDataChunk_(uint32_t payloadLen) {
+  if (!s_chunkBuffer || !s_chunkPayload || payloadLen > s_chunkPayloadCapacity) {
+    return false;
+  }
+  const uint32_t crc = crc32Update_(0, s_chunkPayload, payloadLen);
+  const uint32_t seq = s_sequence++;
+  uint8_t* header = s_chunkBuffer;
+  memcpy(header, kChunkMagic, sizeof(kChunkMagic));
+  putU16_(header + 4, kChunkHeaderVersion);
+  putU16_(header + 6, (uint16_t)ChunkType::Data);
+  putU32_(header + 8, seq);
+  putU32_(header + 12, payloadLen);
+  putU32_(header + 16, crc);
+
+  const uint32_t totalBytes = kChunkHeaderLen + payloadLen;
+  const bool ok = writeBytes_(header, totalBytes);
+  if (!ok) {
+    BDQ_LOGW("data chunk write failed seq=%lu len=%lu\n",
              (unsigned long)seq,
              (unsigned long)payloadLen);
   }
@@ -1415,7 +1494,8 @@ void resetChunkState_() {
 }
 
 bool allocChunkBuffer_(uint32_t targetBytes) {
-  free(s_chunkPayload);
+  free(s_chunkBuffer);
+  s_chunkBuffer = nullptr;
   s_chunkPayload = nullptr;
   s_chunkPayloadCapacity = 0;
   s_framesPerChunk = 0;
@@ -1423,23 +1503,30 @@ bool allocChunkBuffer_(uint32_t targetBytes) {
   if (targetBytes < 1024) targetBytes = 1024;
   if (targetBytes > 65535) targetBytes = 65535;
 
-  uint32_t frames = (targetBytes > kDataPayloadHeaderLen)
-                      ? ((targetBytes - kDataPayloadHeaderLen) / s_frameSize)
-                      : 1;
-  if (frames < 1) frames = 1;
-  if (frames > kMaxFramesPerChunk) frames = kMaxFramesPerChunk;
+  for (uint32_t attempt = targetBytes; attempt >= 1024; attempt /= 2) {
+    uint32_t frames = (attempt > kDataPayloadHeaderLen)
+                        ? ((attempt - kDataPayloadHeaderLen) / s_frameSize)
+                        : 1;
+    if (frames < 1) frames = 1;
+    if (frames > kMaxFramesPerChunk) frames = kMaxFramesPerChunk;
 
-  const uint32_t payloadCapacity = kDataPayloadHeaderLen + frames * s_frameSize;
-  s_chunkPayload = static_cast<uint8_t*>(malloc(payloadCapacity));
-  if (!s_chunkPayload) {
-    BDQ_LOGE("chunk buffer allocation failed bytes=%lu\n", (unsigned long)payloadCapacity);
-    return false;
+    const uint32_t payloadCapacity = kDataPayloadHeaderLen + frames * s_frameSize;
+    s_chunkBuffer = static_cast<uint8_t*>(malloc(kChunkHeaderLen + payloadCapacity));
+    if (!s_chunkBuffer) continue;
+
+    s_chunkPayload = s_chunkBuffer + kChunkHeaderLen;
+    s_chunkPayloadCapacity = payloadCapacity;
+    s_framesPerChunk = (uint16_t)frames;
+    if (attempt != targetBytes) {
+      BDQ_LOGW("chunk buffer reduced to %lu bytes after allocation fallback\n",
+               (unsigned long)payloadCapacity);
+    }
+    resetChunkState_();
+    return true;
   }
 
-  s_chunkPayloadCapacity = payloadCapacity;
-  s_framesPerChunk = (uint16_t)frames;
-  resetChunkState_();
-  return true;
+  BDQ_LOGE("chunk buffer allocation failed target=%lu\n", (unsigned long)targetBytes);
+  return false;
 }
 
 uint16_t flagsFromValueError_(uint16_t flags, float value) {
@@ -1574,6 +1661,8 @@ String buildFinalSummaryJson_(const BdqLogEndInfo& info) {
   appendKeyString_(out, 1, "path", s_logPath.c_str());
   appendKeyUInt_(out, 1, "samples_written", s_samplesWritten);
   appendKeyUInt_(out, 1, "data_chunks_written", s_dataChunksWritten);
+  appendKeyUInt_(out, 1, "data_chunk_buffer_bytes", s_chunkPayloadCapacity);
+  appendKeyUInt_(out, 1, "data_chunk_frames", s_framesPerChunk);
   appendKeyUInt_(out, 1, "samples_dropped", info.samplesDropped);
   appendKeyUInt_(out, 1, "queue_max", info.queueMax);
   appendKeyUInt_(out, 1, "queue_depth", info.queueDepth);
@@ -1592,6 +1681,7 @@ String buildFinalSummaryJson_(const BdqLogEndInfo& info) {
   appendTimingSummary_(out, 1, "storage_drain_loop_us", storageTiming.drainLoopUs);
   appendKeyUInt_(out, 1, "storage_drain_loops", storageTiming.drainLoops);
   appendKeyUInt_(out, 1, "storage_drain_rows", storageTiming.drainRows);
+  appendStorageWriteStalls_(out, 1, storageTiming);
   appendAdcTiming_(out, 1, info.externalAdcTiming ? *info.externalAdcTiming : emptyExternalAdcTiming_());
   appendSensorTiming_(out, 1, info.sensorTiming ? *info.sensorTiming : emptySensorTiming_());
   appendI2CSchedulerTiming_(out, 1, info.i2cSchedulerTiming ? *info.i2cSchedulerTiming : emptyI2CSchedulerTiming_());
@@ -1654,6 +1744,9 @@ bool begin(File& file, const BdqLogSessionInfo& info) {
 bool writeSample(uint32_t sampleId, uint64_t tsMs, const float* values, uint16_t nValues, bool mark) {
   if (!s_active) return false;
 
+  s_lastDataChunkFrameCount = 0;
+  s_lastDataChunkBytes = 0;
+
   if (s_pendingFrames >= s_framesPerChunk) {
     if (!flushDataChunk()) return false;
   }
@@ -1662,6 +1755,8 @@ bool writeSample(uint32_t sampleId, uint64_t tsMs, const float* values, uint16_t
 }
 
 bool flushDataChunk() {
+  s_lastDataChunkFrameCount = 0;
+  s_lastDataChunkBytes = 0;
   if (!s_active || s_pendingFrames == 0 || !s_chunkPayload) return false;
 
   putU32_(s_chunkPayload + 0, s_firstPendingSampleId);
@@ -1671,7 +1766,10 @@ bool flushDataChunk() {
   putU16_(s_chunkPayload + 18, 0);
 
   const uint32_t payloadLen = kDataPayloadHeaderLen + ((uint32_t)s_pendingFrames * s_frameSize);
-  const bool ok = writeChunk_(ChunkType::Data, s_chunkPayload, payloadLen);
+  const uint16_t frameCount = s_pendingFrames;
+  const bool ok = writeDataChunk_(payloadLen);
+  s_lastDataChunkFrameCount = frameCount;
+  s_lastDataChunkBytes = kChunkHeaderLen + payloadLen;
   if (ok) {
     ++s_dataChunksWritten;
     resetChunkState_();
@@ -1700,7 +1798,8 @@ bool end(const BdqLogEndInfo& info) {
 }
 
 void reset() {
-  free(s_chunkPayload);
+  free(s_chunkBuffer);
+  s_chunkBuffer = nullptr;
   s_chunkPayload = nullptr;
   s_chunkPayloadCapacity = 0;
   s_file = nullptr;
@@ -1710,6 +1809,8 @@ void reset() {
   s_frameSize = 0;
   s_framesPerChunk = 0;
   resetChunkState_();
+  s_lastDataChunkFrameCount = 0;
+  s_lastDataChunkBytes = 0;
   s_samplesWritten = 0;
   s_dataChunksWritten = 0;
   s_samplePeriodUs = 0;
@@ -1731,6 +1832,14 @@ uint16_t frameSizeBytes() {
 
 uint16_t pendingFrameCount() {
   return s_pendingFrames;
+}
+
+uint16_t lastDataChunkFrameCount() {
+  return s_lastDataChunkFrameCount;
+}
+
+uint32_t lastDataChunkBytes() {
+  return s_lastDataChunkBytes;
 }
 
 uint32_t samplesWritten() {
