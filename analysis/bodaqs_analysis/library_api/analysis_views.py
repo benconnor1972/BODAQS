@@ -14,6 +14,7 @@ ANALYSIS_ADEQUACY_VERSION = 2
 ANALYSIS_ADEQUACY_POLICY_VERSION = 2
 
 SIMPLE_SUSPENSION_VIEW_ID = "simple-suspension"
+SUSPENSION_PHASE_DIAGRAM_VIEW_ID = "suspension-phase-diagram"
 TRACK_ANALYSIS_VIEW_ID = "track-analysis-lap-timing"
 _SUSPENSION_ENDS = ("front", "rear")
 _REQUIRED_EVENT_TYPES = ("compressions_all", "rebounds_all")
@@ -28,7 +29,7 @@ _REQUIRED_METRIC_COLUMNS = (
 def list_analysis_views() -> list[dict[str, Any]]:
     """Return supported analysis view descriptors."""
 
-    return [_simple_suspension_view_descriptor(), _track_analysis_view_descriptor()]
+    return [_simple_suspension_view_descriptor(), _suspension_phase_diagram_view_descriptor(), _track_analysis_view_descriptor()]
 
 
 def get_analysis_view(view_id: str) -> dict[str, Any]:
@@ -62,6 +63,8 @@ def evaluate_analysis_view_adequacy(
     view = get_analysis_view(view_id)
     if view["view_id"] == SIMPLE_SUSPENSION_VIEW_ID:
         return _simple_suspension_adequacy(view, scope=scope, session_rows=session_rows)
+    if view["view_id"] == SUSPENSION_PHASE_DIAGRAM_VIEW_ID:
+        return _suspension_phase_diagram_adequacy(view, scope=scope, session_rows=session_rows)
     if view["view_id"] == TRACK_ANALYSIS_VIEW_ID:
         return _track_analysis_adequacy(view, scope=scope, session_rows=session_rows)
     raise AnalysisViewNotFoundError(
@@ -164,6 +167,41 @@ def _track_analysis_view_descriptor() -> dict[str, Any]:
     }
 
 
+def _suspension_phase_diagram_view_descriptor() -> dict[str, Any]:
+    return {
+        "schema": "bodaqs.analysis_view",
+        "version": 1,
+        "view_id": SUSPENSION_PHASE_DIAGRAM_VIEW_ID,
+        "display_name": "Suspension Phase Diagram",
+        "category": "Suspension",
+        "description": "Compare continuous wheel displacement and velocity as density phase diagrams.",
+        "route": "/analysis/suspension-phase-diagram",
+        "scope_kinds": ["study_set", "session_refs"],
+        "adequacy_policy": "partial",
+        "requirements": {
+            "required": [{
+                "id": "continuous_wheel_motion",
+                "label": "Continuous wheel displacement and velocity",
+                "applies_to": "session_end",
+                "minimum": "at_least_one_end",
+                "description": "At least one suspension end must expose paired continuous wheel displacement and velocity signals.",
+            }],
+            "recommended": [{
+                "id": "both_ends",
+                "label": "Front and rear ends",
+                "applies_to": "session",
+                "description": "Both ends are available for front-vs-rear comparison.",
+            }],
+            "optional": [{
+                "id": "gps",
+                "label": "GPS data",
+                "applies_to": "session",
+                "description": "GPS data is available for track-sector filtering.",
+            }],
+        },
+    }
+
+
 def _simple_suspension_adequacy(
     view: Mapping[str, Any],
     *,
@@ -232,6 +270,33 @@ def _simple_suspension_adequacy(
         "messages": _scope_messages(session_results, scope_status=scope_status),
         "session_results": session_results,
     })
+
+
+def _suspension_phase_diagram_adequacy(
+    view: Mapping[str, Any],
+    *,
+    scope: Mapping[str, Any],
+    session_rows: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    session_results = [_suspension_phase_diagram_session_result(row) for row in session_rows]
+    usable_sessions = [result for result in session_results if bool(result["usable"])]
+    blocked_sessions = [result for result in session_results if not bool(result["usable"])]
+    scope_status = "blocked" if not usable_sessions else "partial" if blocked_sessions else "warning" if any(result["status"] != "ready" for result in session_results) else "ready"
+    usable_units = [
+        {"session_ref_id": result["session_ref_id"], "library_id": result["library_id"], "session_key": result["session_key"], "run_id": result["run_id"], "session_id": result["session_id"], "unit_kind": "session_end", "end": end}
+        for result in session_results for end, end_result in result["ends"].items() if end_result.get("usable")
+    ]
+    excluded_units = [
+        {"session_ref_id": result["session_ref_id"], "library_id": result["library_id"], "session_key": result["session_key"], "run_id": result["run_id"], "session_id": result["session_id"], "unit_kind": "session_end", "end": end, "missing_required": list(end_result.get("missing_required") or []), "reason": "; ".join(str(item) for item in end_result.get("missing_required") or [])}
+        for result in session_results for end, end_result in result["ends"].items() if not end_result.get("usable")
+    ]
+    adequacy = {
+        "schema": ANALYSIS_ADEQUACY_SCHEMA, "version": ANALYSIS_ADEQUACY_VERSION, "view_id": view["view_id"], "display_name": view["display_name"], "policy": view["adequacy_policy"], "status": scope_status,
+        "summary": _scope_summary(scope_status, usable_sessions=len(usable_sessions), total_sessions=len(session_results)), "scope": dict(scope), "requirements": view["requirements"],
+        "total_session_count": len(session_results), "usable_session_count": len(usable_sessions), "blocked_session_count": len(blocked_sessions), "usable_units": usable_units, "excluded_units": excluded_units,
+        "messages": _scope_messages(session_results, scope_status=scope_status), "session_results": session_results,
+    }
+    return _with_criterion_results(view, adequacy)
 
 
 def _track_analysis_adequacy(
@@ -317,6 +382,8 @@ def _with_criterion_results(view: Mapping[str, Any], adequacy: dict[str, Any]) -
         result["session_ref"] = _session_ref(result)
         if view_id == SIMPLE_SUSPENSION_VIEW_ID:
             result["criteria"] = _simple_suspension_criteria(result)
+        elif view_id == SUSPENSION_PHASE_DIAGRAM_VIEW_ID:
+            result["criteria"] = _suspension_phase_diagram_criteria(result)
         elif view_id == TRACK_ANALYSIS_VIEW_ID:
             result["criteria"] = _track_analysis_criteria(result)
 
@@ -369,6 +436,29 @@ def _simple_suspension_criteria(result: Mapping[str, Any]) -> list[dict[str, Any
             "GPS data is available."
             if "gps" not in (result.get("missing_optional") or [])
             else "GPS data is unavailable.",
+        ),
+    ]
+
+
+def _suspension_phase_diagram_criteria(result: Mapping[str, Any]) -> list[dict[str, Any]]:
+    usable_end_count = int(result.get("usable_end_count") or 0)
+    ends = result.get("ends") if isinstance(result.get("ends"), Mapping) else {}
+    usable_ends = [str(end).title() for end, value in ends.items() if isinstance(value, Mapping) and value.get("usable")]
+    return [
+        _criterion(
+            "continuous_wheel_motion",
+            usable_end_count > 0,
+            f"Paired continuous wheel displacement and velocity signals found for {', '.join(usable_ends) or 'no'} suspension end(s).",
+        ),
+        _criterion(
+            "both_ends",
+            usable_end_count == len(_SUSPENSION_ENDS),
+            "Both suspension ends have paired continuous wheel-motion signals." if usable_end_count == len(_SUSPENSION_ENDS) else "One or more suspension ends lack paired continuous wheel-motion signals.",
+        ),
+        _criterion(
+            "gps",
+            "gps" not in (result.get("missing_optional") or []),
+            "GPS data is available." if "gps" not in (result.get("missing_optional") or []) else "GPS data is unavailable.",
         ),
     ]
 
@@ -471,6 +561,22 @@ def _simple_suspension_session_result(row: Mapping[str, Any]) -> dict[str, Any]:
         "ends": end_results,
         "missing_recommended": missing_recommended,
         "missing_optional": missing_optional,
+        "messages": _session_messages(missing_recommended, missing_optional, usable_end_count=usable_end_count),
+    }
+
+
+def _suspension_phase_diagram_session_result(row: Mapping[str, Any]) -> dict[str, Any]:
+    signals = [signal for signal in row.get("available_signals") or [] if isinstance(signal, Mapping)]
+    end_results = {end: _end_result(end, signals, has_event_velocity_metrics=False) for end in _SUSPENSION_ENDS}
+    usable_end_count = sum(1 for result in end_results.values() if result["usable"])
+    missing_recommended = [] if usable_end_count == len(_SUSPENSION_ENDS) else ["both_ends"]
+    gps_summary = row.get("gps_summary") if isinstance(row.get("gps_summary"), Mapping) else {}
+    missing_optional = [] if bool(gps_summary.get("present")) else ["gps"]
+    status = "blocked" if usable_end_count == 0 else "warning" if missing_recommended or missing_optional else "ready"
+    return {
+        "session_ref_id": row.get("session_ref_id"), "library_id": row.get("library_id"), "session_key": row.get("session_key"), "run_id": row.get("run_id"), "session_id": row.get("session_id"), "label": _session_label(row),
+        "status": status, "usable": usable_end_count > 0, "usable_end_count": usable_end_count, "ends": end_results,
+        "missing_recommended": missing_recommended, "missing_optional": missing_optional,
         "messages": _session_messages(missing_recommended, missing_optional, usable_end_count=usable_end_count),
     }
 

@@ -1498,7 +1498,7 @@ function App() {
   }
 
   function openAnalysisView(viewId: string, studySet: StudySet) {
-    if (viewId === 'simple-suspension' || viewId === 'track-analysis-lap-timing') {
+    if (viewId === 'simple-suspension' || viewId === 'suspension-phase-diagram' || viewId === 'track-analysis-lap-timing') {
       const url = analysisRouteUrl(viewId, studySet)
       const opened = window.open(url, '_blank')
       if (!opened) {
@@ -2977,6 +2977,8 @@ function AnalysisRoutePage({
   const viewTitle =
     route.viewId === 'simple-suspension'
       ? 'Simple Suspension Analysis'
+      : route.viewId === 'suspension-phase-diagram'
+        ? 'Suspension Phase Diagram'
       : route.viewId === 'track-analysis-lap-timing'
         ? 'Track Analysis and Lap Timing'
         : route.viewId
@@ -3014,7 +3016,7 @@ function AnalysisRoutePage({
               'This analysis tab could not find its Study Set scope. Open the analysis again from the Library Browser or Study Set Builder.'}
           </p>
         </section>
-      ) : route.viewId === 'simple-suspension' ? (
+      ) : route.viewId === 'simple-suspension' || route.viewId === 'suspension-phase-diagram' ? (
         <section className="analysis-route-content">
           {scopeNotice && (
             <div className={`analysis-route-notice ${scopeNotice.kind}`}>
@@ -3038,6 +3040,7 @@ function AnalysisRoutePage({
               tracks={tracks}
               dataSource={dataSource}
               bookmarkRefreshToken={bookmarkRefreshToken}
+              mode={route.viewId === 'suspension-phase-diagram' ? 'phase' : 'simple'}
               onInspectSignals={(sessionRef, window) => {
                 const session = sessionByRef(sessionRef, sessions)
                 if (session) {
@@ -3190,6 +3193,9 @@ function browserTabTitle(route: AnalysisRouteState | null) {
   }
   if (route.viewId === 'simple-suspension') {
     return 'simple suspension analysis'
+  }
+  if (route.viewId === 'suspension-phase-diagram') {
+    return 'suspension phase diagram'
   }
   if (route.viewId === 'track-analysis-lap-timing') {
     return 'track analysis and lap timing'

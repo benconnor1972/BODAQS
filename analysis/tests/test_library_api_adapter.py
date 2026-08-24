@@ -1720,7 +1720,7 @@ def test_library_adapter_lists_analysis_views_and_evaluates_simple_suspension_ad
         library_id="default-library",
         display_name="Default Library",
     )
-    ready_ref = _write_simple_suspension_fixture_session(library_root, "run_1", "ready")
+    ready_ref = _write_simple_suspension_fixture_session(library_root, "run_1", "ready", include_velocity_signals=True)
     warning_ref = _write_simple_suspension_fixture_session(
         library_root,
         "run_1",
@@ -1744,8 +1744,9 @@ def test_library_adapter_lists_analysis_views_and_evaluates_simple_suspension_ad
     assert views[0]["view_id"] == "simple-suspension"
     assert views[0]["requirements"]["required"][0]["id"] == "wheel_motion_data"
     assert views[0]["requirements"]["recommended"][0]["id"] == "both_ends"
-    assert [view["view_id"] for view in views] == ["simple-suspension", "track-analysis-lap-timing"]
-    assert views[1]["requirements"]["required"][0]["id"] == "gps"
+    assert [view["view_id"] for view in views] == ["simple-suspension", "suspension-phase-diagram", "track-analysis-lap-timing"]
+    assert views[1]["requirements"]["required"][0]["id"] == "continuous_wheel_motion"
+    assert views[2]["requirements"]["required"][0]["id"] == "gps"
 
     ready = adapter.get_analysis_view_adequacy("simple-suspension", {"sessions": [ready_ref]})
     assert ready["status"] == "ready"
@@ -1782,6 +1783,19 @@ def test_library_adapter_lists_analysis_views_and_evaluates_simple_suspension_ad
     blocked = adapter.get_analysis_view_adequacy("simple-suspension", {"sessions": [blocked_ref]})
     assert blocked["status"] == "blocked"
     assert blocked["usable_session_count"] == 0
+
+    phase_ready = adapter.get_analysis_view_adequacy("suspension-phase-diagram", {"sessions": [ready_ref]})
+    assert phase_ready["status"] == "ready"
+    assert len(phase_ready["usable_units"]) == 2
+    assert {criterion["requirement_id"] for criterion in phase_ready["session_results"][0]["criteria"]} == {
+        "continuous_wheel_motion",
+        "both_ends",
+        "gps",
+    }
+
+    phase_blocked = adapter.get_analysis_view_adequacy("suspension-phase-diagram", {"sessions": [blocked_ref]})
+    assert phase_blocked["status"] == "blocked"
+    assert phase_blocked["usable_session_count"] == 0
 
     track_ready = adapter.get_analysis_view_adequacy("track-analysis-lap-timing", {"sessions": [ready_ref]})
     assert track_ready["status"] == "ready"

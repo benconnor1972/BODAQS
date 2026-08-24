@@ -4898,6 +4898,139 @@ button {
   accent-color: var(--teal);
 }
 
+.viz-frequency-extra-option input.viz-mark-opacity-slider,
+.viz-frequency-extra-option input.viz-mark-size-slider {
+  width: 132px;
+  height: 18px;
+  accent-color: var(--teal);
+  cursor: pointer;
+}
+
+.viz-phase-axis-options {
+  display: grid;
+  gap: 6px;
+  padding: 6px;
+  border: var(--border-subtle);
+  background: var(--surface-warm);
+}
+
+.viz-phase-axis-options > strong {
+  color: var(--ink);
+  font-size: var(--text-caption);
+}
+
+.viz-phase-axis-control {
+  display: grid;
+  gap: 3px;
+}
+
+.viz-phase-axis-control > label {
+  color: var(--muted);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+}
+
+.viz-phase-axis-control > label input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--teal);
+}
+
+.viz-phase-axis-control > small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.viz-phase-range-slider {
+  position: relative;
+  height: 18px;
+}
+
+.viz-phase-range-slider::before,
+.viz-phase-range-slider > span {
+  position: absolute;
+  top: 8px;
+  height: 3px;
+  border-radius: 999px;
+  content: '';
+  pointer-events: none;
+}
+
+.viz-phase-range-slider::before {
+  right: 0;
+  left: 0;
+  background: #c7d2cd;
+}
+
+.viz-phase-range-slider > span {
+  left: var(--phase-range-start);
+  width: var(--phase-range-width);
+  background: var(--teal);
+}
+
+.viz-phase-range-slider input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100% !important;
+  height: 18px !important;
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  pointer-events: none;
+}
+
+.viz-phase-range-zero-tick {
+  position: absolute;
+  top: 4px;
+  width: 1px;
+  height: 11px;
+  background: var(--ink);
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+.viz-phase-range-slider input::-webkit-slider-runnable-track {
+  height: 3px;
+  background: transparent;
+}
+
+.viz-phase-range-slider input::-webkit-slider-thumb {
+  width: 13px;
+  height: 13px;
+  margin-top: -5px;
+  appearance: none;
+  border: 2px solid var(--teal);
+  border-radius: 50%;
+  background: var(--surface);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.viz-phase-range-slider input::-moz-range-track {
+  height: 3px;
+  background: transparent;
+}
+
+.viz-phase-range-slider input::-moz-range-progress {
+  background: transparent;
+}
+
+.viz-phase-range-slider input::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--teal);
+  border-radius: 50%;
+  background: var(--surface);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.viz-phase-range-slider.disabled {
+  opacity: 0.45;
+}
+
 .viz-entity-chip {
   display: inline-flex;
   align-items: center;
@@ -7442,6 +7575,22 @@ button {
   height: auto;
   border: var(--border-subtle);
   background: white;
+}
+
+.phase-diagram-strip {
+  align-items: stretch;
+}
+
+.phase-diagram-tile {
+  min-height: 540px;
+}
+
+.phase-diagram-tile .viz-chart {
+  min-height: 430px;
+}
+
+.phase-diagram-tile .viz-sector-row .viz-chart {
+  min-height: 310px;
 }
 
 .viz-axis {

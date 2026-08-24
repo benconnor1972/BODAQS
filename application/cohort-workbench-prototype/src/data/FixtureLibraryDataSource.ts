@@ -93,13 +93,15 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
   }
 
   async listAnalysisViews(): Promise<AnalysisViewRecord[]> {
-    return [fixtureSimpleSuspensionAnalysisView(), fixtureTrackAnalysisView()]
+    return [fixtureSimpleSuspensionAnalysisView(), fixtureSuspensionPhaseDiagramView(), fixtureTrackAnalysisView()]
   }
 
   async evaluateAnalysisAdequacy(viewId: string, studySet: StudySet): Promise<AnalysisAdequacyResult> {
     const view =
       viewId === 'track-analysis-lap-timing'
         ? fixtureTrackAnalysisView()
+        : viewId === 'suspension-phase-diagram'
+          ? fixtureSuspensionPhaseDiagramView()
         : fixtureSimpleSuspensionAnalysisView()
     const totalSessionCount = studySet.sessions.length
     const usableSessionCount =
@@ -1012,6 +1014,22 @@ function fixtureSimpleSuspensionAnalysisView(): AnalysisViewRecord {
           description: 'GPS and track matches enable sector-based comparisons.',
         },
       ],
+    },
+  }
+}
+
+function fixtureSuspensionPhaseDiagramView(): AnalysisViewRecord {
+  return {
+    id: 'suspension-phase-diagram',
+    displayName: 'Suspension Phase Diagram',
+    category: 'Suspension',
+    description: 'Compare continuous wheel displacement and velocity as density phase diagrams.',
+    route: 'suspension-phase-diagram',
+    adequacyPolicy: 'fixture heuristic',
+    requirements: {
+      required: [{ requirementId: 'continuous_wheel_motion', label: 'Continuous wheel motion', tier: 'required', description: 'At least one suspension end needs paired wheel displacement and velocity signals.' }],
+      recommended: [{ requirementId: 'both_ends', label: 'Both ends', tier: 'recommended', description: 'Front and rear data enables direct front-vs-rear comparison.' }],
+      optional: [{ requirementId: 'gps_and_tracks', label: 'GPS and tracks', tier: 'optional', description: 'GPS and track matches enable sector phase diagrams.' }],
     },
   }
 }

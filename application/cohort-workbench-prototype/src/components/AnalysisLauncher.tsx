@@ -152,7 +152,7 @@ export function AnalysisLauncher({
 function AnalysisViewCard({ item, onOpen }: { item: AnalysisLauncherItem; onOpen: () => void }) {
   const status = item.adequacy?.status ?? 'unknown'
   const statusMeta = analysisStatusMeta(status)
-  const isSupported = item.view.id === 'simple-suspension' || item.view.id === 'track-analysis-lap-timing'
+  const isSupported = item.view.id === 'simple-suspension' || item.view.id === 'suspension-phase-diagram' || item.view.id === 'track-analysis-lap-timing'
   const isBlocked = item.adequacy?.status === 'blocked'
   const canOpen = isSupported && !isBlocked
 
