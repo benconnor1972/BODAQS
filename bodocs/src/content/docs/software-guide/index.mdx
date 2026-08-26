@@ -6,16 +6,10 @@ sidebar:
 ---
 import {Aside, Tabs, TabItem} from '@astrojs/starlight/components';
 import Lede from '@components/Lede.astro';
+import Flag from '@components/Flag.astro';
 import MiniAside from '@components/MiniAside.astro';
 
-<Aside type="caution" title="***This section is out of date***">
-There is BODAQS Analysis software now too. More on this soon - in the meantime, check out these videos:
-<iframe width="560" height="315" src="https://www.youtube.com/embed/V4gr8XfFBcc?si=bJAplxRh-kXe-Mrj" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
-
-<iframe width="560" height="315" src="https://www.youtube.com/embed/HjcBr6v1-Ec?si=BpmfVnZtHPK2Y7TU" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
-</Aside>
-
-BODAQS now has its own analysis software. For most applications, we recommend you use it. Alternative workflows include using data.syn.bike for visualization, or for advanced users with a data science bent, Jupyter Lab.   
+BODAQS has its own analysis software. For most applications, we recommend you use it. Alternative workflows include using data.syn.bike for visualization, or for advanced users with a data science bent, Jupyter Lab.   
 
 <MiniAside>
 Originally, BODAQS exclusively used an interactive computing platform called **Jupyter Lab** to process, select and visualize logger data. Jupyter Lab is widely used in science, engineering, finance and other quantitative disciplines.
@@ -25,6 +19,27 @@ Originally, BODAQS exclusively used an interactive computing platform called **J
 	The reason we made the software this way was that it made it quick and easy to try out new ideas (we still use it for that). But pure notebook-based working is probably best left for power users.
 
 </MiniAside>
+
+There are three pieces of BODAQS software. Normally, you install them all at once. When they are packaged together we refer to them as the **BODAQS Desktop**.
+
+#### The BODAQS Import Manager 
+
+<Flag src="/src/assets/pics/software-guide/bike-profile-complete.png" alt="bike profile">
+The Import Manager is a program that runs on your computer and handles the import, processing, and storage of your log files. It can semi-automatically download and process files for multiple loggers, either by direct WiFi connection or file drag and drop. Processed files are stored in libraries. Each file source can be configured to write files into a particular library so bikes, riders, events etc can be easily kept separate.
+</Flag>
+
+#### The BODAQS Workbench 
+
+<Flag src="/src/assets/pics/homepage/analysis-results.png" alt="analysis results">
+The Workbench is a program that lets you visualize and analyze your data. It is a web application so while it will normally run on your computer it can also be hosted on the internet. The Workbench is launched by a button in the Import Manager.
+</Flag>
+
+#### The BODAQS Library Service 
+
+<Flag src="/src/assets/pics/software-guide/library-service.png" alt="library service">
+The Library Service is normally invisible to users - you will probably never need to concern yourself with it. It starts when the BODAQS Workbench is launched. As the name implies, the Library Service serves data from one or more libraries stored on your computer to the Workbench app. This architecture allows the Workbench to either run locally or be hosted: web browsers can't (and shouldn't) be given free access to your computer's file system.  
+</Flag>
+
 
 ## Suggested workflows
 
