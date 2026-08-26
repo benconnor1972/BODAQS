@@ -3,7 +3,6 @@
 #include <math.h>
 #include <string.h>
 #include <stdlib.h>
-#include <new>
 #include "BoardProfile.h"
 #include "FirmwareInfo.h"
 #include "SensorManager.h"
@@ -98,9 +97,6 @@ uint32_t s_samplePeriodUs = 0;
 uint16_t s_sampleRateHz = 0;
 String s_sessionId;
 String s_logPath;
-String s_timezone;
-String s_startedAtUtc;
-String s_startedAtLocal;
 
 void copyField_(char* dst, size_t cap, const char* src) {
   if (!dst || cap == 0) return;
@@ -164,7 +160,87 @@ bool writeU64_(uint64_t v) {
   return writeBytes_(b, sizeof(b));
 }
 
-void appendJsonEscaped_(String& out, const char* text) {
+class JsonOutput {
+public:
+  virtual ~JsonOutput() = default;
+  virtual bool append(const char* text, size_t length) = 0;
+
+  bool ok() const { return ok_; }
+  uint32_t length() const { return length_; }
+  uint32_t crc32() const { return crc32_; }
+
+  JsonOutput& operator+=(const __FlashStringHelper* text) {
+    const char* chars = reinterpret_cast<const char*>(text);
+    appendChecked_(chars, chars ? strlen(chars) : 0);
+    return *this;
+  }
+
+  JsonOutput& operator+=(const char* text) {
+    appendChecked_(text, text ? strlen(text) : 0);
+    return *this;
+  }
+
+  JsonOutput& operator+=(char value) {
+    appendChecked_(&value, 1);
+    return *this;
+  }
+
+protected:
+  void appendChecked_(const char* text, size_t length) {
+    if (!ok_ || length == 0) return;
+    if (length > UINT32_MAX - length_) {
+      ok_ = false;
+      return;
+    }
+    if (!append(text, length)) {
+      ok_ = false;
+      return;
+    }
+    crc32_ = crc32Update_(crc32_, reinterpret_cast<const uint8_t*>(text), length);
+    length_ += static_cast<uint32_t>(length);
+  }
+
+private:
+  bool ok_ = true;
+  uint32_t length_ = 0;
+  uint32_t crc32_ = 0;
+};
+
+class CountingJsonOutput final : public JsonOutput {
+public:
+  bool append(const char*, size_t) override { return true; }
+};
+
+class FileJsonOutput final : public JsonOutput {
+public:
+  bool append(const char* text, size_t length) override {
+    while (length > 0) {
+      if (used_ == sizeof(buffer_) && !flush_()) return false;
+      const size_t available = sizeof(buffer_) - used_;
+      const size_t chunk = length < available ? length : available;
+      memcpy(buffer_ + used_, text, chunk);
+      used_ += chunk;
+      text += chunk;
+      length -= chunk;
+    }
+    return true;
+  }
+
+  bool finish() { return flush_(); }
+
+private:
+  bool flush_() {
+    if (used_ == 0) return true;
+    if (!writeBytes_(buffer_, used_)) return false;
+    used_ = 0;
+    return true;
+  }
+
+  uint8_t buffer_[1024];
+  size_t used_ = 0;
+};
+
+void appendJsonEscaped_(JsonOutput& out, const char* text) {
   out += '"';
   const char* p = text ? text : "";
   while (*p) {
@@ -191,19 +267,19 @@ void appendJsonEscaped_(String& out, const char* text) {
   out += '"';
 }
 
-void appendKey_(String& out, uint8_t depth, const char* key) {
+void appendKey_(JsonOutput& out, uint8_t depth, const char* key) {
   for (uint8_t i = 0; i < depth; ++i) out += F("  ");
   appendJsonEscaped_(out, key);
   out += F(": ");
 }
 
-void appendKeyString_(String& out, uint8_t depth, const char* key, const char* value, bool comma = true) {
+void appendKeyString_(JsonOutput& out, uint8_t depth, const char* key, const char* value, bool comma = true) {
   appendKey_(out, depth, key);
   appendJsonEscaped_(out, value);
   out += comma ? F(",\n") : F("\n");
 }
 
-void appendKeyUInt_(String& out, uint8_t depth, const char* key, uint64_t value, bool comma = true) {
+void appendKeyUInt_(JsonOutput& out, uint8_t depth, const char* key, uint64_t value, bool comma = true) {
   appendKey_(out, depth, key);
   char buf[24];
   snprintf(buf, sizeof(buf), "%llu", (unsigned long long)value);
@@ -211,13 +287,15 @@ void appendKeyUInt_(String& out, uint8_t depth, const char* key, uint64_t value,
   out += comma ? F(",\n") : F("\n");
 }
 
-void appendKeyInt_(String& out, uint8_t depth, const char* key, int32_t value, bool comma = true) {
+void appendKeyInt_(JsonOutput& out, uint8_t depth, const char* key, int32_t value, bool comma = true) {
   appendKey_(out, depth, key);
-  out += String(value);
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%ld", (long)value);
+  out += buf;
   out += comma ? F(",\n") : F("\n");
 }
 
-void appendKeyHex8_(String& out, uint8_t depth, const char* key, uint8_t value, bool comma = true) {
+void appendKeyHex8_(JsonOutput& out, uint8_t depth, const char* key, uint8_t value, bool comma = true) {
   appendKey_(out, depth, key);
   char buf[7];
   snprintf(buf, sizeof(buf), "\"0x%02X\"", (unsigned)value);
@@ -225,7 +303,7 @@ void appendKeyHex8_(String& out, uint8_t depth, const char* key, uint8_t value, 
   out += comma ? F(",\n") : F("\n");
 }
 
-void appendKeyHex16_(String& out, uint8_t depth, const char* key, uint16_t value, bool comma = true) {
+void appendKeyHex16_(JsonOutput& out, uint8_t depth, const char* key, uint16_t value, bool comma = true) {
   appendKey_(out, depth, key);
   char buf[9];
   snprintf(buf, sizeof(buf), "\"0x%04X\"", (unsigned)value);
@@ -233,7 +311,7 @@ void appendKeyHex16_(String& out, uint8_t depth, const char* key, uint16_t value
   out += comma ? F(",\n") : F("\n");
 }
 
-void appendKeyBool_(String& out, uint8_t depth, const char* key, bool value, bool comma = true) {
+void appendKeyBool_(JsonOutput& out, uint8_t depth, const char* key, bool value, bool comma = true) {
   appendKey_(out, depth, key);
   out += value ? F("true") : F("false");
   out += comma ? F(",\n") : F("\n");
@@ -264,13 +342,15 @@ const I2CBusSchedulerTimingStats& emptyI2CSchedulerTiming_() {
   return empty;
 }
 
-void appendKeyFloat_(String& out, uint8_t depth, const char* key, float value, bool comma = true) {
+void appendKeyFloat_(JsonOutput& out, uint8_t depth, const char* key, float value, bool comma = true) {
   appendKey_(out, depth, key);
-  out += String(value, 6);
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%.6f", (double)value);
+  out += buf;
   out += comma ? F(",\n") : F("\n");
 }
 
-void appendIndent_(String& out, uint8_t depth) {
+void appendIndent_(JsonOutput& out, uint8_t depth) {
   for (uint8_t i = 0; i < depth; ++i) out += F("  ");
 }
 
@@ -300,7 +380,7 @@ const char* imuStartupRejectionName_(uint8_t state, uint16_t mask) {
 }
 
 void appendImuQualityDiagnostics_(
-    String& out,
+    JsonOutput& out,
     uint8_t depth,
     const SensorRuntimeDiagnostics& diagnostics) {
   appendKey_(out, depth, "near_rail_counts");
@@ -403,7 +483,7 @@ void appendImuQualityDiagnostics_(
   out += F("},\n");
 }
 
-void appendTimingSummary_(String& out, uint8_t depth, const char* key, const TimingSummary& s, bool comma = true) {
+void appendTimingSummary_(JsonOutput& out, uint8_t depth, const char* key, const TimingSummary& s, bool comma = true) {
   appendKey_(out, depth, key);
   out += F("{\n");
   appendKeyUInt_(out, depth + 1, "count", s.count);
@@ -433,7 +513,7 @@ const char* storageWriteOperationName_(uint8_t operation) {
   }
 }
 
-void appendStorageWriteStalls_(String& out, uint8_t depth, const StorageTimingStats& stats) {
+void appendStorageWriteStalls_(JsonOutput& out, uint8_t depth, const StorageTimingStats& stats) {
   appendKey_(out, depth, "storage_write_stalls");
   out += F("{\n");
   appendKeyUInt_(out, depth + 1, "threshold_us", stats.writeStallThresholdUs);
@@ -460,7 +540,7 @@ void appendStorageWriteStalls_(String& out, uint8_t depth, const StorageTimingSt
   out += F("},\n");
 }
 
-void appendAdcTiming_(String& out, uint8_t depth, const ExternalAdcTimingStats& stats, bool comma = true) {
+void appendAdcTiming_(JsonOutput& out, uint8_t depth, const ExternalAdcTimingStats& stats, bool comma = true) {
   appendKey_(out, depth, "external_adc_timing");
   out += F("{\n");
   bool wroteAny = false;
@@ -521,7 +601,7 @@ void appendAdcTiming_(String& out, uint8_t depth, const ExternalAdcTimingStats& 
   out += comma ? F("},\n") : F("}\n");
 }
 
-void appendSensorTiming_(String& out, uint8_t depth, const SensorTimingStats& stats, bool comma = true) {
+void appendSensorTiming_(JsonOutput& out, uint8_t depth, const SensorTimingStats& stats, bool comma = true) {
   appendKey_(out, depth, "sensor_timing");
   out += F("{\n");
   appendKeyUInt_(out, depth + 1, "sensor_count", stats.sensorCount);
@@ -556,7 +636,7 @@ void appendSensorTiming_(String& out, uint8_t depth, const SensorTimingStats& st
   out += comma ? F("},\n") : F("}\n");
 }
 
-void appendI2CSchedulerTiming_(String& out,
+void appendI2CSchedulerTiming_(JsonOutput& out,
                                uint8_t depth,
                                const I2CBusSchedulerTimingStats& stats,
                                bool comma = true) {
@@ -629,7 +709,7 @@ void appendI2CSchedulerTiming_(String& out,
   out += comma ? F("},\n") : F("}\n");
 }
 
-void appendI2CBusDiagnostics_(String& out,
+void appendI2CBusDiagnostics_(JsonOutput& out,
                               uint8_t depth,
                               const board::BoardProfile* bp,
                               bool comma = true) {
@@ -700,7 +780,7 @@ const char* runtimeFailureStageName_(SensorRuntimeFailureStage stage) {
   }
 }
 
-void appendRuntimeFailure_(String& out,
+void appendRuntimeFailure_(JsonOutput& out,
                            uint8_t depth,
                            const char* key,
                            const SensorRuntimeFailure& failure,
@@ -716,7 +796,7 @@ void appendRuntimeFailure_(String& out,
   out += comma ? F("},\n") : F("}\n");
 }
 
-void appendRuntimeDiagnostics_(String& out, uint8_t depth, bool comma = true) {
+void appendRuntimeDiagnostics_(JsonOutput& out, uint8_t depth, bool comma = true) {
   uint8_t sensorCount = 0;
   const uint8_t registered = SensorManager::count();
   SensorRuntimeDiagnostics diagnostics;
@@ -962,7 +1042,7 @@ StorageType storageTypeFor_(const SensorColumnDescriptor& desc) {
   }
 }
 
-void appendDeviceConfigObject_(String& out,
+void appendDeviceConfigObject_(JsonOutput& out,
                                const SensorDeviceConfigDescriptor& cfg,
                                uint8_t depth,
                                bool comma) {
@@ -1006,28 +1086,21 @@ void appendDeviceConfigObject_(String& out,
   out += comma ? F("},\n") : F("}\n");
 }
 
-bool appendDeviceConfigs_(String& out) {
+bool appendDeviceConfigs_(JsonOutput& out) {
   const uint16_t sensorCount = SensorManager::describeSensors(nullptr, 0);
-  SensorMetadataDescriptor* sensors = sensorCount ? new (std::nothrow) SensorMetadataDescriptor[sensorCount] : nullptr;
-  if (sensorCount && !sensors) return false;
-
-  const uint16_t sensorsWritten = SensorManager::describeSensors(sensors, sensorCount);
   uint16_t configCount = 0;
-  for (uint16_t i = 0; i < sensorsWritten; ++i) {
-    if (sensors[i].hasDeviceConfig) ++configCount;
+  SensorMetadataDescriptor sensor;
+  for (uint16_t i = 0; i < sensorCount; ++i) {
+    if (SensorManager::describeSensorAt(i, sensor) && sensor.hasDeviceConfig) ++configCount;
   }
 
-  if (configCount == 0) {
-    delete[] sensors;
-    return false;
-  }
+  if (configCount == 0) return false;
 
   appendKey_(out, 1, "device_configs");
   out += F("{\n");
   uint16_t written = 0;
-  for (uint16_t i = 0; i < sensorsWritten; ++i) {
-    const SensorMetadataDescriptor& sensor = sensors[i];
-    if (!sensor.hasDeviceConfig) continue;
+  for (uint16_t i = 0; i < sensorCount; ++i) {
+    if (!SensorManager::describeSensorAt(i, sensor) || !sensor.hasDeviceConfig) continue;
 
     out += F("    ");
     appendJsonEscaped_(out, sensor.sensorId[0] ? sensor.sensorId : sensor.name);
@@ -1035,13 +1108,11 @@ bool appendDeviceConfigs_(String& out) {
     appendDeviceConfigObject_(out, sensor.deviceConfig, 2, ++written < configCount);
   }
   out += F("  },\n");
-
-  delete[] sensors;
-  return true;
+  return out.ok();
 }
 
 void appendFloatVector3_(
-    String& out,
+    JsonOutput& out,
     uint8_t depth,
     const char* key,
     const float values[3],
@@ -1050,13 +1121,15 @@ void appendFloatVector3_(
   out += '[';
   for (uint8_t i = 0; i < 3; ++i) {
     if (i) out += F(", ");
-    out += String(values[i], 8);
+    char value[32];
+    snprintf(value, sizeof(value), "%.8f", (double)values[i]);
+    out += value;
   }
   out += comma ? F("],\n") : F("]\n");
 }
 
 void appendRotationMatrix_(
-    String& out,
+    JsonOutput& out,
     uint8_t depth,
     const float matrix[3][3],
     bool comma = true) {
@@ -1067,7 +1140,9 @@ void appendRotationMatrix_(
     out += '[';
     for (uint8_t column = 0; column < 3; ++column) {
       if (column) out += F(", ");
-      out += String(matrix[row][column], 8);
+      char value[32];
+      snprintf(value, sizeof(value), "%.8f", (double)matrix[row][column]);
+      out += value;
     }
     out += row < 2 ? F("],\n") : F("]\n");
   }
@@ -1076,7 +1151,7 @@ void appendRotationMatrix_(
 }
 
 void appendImuConfigObject_(
-    String& out,
+    JsonOutput& out,
     const SensorImuConfigDescriptor& imu,
     uint8_t depth,
     bool comma) {
@@ -1209,32 +1284,98 @@ void appendImuConfigObject_(
   out += comma ? F("},\n") : F("}\n");
 }
 
-bool appendImuConfigs_(String& out) {
+bool appendImuConfigs_(JsonOutput& out) {
   const uint16_t sensorCount = SensorManager::describeSensors(nullptr, 0);
-  SensorMetadataDescriptor* sensors = sensorCount ? new (std::nothrow) SensorMetadataDescriptor[sensorCount] : nullptr;
-  if (sensorCount && !sensors) return false;
-  const uint16_t sensorsWritten = SensorManager::describeSensors(sensors, sensorCount);
   uint16_t imuCount = 0;
-  for (uint16_t i = 0; i < sensorsWritten; ++i) if (sensors[i].hasImuConfig) ++imuCount;
-  if (imuCount == 0) {
-    delete[] sensors;
-    return false;
+  SensorMetadataDescriptor sensor;
+  for (uint16_t i = 0; i < sensorCount; ++i) {
+    if (SensorManager::describeSensorAt(i, sensor) && sensor.hasImuConfig) ++imuCount;
   }
+  if (imuCount == 0) return false;
 
   appendKey_(out, 1, "imu_configs");
   out += F("{\n");
   uint16_t written = 0;
-  for (uint16_t i = 0; i < sensorsWritten; ++i) {
-    if (!sensors[i].hasImuConfig) continue;
+  for (uint16_t i = 0; i < sensorCount; ++i) {
+    if (!SensorManager::describeSensorAt(i, sensor) || !sensor.hasImuConfig) continue;
     appendIndent_(out, 2);
-    appendJsonEscaped_(out, sensors[i].sensorId[0] ? sensors[i].sensorId : sensors[i].name);
+    appendJsonEscaped_(out, sensor.sensorId[0] ? sensor.sensorId : sensor.name);
     out += F(": ");
-    appendImuConfigObject_(out, sensors[i].imuConfig, 2, ++written < imuCount);
+    appendImuConfigObject_(out, sensor.imuConfig, 2, ++written < imuCount);
   }
   appendIndent_(out, 1);
   out += F("},\n");
-  delete[] sensors;
-  return true;
+  return out.ok();
+}
+
+void appendSensorObject_(JsonOutput& out,
+                         const SensorMetadataDescriptor& sensor,
+                         uint8_t depth,
+                         bool comma) {
+  out += F("{\n");
+  appendKeyString_(out, depth + 1, "name", sensor.name);
+  appendKeyString_(out, depth + 1, "type", sensor.type);
+  if (sensor.domain[0]) appendKeyString_(out, depth + 1, "domain", sensor.domain);
+  appendKeyString_(out, depth + 1, "raw_unit", sensor.rawUnit);
+
+  if (sensor.hasTracking) {
+    appendKey_(out, depth + 1, "tracking");
+    out += F("{\n");
+    appendKeyUInt_(out, depth + 2, "counts_per_turn", sensor.countsPerTurn);
+    appendKeyUInt_(out, depth + 2, "wrap_threshold_counts", sensor.wrapThresholdCounts);
+    appendKeyBool_(out, depth + 2, "assume_turn0_at_start", sensor.assumeTurn0AtStart, false);
+    appendIndent_(out, depth + 1);
+    out += F("},\n");
+  }
+
+  if (sensor.hasDeviceConfig) {
+    appendKey_(out, depth + 1, "device_config");
+    appendDeviceConfigObject_(out, sensor.deviceConfig, depth + 1, true);
+  }
+  if (sensor.hasImuConfig) {
+    appendKey_(out, depth + 1, "imu_config");
+    appendImuConfigObject_(out, sensor.imuConfig, depth + 1, true);
+  }
+
+  if (sensor.hasCalibration) {
+    appendKey_(out, depth + 1, "calibration");
+    out += F("{\n");
+    appendKeyString_(out, depth + 2, "type",
+                     sensor.calibrationType[0] ? sensor.calibrationType : "linear");
+    appendKeyString_(out, depth + 2, "input_unit", sensor.calibrationInputUnit);
+    appendKeyString_(out, depth + 2, "output_unit", sensor.calibrationOutputUnit);
+    appendKeyInt_(out, depth + 2, "installed_zero_count", sensor.installedZeroCount);
+    appendKeyInt_(out, depth + 2, "sensor_zero_count", sensor.sensorZeroCount);
+    appendKeyInt_(out, depth + 2, "sensor_full_count", sensor.sensorFullCount);
+    appendKeyFloat_(out, depth + 2, "sensor_full_travel", sensor.sensorFullTravel);
+    if (sensor.direction[0]) appendKeyString_(out, depth + 2, "direction", sensor.direction);
+    appendKeyBool_(out, depth + 2, "invert", sensor.invert, false);
+    appendIndent_(out, depth + 1);
+    out += F("}\n");
+  } else {
+    appendKeyBool_(out, depth + 1, "calibration_available", false, false);
+  }
+
+  appendIndent_(out, depth);
+  out += comma ? F("},\n") : F("}\n");
+}
+
+bool appendSensors_(JsonOutput& out) {
+  const uint16_t sensorCount = SensorManager::describeSensors(nullptr, 0);
+  appendKey_(out, 1, "sensors");
+  out += F("{\n");
+  uint16_t written = 0;
+  SensorMetadataDescriptor sensor;
+  for (uint16_t i = 0; i < sensorCount; ++i) {
+    if (!SensorManager::describeSensorAt(i, sensor)) continue;
+    appendIndent_(out, 2);
+    appendJsonEscaped_(out, sensor.sensorId[0] ? sensor.sensorId : sensor.name);
+    out += F(": ");
+    appendSensorObject_(out, sensor, 2, ++written < sensorCount);
+  }
+  appendIndent_(out, 1);
+  out += F("},\n");
+  return out.ok();
 }
 
 bool buildColumnLayout_() {
@@ -1242,11 +1383,11 @@ bool buildColumnLayout_() {
   s_frameSize = 4; // sample_id
 
   const uint16_t total = SensorManager::describeSensorColumns(nullptr, 0);
-  const uint16_t n = (total > kMaxColumns) ? kMaxColumns : total;
-
   if (total > kMaxColumns) {
-    BDQ_LOGW("schema truncated: columns=%u max=%u\n", (unsigned)total, (unsigned)kMaxColumns);
+    BDQ_LOGE("schema rejected: columns=%u max=%u\n", (unsigned)total, (unsigned)kMaxColumns);
+    return false;
   }
+  const uint16_t n = total;
 
   for (uint16_t i = 0; i < n; ++i) {
     SensorColumnDescriptor desc;
@@ -1286,13 +1427,11 @@ bool buildColumnLayout_() {
   return s_frameSize > 6;
 }
 
-String buildMetadataJson_(const BdqLogSessionInfo& info) {
+bool serializeMetadataJson_(JsonOutput& out, const BdqLogSessionInfo& info) {
   const LoggerConfig* cfg = info.config;
   const String loggerIdText = cfg ? ConfigManager::loggerId(*cfg) : String("unknown");
   const char* loggerId = loggerIdText.c_str();
 
-  String out;
-  out.reserve(1536);
   out += F("{\n");
   appendKeyString_(out, 1, "format", "bdq.v1");
   appendKeyString_(out, 1, "format_name", "BDQLOG v1");
@@ -1309,14 +1448,15 @@ String buildMetadataJson_(const BdqLogSessionInfo& info) {
   appendKeyString_(out, 1, "timezone", info.timezone && *info.timezone ? info.timezone : "unknown");
   appendKeyString_(out, 1, "started_at_utc", info.startedAtUtc);
   appendKeyString_(out, 1, "started_at_local", info.startedAtLocal);
+  appendSensors_(out);
   appendDeviceConfigs_(out);
   appendImuConfigs_(out);
   appendKeyString_(out, 1, "log_format", cfg ? ConfigManager::logFormatKey(cfg->logFormat) : "bodaqs_compact_binary", false);
   out += F("}\n");
-  return out;
+  return out.ok();
 }
 
-void appendChannelJson_(String& out,
+void appendChannelJson_(JsonOutput& out,
                         const char* field,
                         const char* quantity,
                         const char* unit,
@@ -1333,7 +1473,14 @@ void appendChannelJson_(String& out,
                         const char* kind,
                         const char* processingRole,
                         const char* columnClass,
+                        const char* calibrationId,
+                        const char* transformChain,
+                        const char* notes,
                         bool raw,
+                        bool required,
+                        bool primary,
+                        bool calibrated,
+                        bool transformed,
                         bool semanticSelectionExcluded,
                         bool allowNaN,
                         bool comma) {
@@ -1354,15 +1501,28 @@ void appendChannelJson_(String& out,
   if (source && *source) appendKeyString_(out, 3, "source", source);
   if ((kind && *kind) || raw) appendKeyString_(out, 3, "kind", kind && *kind ? kind : "raw");
   if (processingRole && *processingRole) appendKeyString_(out, 3, "processing_role", processingRole);
+  if (calibrationId && *calibrationId) appendKeyString_(out, 3, "calibration_ref", calibrationId);
+  if (transformChain && *transformChain) {
+    appendKey_(out, 3, "transform_chain");
+    out += '[';
+    appendJsonEscaped_(out, transformChain);
+    out += F("],\n");
+  } else {
+    appendKey_(out, 3, "transform_chain");
+    out += F("[],\n");
+  }
+  if (notes && *notes) appendKeyString_(out, 3, "notes", notes);
+  appendKeyBool_(out, 3, "required", required);
+  appendKeyBool_(out, 3, "primary", primary);
+  appendKeyBool_(out, 3, "calibrated", calibrated);
+  appendKeyBool_(out, 3, "transformed", transformed);
   if (semanticSelectionExcluded) appendKeyBool_(out, 3, "semantic_selection_excluded", true);
   if (allowNaN) appendKeyBool_(out, 3, "nan_allowed", true);
   appendKeyBool_(out, 3, "raw", raw, false);
   out += comma ? F("    },\n") : F("    }\n");
 }
 
-String buildSchemaJson_() {
-  String out;
-  out.reserve(1024 + (s_columnCount * 320));
+bool serializeSchemaJson_(JsonOutput& out) {
   out += F("{\n");
   appendKeyString_(out, 1, "schema_format", "bdq.channel_schema.v1");
   appendKeyString_(out, 1, "frame_layout", "fixed_mixed_v1");
@@ -1380,10 +1540,12 @@ String buildSchemaJson_() {
 
   appendKey_(out, 1, "channels");
   out += F("[\n");
-  appendChannelJson_(out, "sample_id", "sample_index", "sample", "uint32", 0, "", "", "", "", "", "", "", "frame", "", "", "index", false, false, false, true);
+  appendChannelJson_(out, "sample_id", "sample_index", "sample", "uint32", 0, "", "", "", "", "", "", "", "frame", "", "", "index", "", "", "", false, true, false, false, false, false, false, true);
 
   for (uint16_t i = 0; i < s_columnCount; ++i) {
     const ColumnLayout& col = s_columns[i];
+    SensorColumnDescriptor descriptor;
+    const bool described = SensorManager::describeSensorColumnAt(col.valueIndex, descriptor);
     const bool comma = true;
     const char* quantity = col.quantity[0] ? col.quantity : (col.raw ? "raw" : "value");
     const char* unit = col.unit[0] ? col.unit : (col.raw ? "counts" : "");
@@ -1404,13 +1566,20 @@ String buildSchemaJson_() {
                        col.kind,
                        col.processingRole,
                        col.columnClass,
+                       described ? descriptor.calibrationId : "",
+                       described ? descriptor.transformChain : "",
+                       described ? descriptor.notes : "",
                        col.raw,
+                       described ? descriptor.required : true,
+                       described && descriptor.primary,
+                       described && descriptor.calibrated,
+                       described && descriptor.transformed,
                        col.semanticSelectionExcluded,
                        col.allowNaN,
                        comma);
   }
 
-  appendChannelJson_(out, "flags", "flags", "bitfield", "uint16", (uint16_t)(s_frameSize - 2), "", "", "", "", "", "", "", "frame", "qc", "qc_metric", "qc_flag", false, true, false, false);
+  appendChannelJson_(out, "flags", "flags", "bitfield", "uint16", (uint16_t)(s_frameSize - 2), "", "", "", "", "", "", "", "frame", "qc", "qc_metric", "qc_flag", "", "", "", false, true, false, false, false, true, true, false);
   out += F("  ],\n");
 
   appendKey_(out, 1, "sample_flags");
@@ -1422,7 +1591,7 @@ String buildSchemaJson_() {
   out += F("  }\n");
 
   out += F("}\n");
-  return out;
+  return out.ok();
 }
 
 bool writeFileHeader_(uint64_t createdUnixUs) {
@@ -1435,10 +1604,7 @@ bool writeFileHeader_(uint64_t createdUnixUs) {
          writeU32_(0);
 }
 
-bool writeChunk_(ChunkType type, const uint8_t* payload, uint32_t payloadLen) {
-  const uint32_t crc = payloadLen ? crc32Update_(0, payload, payloadLen) : 0;
-  const uint32_t seq = s_sequence++;
-
+bool writeChunkHeader_(ChunkType type, uint32_t payloadLen, uint32_t crc, uint32_t seq) {
   uint8_t header[kChunkHeaderLen];
   memcpy(header, kChunkMagic, sizeof(kChunkMagic));
   putU16_(header + 4, kChunkHeaderVersion);
@@ -1447,16 +1613,7 @@ bool writeChunk_(ChunkType type, const uint8_t* payload, uint32_t payloadLen) {
   putU32_(header + 12, payloadLen);
   putU32_(header + 16, crc);
 
-  const bool ok = writeBytes_(header, sizeof(header)) &&
-                  writeBytes_(payload, payloadLen);
-
-  if (!ok) {
-    BDQ_LOGW("chunk write failed type=%u seq=%lu len=%lu\n",
-             (unsigned)type,
-             (unsigned long)seq,
-             (unsigned long)payloadLen);
-  }
-  return ok;
+  return writeBytes_(header, sizeof(header));
 }
 
 bool writeDataChunk_(uint32_t payloadLen) {
@@ -1483,8 +1640,37 @@ bool writeDataChunk_(uint32_t payloadLen) {
   return ok;
 }
 
-bool writeJsonChunk_(ChunkType type, const String& json) {
-  return writeChunk_(type, (const uint8_t*)json.c_str(), (uint32_t)json.length());
+template <typename Serializer>
+bool writeJsonChunkStreamed_(ChunkType type, Serializer serialize) {
+  CountingJsonOutput measured;
+  if (!serialize(measured) || !measured.ok()) {
+    BDQ_LOGW("JSON measurement failed type=%u\n", (unsigned)type);
+    return false;
+  }
+
+  const uint32_t seq = s_sequence++;
+  if (!writeChunkHeader_(type, measured.length(), measured.crc32(), seq)) {
+    BDQ_LOGW("JSON chunk header write failed type=%u seq=%lu len=%lu\n",
+             (unsigned)type,
+             (unsigned long)seq,
+             (unsigned long)measured.length());
+    return false;
+  }
+
+  FileJsonOutput written;
+  const bool serialized = serialize(written);
+  const bool flushed = written.finish();
+  const bool matched = written.length() == measured.length() &&
+                       written.crc32() == measured.crc32();
+  if (!serialized || !written.ok() || !flushed || !matched) {
+    BDQ_LOGW("JSON chunk write failed type=%u seq=%lu expected=%lu actual=%lu\n",
+             (unsigned)type,
+             (unsigned long)seq,
+             (unsigned long)measured.length(),
+             (unsigned long)written.length());
+    return false;
+  }
+  return true;
 }
 
 void resetChunkState_() {
@@ -1652,9 +1838,7 @@ bool appendFrame_(uint32_t sampleId, uint64_t tsMs, const float* values, uint16_
   return true;
 }
 
-String buildFinalSummaryJson_(const BdqLogEndInfo& info) {
-  String out;
-  out.reserve(4096);
+bool serializeFinalSummaryJson_(JsonOutput& out, const BdqLogEndInfo& info) {
   out += F("{\n");
   appendKeyString_(out, 1, "summary_format", "bdq.final_summary.v1");
   appendKeyString_(out, 1, "session_id", s_sessionId.c_str());
@@ -1689,7 +1873,7 @@ String buildFinalSummaryJson_(const BdqLogEndInfo& info) {
 #endif
   appendRuntimeDiagnostics_(out, 1, false);
   out += F("}\n");
-  return out;
+  return out.ok();
 }
 
 } // namespace
@@ -1706,9 +1890,6 @@ bool begin(File& file, const BdqLogSessionInfo& info) {
   s_sampleRateHz = info.sampleRateHz;
   s_sessionId = info.sessionId ? info.sessionId : "";
   s_logPath = info.logPath ? info.logPath : "";
-  s_timezone = info.timezone ? info.timezone : "";
-  s_startedAtUtc = info.startedAtUtc ? info.startedAtUtc : "";
-  s_startedAtLocal = info.startedAtLocal ? info.startedAtLocal : "";
 
   if (!buildColumnLayout_()) {
     reset();
@@ -1724,11 +1905,10 @@ bool begin(File& file, const BdqLogSessionInfo& info) {
     return false;
   }
 
-  const String metadata = buildMetadataJson_(info);
-  const String schema = buildSchemaJson_();
-
-  if (!writeJsonChunk_(ChunkType::Metadata, metadata) ||
-      !writeJsonChunk_(ChunkType::ChannelSchema, schema)) {
+  if (!writeJsonChunkStreamed_(ChunkType::Metadata,
+                               [&](JsonOutput& out) { return serializeMetadataJson_(out, info); }) ||
+      !writeJsonChunkStreamed_(ChunkType::ChannelSchema,
+                               [&](JsonOutput& out) { return serializeSchemaJson_(out); })) {
     reset();
     return false;
   }
@@ -1790,8 +1970,9 @@ bool end(const BdqLogEndInfo& info) {
   }
 
   const bool dataOk = (s_pendingFrames == 0) ? true : flushDataChunk();
-  const String summary = buildFinalSummaryJson_(info);
-  const bool summaryOk = writeJsonChunk_(ChunkType::FinalSummary, summary);
+  const bool summaryOk = writeJsonChunkStreamed_(
+      ChunkType::FinalSummary,
+      [&](JsonOutput& out) { return serializeFinalSummaryJson_(out, info); });
   flushFile();
   reset();
   return dataOk && summaryOk;
@@ -1817,9 +1998,6 @@ void reset() {
   s_sampleRateHz = 0;
   s_sessionId = "";
   s_logPath = "";
-  s_timezone = "";
-  s_startedAtUtc = "";
-  s_startedAtLocal = "";
 }
 
 bool isActive() {

@@ -63,8 +63,9 @@ static String s_currentSessionId;
 static String s_logStartedAtUtc;
 static String s_logStartedAtLocal;
 static uint32_t s_rowsWritten = 0;
+static uint32_t s_rowsFormatFailed = 0;
+static uint32_t s_storageWriteFailures = 0;
 static LogFormat s_activeLogFormat = LogFormat::BodaqsStandard;
-static SensorManager::SynBikeRawBindings s_synBikeRawBindings;
 
 static uint32_t s_flushCount    = 0;
 static uint32_t s_flushMaxMs    = 0;
@@ -75,7 +76,12 @@ static StorageTimingStats s_storageTiming;
 // --- Sample row queue for non-blocking sampling ---
 // Must match LoggingManager's values buffer size.
 constexpr uint16_t SM_MAX_DYNAMIC_COLS = LoggerLimits::kMaxDynamicColumns;
+// A finite float32 rendered with six decimal places needs at most 47 visible
+// characters (sign, 39 integer digits, decimal point, and six decimals).
+constexpr size_t kCsvValueMaxChars = 48;
+constexpr size_t kCsvRowBufferBytes = 96 + (SM_MAX_DYNAMIC_COLS * (kCsvValueMaxChars + 1));
 static bool s_valueColumnIsRaw[SM_MAX_DYNAMIC_COLS] = {false};
+static char* s_csvRowBuffer = nullptr;
 
 struct SampleRow {
   uint32_t sample_id = 0;
@@ -131,10 +137,6 @@ static void setupCardDetectPin_() {
             (int)s_storage->detect_pin,
             s_storage->detect_active_low ? "low" : "high",
             s_cardDetectedCached ? "present" : "absent");
-}
-
-static bool isSynBikeRawFormat_() {
-  return s_activeLogFormat == LogFormat::SynBikeRaw;
 }
 
 static bool isCompactBinaryFormat_() {
@@ -545,6 +547,22 @@ static void releaseWriteBuffer_() {
   delete[] old;
 }
 
+static void releaseCsvRowBuffer_() {
+  char* old = s_csvRowBuffer;
+  s_csvRowBuffer = nullptr;
+  delete[] old;
+}
+
+static bool allocCsvRowBuffer_() {
+  releaseCsvRowBuffer_();
+  s_csvRowBuffer = new (std::nothrow) char[kCsvRowBufferBytes];
+  if (!s_csvRowBuffer) {
+    STOR_LOGE("CSV row buffer allocation failed bytes=%u\n", (unsigned)kCsvRowBufferBytes);
+    return false;
+  }
+  return true;
+}
+
 static bool allocWriteBuffer_(size_t bytes) {
   releaseWriteBuffer_();
   if (bytes == 0) {
@@ -570,6 +588,7 @@ static bool allocWriteBuffer_(size_t bytes) {
 }
 
 static void releaseLogSessionBuffers_() {
+  releaseCsvRowBuffer_();
   releaseWriteBuffer_();
   releaseQueue_();
 }
@@ -582,8 +601,15 @@ static bool prepareLogSessionBuffers_() {
   }
 
   if (isCompactBinaryFormat_()) {
+    releaseCsvRowBuffer_();
     releaseWriteBuffer_();
     return true;
+  }
+
+  if (!allocCsvRowBuffer_()) {
+    releaseQueue_();
+    setStatus_("CSV row buffer OOM");
+    return false;
   }
 
   const size_t desiredBufferSize = s_configuredBufferSize
@@ -754,6 +780,15 @@ static void logCloseInternal() {
 static size_t logWriteInternal(const void* data, size_t len) {
     uint32_t t0 = millis();
     size_t written = logFileMMC.write((const uint8_t*)data, len);
+    if (written != len) {
+      ++s_storageWriteFailures;
+      if (s_storageWriteFailures == 1 || (s_storageWriteFailures % 64) == 0) {
+        STOR_LOGW("short log write requested=%u written=%u failures=%lu\n",
+                  (unsigned)len,
+                  (unsigned)written,
+                  (unsigned long)s_storageWriteFailures);
+      }
+    }
     uint32_t dt = millis() - t0;
     if (dt > 200) {
       SD_LOGD("logWriteInternal len=%u dt=%lu ms bufIndex=%u loggingActive=%d\n",
@@ -1116,12 +1151,24 @@ static void startLog() {
   s_storageTiming = StorageTimingStats{};
   s_storageTiming.writeStallThresholdUs = kStorageWriteStallThresholdUs;
   s_rowsWritten = 0;
+  s_rowsFormatFailed = 0;
+  s_storageWriteFailures = 0;
   s_currentLogPath = "";
   s_currentSessionId = "";
   s_logStartedAtUtc = "";
   s_logStartedAtLocal = "";
   s_activeLogFormat = ConfigManager::get().logFormat;
-  s_synBikeRawBindings = SensorManager::SynBikeRawBindings{};
+
+  const uint16_t columnCount = SensorManager::describeSensorColumns(nullptr, 0);
+  if (columnCount > SM_MAX_DYNAMIC_COLS) {
+    setStatus_("too many sensor columns");
+    STOR_LOGE("startLog: configured columns=%u exceeds maximum=%u\n",
+              (unsigned)columnCount,
+              (unsigned)SM_MAX_DYNAMIC_COLS);
+    UI::status("Too many columns");
+    UI::toast("Too many columns", 1800, 1);
+    return;
+  }
 
   const bool rtcValid = RTCManager_hasValidTime();
   const time_t startEpoch = RTCManager_getEpoch();
@@ -1217,15 +1264,6 @@ static void startLog() {
     }
     headerMs = millis() - headerT0;
     flushMs = 0;
-  } else if (isSynBikeRawFormat_()) {
-    (void)SensorManager::resolveSynBikeRawBindings(s_synBikeRawBindings);
-    if (!s_synBikeRawBindings.front.available) {
-      STOR_LOGW("syn.bike raw format: no front wheel/suspension raw column found; emitting blank front column\n");
-    }
-    if (!s_synBikeRawBindings.rear.available) {
-      STOR_LOGW("syn.bike raw format: no rear wheel/suspension raw column found; emitting blank rear column\n");
-    }
-    headerMs = millis() - headerT0;
   } else {
     // --- Build header (shared for both backends) ---
     //SensorManager::debugDump("startLog-beforeHeader");
@@ -1241,7 +1279,16 @@ static void startLog() {
     refreshValueColumnTypes_();
 
     const uint32_t flushT0 = millis();
-    logFileMMC.println(header);
+    const size_t headerBytes = logFileMMC.println(header);
+    if (headerBytes < header.length() + 1) {
+      STOR_LOGE("CSV header write failed expected>=%u written=%u\n",
+                (unsigned)(header.length() + 1),
+                (unsigned)headerBytes);
+      logFileMMC.close();
+      s_currentLogPath = "";
+      releaseLogSessionBuffers_();
+      return;
+    }
     logFileMMC.flush();
     flushMs = millis() - flushT0;
   }
@@ -1385,7 +1432,7 @@ void StorageManager_stopLog() {
   StorageManager_drainQueuedSamples();
 
   if (!isCompactBinaryFormat_() && bufferIndex > 0) {
-    logFileMMC.write((const uint8_t*)buffer, bufferIndex);
+    logWriteInternal(buffer, bufferIndex);
     bufferIndex = 0;
   }
 
@@ -1431,6 +1478,8 @@ void StorageManager_stopLog() {
     metaCtx.humanReadableTime = RTCManager_isHumanReadable();
     metaCtx.logFormat = s_activeLogFormat;
     metaCtx.samplesDropped = s_samplesDropped;
+    metaCtx.rowsFormatFailed = s_rowsFormatFailed;
+    metaCtx.storageWriteFailures = s_storageWriteFailures;
     metaCtx.queueMax = s_qMax;
     metaCtx.queueDepth = s_qCap;
     metaCtx.flushCount = s_flushCount;
@@ -1462,6 +1511,9 @@ void StorageManager_stopLog() {
 
   loggingActive = false;
   STOR_LOGI("samplesDropped=%lu\n", (unsigned long)s_samplesDropped);
+  STOR_LOGI("rowsFormatFailed=%lu storageWriteFailures=%lu\n",
+            (unsigned long)s_rowsFormatFailed,
+            (unsigned long)s_storageWriteFailures);
   STOR_LOGI("flushCount=%lu maxFlushMs=%lu avgFlushMs=%.2f\n",
             (unsigned long)s_flushCount,
             (unsigned long)s_flushMaxMs,
@@ -1517,70 +1569,19 @@ const char* StorageManager_lastStatus() {
   return s_lastStatus;
 }
 
-// Dynamic CSV logging: one FULL row per call, matching header
-// Columns: [timestamp, sensor values..., mark]
-static uint32_t formatRawForExport_(float raw, bool invert) {
-    if (!isfinite(raw)) return 0UL;
-    const uint32_t rawInt = (raw <= 0.0f) ? 0UL : (uint32_t)lroundf(raw);
-    if (!invert) return rawInt;
-
-    const uint32_t maxRaw = (board::gBoard && board::gBoard->analog.adc_max)
-                              ? (uint32_t)board::gBoard->analog.adc_max
-                              : 4095UL;
-    return (rawInt >= maxRaw) ? 0UL : (maxRaw - rawInt);
+static uint32_t formatRawForCsv_(float raw) {
+    if (!isfinite(raw) || raw <= 0.0f) return 0UL;
+    return (uint32_t)lroundf(raw);
 }
 
-static void appendSynBikeRawValue_(char* line,
-                                   size_t lineSize,
-                                   int& off,
-                                   const float* values,
-                                   uint16_t nValues,
-                                   const SensorManager::SynBikeRawColumnBinding& binding) {
-    if (!binding.available || binding.valueIndex >= nValues || !values) {
-        int n = snprintf(line + off, lineSize - (size_t)off, ",");
-        if (n > 0 && off + n < (int)lineSize) off += n;
-        return;
+static void recordCsvFormatFailure_(uint32_t sampleId, uint16_t nValues) {
+    ++s_rowsFormatFailed;
+    if (s_rowsFormatFailed == 1) {
+        STOR_LOGE("CSV row formatting failed sample=%lu values=%u capacity=%u\n",
+                  (unsigned long)sampleId,
+                  (unsigned)nValues,
+                  (unsigned)kCsvRowBufferBytes);
     }
-
-    const uint32_t raw = formatRawForExport_(values[binding.valueIndex], binding.invert);
-    int n = snprintf(line + off, lineSize - (size_t)off, ",%lu", (unsigned long)raw);
-    if (n > 0 && off + n < (int)lineSize) off += n;
-}
-
-static void StorageManager_logCsvSynBikeRaw_(uint32_t sample_id, const float* values, uint16_t nValues) {
-    if (!logIsOpen()) {
-        STOR_LOGW("logCsvSynBikeRaw: file not open\n");
-        return;
-    }
-
-    char line[128];
-    int off = snprintf(line, sizeof(line), "%lu", (unsigned long)sample_id);
-    if (off <= 0 || off >= (int)sizeof(line)) return;
-
-    appendSynBikeRawValue_(line, sizeof(line), off, values, nValues, s_synBikeRawBindings.front);
-    appendSynBikeRawValue_(line, sizeof(line), off, values, nValues, s_synBikeRawBindings.rear);
-
-    int n = snprintf(line + off, sizeof(line) - (size_t)off, ",,,\n");
-    if (n <= 0 || off + n >= (int)sizeof(line)) return;
-    off += n;
-
-    const size_t len = (size_t)off;
-    if (buffer && (bufferIndex + len > bufferSize)) {
-        if (bufferIndex > 0) {
-            logWriteInternal(buffer, bufferIndex);
-            bufferIndex = 0;
-        }
-    }
-
-    if (!buffer || len > bufferSize) {
-        logWriteInternal(line, len);
-        ++s_rowsWritten;
-        return;
-    }
-
-    memcpy(&buffer[bufferIndex], line, len);
-    bufferIndex += len;
-    ++s_rowsWritten;
 }
 
 void StorageManager_logCsvDynamic(uint32_t sample_id, uint64_t ts_ms, const float* values, uint16_t nValues, bool mark)
@@ -1589,20 +1590,28 @@ void StorageManager_logCsvDynamic(uint32_t sample_id, uint64_t ts_ms, const floa
         STOR_LOGW("logCsvDynamic: file not open\n");
         return;
     }
-    if (isSynBikeRawFormat_()) {
-        StorageManager_logCsvSynBikeRaw_(sample_id, values, nValues);
+    if (nValues == 0 || !values) return;
+    if (!s_csvRowBuffer) {
+        ++s_rowsFormatFailed;
+        if (s_rowsFormatFailed == 1) {
+            STOR_LOGE("CSV row buffer unavailable; dropping sample %lu\n", (unsigned long)sample_id);
+        }
         return;
     }
-    if (nValues == 0 || !values) return;
 
-    // 1) Format ONE complete CSV line into a local stack buffer.
-    //    Size generously: sample id + timestamp + commas + sensor values + mark + newline.
-    char line[1280];
+    // Format one complete row into the session buffer so rows remain atomic.
+    // The capacity is derived from the maximum float32 text width and the
+    // shared maximum column count rather than from a typical-row estimate.
+    char* line = s_csvRowBuffer;
+    const size_t lineCapacity = kCsvRowBufferBytes;
     int off = 0;
     
     // sample_id first
-    off = snprintf(line, sizeof(line), "%lu", (unsigned long)sample_id);
-    if (off <= 0 || off >= (int)sizeof(line)) return;
+    off = snprintf(line, lineCapacity, "%lu", (unsigned long)sample_id);
+    if (off <= 0 || off >= (int)lineCapacity) {
+        recordCsvFormatFailure_(sample_id, nValues);
+        return;
+    }
 
     // then timestamp (human: local HH:MM:SS.mmm ; else raw epoch ms)
     if (RTCManager_isHumanReadable()) {
@@ -1611,16 +1620,22 @@ void StorageManager_logCsvDynamic(uint32_t sample_id, uint64_t ts_ms, const floa
         localtime_r(&sec, &tm);
         const unsigned msecs = (unsigned)(ts_ms % 1000ULL);
 
-        int n = snprintf(line + off, sizeof(line) - (size_t)off,
+        int n = snprintf(line + off, lineCapacity - (size_t)off,
                          ",%02d:%02d:%02d.%03u",
                          tm.tm_hour, tm.tm_min, tm.tm_sec, msecs);
-        if (n <= 0 || off + n >= (int)sizeof(line)) return;
+        if (n <= 0 || off + n >= (int)lineCapacity) {
+            recordCsvFormatFailure_(sample_id, nValues);
+            return;
+        }
         off += n;
     } else {
-        int n = snprintf(line + off, sizeof(line) - (size_t)off,
+        int n = snprintf(line + off, lineCapacity - (size_t)off,
                          ",%llu",
                          (unsigned long long)ts_ms);
-        if (n <= 0 || off + n >= (int)sizeof(line)) return;
+        if (n <= 0 || off + n >= (int)lineCapacity) {
+            recordCsvFormatFailure_(sample_id, nValues);
+            return;
+        }
         off += n;
     }
 
@@ -1628,19 +1643,20 @@ void StorageManager_logCsvDynamic(uint32_t sample_id, uint64_t ts_ms, const floa
     for (uint16_t i = 0; i < nValues; ++i) {
         int n = 0;
         if (i < SM_MAX_DYNAMIC_COLS && s_valueColumnIsRaw[i]) {
-            const uint32_t rawInt = formatRawForExport_(values[i], false);
+            const uint32_t rawInt = formatRawForCsv_(values[i]);
             n = snprintf(line + off,
-                         sizeof(line) - (size_t)off,
+                         lineCapacity - (size_t)off,
                          ",%lu",
                          (unsigned long)rawInt);
         } else {
             n = snprintf(line + off,
-                         sizeof(line) - (size_t)off,
+                         lineCapacity - (size_t)off,
                          ",%.6f",
                          (double)values[i]);
         }
-        if (n <= 0 || off + n >= (int)sizeof(line)) {
-            return; // overflow guard
+        if (n <= 0 || off + n >= (int)lineCapacity) {
+            recordCsvFormatFailure_(sample_id, nValues);
+            return;
         }
         off += n;
     }
@@ -1648,11 +1664,12 @@ void StorageManager_logCsvDynamic(uint32_t sample_id, uint64_t ts_ms, const floa
     // Mark, then newline
     {
         int n = snprintf(line + off,
-                         sizeof(line) - (size_t)off,
+                         lineCapacity - (size_t)off,
                          ",%d\n",
                          mark ? 1 : 0);
-        if (n <= 0 || off + n >= (int)sizeof(line)) {
-            return; // overflow guard
+        if (n <= 0 || off + n >= (int)lineCapacity) {
+            recordCsvFormatFailure_(sample_id, nValues);
+            return;
         }
         off += n;
     }

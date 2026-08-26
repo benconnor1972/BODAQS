@@ -128,6 +128,14 @@
         "run_stats": {
           "type": "object",
           "additionalProperties": true
+        },
+        "sensor_runtime_diagnostics": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "imu_runtime_diagnostics": {
+          "type": "object",
+          "additionalProperties": true
         }
       }
     },

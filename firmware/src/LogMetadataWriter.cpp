@@ -304,13 +304,6 @@ void appendCsvRefByHeader_(MetadataOutput& out, uint8_t depth, const char* heade
   out += F(" },\n");
 }
 
-void appendCsvRefByIndex_(MetadataOutput& out, uint8_t depth, uint8_t index) {
-  appendKey_(out, depth, "csv_ref");
-  out += F("{ \"by\": \"index\", \"index\": ");
-  out += String((unsigned)index);
-  out += F(" },\n");
-}
-
 bool hasText_(const char* s) {
   return s && *s;
 }
@@ -574,6 +567,8 @@ void appendRunStats_(MetadataOutput& out, uint8_t depth, const LogMetadataContex
   appendKey_(out, depth, "run_stats");
   out += F("{\n");
   appendKeyUInt_(out, depth + 1, "samples_dropped", ctx.samplesDropped);
+  appendKeyUInt_(out, depth + 1, "rows_format_failed", ctx.rowsFormatFailed);
+  appendKeyUInt_(out, depth + 1, "storage_write_failures", ctx.storageWriteFailures);
   appendKeyUInt_(out, depth + 1, "queue_max", ctx.queueMax);
   appendKeyUInt_(out, depth + 1, "queue_depth", ctx.queueDepth);
   appendKeyUInt_(out, depth + 1, "flush_count", ctx.flushCount);
@@ -669,6 +664,108 @@ void appendDeviceConfig_(MetadataOutput& out, const SensorDeviceConfigDescriptor
 
   appendIndent_(out, 3);
   out += F("},\n");
+}
+
+const char* runtimeFailureStageName_(SensorRuntimeFailureStage stage) {
+  switch (stage) {
+    case SensorRuntimeFailureStage::None: return "none";
+    case SensorRuntimeFailureStage::BusUnavailable: return "bus_unavailable";
+    case SensorRuntimeFailureStage::BusLock: return "bus_lock";
+    case SensorRuntimeFailureStage::Probe: return "probe";
+    case SensorRuntimeFailureStage::RegisterAddress: return "register_address";
+    case SensorRuntimeFailureStage::RequestBytes: return "request_bytes";
+    case SensorRuntimeFailureStage::ReadByte: return "read_byte";
+    case SensorRuntimeFailureStage::WriteRegister: return "write_register";
+    case SensorRuntimeFailureStage::InvalidArgument: return "invalid_argument";
+    case SensorRuntimeFailureStage::WritePayload: return "write_payload";
+    case SensorRuntimeFailureStage::EndTransmission: return "end_transmission";
+    default: return "unknown";
+  }
+}
+
+void appendRuntimeFailure_(MetadataOutput& out,
+                           uint8_t depth,
+                           const char* key,
+                           const SensorRuntimeFailure& failure,
+                           bool comma = true) {
+  appendKey_(out, depth, key);
+  out += F("{\n");
+  appendKeyString_(out, depth + 1, "stage", runtimeFailureStageName_(failure.stage));
+  appendKeyInt_(out, depth + 1, "result_code", failure.resultCode);
+  appendKeyUInt_(out, depth + 1, "register_address", failure.registerAddress);
+  appendKeyUInt_(out, depth + 1, "expected_bytes", failure.expectedBytes);
+  appendKeyUInt_(out, depth + 1, "received_bytes", failure.receivedBytes, false);
+  appendIndent_(out, depth);
+  out += comma ? F("},\n") : F("}\n");
+}
+
+void appendSensorRuntimeDiagnostics_(MetadataOutput& out, uint8_t depth, bool comma = true) {
+  uint8_t describedCount = 0;
+  const uint8_t registered = SensorManager::count();
+  SensorRuntimeDiagnostics diagnostics;
+  for (uint8_t i = 0; i < registered; ++i) {
+    if (SensorManager::describeRuntimeDiagnosticsAt(i, diagnostics) && diagnostics.present) {
+      ++describedCount;
+    }
+  }
+
+  appendKey_(out, depth, "sensor_runtime_diagnostics");
+  out += F("{\n");
+  appendKeyUInt_(out, depth + 1, "sensor_count", describedCount);
+  appendKey_(out, depth + 1, "sensors");
+  out += F("{\n");
+
+  uint8_t written = 0;
+  for (uint8_t i = 0; i < registered; ++i) {
+    if (!SensorManager::describeRuntimeDiagnosticsAt(i, diagnostics) || !diagnostics.present) continue;
+
+    appendIndent_(out, depth + 2);
+    appendJsonString_(out, diagnostics.sensorName);
+    out += F(": {\n");
+    appendKeyString_(out, depth + 3, "kind", diagnostics.kind);
+    appendKeyUInt_(out, depth + 3, "bus", diagnostics.busIndex);
+    appendKeyUInt_(out, depth + 3, "address", diagnostics.address);
+
+    appendKey_(out, depth + 3, "initialization");
+    out += F("{\n");
+    appendKeyUInt_(out, depth + 4, "begin_count", diagnostics.beginCount);
+    appendKeyUInt_(out, depth + 4, "last_begin_uptime_ms", diagnostics.lastBeginUptimeMs);
+    appendKeyBool_(out, depth + 4, "probe_ok", diagnostics.initialProbeOk);
+    appendKeyBool_(out, depth + 4, "config_write_attempted", diagnostics.configWriteAttempted);
+    appendKeyBool_(out, depth + 4, "config_write_ok", diagnostics.configWriteOk);
+    appendKeyBool_(out, depth + 4, "config_read_attempted", diagnostics.configReadAttempted);
+    appendKeyBool_(out, depth + 4, "config_read_ok", diagnostics.configReadOk);
+    appendKeyHex16_(out, depth + 4, "conf_before", diagnostics.configBefore);
+    appendKeyHex16_(out, depth + 4, "conf_after", diagnostics.configAfter);
+    appendRuntimeFailure_(out, depth + 4, "failure", diagnostics.initializationFailure, false);
+    appendIndent_(out, depth + 3);
+    out += F("},\n");
+
+    appendKey_(out, depth + 3, "session");
+    out += F("{\n");
+    appendKeyUInt_(out, depth + 4, "raw_read_failures", diagnostics.rawReadFailures);
+    appendKeyUInt_(out, depth + 4, "diagnostic_read_failures", diagnostics.diagnosticReadFailures);
+    appendKeyUInt_(out, depth + 4, "read_failure_streak_max", diagnostics.readFailureStreakMax);
+    appendKeyUInt_(out, depth + 4, "read_recoveries", diagnostics.readRecoveries);
+    appendKeyBool_(out, depth + 4, "have_last_good_raw", diagnostics.haveLastGoodRaw);
+    appendKeyBool_(out, depth + 4, "last_read_ok", diagnostics.lastReadOk);
+    appendKeyBool_(out, depth + 4, "last_read_reused", diagnostics.lastReadReused);
+    appendKeyUInt_(out, depth + 4, "last_good_raw", diagnostics.lastGoodRaw);
+    appendKeyHex16_(out, depth + 4, "last_conf", diagnostics.lastConf);
+    appendKeyUInt_(out, depth + 4, "events_recorded", diagnostics.eventCount);
+    appendKeyUInt_(out, depth + 4, "events_total", diagnostics.eventsTotal);
+    appendKeyUInt_(out, depth + 4, "events_dropped", diagnostics.eventsDropped);
+    appendRuntimeFailure_(out, depth + 4, "last_failure", diagnostics.lastFailure, false);
+    appendIndent_(out, depth + 3);
+    out += F("}\n");
+    appendIndent_(out, depth + 2);
+    out += (++written < describedCount) ? F("},\n") : F("}\n");
+  }
+
+  appendIndent_(out, depth + 1);
+  out += F("}\n");
+  appendIndent_(out, depth);
+  out += comma ? F("},\n") : F("}\n");
 }
 
 void appendImuRuntimeDiagnostics_(MetadataOutput& out, uint8_t depth, bool comma = true) {
@@ -1058,7 +1155,7 @@ void appendSignalColumn_(MetadataOutput& out,
   if (hasText_(c.processingRole)) appendKeyString_(out, 3, "processing_role", c.processingRole);
   if (c.semanticSelectionExcluded) appendKeyBool_(out, 3, "semantic_selection_excluded", true);
   if (c.allowNaN) appendKeyBool_(out, 3, "nan_allowed", true);
-  if (hasText_(c.calibrationId)) appendKeyString_(out, 3, "calibration_ref", c.sensorName);
+  if (hasText_(c.calibrationId)) appendKeyString_(out, 3, "calibration_ref", c.calibrationId);
 
   if (hasText_(c.transformChain)) {
     appendKey_(out, 3, "transform_chain");
@@ -1071,8 +1168,11 @@ void appendSignalColumn_(MetadataOutput& out,
   }
 
   if (c.raw) appendKeyString_(out, 3, "raw_representation", c.source);
+  appendKeyBool_(out, 3, "required", c.required);
+  appendKeyBool_(out, 3, "primary", c.primary);
+  appendKeyBool_(out, 3, "calibrated", c.calibrated);
+  appendKeyBool_(out, 3, "transformed", c.transformed, hasText_(c.notes));
   if (hasText_(c.notes)) appendKeyString_(out, 3, "notes", c.notes, false);
-  else appendKeyBool_(out, 3, "required", true, false);
 
   appendIndent_(out, 2);
   out += comma ? F("},\n") : F("}\n");
@@ -1108,8 +1208,8 @@ void appendDiagnosticColumn_(MetadataOutput& out,
   appendKeyString_(out, 3, "unit", c.unit[0] ? c.unit : "");
   if (hasText_(c.source)) appendKeyString_(out, 3, "source", c.source);
   if (c.allowNaN) appendKeyBool_(out, 3, "nan_allowed", true);
+  appendKeyBool_(out, 3, "required", c.required, hasText_(c.notes));
   if (hasText_(c.notes)) appendKeyString_(out, 3, "notes", c.notes, false);
-  else appendKeyBool_(out, 3, "required", true, false);
 
   appendIndent_(out, 2);
   out += comma ? F("},\n") : F("}\n");
@@ -1183,173 +1283,6 @@ String localStartedAtFromSessionId_(const char* sessionId) {
   return String();
 }
 
-void appendSynBikeRawColumn_(MetadataOutput& out,
-                             const char* key,
-                             uint8_t index,
-                             const char* end,
-                             const SensorManager::SynBikeRawColumnBinding& binding,
-                             bool comma) {
-  appendIndent_(out, 2);
-  appendJsonString_(out, key);
-  out += F(": {\n");
-  appendCsvRefByIndex_(out, 3, index);
-  appendKeyString_(out, 3, "class", "signal");
-  appendKeyString_(out, 3, "dtype", "uint32");
-  appendKeyString_(out, 3, "stream", "primary");
-  if (binding.available && hasText_(binding.sensorName)) appendKeyString_(out, 3, "sensor", binding.sensorName);
-  appendKeyString_(out, 3, "end", end);
-  appendKeyString_(out, 3, "quantity", "raw");
-  if (binding.available && hasText_(binding.domain)) appendKeyString_(out, 3, "domain", binding.domain);
-  appendKeyString_(out, 3, "unit", "counts");
-  appendKey_(out, 3, "transform_chain");
-  out += F("[],\n");
-  appendKeyString_(out, 3, "raw_representation",
-                   binding.available && hasText_(binding.source) ? binding.source : "unavailable");
-  if (binding.invert) appendKeyBool_(out, 3, "inverted_for_export", true);
-  appendKeyBool_(out, 3, "required", false, false);
-  appendIndent_(out, 2);
-  out += comma ? F("},\n") : F("}\n");
-}
-
-void appendSynBikeBlankFloatColumn_(MetadataOutput& out,
-                                    const char* key,
-                                    uint8_t index,
-                                    const char* quantity,
-                                    bool comma) {
-  appendIndent_(out, 2);
-  appendJsonString_(out, key);
-  out += F(": {\n");
-  appendCsvRefByIndex_(out, 3, index);
-  appendKeyString_(out, 3, "class", "signal");
-  appendKeyString_(out, 3, "dtype", "float64");
-  appendKeyString_(out, 3, "stream", "primary");
-  appendKeyString_(out, 3, "quantity", quantity);
-  appendKeyString_(out, 3, "unit", "");
-  appendKeyString_(out, 3, "notes", "Reserved for syn.bike GPS field; firmware currently emits blank values.");
-  appendKeyBool_(out, 3, "required", false, false);
-  appendIndent_(out, 2);
-  out += comma ? F("},\n") : F("}\n");
-}
-
-bool writeSynBikeRawMetadata_(const LogMetadataContext& ctx, MetadataOutput& out) {
-  SensorManager::SynBikeRawBindings bindings;
-  (void)SensorManager::resolveSynBikeRawBindings(bindings);
-
-  const uint16_t sensorCount = SensorManager::describeSensors(nullptr, 0);
-  SensorMetadataDescriptor* sensors = sensorCount ? new (std::nothrow) SensorMetadataDescriptor[sensorCount] : nullptr;
-  if (sensorCount && !sensors) return false;
-  const uint16_t sensorsWritten = SensorManager::describeSensors(sensors, sensorCount);
-  String startedAt = hasText_(ctx.startedAtLocal) ? String(ctx.startedAtLocal) : localStartedAtFromSessionId_(ctx.sessionId);
-
-  if (!out.reserve(2048 + (sensorsWritten * 900))) {
-    delete[] sensors;
-    return false;
-  }
-  out += F("{\n");
-
-  appendKey_(out, 1, "contract");
-  out += F("{\n");
-  appendKeyString_(out, 2, "name", "mtb_logger_timeseries");
-  appendKeyString_(out, 2, "version", "0.2.0");
-  appendKeyString_(out, 2, "sidecar_kind", "session", false);
-  appendIndent_(out, 1);
-  out += F("},\n");
-
-  appendKey_(out, 1, "data_file");
-  out += F("{\n");
-  appendKeyString_(out, 2, "path", ctx.csvPath);
-  appendKeyString_(out, 2, "delimiter", ",");
-  appendKeyBool_(out, 2, "header", false);
-  appendKeyUInt_(out, 2, "row_count", ctx.rowCount, false);
-  appendIndent_(out, 1);
-  out += F("},\n");
-
-  appendKey_(out, 1, "session");
-  out += F("{\n");
-  appendKeyString_(out, 2, "session_id", ctx.sessionId);
-  if (hasText_(ctx.startedAtUtc)) appendKeyString_(out, 2, "started_at_utc", ctx.startedAtUtc);
-  if (startedAt.length()) appendKeyString_(out, 2, "started_at_local", startedAt.c_str());
-  if (hasText_(ctx.timezone)) appendKeyString_(out, 2, "timezone", ctx.timezone);
-  appendKeyString_(out, 2, "notes", "CSV emitted in syn.bike raw import format.", false);
-  appendIndent_(out, 1);
-  out += F("},\n");
-
-  appendKey_(out, 1, "streams");
-  out += F("{\n");
-  appendIndent_(out, 2);
-  out += F("\"primary\": {\n");
-  appendKeyString_(out, 3, "type", "uniform");
-  appendKeyString_(out, 3, "time_column", "sample_id");
-  appendKeyString_(out, 3, "time_encoding", "sample_index");
-  appendKeyString_(out, 3, "time_unit", "sample");
-  appendKeyUInt_(out, 3, "sample_rate_hz", ctx.sampleRateHz, false);
-  appendIndent_(out, 2);
-  out += F("}\n");
-  appendIndent_(out, 1);
-  out += F("},\n");
-
-  appendKey_(out, 1, "sensors");
-  out += F("{\n");
-  for (uint16_t i = 0; i < sensorsWritten; ++i) {
-    appendSensor_(out, sensors[i], i + 1 < sensorsWritten);
-  }
-  appendIndent_(out, 1);
-  out += F("},\n");
-
-  appendKey_(out, 1, "columns");
-  out += F("{\n");
-  appendIndent_(out, 2);
-  out += F("\"sample_id\": {\n");
-  appendCsvRefByIndex_(out, 3, 0);
-  appendKeyString_(out, 3, "class", "time");
-  appendKeyString_(out, 3, "dtype", "uint32");
-  appendKeyString_(out, 3, "stream", "primary");
-  appendKeyString_(out, 3, "unit", "sample", false);
-  appendIndent_(out, 2);
-  out += F("},\n");
-
-  appendSynBikeRawColumn_(out, "front_raw", 1, "front", bindings.front, true);
-  appendSynBikeRawColumn_(out, "rear_raw", 2, "rear", bindings.rear, true);
-  appendSynBikeBlankFloatColumn_(out, "lat", 3, "latitude", true);
-  appendSynBikeBlankFloatColumn_(out, "long", 4, "longitude", true);
-  appendSynBikeBlankFloatColumn_(out, "speed", 5, "speed", false);
-  appendIndent_(out, 1);
-  out += F("},\n");
-
-  appendKey_(out, 1, "qc");
-  out += F("{\n");
-  appendIndent_(out, 2);
-  out += F("\"warnings\": [");
-  bool wroteWarning = false;
-  if (!bindings.front.available) {
-    appendJsonString_(out, "syn_bike_front_raw_not_available");
-    wroteWarning = true;
-  }
-  if (!bindings.rear.available) {
-    if (wroteWarning) out += F(", ");
-    appendJsonString_(out, "syn_bike_rear_raw_not_available");
-  }
-  out += F("],\n");
-  appendRunStats_(out, 2, ctx);
-  appendImuRuntimeDiagnostics_(out, 2, false);
-  appendIndent_(out, 1);
-  out += F("},\n");
-
-  appendKey_(out, 1, "provenance");
-  out += F("{\n");
-  appendKeyString_(out, 2, "logger_family", "BODAQS");
-  appendKeyString_(out, 2, "generator", "BODAQS firmware log metadata writer");
-  appendKeyString_(out, 2, "log_format", ConfigManager::logFormatKey(LogFormat::SynBikeRaw));
-  if (hasText_(ctx.generatedAtLocal)) appendKeyString_(out, 2, "metadata_generated_at", ctx.generatedAtLocal, false);
-  else appendKeyString_(out, 2, "metadata_generated_at", "", false);
-  appendIndent_(out, 1);
-  out += F("}\n");
-
-  out += F("}\n");
-  delete[] sensors;
-  return out.ok();
-}
-
 } // namespace
 
 String LogMetadataWriter_metadataPathForCsv(const char* csvPath) {
@@ -1364,10 +1297,6 @@ String LogMetadataWriter_metadataPathForCsv(const char* csvPath) {
 }
 
 static bool writeMetadata_(const LogMetadataContext& ctx, MetadataOutput& out) {
-  if (ctx.logFormat == LogFormat::SynBikeRaw) {
-    return writeSynBikeRawMetadata_(ctx, out);
-  }
-
   const uint16_t sensorCount = SensorManager::describeSensors(nullptr, 0);
   const uint16_t columnCount = SensorManager::describeSensorColumns(nullptr, 0);
 
@@ -1491,6 +1420,7 @@ static bool writeMetadata_(const LogMetadataContext& ctx, MetadataOutput& out) {
   appendIndent_(out, 2);
   out += F("\"warnings\": [],\n");
   appendRunStats_(out, 2, ctx);
+  appendSensorRuntimeDiagnostics_(out, 2);
   appendImuRuntimeDiagnostics_(out, 2, false);
   appendIndent_(out, 1);
   out += F("},\n");

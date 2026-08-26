@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useState, type CSSProperties, type PointerEvent, type ReactNode } from 'react'
+import { memo, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode } from 'react'
 import * as d3 from 'd3'
 import { Activity, ChevronDown, ChevronLeft, ChevronRight, ChevronUp } from 'lucide-react'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
@@ -48,6 +48,20 @@ const DISPLACEMENT_MM_DOMAIN_LIMITS = [100, 120, 150, 180, 200, 250]
 const WHOLE_SESSION_DISTRIBUTION_BINS = 20
 const SECTOR_DISTRIBUTION_BINS = 15
 const CUMULATIVE_DISTRIBUTION_MAX_POINTS = 900
+const PHASE_SCATTER_MAX_POINTS = 24_000
+const PHASE_LINE_TARGET_HZ = 200
+const PHASE_LINE_MAX_POINTS = 100_000
+const PHASE_CANVAS_RAW_POINT_LIMIT = 250_000
+const PHASE_DISPLACEMENT_MM_BOUNDS = [-10, 250] as const
+const PHASE_DISPLACEMENT_NORMALIZED_BOUNDS = [-5, 105] as const
+const PHASE_VELOCITY_BOUNDS = [-5000, 10000] as const
+const PHASE_DISPLACEMENT_AXIS_STEP = 0.1
+const PHASE_VELOCITY_AXIS_STEP = 10
+const PHASE_DEFAULT_CONDITIONAL_DISTRIBUTION_BINS = 60
+const PHASE_CONDITIONAL_LOWER_QUANTILE = 0.001
+const PHASE_CONDITIONAL_UPPER_QUANTILE = 0.999
+const PHASE_CONTOUR_MASS_OPTIONS = [0.5, 0.8, 0.95, 0.99, 0.999] as const
+const PHASE_DEFAULT_CONTOUR_MASSES = [0.5, 0.8, 0.95]
 const VISUALIZATION_SESSION_CACHE_VERSION = 3
 const VELOCITY_STATS_FORMATTER = formatMetricValueWithUnit('mm/s')
 const STROKE_LENGTH_STATS_FORMATTER = formatMetricValueWithUnit('mm')
@@ -88,6 +102,20 @@ const MM_DISPLACEMENT_SIGNAL_ROLE_CONFIGS = [
     selector: { end: 'rear', domain: 'wheel', quantity: 'disp', unit: 'mm' },
   },
 ] as const
+const VELOCITY_SIGNAL_ROLE_CONFIGS = [
+  {
+    role: 'front_velocity',
+    label: 'Front wheel velocity',
+    end: 'front',
+    selector: { end: 'front', domain: 'wheel', quantity: 'vel', unit: 'mm/s' },
+  },
+  {
+    role: 'rear_velocity',
+    label: 'Rear wheel velocity',
+    end: 'rear',
+    selector: { end: 'rear', domain: 'wheel', quantity: 'vel', unit: 'mm/s' },
+  },
+] as const
 const DISPLACEMENT_SIGNAL_ROLE_CONFIGS = [
   ...NORMALIZED_DISPLACEMENT_SIGNAL_ROLE_CONFIGS,
   ...MM_DISPLACEMENT_SIGNAL_ROLE_CONFIGS,
@@ -123,6 +151,10 @@ type LoadState =
 type ComparisonLayout = 'entities' | 'ends'
 type ScopeMode = 'whole_session' | 'sector'
 type SuspensionEnd = 'front' | 'rear'
+type PhaseAxisRange = [number, number]
+type SuspensionVisualizationMode = 'simple' | 'phase'
+type PhaseRenderMode = 'density' | 'scatter' | 'line'
+type PhaseChartVariant = 'phase' | 'contours' | 'velocity_given_position' | 'position_given_velocity'
 type DistributionChartKind = 'histogram' | 'mirrored_velocity'
 type FrequencyDisplayMode = 'histogram' | 'cumulative'
 type DisplacementGlyphPlacement = 'top' | 'bottom'
@@ -157,6 +189,20 @@ type SuspensionVisualizationSettings = {
   showDisplacementStatsOnChart: boolean
   showVelocityStatsOnChart: boolean
   showStrokeLengthStatsOnChart: boolean
+  phaseDensityBins: number
+  phaseContourMasses: number[]
+  phaseConditionalBins: number
+  phaseRenderMode: PhaseRenderMode
+  phaseMarkOpacity: number
+  phaseScatterMarkSize: number
+  phaseShowGridlines: boolean
+  phaseXAxisAuto: boolean
+  phaseYAxisAuto: boolean
+  phaseXAxisRange: PhaseAxisRange
+  phaseYAxisRange: PhaseAxisRange
+  phasePositionConditionMm: PhaseAxisRange
+  phasePositionConditionNormalized: PhaseAxisRange
+  phaseVelocityCondition: PhaseAxisRange
 }
 
 const DEFAULT_FREQUENCY_DISPLAY_MODES: FrequencyDisplayModes = {
@@ -189,6 +235,13 @@ type HistogramBin = {
   x1: number
   proportion: number
   count: number
+  total: number
+}
+
+type ConditionalHistogram = {
+  bins: HistogramBin[]
+  underflowCount: number
+  overflowCount: number
   total: number
 }
 
@@ -278,6 +331,7 @@ export function SuspensionVisualization({
   dataSource,
   bookmarkRefreshToken = 0,
   onInspectSignals,
+  mode = 'simple',
 }: {
   studySet: StudySet
   sessions: SessionRecord[]
@@ -285,17 +339,18 @@ export function SuspensionVisualization({
   dataSource: LibraryDataSource
   bookmarkRefreshToken?: number
   onInspectSignals?: (sessionRef: StudySessionRef, window: TimeWindow) => void
+  mode?: SuspensionVisualizationMode
 }) {
-  const entities = visualizationEntities(studySet)
-  const baseStudySetTracks = tracks.filter((track) => studySet.trackIds.includes(track.id))
+  const entities = useMemo(() => visualizationEntities(studySet), [studySet])
+  const baseStudySetTracks = useMemo(() => tracks.filter((track) => studySet.trackIds.includes(track.id)), [studySet.trackIds, tracks])
   const [visualizationTrackMatches, setVisualizationTrackMatches] = useState<SessionTrackMatchRecord[] | null>(null)
   const [visualizationTrackMatchesLoading, setVisualizationTrackMatchesLoading] = useState(false)
-  const studySetTracks = mergeTrackMatches(baseStudySetTracks, visualizationTrackMatches)
+  const studySetTracks = useMemo(() => mergeTrackMatches(baseStudySetTracks, visualizationTrackMatches), [baseStudySetTracks, visualizationTrackMatches])
   const studySetTrackKey = studySetTracks.map((track) => `${track.id}:${track.revision}`).join('|')
   const studySetKey = stableStudySetKey(studySet)
   const trackMatchKey = stableTrackMatchKey(studySet)
-  const settingsCacheKey = visualizationSettingsKey(studySet)
-  const initialSettings = restoredVisualizationSettings(settingsCacheKey, entities, studySetTracks)
+  const settingsCacheKey = visualizationSettingsKey(studySet, mode)
+  const initialSettings = restoredVisualizationSettings(settingsCacheKey, entities, studySetTracks, mode)
   const [selectedEntityIds, setSelectedEntityIds] = useState<string[]>(() =>
     initialSettings.selectedEntityIds,
   )
@@ -313,10 +368,24 @@ export function SuspensionVisualization({
   const [showDisplacementStatsOnChart, setShowDisplacementStatsOnChart] = useState(initialSettings.showDisplacementStatsOnChart)
   const [showVelocityStatsOnChart, setShowVelocityStatsOnChart] = useState(initialSettings.showVelocityStatsOnChart)
   const [showStrokeLengthStatsOnChart, setShowStrokeLengthStatsOnChart] = useState(initialSettings.showStrokeLengthStatsOnChart)
+  const [phaseDensityBins, setPhaseDensityBins] = useState(initialSettings.phaseDensityBins)
+  const [phaseContourMasses, setPhaseContourMasses] = useState(initialSettings.phaseContourMasses)
+  const [phaseConditionalBins, setPhaseConditionalBins] = useState(initialSettings.phaseConditionalBins)
+  const [phaseRenderMode, setPhaseRenderMode] = useState(initialSettings.phaseRenderMode)
+  const [phaseMarkOpacity, setPhaseMarkOpacity] = useState(initialSettings.phaseMarkOpacity)
+  const [phaseScatterMarkSize, setPhaseScatterMarkSize] = useState(initialSettings.phaseScatterMarkSize)
+  const [phaseShowGridlines, setPhaseShowGridlines] = useState(initialSettings.phaseShowGridlines)
+  const [phaseXAxisAuto, setPhaseXAxisAuto] = useState(initialSettings.phaseXAxisAuto)
+  const [phaseYAxisAuto, setPhaseYAxisAuto] = useState(initialSettings.phaseYAxisAuto)
+  const [phaseXAxisRange, setPhaseXAxisRange] = useState<PhaseAxisRange>(initialSettings.phaseXAxisRange)
+  const [phaseYAxisRange, setPhaseYAxisRange] = useState<PhaseAxisRange>(initialSettings.phaseYAxisRange)
+  const [phasePositionConditionMm, setPhasePositionConditionMm] = useState<PhaseAxisRange>(initialSettings.phasePositionConditionMm)
+  const [phasePositionConditionNormalized, setPhasePositionConditionNormalized] = useState<PhaseAxisRange>(initialSettings.phasePositionConditionNormalized)
+  const [phaseVelocityCondition, setPhaseVelocityCondition] = useState<PhaseAxisRange>(initialSettings.phaseVelocityCondition)
   const [loadState, setLoadState] = useState<LoadState>({ status: 'idle', message: 'Select sessions or groups to visualize.' })
 
   useEffect(() => {
-    const restored = restoredVisualizationSettings(settingsCacheKey, visualizationEntities(studySet), studySetTracks)
+    const restored = restoredVisualizationSettings(settingsCacheKey, visualizationEntities(studySet), studySetTracks, mode)
     setSelectedEntityIds(restored.selectedEntityIds)
     setCollapsedPanels(restored.collapsedPanels)
     setComparisonLayout(restored.comparisonLayout)
@@ -332,6 +401,20 @@ export function SuspensionVisualization({
     setShowDisplacementStatsOnChart(restored.showDisplacementStatsOnChart)
     setShowVelocityStatsOnChart(restored.showVelocityStatsOnChart)
     setShowStrokeLengthStatsOnChart(restored.showStrokeLengthStatsOnChart)
+    setPhaseDensityBins(restored.phaseDensityBins)
+    setPhaseContourMasses(restored.phaseContourMasses)
+    setPhaseConditionalBins(restored.phaseConditionalBins)
+    setPhaseRenderMode(restored.phaseRenderMode)
+    setPhaseMarkOpacity(restored.phaseMarkOpacity)
+    setPhaseScatterMarkSize(restored.phaseScatterMarkSize)
+    setPhaseShowGridlines(restored.phaseShowGridlines)
+    setPhaseXAxisAuto(restored.phaseXAxisAuto)
+    setPhaseYAxisAuto(restored.phaseYAxisAuto)
+    setPhaseXAxisRange(restored.phaseXAxisRange)
+    setPhaseYAxisRange(restored.phaseYAxisRange)
+    setPhasePositionConditionMm(restored.phasePositionConditionMm)
+    setPhasePositionConditionNormalized(restored.phasePositionConditionNormalized)
+    setPhaseVelocityCondition(restored.phaseVelocityCondition)
   }, [settingsCacheKey, studySetKey])
 
   useEffect(() => {
@@ -376,15 +459,15 @@ export function SuspensionVisualization({
     }
   }, [studySetKey, studySetTrackKey])
 
-  const selectedEntities = entities.filter((entity) => selectedEntityIds.includes(entity.id))
-  const selectedTrack = studySetTracks.find((track) => track.id === selectedTrackId) ?? studySetTracks[0] ?? null
-  const sectors = selectedTrack ? trackSectors(selectedTrack) : []
+  const selectedEntities = useMemo(() => entities.filter((entity) => selectedEntityIds.includes(entity.id)), [entities, selectedEntityIds])
+  const selectedTrack = useMemo(() => studySetTracks.find((track) => track.id === selectedTrackId) ?? studySetTracks[0] ?? null, [selectedTrackId, studySetTracks])
+  const sectors = useMemo(() => selectedTrack ? trackSectors(selectedTrack) : [], [selectedTrack])
   const sectorKey = sectors.map((sector) => sector.id).join('|')
-  const selectedSectors = sectors.filter((sector) => selectedSectorIds.includes(sector.id))
-  const selectedSessionRefs = uniqueSessionRefs(selectedEntities.flatMap((entity) => entity.sessionRefs))
+  const selectedSectors = useMemo(() => sectors.filter((sector) => selectedSectorIds.includes(sector.id)), [sectors, selectedSectorIds])
+  const selectedSessionRefs = useMemo(() => uniqueSessionRefs(selectedEntities.flatMap((entity) => entity.sessionRefs)), [selectedEntities])
   const studySetSessionRefs = useMemo(() => uniqueSessionRefs(studySet.sessions), [studySetKey])
   const displacementUnitMode: DisplacementUnitMode = showDisplacementMm ? 'mm' : 'normalized'
-  const displacementRoleConfigs = displacementSignalRoleConfigs(displacementUnitMode)
+  const displacementRoleConfigs = useMemo(() => displacementSignalRoleConfigs(displacementUnitMode), [displacementUnitMode])
   const studySetSessionKey = studySetSessionRefs.map(sessionRefId).join('|')
   const resolvedSignalChoices = useMemo(
     () => resolvedDisplacementSignalChoices(studySetSessionRefs, sessions, signalChoices, displacementRoleConfigs),
@@ -422,9 +505,24 @@ export function SuspensionVisualization({
       showDisplacementStatsOnChart,
       showVelocityStatsOnChart,
       showStrokeLengthStatsOnChart,
+      phaseDensityBins,
+      phaseContourMasses,
+      phaseConditionalBins,
+      phaseRenderMode,
+      phaseMarkOpacity,
+      phaseScatterMarkSize,
+      phaseShowGridlines,
+      phaseXAxisAuto,
+      phaseYAxisAuto,
+      phaseXAxisRange,
+      phaseYAxisRange,
+      phasePositionConditionMm,
+      phasePositionConditionNormalized,
+      phaseVelocityCondition,
     }
     visualizationSettingsCache.set(settingsCacheKey, settings)
-    persistVisualizationSettings(settingsCacheKey, settings)
+    const persistenceTimer = window.setTimeout(() => persistVisualizationSettings(settingsCacheKey, settings), 180)
+    return () => window.clearTimeout(persistenceTimer)
   }, [
     settingsCacheKey,
     studySetKey,
@@ -443,6 +541,20 @@ export function SuspensionVisualization({
     showDisplacementStatsOnChart,
     showVelocityStatsOnChart,
     showStrokeLengthStatsOnChart,
+    phaseDensityBins,
+    phaseContourMasses,
+    phaseConditionalBins,
+    phaseRenderMode,
+    phaseMarkOpacity,
+    phaseScatterMarkSize,
+    phaseShowGridlines,
+    phaseXAxisAuto,
+    phaseYAxisAuto,
+    phaseXAxisRange,
+    phaseYAxisRange,
+    phasePositionConditionMm,
+    phasePositionConditionNormalized,
+    phaseVelocityCondition,
   ])
 
   useEffect(() => {
@@ -452,7 +564,7 @@ export function SuspensionVisualization({
         setLoadState({ status: 'idle', message: 'Add at least one session to visualize suspension data.' })
         return
       }
-      const missCount = visualizationCacheMissCount(dataSource, studySetSessionRefs, resolvedSignalChoices, displacementUnitMode)
+      const missCount = visualizationCacheMissCount(dataSource, studySetSessionRefs, resolvedSignalChoices, displacementUnitMode, mode)
       setLoadState((current) => ({
         status: 'loading',
         message: current.data
@@ -464,7 +576,7 @@ export function SuspensionVisualization({
         diagnostics: current.diagnostics,
       }))
       try {
-        const result = await loadVisualizationData(studySetSessionRefs, resolvedSignalChoices, displacementUnitMode, sessions, dataSource)
+        const result = await loadVisualizationData(studySetSessionRefs, resolvedSignalChoices, displacementUnitMode, sessions, dataSource, mode)
         if (!cancelled) {
           setLoadState({
             status: 'ready',
@@ -490,7 +602,7 @@ export function SuspensionVisualization({
     return () => {
       cancelled = true
     }
-  }, [dataSource, sessions, studySetSessionKey, signalChoiceSignature, displacementUnitMode])
+  }, [dataSource, sessions, studySetSessionKey, signalChoiceSignature, displacementUnitMode, mode])
 
   const data = loadState.data ?? null
   const deferredTimeWindowsBySession = useDeferredValue(timeWindowsBySession)
@@ -507,7 +619,7 @@ export function SuspensionVisualization({
     [scopedData, excludeInactivePeriods],
   )
   const controlsCollapsed = collapsedPanels.includes('select-filter')
-  const singleEntityDashboard = selectedEntities.length === 1 && scopeMode === 'whole_session'
+  const singleEntityDashboard = mode === 'simple' && selectedEntities.length === 1 && scopeMode === 'whole_session'
   const panelComparisonLayout: ComparisonLayout = singleEntityDashboard ? 'entities' : comparisonLayout
   const velocityDomain = baseAnalysisData
     ? metricMagnitudeCandidateDomain(selectedEntities, baseAnalysisData, selectedEnds, VELOCITY_METRIC_SPEC, VELOCITY_DOMAIN_LIMITS)
@@ -517,10 +629,59 @@ export function SuspensionVisualization({
     : ([0, 100] as [number, number])
   const displacementFrontRole = showDisplacementMm ? 'front_displacement_mm' : 'front_displacement'
   const displacementRearRole = showDisplacementMm ? 'rear_displacement_mm' : 'rear_displacement'
+  const phaseDisplacementRoles = useMemo<Record<SuspensionEnd, string>>(() => ({
+    front: displacementFrontRole,
+    rear: displacementRearRole,
+  }), [displacementFrontRole, displacementRearRole])
   const displacementXDomain = showDisplacementMm && baseAnalysisData
     ? displacementMmCandidateDomain(selectedEntities, baseAnalysisData, selectedEnds, DISPLACEMENT_MM_DOMAIN_LIMITS)
     : ([0, 100] as [number, number])
   const displacementXLabel = showDisplacementMm ? 'wheel displacement (mm)' : 'wheel displacement, % of max'
+  const phaseXAxisBounds = useMemo<PhaseAxisRange>(() => showDisplacementMm
+    ? [...PHASE_DISPLACEMENT_MM_BOUNDS]
+    : [...PHASE_DISPLACEMENT_NORMALIZED_BOUNDS], [showDisplacementMm])
+  const phaseXAxisManualRange = useMemo(() => clampPhaseAxisRange(phaseXAxisRange, phaseXAxisBounds), [phaseXAxisBounds, phaseXAxisRange])
+  const phaseYAxisManualRange = useMemo(() => clampPhaseAxisRange(phaseYAxisRange, [...PHASE_VELOCITY_BOUNDS]), [phaseYAxisRange])
+  const phasePositionCondition = useMemo(() => showDisplacementMm
+    ? clampPhaseAxisRange(phasePositionConditionMm, [...PHASE_DISPLACEMENT_MM_BOUNDS])
+    : clampPhaseAxisRange(phasePositionConditionNormalized, [...PHASE_DISPLACEMENT_NORMALIZED_BOUNDS]), [phasePositionConditionMm, phasePositionConditionNormalized, showDisplacementMm])
+  const setPhasePositionCondition = showDisplacementMm ? setPhasePositionConditionMm : setPhasePositionConditionNormalized
+  const phaseVelocityConditionRange = useMemo(() => clampPhaseAxisRange(phaseVelocityCondition, [...PHASE_VELOCITY_BOUNDS]), [phaseVelocityCondition])
+  const deferredPhasePositionCondition = useDeferredValue(phasePositionCondition)
+  const deferredPhaseVelocityConditionRange = useDeferredValue(phaseVelocityConditionRange)
+  const phaseAutoDomain = useMemo(() => {
+    if (!analysisData) {
+      return null
+    }
+    const visibleSectors = scopeMode === 'sector' ? selectedSectors : [null]
+    const series = selectedEntities.flatMap((entity) => visibleSectors.flatMap((sector) => orderedSuspensionEnds(selectedEnds).map((end) => ({
+      id: `${entity.id}-${end}-${sector?.id ?? 'all'}`,
+      label: entity.label,
+      color: roleColor(end),
+      points: phasePointsForEntityEnd(
+        entity,
+        analysisData,
+        end === 'front' ? displacementFrontRole : displacementRearRole,
+        `${end}_velocity`,
+        selectedTrack,
+        sector ? [sector] : null,
+        showDisplacementMm ? 1 : 100,
+      ),
+    }))))
+    return phaseDomain(series)
+  }, [analysisData, displacementFrontRole, displacementRearRole, scopeMode, selectedEnds, selectedEntities, selectedSectors, selectedTrack, showDisplacementMm])
+
+  useEffect(() => {
+    if (!phaseAutoDomain) {
+      return
+    }
+    if (phaseXAxisAuto) {
+      setPhaseXAxisRange((current) => phaseAxisRangesEqual(current, phaseAutoDomain.x) ? current : phaseAutoDomain.x)
+    }
+    if (phaseYAxisAuto) {
+      setPhaseYAxisRange((current) => phaseAxisRangesEqual(current, phaseAutoDomain.y) ? current : phaseAutoDomain.y)
+    }
+  }, [phaseAutoDomain, phaseXAxisAuto, phaseYAxisAuto])
   const displacementStatsFormatter = showDisplacementMm ? DISPLACEMENT_MM_STATS_FORMATTER : formatPercentValue
   const displacementValueTransform = showDisplacementMm ? identityValues : percentValues
 
@@ -532,7 +693,7 @@ export function SuspensionVisualization({
 
   function toggleEnd(end: SuspensionEnd) {
     setSelectedEnds((current) =>
-      current.includes(end) ? current.filter((item) => item !== end) : [...current, end],
+      orderedSuspensionEnds(current.includes(end) ? current.filter((item) => item !== end) : [...current, end]),
     )
   }
 
@@ -585,7 +746,7 @@ export function SuspensionVisualization({
         <div>
           <h3 className="viz-heading">
             {studySet.displayName || 'Current Study Set'}
-            <InfoTip text="Simple Suspension Metrics for one or more Study Set sessions or groups. Groups combine their member sessions." />
+            <InfoTip text={mode === 'phase' ? 'Suspension displacement--velocity phase diagrams for one or more Study Set sessions or groups. Groups pool their member samples.' : 'Simple Suspension Metrics for one or more Study Set sessions or groups. Groups combine their member sessions.'} />
           </h3>
         </div>
         <div className="suspension-viz-legend">
@@ -668,6 +829,40 @@ export function SuspensionVisualization({
                   />
                 )}
 
+                {mode === 'phase' ? (
+                  <PhaseDisplayOptionsControl
+                    densityBins={phaseDensityBins}
+                    contourMasses={phaseContourMasses}
+                    conditionalBins={phaseConditionalBins}
+                    renderMode={phaseRenderMode}
+                    markOpacity={phaseMarkOpacity}
+                    scatterMarkSize={phaseScatterMarkSize}
+                    showGridlines={phaseShowGridlines}
+                    xAxisAuto={phaseXAxisAuto}
+                    xAxisBounds={phaseXAxisBounds}
+                    xAxisRange={phaseXAxisManualRange}
+                    yAxisAuto={phaseYAxisAuto}
+                    yAxisBounds={PHASE_VELOCITY_BOUNDS}
+                    yAxisRange={phaseYAxisManualRange}
+                    positionConditionRange={phasePositionCondition}
+                    velocityConditionRange={phaseVelocityConditionRange}
+                    showDisplacementMm={showDisplacementMm}
+                    onDensityBinsChange={setPhaseDensityBins}
+                    onContourMassesChange={setPhaseContourMasses}
+                    onConditionalBinsChange={setPhaseConditionalBins}
+                    onRenderModeChange={setPhaseRenderMode}
+                    onMarkOpacityChange={setPhaseMarkOpacity}
+                    onScatterMarkSizeChange={setPhaseScatterMarkSize}
+                    onShowGridlinesChange={setPhaseShowGridlines}
+                    onXAxisAutoChange={setPhaseXAxisAuto}
+                    onXAxisRangeChange={setPhaseXAxisRange}
+                    onYAxisAutoChange={setPhaseYAxisAuto}
+                    onYAxisRangeChange={setPhaseYAxisRange}
+                    onPositionConditionRangeChange={setPhasePositionCondition}
+                    onVelocityConditionRangeChange={setPhaseVelocityCondition}
+                    onShowDisplacementMmChange={setShowDisplacementMm}
+                  />
+                ) : (
                 <DisplayOptionsControl
                   modes={frequencyDisplayModes}
                   onChange={setFrequencyDisplayMode}
@@ -680,6 +875,7 @@ export function SuspensionVisualization({
                   showStrokeLengthStatsOnChart={showStrokeLengthStatsOnChart}
                   showVelocityStatsOnChart={showVelocityStatsOnChart}
                 />
+                )}
               </div>
             </section>
           )}
@@ -699,6 +895,148 @@ export function SuspensionVisualization({
 
           {data && analysisData && baseAnalysisData && (
             <div className={`viz-panel-stack${singleEntityDashboard ? ' single-entity-dashboard' : ''}`}>
+          {mode === 'phase' ? (
+            <>
+            <VisualizationPanel
+              id="phase-diagram"
+              title="Suspension phase diagram"
+              subtitle="Wheel displacement versus instantaneous wheel velocity. Positive velocity is compression; negative velocity is rebound."
+              collapsed={collapsedPanels.includes('phase-diagram')}
+              onToggle={() => togglePanel('phase-diagram')}
+            >
+              <PhaseProvenanceNote entities={selectedEntities} sessions={sessions} />
+              <PhaseDiagramGrid
+                variant="phase"
+                data={analysisData}
+                entities={selectedEntities}
+                ends={selectedEnds}
+                layout={panelComparisonLayout}
+                scopeMode={scopeMode}
+                selectedTrack={selectedTrack}
+                sectors={selectedSectors}
+                displacementRoles={phaseDisplacementRoles}
+                displacementScale={showDisplacementMm ? 1 : 100}
+                densityBins={phaseDensityBins}
+                contourMasses={phaseContourMasses}
+                conditionalBins={phaseConditionalBins}
+                renderMode={phaseRenderMode}
+                markOpacity={phaseMarkOpacity}
+                scatterMarkSize={phaseScatterMarkSize}
+                showGridlines={phaseShowGridlines}
+                xDomainOverride={phaseXAxisAuto ? phaseAutoDomain?.x ?? null : phaseXAxisManualRange}
+                yDomainOverride={phaseYAxisAuto ? phaseAutoDomain?.y ?? null : phaseYAxisManualRange}
+                logDensity
+                showZeroLines
+                positionConditionRange={deferredPhasePositionCondition}
+                velocityConditionRange={deferredPhaseVelocityConditionRange}
+                xLabel={displacementXLabel}
+              />
+            </VisualizationPanel>
+            <VisualizationPanel
+              id="phase-contours"
+              title="Probability-mass contours"
+              subtitle="Sample-weighted outline contours at the selected probability masses."
+              collapsed={collapsedPanels.includes('phase-contours')}
+              onToggle={() => togglePanel('phase-contours')}
+            >
+              <PhaseDiagramGrid
+                variant="contours"
+                data={analysisData}
+                entities={selectedEntities}
+                ends={selectedEnds}
+                layout={panelComparisonLayout}
+                scopeMode={scopeMode}
+                selectedTrack={selectedTrack}
+                sectors={selectedSectors}
+                displacementRoles={phaseDisplacementRoles}
+                displacementScale={showDisplacementMm ? 1 : 100}
+                densityBins={phaseDensityBins}
+                contourMasses={phaseContourMasses}
+                conditionalBins={phaseConditionalBins}
+                renderMode={phaseRenderMode}
+                markOpacity={phaseMarkOpacity}
+                scatterMarkSize={phaseScatterMarkSize}
+                showGridlines={phaseShowGridlines}
+                xDomainOverride={phaseXAxisAuto ? phaseAutoDomain?.x ?? null : phaseXAxisManualRange}
+                yDomainOverride={phaseYAxisAuto ? phaseAutoDomain?.y ?? null : phaseYAxisManualRange}
+                logDensity
+                showZeroLines
+                positionConditionRange={deferredPhasePositionCondition}
+                velocityConditionRange={deferredPhaseVelocityConditionRange}
+                xLabel={displacementXLabel}
+              />
+            </VisualizationPanel>
+            <VisualizationPanel
+              id="phase-velocity-given-position"
+              title="Velocity conditional on position"
+              subtitle={`Normalized velocity distributions for samples with displacement from ${formatPhaseAxisRangeValue(phasePositionCondition[0])} to ${formatPhaseAxisRangeValue(phasePositionCondition[1])}${showDisplacementMm ? ' mm' : '%'}. The chart range uses the 0.1st to 99.9th percentiles; excluded tails are reported on the chart.`}
+              collapsed={collapsedPanels.includes('phase-velocity-given-position')}
+              onToggle={() => togglePanel('phase-velocity-given-position')}
+            >
+              <PhaseDiagramGrid
+                variant="velocity_given_position"
+                data={analysisData}
+                entities={selectedEntities}
+                ends={selectedEnds}
+                layout={panelComparisonLayout}
+                scopeMode={scopeMode}
+                selectedTrack={selectedTrack}
+                sectors={selectedSectors}
+                displacementRoles={phaseDisplacementRoles}
+                displacementScale={showDisplacementMm ? 1 : 100}
+                densityBins={phaseDensityBins}
+                contourMasses={phaseContourMasses}
+                conditionalBins={phaseConditionalBins}
+                renderMode={phaseRenderMode}
+                markOpacity={phaseMarkOpacity}
+                scatterMarkSize={phaseScatterMarkSize}
+                showGridlines={phaseShowGridlines}
+                xDomainOverride={phaseXAxisAuto ? phaseAutoDomain?.x ?? null : phaseXAxisManualRange}
+                yDomainOverride={phaseYAxisAuto ? phaseAutoDomain?.y ?? null : phaseYAxisManualRange}
+                logDensity
+                showZeroLines
+                positionConditionRange={deferredPhasePositionCondition}
+                velocityConditionRange={deferredPhaseVelocityConditionRange}
+                xLabel={displacementXLabel}
+              />
+            </VisualizationPanel>
+            <VisualizationPanel
+              id="phase-position-given-velocity"
+              title="Position conditional on velocity"
+              subtitle={`Normalized position distributions for samples with velocity from ${formatPhaseAxisRangeValue(phaseVelocityConditionRange[0])} to ${formatPhaseAxisRangeValue(phaseVelocityConditionRange[1])} mm/s. The chart range uses the 0.1st to 99.9th percentiles; excluded tails are reported on the chart.`}
+              collapsed={collapsedPanels.includes('phase-position-given-velocity')}
+              onToggle={() => togglePanel('phase-position-given-velocity')}
+            >
+              <PhaseDiagramGrid
+                variant="position_given_velocity"
+                data={analysisData}
+                entities={selectedEntities}
+                ends={selectedEnds}
+                layout={panelComparisonLayout}
+                scopeMode={scopeMode}
+                selectedTrack={selectedTrack}
+                sectors={selectedSectors}
+                displacementRoles={phaseDisplacementRoles}
+                displacementScale={showDisplacementMm ? 1 : 100}
+                densityBins={phaseDensityBins}
+                contourMasses={phaseContourMasses}
+                conditionalBins={phaseConditionalBins}
+                renderMode={phaseRenderMode}
+                markOpacity={phaseMarkOpacity}
+                scatterMarkSize={phaseScatterMarkSize}
+                showGridlines={phaseShowGridlines}
+                xDomainOverride={phaseXAxisAuto ? phaseAutoDomain?.x ?? null : phaseXAxisManualRange}
+                yDomainOverride={phaseYAxisAuto ? phaseAutoDomain?.y ?? null : phaseYAxisManualRange}
+                logDensity
+                showZeroLines
+                positionConditionRange={deferredPhasePositionCondition}
+                velocityConditionRange={deferredPhaseVelocityConditionRange}
+                xLabel={displacementXLabel}
+              />
+            </VisualizationPanel>
+            </>
+          ) : (
+            <>
           <VisualizationPanel
             id="displacement"
             title="Wheel displacement distribution"
@@ -960,11 +1298,27 @@ export function SuspensionVisualization({
               <EventCountStrip entities={selectedEntities} data={analysisData} ends={selectedEnds} />
             )}
           </VisualizationPanel>
+            </>
+          )}
         </div>
       )}
         </div>
       </div>
 
+    </div>
+  )
+}
+
+function PhaseProvenanceNote({ entities, sessions }: { entities: VisualizationEntity[]; sessions: SessionRecord[] }) {
+  const profileNames = Array.from(new Set(
+    uniqueSessionRefs(entities.flatMap((entity) => entity.sessionRefs))
+      .map((ref) => sessionByRef(ref, sessions)?.preprocessingProfile?.trim())
+      .filter((value): value is string => Boolean(value)),
+  ))
+  return (
+    <div className={`viz-status${profileNames.length > 1 ? ' warning' : ''}`}>
+      Continuous velocity is the persisted preprocessed wheel-velocity signal. {profileNames.length > 0 ? `Profile${profileNames.length === 1 ? '' : 's'}: ${profileNames.join(', ')}.` : 'No preprocessing profile metadata is available.'}
+      {profileNames.length > 1 ? ' Compare sessions only when filtering and derivation settings are compatible.' : ''}
     </div>
   )
 }
@@ -1106,6 +1460,251 @@ function DisplayOptionsControl({
         />
       </fieldset>
     </section>
+  )
+}
+
+function PhaseDisplayOptionsControl({
+  densityBins,
+  contourMasses,
+  conditionalBins,
+  renderMode,
+  markOpacity,
+  scatterMarkSize,
+  showGridlines,
+  xAxisAuto,
+  xAxisBounds,
+  xAxisRange,
+  yAxisAuto,
+  yAxisBounds,
+  yAxisRange,
+  positionConditionRange,
+  velocityConditionRange,
+  showDisplacementMm,
+  onDensityBinsChange,
+  onContourMassesChange,
+  onConditionalBinsChange,
+  onRenderModeChange,
+  onMarkOpacityChange,
+  onScatterMarkSizeChange,
+  onShowGridlinesChange,
+  onXAxisAutoChange,
+  onXAxisRangeChange,
+  onYAxisAutoChange,
+  onYAxisRangeChange,
+  onPositionConditionRangeChange,
+  onVelocityConditionRangeChange,
+  onShowDisplacementMmChange,
+}: {
+  densityBins: number
+  contourMasses: number[]
+  conditionalBins: number
+  renderMode: PhaseRenderMode
+  markOpacity: number
+  scatterMarkSize: number
+  showGridlines: boolean
+  xAxisAuto: boolean
+  xAxisBounds: PhaseAxisRange
+  xAxisRange: PhaseAxisRange
+  yAxisAuto: boolean
+  yAxisBounds: readonly [number, number]
+  yAxisRange: PhaseAxisRange
+  positionConditionRange: PhaseAxisRange
+  velocityConditionRange: PhaseAxisRange
+  showDisplacementMm: boolean
+  onDensityBinsChange: (value: number) => void
+  onContourMassesChange: (value: number[]) => void
+  onConditionalBinsChange: (value: number) => void
+  onRenderModeChange: (value: PhaseRenderMode) => void
+  onMarkOpacityChange: (value: number) => void
+  onScatterMarkSizeChange: (value: number) => void
+  onShowGridlinesChange: (checked: boolean) => void
+  onXAxisAutoChange: (checked: boolean) => void
+  onXAxisRangeChange: (value: PhaseAxisRange) => void
+  onYAxisAutoChange: (checked: boolean) => void
+  onYAxisRangeChange: (value: PhaseAxisRange) => void
+  onPositionConditionRangeChange: (value: PhaseAxisRange) => void
+  onVelocityConditionRangeChange: (value: PhaseAxisRange) => void
+  onShowDisplacementMmChange: (checked: boolean) => void
+}) {
+  const toggleContourMass = (mass: number, checked: boolean) => {
+    onContourMassesChange(checked
+      ? PHASE_CONTOUR_MASS_OPTIONS.filter((option) => option === mass || contourMasses.includes(option))
+      : contourMasses.filter((option) => option !== mass))
+  }
+  return (
+    <section className="viz-display-options">
+      <strong>Display options</strong>
+      <fieldset className="viz-frequency-options">
+        <legend>Phase diagram</legend>
+        <span className="viz-frequency-mode-options">
+          {(['line', 'scatter', 'density'] as const).map((presentation) => (
+            <label key={presentation}>
+              <input checked={renderMode === presentation} name="phase-presentation" onChange={() => onRenderModeChange(presentation)} type="radio" />
+              {presentation[0].toUpperCase() + presentation.slice(1)}
+            </label>
+          ))}
+        </span>
+        {renderMode === 'density' && <label className="viz-frequency-extra-option">
+          Resolution
+          <select value={densityBins} onChange={(event) => onDensityBinsChange(Number(event.target.value))}>
+            <option value={48}>Fine</option>
+            <option value={72}>Finer</option>
+            <option value={96}>Finest</option>
+          </select>
+        </label>}
+        {renderMode !== 'density' && <label className="viz-frequency-extra-option">
+          Mark opacity: {Math.round(markOpacity * 100)}%
+          <input className="viz-mark-opacity-slider" min="0.02" max="0.8" step="0.02" type="range" value={markOpacity} onChange={(event) => onMarkOpacityChange(Number(event.target.value))} />
+        </label>}
+        {renderMode === 'scatter' && <label className="viz-frequency-extra-option">
+          Mark size: {scatterMarkSize}px
+          <input className="viz-mark-size-slider" min="1" max="5" step="0.5" type="range" value={scatterMarkSize} onChange={(event) => onScatterMarkSizeChange(Number(event.target.value))} />
+        </label>}
+        <div className="viz-phase-axis-options">
+          <strong>Axis ranges</strong>
+          <AxisRangeControl auto={xAxisAuto} bounds={xAxisBounds} label="Displacement" range={xAxisRange} step={PHASE_DISPLACEMENT_AXIS_STEP} onAutoChange={onXAxisAutoChange} onRangeChange={onXAxisRangeChange} />
+          <AxisRangeControl auto={yAxisAuto} bounds={yAxisBounds} label="Velocity" range={yAxisRange} showZeroTick snapToZeroWithin={20} step={PHASE_VELOCITY_AXIS_STEP} onAutoChange={onYAxisAutoChange} onRangeChange={onYAxisRangeChange} />
+        </div>
+        <label className="viz-frequency-extra-option">
+          <input checked={showGridlines} onChange={(event) => onShowGridlinesChange(event.target.checked)} type="checkbox" />
+          Show gridlines
+        </label>
+        <label className="viz-frequency-extra-option">
+          <input checked={!showDisplacementMm} onChange={(event) => onShowDisplacementMmChange(!event.target.checked)} type="checkbox" />
+          Normalized displacement
+        </label>
+      </fieldset>
+      <fieldset className="viz-frequency-options">
+        <legend>Probability mass contours</legend>
+        <span className="viz-frequency-mode-options viz-contour-mass-options">
+          {PHASE_CONTOUR_MASS_OPTIONS.map((mass) => <label key={mass}>
+            <input checked={contourMasses.includes(mass)} onChange={(event) => toggleContourMass(mass, event.target.checked)} type="checkbox" />
+            {formatContourMass(mass)}
+          </label>)}
+        </span>
+      </fieldset>
+      <fieldset className="viz-frequency-options">
+        <legend>Conditional distributions</legend>
+        <ConditionRangeControl bounds={xAxisBounds} label="Position window" range={positionConditionRange} step={PHASE_DISPLACEMENT_AXIS_STEP} onRangeChange={onPositionConditionRangeChange} />
+        <ConditionRangeControl bounds={yAxisBounds} label="Velocity window" range={velocityConditionRange} showZeroTick snapToZeroWithin={20} step={PHASE_VELOCITY_AXIS_STEP} onRangeChange={onVelocityConditionRangeChange} />
+        <label className="viz-frequency-extra-option">
+          Bins: {conditionalBins}
+          <input className="viz-conditional-bins-slider" min="20" max="120" step="5" type="range" value={conditionalBins} onChange={(event) => onConditionalBinsChange(Number(event.target.value))} />
+        </label>
+      </fieldset>
+    </section>
+  )
+}
+
+function AxisRangeControl({ auto, bounds, label, range, showZeroTick = false, snapToZeroWithin, step, onAutoChange, onRangeChange }: {
+  auto: boolean
+  bounds: readonly [number, number]
+  label: string
+  range: PhaseAxisRange
+  showZeroTick?: boolean
+  snapToZeroWithin?: number
+  step: number
+  onAutoChange: (checked: boolean) => void
+  onRangeChange: (range: PhaseAxisRange) => void
+}) {
+  const span = bounds[1] - bounds[0]
+  const minPosition = ((range[0] - bounds[0]) / span) * 100
+  const maxPosition = ((range[1] - bounds[0]) / span) * 100
+  const sliderStyle = {
+    '--phase-range-start': `${minPosition}%`,
+    '--phase-range-width': `${Math.max(0, maxPosition - minPosition)}%`,
+  } as CSSProperties
+  const zeroPosition = ((0 - bounds[0]) / span) * 100
+  const snapValue = (value: number) => snapToZeroWithin !== undefined && Math.abs(value) <= snapToZeroWithin ? 0 : value
+  return (
+    <div className="viz-phase-axis-control">
+      <label><input checked={auto} onChange={(event) => onAutoChange(event.target.checked)} type="checkbox" /> {label}: auto</label>
+      <div className={`viz-phase-range-slider${auto ? ' disabled' : ''}`} style={sliderStyle}>
+        <span aria-hidden="true" />
+        {showZeroTick && <i aria-hidden="true" className="viz-phase-range-zero-tick" style={{ left: `${zeroPosition}%` }} />}
+        <input aria-label={`${label} minimum`} disabled={auto} max={bounds[1]} min={bounds[0]} onChange={(event) => onRangeChange([Math.min(snapValue(Number(event.target.value)), range[1] - step), range[1]])} step={step} type="range" value={range[0]} />
+        <input aria-label={`${label} maximum`} disabled={auto} max={bounds[1]} min={bounds[0]} onChange={(event) => onRangeChange([range[0], Math.max(snapValue(Number(event.target.value)), range[0] + step)])} step={step} type="range" value={range[1]} />
+      </div>
+      <small>{formatPhaseAxisRangeValue(range[0])} to {formatPhaseAxisRangeValue(range[1])}</small>
+    </div>
+  )
+}
+
+function ConditionRangeControl({ bounds, label, range, showZeroTick = false, snapToZeroWithin, step, onRangeChange }: {
+  bounds: readonly [number, number]
+  label: string
+  range: PhaseAxisRange
+  showZeroTick?: boolean
+  snapToZeroWithin?: number
+  step: number
+  onRangeChange: (range: PhaseAxisRange) => void
+}) {
+  const sliderRef = useRef<HTMLDivElement | null>(null)
+  const activeThumbRef = useRef<'minimum' | 'maximum' | null>(null)
+  const span = bounds[1] - bounds[0]
+  const minPosition = ((range[0] - bounds[0]) / span) * 100
+  const maxPosition = ((range[1] - bounds[0]) / span) * 100
+  const zeroPosition = ((0 - bounds[0]) / span) * 100
+  const snapValue = (value: number) => snapToZeroWithin !== undefined && Math.abs(value) <= snapToZeroWithin ? 0 : value
+  const sliderStyle = {
+    '--phase-range-start': `${minPosition}%`,
+    '--phase-range-width': `${Math.max(0, maxPosition - minPosition)}%`,
+  } as CSSProperties
+  const valueAtPointer = (event: PointerEvent<HTMLDivElement>) => {
+    const slider = sliderRef.current
+    if (!slider) {
+      return bounds[0]
+    }
+    const rect = slider.getBoundingClientRect()
+    const proportion = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
+    const stepped = bounds[0] + Math.round((proportion * span) / step) * step
+    return Math.max(bounds[0], Math.min(bounds[1], snapValue(stepped)))
+  }
+  const updateFromPointer = (event: PointerEvent<HTMLDivElement>, thumb: 'minimum' | 'maximum') => {
+    const value = valueAtPointer(event)
+    if (thumb === 'minimum') {
+      onRangeChange([Math.min(value, range[1] - step), range[1]])
+    } else {
+      onRangeChange([range[0], Math.max(value, range[0] + step)])
+    }
+  }
+  const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    const value = valueAtPointer(event)
+    const thumb = Math.abs(value - range[0]) <= Math.abs(value - range[1]) ? 'minimum' : 'maximum'
+    activeThumbRef.current = thumb
+    event.currentTarget.setPointerCapture(event.pointerId)
+    updateFromPointer(event, thumb)
+  }
+  const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    if (activeThumbRef.current) {
+      updateFromPointer(event, activeThumbRef.current)
+    }
+  }
+  const finishPointerDrag = (event: PointerEvent<HTMLDivElement>) => {
+    activeThumbRef.current = null
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+  }
+  return (
+    <div className="viz-phase-axis-control">
+      <label>{label}</label>
+      <div
+        className="viz-phase-range-slider interactive"
+        onPointerCancel={finishPointerDrag}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={finishPointerDrag}
+        ref={sliderRef}
+        style={sliderStyle}
+      >
+        <span aria-hidden="true" />
+        {showZeroTick && <i aria-hidden="true" className="viz-phase-range-zero-tick" style={{ left: `${zeroPosition}%` }} />}
+        <input aria-label={`${label} minimum`} max={bounds[1]} min={bounds[0]} readOnly step={step} tabIndex={-1} type="range" value={range[0]} />
+        <input aria-label={`${label} maximum`} max={bounds[1]} min={bounds[0]} readOnly step={step} tabIndex={-1} type="range" value={range[1]} />
+      </div>
+      <small>{formatPhaseAxisRangeValue(range[0])} to {formatPhaseAxisRangeValue(range[1])}</small>
+    </div>
   )
 }
 
@@ -1408,10 +2007,12 @@ function TimeWindowOverview({
   const times = data.timeBySession[key] ?? []
   const signals = data.signalsBySession[key] ?? {}
   const inactiveIntervals = inactiveIntervalsForSession(data, key)
-  const frontPoints = overviewPoints(times, signals.front_displacement ?? [], 520)
-  const rearPoints = overviewPoints(times, signals.rear_displacement ?? [], 520)
+  const frontPoints = overviewPoints(times, signals.front_displacement_mm ?? signals.front_displacement ?? [], 520)
+  const rearPoints = overviewPoints(times, signals.rear_displacement_mm ?? signals.rear_displacement ?? [], 520)
+  const displacementExtent = finiteExtent([...frontPoints, ...rearPoints].map((point) => point.value))
+  const displacementMax = displacementExtent.count > 0 ? Math.max(1, displacementExtent.max * 1.04) : 1
   const x = d3.scaleLinear().domain([0, durationS || 1]).range([margin.left, width - margin.right])
-  const y = d3.scaleLinear().domain([0, 1]).range([height - margin.bottom, margin.top])
+  const y = d3.scaleLinear().domain([0, displacementMax]).range([height - margin.bottom, margin.top])
   const line = d3
     .line<{ timeS: number; value: number }>()
     .x((point) => x(point.timeS))
@@ -2574,6 +3175,599 @@ function EventCountStrip({
   )
 }
 
+type PhaseDiagramGridProps = {
+  variant: PhaseChartVariant
+  data: VisualizationData
+  entities: VisualizationEntity[]
+  ends: SuspensionEnd[]
+  layout: ComparisonLayout
+  scopeMode: ScopeMode
+  selectedTrack: TrackRecord | null
+  sectors: TrackSector[]
+  displacementRoles: Record<SuspensionEnd, string>
+  displacementScale: number
+  densityBins: number
+  contourMasses: number[]
+  conditionalBins: number
+  renderMode: PhaseRenderMode
+  markOpacity: number
+  scatterMarkSize: number
+  showGridlines: boolean
+  positionConditionRange: PhaseAxisRange
+  velocityConditionRange: PhaseAxisRange
+  xDomainOverride: PhaseAxisRange | null
+  yDomainOverride: PhaseAxisRange | null
+  logDensity: boolean
+  showZeroLines: boolean
+  xLabel: string
+}
+
+type PhaseConditionalSeries = PhaseSeries & { values: number[]; matchedCount: number }
+
+function PhaseDiagramGridComponent({
+  variant,
+  data,
+  entities,
+  ends,
+  layout,
+  scopeMode,
+  selectedTrack,
+  sectors,
+  displacementRoles,
+  displacementScale,
+  densityBins,
+  contourMasses,
+  conditionalBins,
+  renderMode,
+  markOpacity,
+  scatterMarkSize,
+  showGridlines,
+  positionConditionRange,
+  velocityConditionRange,
+  xDomainOverride,
+  yDomainOverride,
+  logDensity,
+  showZeroLines,
+  xLabel,
+}: PhaseDiagramGridProps) {
+  if (ends.length === 0) {
+    return <div className="viz-sector-empty"><strong>No ends selected.</strong><span>Select front, rear, or both in the visualization filters.</span></div>
+  }
+  const orderedEnds = orderedSuspensionEnds(ends)
+  const makeEntityOverlaySeries = (items: VisualizationEntity[], end: SuspensionEnd, sector: TrackSector | null) => items.map((entity, index) => ({
+    id: `${entity.id}:${end}`,
+    label: entity.label,
+    color: items.length > 1 ? entityColor(entity, index) : roleColor(end),
+    points: phasePointsForEntityEnd(entity, data, displacementRoles[end], `${end}_velocity`, selectedTrack, sector ? [sector] : null, displacementScale),
+  }))
+  const makeEndOverlaySeries = (entity: VisualizationEntity, sector: TrackSector | null) => orderedEnds.map((end) => ({
+    id: `${entity.id}:${end}`,
+    label: formatRole(end),
+    color: roleColor(end),
+    points: phasePointsForEntityEnd(entity, data, displacementRoles[end], `${end}_velocity`, selectedTrack, sector ? [sector] : null, displacementScale),
+  }))
+  const chartDomain = (series: PhaseSeries[]) => {
+    if (xDomainOverride && yDomainOverride) {
+      return { x: xDomainOverride, y: yDomainOverride }
+    }
+    const automatic = phaseDomain(series)
+    return { x: xDomainOverride ?? automatic.x, y: yDomainOverride ?? automatic.y }
+  }
+  const conditionalSeries = (series: PhaseSeries[]): PhaseConditionalSeries[] | null => {
+    if (variant !== 'velocity_given_position' && variant !== 'position_given_velocity') {
+      return null
+    }
+    return series.map((item) => {
+      const values = phaseConditionalValues(item.points, variant, positionConditionRange, velocityConditionRange)
+      return { ...item, values, matchedCount: values.length }
+    })
+  }
+  const renderChart = (
+    series: PhaseSeries[],
+    domain: { x: PhaseAxisRange; y: PhaseAxisRange },
+    conditional: PhaseConditionalSeries[] | null,
+    conditionalDomain: PhaseAxisRange | null,
+  ) => {
+    if (variant === 'contours') {
+      return <PhaseProbabilityContourChart contourMasses={contourMasses} densityBins={densityBins} series={series} showGridlines={showGridlines} showZeroLines={showZeroLines} xDomain={domain.x} yDomain={domain.y} xLabel={xLabel} />
+    }
+    if (variant === 'velocity_given_position' || variant === 'position_given_velocity') {
+      return <PhaseConditionalDistributionChart bins={conditionalBins} conditionTitle={phaseConditionalChartTitle(variant, positionConditionRange, velocityConditionRange, xLabel)} series={conditional ?? []} showGridlines={showGridlines} target={variant} xDomain={conditionalDomain ?? [0, 1]} xLabel={xLabel} />
+    }
+    return <PhaseDensityChart densityBins={densityBins} markOpacity={markOpacity} renderMode={renderMode} logDensity={logDensity} scatterMarkSize={scatterMarkSize} series={series} showGridlines={showGridlines} showZeroLines={showZeroLines} xDomain={domain.x} yDomain={domain.y} xLabel={xLabel} />
+  }
+  const renderLegend = (series: PhaseSeries[], conditionalSeriesForLegend: PhaseConditionalSeries[] | null) => {
+    const conditional = variant === 'velocity_given_position' || variant === 'position_given_velocity'
+    const legendSeries = series.map((item) => {
+      const matchedCount = conditionalSeriesForLegend?.find((candidate) => candidate.id === item.id)?.matchedCount ?? item.points.length
+      return {
+        ...item,
+        count: matchedCount,
+        detail: conditional
+          ? `${matchedCount} rows · ${formatProportion(item.points.length ? matchedCount / item.points.length : 0)} of phase samples`
+          : undefined,
+      }
+    })
+    return <EntitySeriesLegend series={legendSeries} emptyLabel={conditional ? 'No samples in conditioning window' : 'No paired displacement and velocity samples'} />
+  }
+  const renderTileContents = (
+    series: PhaseSeries[],
+    domain: { x: PhaseAxisRange; y: PhaseAxisRange },
+    rowConditionalSeries: PhaseConditionalSeries[] | null,
+    conditionalDomain: PhaseAxisRange | null,
+  ) => {
+    const seriesIds = new Set(series.map((item) => item.id))
+    const conditional = rowConditionalSeries?.filter((item) => seriesIds.has(item.id)) ?? null
+    return <>{renderChart(series, domain, conditional, conditionalDomain)}{renderLegend(series, conditional)}</>
+  }
+
+  if (scopeMode === 'sector') {
+    if (!selectedTrack || sectors.length === 0) {
+      return <div className="viz-sector-empty"><strong>No sector data selected.</strong><span>Select a track and at least one sector in the visualization filters.</span></div>
+    }
+    return (
+      <div className="viz-sector-facet-stack">
+        {sectors.map((sector) => {
+          const seriesByEnd = orderedEnds.map((end) => ({ end, series: makeEntityOverlaySeries(entities, end, sector) }))
+          const rowSeries = seriesByEnd.flatMap((item) => item.series)
+          const domain = chartDomain(rowSeries)
+          const rowConditionalSeries = conditionalSeries(rowSeries)
+          const conditionalDomain = phaseConditionalDataDomain(rowConditionalSeries, variant)
+          return (
+            <article className="viz-sector-facet" key={sector.id}>
+              <header className="viz-sector-section-heading">
+                <strong>{sector.label}</strong>
+                <span>{formatMetres(sector.lengthM)}</span>
+              </header>
+              {layout === 'ends' ? (
+                <div className="viz-entity-strip responsive phase-diagram-strip" style={responsiveStripStyle(orderedEnds.length, 700)}>
+                  {seriesByEnd.map(({ end, series }) => <article className="viz-entity-tile viz-end-tile phase-diagram-tile" key={end}>
+                    <EndTileHeader label={formatRole(end)} />
+                    {renderTileContents(series, domain, rowConditionalSeries, conditionalDomain)}
+                  </article>)}
+                </div>
+              ) : (
+                <div className="viz-entity-strip responsive phase-diagram-strip" style={responsiveStripStyle(entities.length, 700)}>
+                  {entities.map((entity) => {
+                    const series = makeEndOverlaySeries(entity, sector)
+                    return <article className="viz-entity-tile phase-diagram-tile" key={entity.id}>
+                      <EntityTileHeader entity={entity} />
+                      {renderTileContents(series, domain, rowConditionalSeries, conditionalDomain)}
+                    </article>
+                  })}
+                </div>
+              )}
+            </article>
+          )
+        })}
+      </div>
+    )
+  }
+
+  if (layout === 'ends') {
+    const allSeries = orderedEnds.map((end) => ({ end, series: makeEntityOverlaySeries(entities, end, null) }))
+    const rowSeries = allSeries.flatMap((item) => item.series)
+    const domain = chartDomain(rowSeries)
+    const rowConditionalSeries = conditionalSeries(rowSeries)
+    const conditionalDomain = phaseConditionalDataDomain(rowConditionalSeries, variant)
+    return (
+      <div className="viz-entity-strip responsive phase-diagram-strip" style={responsiveStripStyle(ends.length, 700)}>
+        {allSeries.map(({ end, series }) => <article className="viz-entity-tile viz-end-tile phase-diagram-tile" key={end}>
+          <EndTileHeader label={formatRole(end)} />
+          {renderTileContents(series, domain, rowConditionalSeries, conditionalDomain)}
+        </article>)}
+      </div>
+    )
+  }
+
+  const allSeries = entities.flatMap((entity) => makeEndOverlaySeries(entity, null))
+  const domain = chartDomain(allSeries)
+  const rowConditionalSeries = conditionalSeries(allSeries)
+  const conditionalDomain = phaseConditionalDataDomain(rowConditionalSeries, variant)
+  return (
+    <div className="viz-entity-strip responsive phase-diagram-strip" style={responsiveStripStyle(entities.length, 700)}>
+      {entities.map((entity) => {
+        const series = makeEndOverlaySeries(entity, null)
+        return <article className="viz-entity-tile phase-diagram-tile" key={entity.id}>
+          <EntityTileHeader entity={entity} />
+          {renderTileContents(series, domain, rowConditionalSeries, conditionalDomain)}
+        </article>
+      })}
+    </div>
+  )
+}
+
+const PhaseDiagramGrid = memo(PhaseDiagramGridComponent, phaseDiagramGridPropsEqual)
+
+function phaseDiagramGridPropsEqual(previous: PhaseDiagramGridProps, next: PhaseDiagramGridProps) {
+  if (
+    previous.variant !== next.variant
+    || previous.data !== next.data
+    || previous.entities !== next.entities
+    || previous.ends !== next.ends
+    || previous.layout !== next.layout
+    || previous.scopeMode !== next.scopeMode
+    || previous.selectedTrack !== next.selectedTrack
+    || previous.sectors !== next.sectors
+    || previous.displacementRoles.front !== next.displacementRoles.front
+    || previous.displacementRoles.rear !== next.displacementRoles.rear
+    || previous.displacementScale !== next.displacementScale
+    || previous.xLabel !== next.xLabel
+  ) {
+    return false
+  }
+  if (next.variant === 'phase') {
+    return previous.densityBins === next.densityBins
+      && previous.renderMode === next.renderMode
+      && previous.markOpacity === next.markOpacity
+      && previous.scatterMarkSize === next.scatterMarkSize
+      && previous.showGridlines === next.showGridlines
+      && previous.logDensity === next.logDensity
+      && previous.showZeroLines === next.showZeroLines
+      && nullablePhaseAxisRangesEqual(previous.xDomainOverride, next.xDomainOverride)
+      && nullablePhaseAxisRangesEqual(previous.yDomainOverride, next.yDomainOverride)
+  }
+  if (next.variant === 'contours') {
+    return previous.densityBins === next.densityBins
+      && numericArraysEqual(previous.contourMasses, next.contourMasses)
+      && previous.showGridlines === next.showGridlines
+      && previous.showZeroLines === next.showZeroLines
+      && nullablePhaseAxisRangesEqual(previous.xDomainOverride, next.xDomainOverride)
+      && nullablePhaseAxisRangesEqual(previous.yDomainOverride, next.yDomainOverride)
+  }
+  if (next.variant === 'velocity_given_position') {
+    return previous.conditionalBins === next.conditionalBins
+      && previous.showGridlines === next.showGridlines
+      && phaseAxisRangesEqual(previous.positionConditionRange, next.positionConditionRange)
+  }
+  return previous.conditionalBins === next.conditionalBins
+    && previous.showGridlines === next.showGridlines
+    && phaseAxisRangesEqual(previous.velocityConditionRange, next.velocityConditionRange)
+}
+
+function numericArraysEqual(left: number[], right: number[]) {
+  return left === right || (left.length === right.length && left.every((value, index) => value === right[index]))
+}
+
+function nullablePhaseAxisRangesEqual(left: PhaseAxisRange | null, right: PhaseAxisRange | null) {
+  return left === right || (left !== null && right !== null && phaseAxisRangesEqual(left, right))
+}
+
+function PhaseProbabilityContourChart({
+  contourMasses,
+  densityBins,
+  series,
+  showGridlines,
+  showZeroLines,
+  xDomain,
+  yDomain,
+  xLabel,
+}: {
+  contourMasses: number[]
+  densityBins: number
+  series: PhaseSeries[]
+  showGridlines: boolean
+  showZeroLines: boolean
+  xDomain: PhaseAxisRange
+  yDomain: PhaseAxisRange
+  xLabel: string
+}) {
+  const width = 620
+  const height = 470
+  const margin = { top: 30, right: 16, bottom: 42, left: 56 }
+  const plotWidth = width - margin.left - margin.right
+  const plotHeight = height - margin.top - margin.bottom
+  const xScale = d3.scaleLinear().domain(xDomain).range([margin.left, width - margin.right])
+  const yScale = d3.scaleLinear().domain(yDomain).range([height - margin.bottom, margin.top])
+  const contourSeries = series.map((item) => ({
+    ...item,
+    contours: phaseProbabilityContourPaths(item.points, xDomain, yDomain, densityBins, contourMasses),
+  }))
+  const hasContours = contourSeries.some((item) => item.contours.length > 0)
+  return (
+    <svg className="viz-chart viz-phase-contour-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`Probability-mass contours: ${xLabel} versus wheel velocity`}>
+      <rect fill="#ffffff" height={plotHeight} width={plotWidth} x={margin.left} y={margin.top} />
+      {showGridlines && <g stroke="#d9e0dc" strokeWidth="1">
+        {xScale.ticks(5).map((tick) => <line key={`grid-x-${tick}`} x1={xScale(tick)} x2={xScale(tick)} y1={margin.top} y2={height - margin.bottom} />)}
+        {yScale.ticks(5).map((tick) => <line key={`grid-y-${tick}`} x1={margin.left} x2={width - margin.right} y1={yScale(tick)} y2={yScale(tick)} />)}
+      </g>}
+      <g transform={`translate(${margin.left} ${margin.top}) scale(${plotWidth / densityBins} ${plotHeight / densityBins})`}>
+        {contourSeries.flatMap((item) => item.contours.map((contour) => (
+          <path
+            d={contour.d}
+            fill="none"
+            fillRule="evenodd"
+            key={`${item.id}-${contour.mass}`}
+            stroke={item.color}
+            strokeDasharray={phaseContourDasharray(contour.mass)}
+            strokeOpacity={phaseContourStrokeOpacity(contour.mass)}
+            strokeWidth={phaseContourStrokeWidth(contour.mass)}
+            vectorEffect="non-scaling-stroke"
+          >
+            <title>{item.label}: {Math.round(contour.mass * 100)}% sample-mass contour</title>
+          </path>
+        )))}
+      </g>
+      {showZeroLines && yDomain[0] < 0 && yDomain[1] > 0 && <line stroke="#7b8580" strokeDasharray="3 3" x1={margin.left} x2={width - margin.right} y1={yScale(0)} y2={yScale(0)} />}
+      <line stroke="#56615c" x1={margin.left} x2={width - margin.right} y1={height - margin.bottom} y2={height - margin.bottom} />
+      <line stroke="#56615c" x1={margin.left} x2={margin.left} y1={margin.top} y2={height - margin.bottom} />
+      {xScale.ticks(5).map((tick) => <g key={`x-${tick}`} transform={`translate(${xScale(tick)},${height - margin.bottom})`}><line stroke="#56615c" y2="4" /><text dy="1.25em" textAnchor="middle">{formatPhaseTick(tick)}</text></g>)}
+      {yScale.ticks(5).map((tick) => <g key={`y-${tick}`} transform={`translate(${margin.left},${yScale(tick)})`}><line stroke="#56615c" x2="-4" /><text dx="-0.5em" dy="0.32em" textAnchor="end">{formatPhaseTick(tick)}</text></g>)}
+      {contourMasses.length > 0 && <g className="viz-phase-contour-level-legend" transform={`translate(${width - margin.right - contourMasses.length * 62} 10)`}>
+        {contourMasses.map((mass, index) => <g key={mass} transform={`translate(${index * 62} 0)`}><line stroke="#56615c" strokeDasharray={phaseContourDasharray(mass)} strokeWidth={phaseContourStrokeWidth(mass)} x2="19" y1="5" y2="5" /><text x="23" y="9">{formatContourMass(mass)}</text></g>)}
+      </g>}
+      <text textAnchor="middle" x={margin.left + plotWidth / 2} y={height - 7}>{xLabel}</text>
+      <text textAnchor="middle" transform={`translate(15 ${margin.top + plotHeight / 2}) rotate(-90)`}>wheel velocity (mm/s)</text>
+      {!hasContours && <text textAnchor="middle" x={margin.left + plotWidth / 2} y={margin.top + plotHeight / 2}>{contourMasses.length === 0 ? 'No contour levels selected' : 'Not enough paired samples for contours'}</text>}
+    </svg>
+  )
+}
+
+function PhaseConditionalDistributionChart({ bins, conditionTitle, series, showGridlines, target, xDomain, xLabel }: {
+  bins: number
+  conditionTitle: string
+  series: PhaseConditionalSeries[]
+  showGridlines: boolean
+  target: Extract<PhaseChartVariant, 'velocity_given_position' | 'position_given_velocity'>
+  xDomain: PhaseAxisRange
+  xLabel: string
+}) {
+  const width = 620
+  const height = 470
+  const margin = { top: 42, right: 16, bottom: 42, left: 56 }
+  const plotWidth = width - margin.left - margin.right
+  const plotHeight = height - margin.top - margin.bottom
+  const velocityTarget = target === 'velocity_given_position'
+  const targetLabel = velocityTarget ? 'wheel velocity (mm/s)' : xLabel
+  const xScale = d3.scaleLinear().domain(xDomain).range([margin.left, width - margin.right])
+  const seriesBins = series.map((item) => ({
+    ...item,
+    histogram: equalWidthConditionalHistogram(item.values, xDomain, bins),
+  }))
+  const maximumProportion = Math.max(...seriesBins.flatMap((item) => item.histogram.bins.map((bin) => bin.proportion)), 0)
+  const yScale = d3.scaleLinear().domain([0, maximumProportion || 1]).nice(5).range([height - margin.bottom, margin.top])
+  const xTicks = xScale.ticks(5)
+  const yTicks = yScale.ticks(5)
+  const allEmpty = series.every((item) => item.values.length === 0)
+  const underflowCount = d3.sum(seriesBins, (item) => item.histogram.underflowCount)
+  const overflowCount = d3.sum(seriesBins, (item) => item.histogram.overflowCount)
+  const totalCount = d3.sum(seriesBins, (item) => item.histogram.total)
+  return (
+    <div className="viz-phase-conditional-chart">
+      <svg className="viz-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`Conditional distribution of ${targetLabel}`}>
+        <text className="viz-phase-conditional-title" textAnchor="middle" x={margin.left + plotWidth / 2} y={17}>{conditionTitle}</text>
+        <rect fill="#f8faf9" height={plotHeight} width={plotWidth} x={margin.left} y={margin.top} />
+        {showGridlines && <g stroke="#d9e0dc" strokeWidth="1">
+          {xTicks.map((tick) => <line key={`grid-x-${tick}`} x1={xScale(tick)} x2={xScale(tick)} y1={margin.top} y2={height - margin.bottom} />)}
+          {yTicks.map((tick) => <line key={`grid-y-${tick}`} x1={margin.left} x2={width - margin.right} y1={yScale(tick)} y2={yScale(tick)} />)}
+        </g>}
+        {seriesBins.flatMap((item, seriesIndex) => item.histogram.bins.map((bin) => {
+          const bar = histogramBarGeometry(xScale, bin, seriesIndex, Math.max(1, seriesBins.length))
+          return <rect
+            className="viz-histogram-bar"
+            fill={item.color}
+            fillOpacity={0.3}
+            height={height - margin.bottom - yScale(bin.proportion)}
+            key={`${item.id}-${bin.x0}`}
+            stroke={item.color}
+            strokeOpacity={0.66}
+            width={bar.width}
+            x={bar.x}
+            y={yScale(bin.proportion)}
+          ><title>{histogramBinTitle(item.label, bin, targetLabel)}</title></rect>
+        }))}
+        <line className="viz-axis" x1={margin.left} x2={width - margin.right} y1={height - margin.bottom} y2={height - margin.bottom} />
+        <line className="viz-axis" x1={margin.left} x2={margin.left} y1={margin.top} y2={height - margin.bottom} />
+        {xTicks.map((tick) => <g key={`x-${tick}`}>
+          <line className="viz-tick" x1={xScale(tick)} x2={xScale(tick)} y1={height - margin.bottom} y2={height - margin.bottom + 4} />
+          <text className="viz-axis-label" textAnchor="middle" x={xScale(tick)} y={height - margin.bottom + 17}>{formatPhaseTick(tick)}</text>
+        </g>)}
+        {yTicks.map((tick) => <g key={`y-${tick}`}>
+          <line className="viz-tick" x1={margin.left - 4} x2={margin.left} y1={yScale(tick)} y2={yScale(tick)} />
+          <text className="viz-axis-label" dominantBaseline="middle" textAnchor="end" x={margin.left - 7} y={yScale(tick)}>{formatProportion(tick)}</text>
+        </g>)}
+        {underflowCount > 0 && <text className="viz-phase-tail-label" textAnchor="start" x={margin.left} y={34}>← {formatConditionalTailCount(underflowCount, totalCount)} below range</text>}
+        {overflowCount > 0 && <text className="viz-phase-tail-label" textAnchor="end" x={width - margin.right} y={34}>{formatConditionalTailCount(overflowCount, totalCount)} above range →</text>}
+        <text className="viz-axis-title" textAnchor="middle" x={margin.left + plotWidth / 2} y={height - 7}>{targetLabel}</text>
+        <text className="viz-axis-title" textAnchor="middle" transform={`translate(15 ${margin.top + plotHeight / 2}) rotate(-90)`}>conditional proportion</text>
+        {allEmpty && <text className="viz-empty-chart" textAnchor="middle" x={margin.left + plotWidth / 2} y={margin.top + plotHeight / 2}>No samples in conditioning window</text>}
+      </svg>
+    </div>
+  )
+}
+
+function PhaseDensityChart({ densityBins, markOpacity, renderMode, logDensity, scatterMarkSize, series, showGridlines, showZeroLines, xDomain, yDomain, xLabel }: {
+  densityBins: number
+  markOpacity: number
+  renderMode: PhaseRenderMode
+  logDensity: boolean
+  scatterMarkSize: number
+  series: PhaseSeries[]
+  showGridlines: boolean
+  showZeroLines: boolean
+  xDomain: [number, number]
+  yDomain: [number, number]
+  xLabel: string
+}) {
+  if (renderMode !== 'density') {
+    return <PhaseCanvasChart markOpacity={markOpacity} renderMode={renderMode} scatterMarkSize={scatterMarkSize} series={series} showGridlines={showGridlines} showZeroLines={showZeroLines} xDomain={xDomain} yDomain={yDomain} xLabel={xLabel} />
+  }
+  const width = 620
+  const height = 470
+  const margin = { top: 12, right: 16, bottom: 42, left: 56 }
+  const plotWidth = width - margin.left - margin.right
+  const plotHeight = height - margin.top - margin.bottom
+  const xScale = d3.scaleLinear().domain(xDomain).range([margin.left, width - margin.right])
+  const yScale = d3.scaleLinear().domain(yDomain).range([height - margin.bottom, margin.top])
+  const hasPoints = series.some((item) => item.points.length > 0)
+  return (
+    <svg className="viz-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`Suspension phase diagram: ${xLabel} versus wheel velocity`}>
+      <rect fill="#f8faf9" height={plotHeight} width={plotWidth} x={margin.left} y={margin.top} />
+      {showGridlines && <g stroke="#d9e0dc" strokeWidth="1">
+        {xScale.ticks(5).map((tick) => <line key={`grid-x-${tick}`} x1={xScale(tick)} x2={xScale(tick)} y1={margin.top} y2={height - margin.bottom} />)}
+        {yScale.ticks(5).map((tick) => <line key={`grid-y-${tick}`} x1={margin.left} x2={width - margin.right} y1={yScale(tick)} y2={yScale(tick)} />)}
+      </g>}
+      {series.map((item) => phaseDensityCells(item.points, xDomain, yDomain, densityBins).map((cell) => {
+        const opacity = densityOpacity(cell.count, cell.maxCount, logDensity)
+        return <rect fill={item.color} fillOpacity={opacity} height={Math.max(1, yScale(cell.y0) - yScale(cell.y1))} key={`${item.id}-${cell.xIndex}-${cell.yIndex}`} width={Math.max(1, xScale(cell.x1) - xScale(cell.x0))} x={xScale(cell.x0)} y={yScale(cell.y1)} />
+      }))}
+      {showZeroLines && yDomain[0] < 0 && yDomain[1] > 0 && <line stroke="#7b8580" strokeDasharray="3 3" x1={margin.left} x2={width - margin.right} y1={yScale(0)} y2={yScale(0)} />}
+      <line stroke="#56615c" x1={margin.left} x2={width - margin.right} y1={height - margin.bottom} y2={height - margin.bottom} />
+      <line stroke="#56615c" x1={margin.left} x2={margin.left} y1={margin.top} y2={height - margin.bottom} />
+      {xScale.ticks(5).map((tick) => <g key={`x-${tick}`} transform={`translate(${xScale(tick)},${height - margin.bottom})`}><line stroke="#56615c" y2="4" /><text dy="1.25em" textAnchor="middle">{formatPhaseTick(tick)}</text></g>)}
+      {yScale.ticks(5).map((tick) => <g key={`y-${tick}`} transform={`translate(${margin.left},${yScale(tick)})`}><line stroke="#56615c" x2="-4" /><text dx="-0.5em" dy="0.32em" textAnchor="end">{formatPhaseTick(tick)}</text></g>)}
+      <text textAnchor="middle" x={margin.left + plotWidth / 2} y={height - 7}>{xLabel}</text>
+      <text textAnchor="middle" transform={`translate(15 ${margin.top + plotHeight / 2}) rotate(-90)`}>wheel velocity (mm/s)</text>
+      {!hasPoints && <text textAnchor="middle" x={margin.left + plotWidth / 2} y={margin.top + plotHeight / 2}>No paired samples</text>}
+    </svg>
+  )
+}
+
+function PhaseCanvasChart({ markOpacity, renderMode, scatterMarkSize, series, showGridlines, showZeroLines, xDomain, yDomain, xLabel }: {
+  markOpacity: number
+  renderMode: Exclude<PhaseRenderMode, 'density'>
+  scatterMarkSize: number
+  series: PhaseSeries[]
+  showGridlines: boolean
+  showZeroLines: boolean
+  xDomain: [number, number]
+  yDomain: [number, number]
+  xLabel: string
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const width = 620
+  const height = 470
+  const deviceScale = 2
+  const margin = { top: 12, right: 16, bottom: 42, left: 56 }
+  const renderedSeries = useMemo(
+    () => series.map((item) => ({ ...item, points: canvasPhasePoints(item.points, renderMode) })),
+    [renderMode, series],
+  )
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    const context = canvas?.getContext('2d')
+    if (!canvas || !context) {
+      return
+    }
+    const plotWidth = width - margin.left - margin.right
+    const plotHeight = height - margin.top - margin.bottom
+    const xScale = d3.scaleLinear().domain(xDomain).range([margin.left, width - margin.right])
+    const yScale = d3.scaleLinear().domain(yDomain).range([height - margin.bottom, margin.top])
+    context.setTransform(deviceScale, 0, 0, deviceScale, 0, 0)
+    context.clearRect(0, 0, width, height)
+    context.fillStyle = '#f8faf9'
+    context.fillRect(margin.left, margin.top, plotWidth, plotHeight)
+    if (showGridlines) {
+      context.save()
+      context.strokeStyle = '#d9e0dc'
+      context.lineWidth = 1
+      context.beginPath()
+      for (const tick of xScale.ticks(5)) {
+        const x = xScale(tick)
+        context.moveTo(x, margin.top)
+        context.lineTo(x, height - margin.bottom)
+      }
+      for (const tick of yScale.ticks(5)) {
+        const y = yScale(tick)
+        context.moveTo(margin.left, y)
+        context.lineTo(width - margin.right, y)
+      }
+      context.stroke()
+      context.restore()
+    }
+    context.save()
+    context.beginPath()
+    context.rect(margin.left, margin.top, plotWidth, plotHeight)
+    context.clip()
+    for (const item of renderedSeries) {
+      if (renderMode === 'line') {
+        context.globalAlpha = markOpacity
+        context.strokeStyle = item.color
+        context.lineWidth = 1.15
+        context.lineCap = 'round'
+        context.lineJoin = 'round'
+        let started = false
+        for (const point of item.points) {
+          const x = xScale(point.x)
+          const y = yScale(point.y)
+          if (!started || point.breakBefore) {
+            if (started) {
+              context.stroke()
+            }
+            context.beginPath()
+            context.moveTo(x, y)
+            started = true
+          } else {
+            context.lineTo(x, y)
+          }
+        }
+        if (started) {
+          context.stroke()
+        }
+      } else {
+        context.globalAlpha = markOpacity
+        context.fillStyle = item.color
+        for (const point of item.points) {
+          context.fillRect(xScale(point.x) - scatterMarkSize / 2, yScale(point.y) - scatterMarkSize / 2, scatterMarkSize, scatterMarkSize)
+        }
+      }
+    }
+    context.restore()
+    context.globalAlpha = 1
+    if (showZeroLines && yDomain[0] < 0 && yDomain[1] > 0) {
+      context.save()
+      context.strokeStyle = '#7b8580'
+      context.setLineDash([3, 3])
+      context.beginPath()
+      context.moveTo(margin.left, yScale(0))
+      context.lineTo(width - margin.right, yScale(0))
+      context.stroke()
+      context.restore()
+    }
+    context.strokeStyle = '#56615c'
+    context.lineWidth = 1
+    context.beginPath()
+    context.moveTo(margin.left, height - margin.bottom)
+    context.lineTo(width - margin.right, height - margin.bottom)
+    context.moveTo(margin.left, margin.top)
+    context.lineTo(margin.left, height - margin.bottom)
+    context.stroke()
+    context.fillStyle = '#3f4a45'
+    context.font = '12px system-ui, sans-serif'
+    context.textAlign = 'center'
+    for (const tick of xScale.ticks(5)) {
+      const x = xScale(tick)
+      context.beginPath()
+      context.moveTo(x, height - margin.bottom)
+      context.lineTo(x, height - margin.bottom + 4)
+      context.stroke()
+      context.fillText(formatPhaseTick(tick), x, height - margin.bottom + 16)
+    }
+    context.textAlign = 'right'
+    for (const tick of yScale.ticks(5)) {
+      const y = yScale(tick)
+      context.beginPath()
+      context.moveTo(margin.left, y)
+      context.lineTo(margin.left - 4, y)
+      context.stroke()
+      context.fillText(formatPhaseTick(tick), margin.left - 7, y + 4)
+    }
+    context.textAlign = 'center'
+    context.fillText(xLabel, margin.left + plotWidth / 2, height - 7)
+    context.save()
+    context.translate(15, margin.top + plotHeight / 2)
+    context.rotate(-Math.PI / 2)
+    context.fillText('wheel velocity (mm/s)', 0, 0)
+    context.restore()
+    if (!renderedSeries.some((item) => item.points.length > 0)) {
+      context.fillText('No paired samples', margin.left + plotWidth / 2, margin.top + plotHeight / 2)
+    }
+  }, [markOpacity, renderMode, renderedSeries, scatterMarkSize, showGridlines, showZeroLines, xDomain, xLabel, yDomain])
+
+  return <canvas className="viz-chart" height={height * deviceScale} ref={canvasRef} role="img" aria-label={`Suspension phase diagram: ${xLabel} versus wheel velocity`} width={width * deviceScale} />
+}
+
 function ScatterEntityStrip({
   layout,
   entities,
@@ -3726,7 +4920,7 @@ function EntitySeriesLegend({
   series,
   emptyLabel,
 }: {
-  series: Array<{ id: string; label: string; color: string; count: number }>
+  series: Array<{ id: string; label: string; color: string; count: number; detail?: string }>
   emptyLabel: string
 }) {
   if (series.length === 0) {
@@ -3738,7 +4932,7 @@ function EntitySeriesLegend({
         <div key={item.id}>
           <span style={{ background: item.color }} />
           <strong>{item.label}</strong>
-          <small>{item.count ? `${item.count} rows` : emptyLabel}</small>
+          <small>{item.detail ?? (item.count ? `${item.count} rows` : emptyLabel)}</small>
         </div>
       ))}
     </div>
@@ -4213,12 +5407,13 @@ function visualizationSessionCacheKey(
   sessionRef: StudySessionRef,
   signalChoices: SignalChoiceSelections,
   displacementMode: DisplacementUnitMode,
+  mode: SuspensionVisualizationMode,
 ) {
   const refId = sessionRefId(sessionRef)
   const displacementChoices = displacementSignalRoleConfigs(displacementMode)
     .map((config) => `${config.role}:${signalChoices[signalChoiceKey(refId, config.role)] ?? ''}`)
     .join('|')
-  return `v${VISUALIZATION_SESSION_CACHE_VERSION}|${refId}|disp:${displacementMode}|${displacementChoices}`
+  return `v${VISUALIZATION_SESSION_CACHE_VERSION}|${mode}|${refId}|disp:${displacementMode}|${displacementChoices}`
 }
 
 function visualizationCacheMissCount(
@@ -4226,10 +5421,11 @@ function visualizationCacheMissCount(
   requestedSessionRefs: StudySessionRef[],
   signalChoices: SignalChoiceSelections,
   displacementMode: DisplacementUnitMode,
+  mode: SuspensionVisualizationMode,
 ) {
   const sessionCache = suspensionSessionCache<CachedSessionVisualizationData>(dataSource)
   return uniqueSessionRefs(requestedSessionRefs).filter((sessionRef) => {
-    const cacheKey = visualizationSessionCacheKey(sessionRef, signalChoices, displacementMode)
+    const cacheKey = visualizationSessionCacheKey(sessionRef, signalChoices, displacementMode, mode)
     return !sessionCache.entries.has(cacheKey) && !sessionCache.inFlight.has(cacheKey)
   }).length
 }
@@ -4238,6 +5434,7 @@ function signalRequestsForSession(
   sessionRef: StudySessionRef,
   signalChoices: SignalChoiceSelections,
   displacementMode: DisplacementUnitMode,
+  mode: SuspensionVisualizationMode,
 ): SignalQuerySignalRequest[] {
   const refId = sessionRefId(sessionRef)
   return [
@@ -4245,6 +5442,7 @@ function signalRequestsForSession(
       const column = signalChoices[signalChoiceKey(refId, config.role)]
       return column ? { role: config.role, column } : { role: config.role, selector: config.selector }
     }),
+    ...(mode === 'phase' ? VELOCITY_SIGNAL_ROLE_CONFIGS.map((config): SignalQuerySignalRequest => ({ role: config.role, selector: config.selector })) : []),
     ...SIGNAL_REQUESTS,
   ]
 }
@@ -4255,6 +5453,7 @@ async function loadVisualizationData(
   displacementMode: DisplacementUnitMode,
   sessions: SessionRecord[],
   dataSource: LibraryDataSource,
+  mode: SuspensionVisualizationMode,
 ): Promise<VisualizationLoadResult> {
   const sessionRefs = uniqueSessionRefs(requestedSessionRefs)
   const diagnostics = startSuspensionCacheDiagnostics(sessionRefs.length)
@@ -4262,7 +5461,7 @@ async function loadVisualizationData(
   const refsNeedingData: StudySessionRef[] = []
 
   for (const sessionRef of sessionRefs) {
-    const cacheKey = visualizationSessionCacheKey(sessionRef, signalChoices, displacementMode)
+    const cacheKey = visualizationSessionCacheKey(sessionRef, signalChoices, displacementMode, mode)
     if (getSuspensionCacheEntry(sessionCache, cacheKey)) {
       diagnostics.cacheHitCount += 1
     } else if (sessionCache.inFlight.has(cacheKey)) {
@@ -4279,7 +5478,7 @@ async function loadVisualizationData(
     const refsToFetch: StudySessionRef[] = []
 
     for (const ref of refs) {
-      const cacheKey = visualizationSessionCacheKey(ref, signalChoices, displacementMode)
+      const cacheKey = visualizationSessionCacheKey(ref, signalChoices, displacementMode, mode)
       const inFlight = sessionCache.inFlight.get(cacheKey)
       if (inFlight) {
         inFlightRequests.push(inFlight)
@@ -4306,11 +5505,12 @@ async function loadVisualizationData(
         displacementMode,
         sessions,
         dataSource,
+        mode,
       ).then(
         (fetchedSessions) => {
           recordFetchDuration()
           for (const cached of fetchedSessions.values()) {
-            setSuspensionCacheEntry(sessionCache, visualizationSessionCacheKey(cached.sessionRef, signalChoices, displacementMode), cached)
+            setSuspensionCacheEntry(sessionCache, visualizationSessionCacheKey(cached.sessionRef, signalChoices, displacementMode, mode), cached)
           }
           return fetchedSessions
         },
@@ -4321,7 +5521,7 @@ async function loadVisualizationData(
       )
 
       for (const ref of refsToFetch) {
-        const cacheKey = visualizationSessionCacheKey(ref, signalChoices, displacementMode)
+        const cacheKey = visualizationSessionCacheKey(ref, signalChoices, displacementMode, mode)
         sessionCache.inFlight.set(
           cacheKey,
           batchPromise.then((fetchedSessions) => fetchedSessions.get(sessionRefId(ref)) ?? emptyCachedSession(ref)),
@@ -4332,7 +5532,7 @@ async function loadVisualizationData(
         await batchPromise
       } finally {
         for (const ref of refsToFetch) {
-          sessionCache.inFlight.delete(visualizationSessionCacheKey(ref, signalChoices, displacementMode))
+          sessionCache.inFlight.delete(visualizationSessionCacheKey(ref, signalChoices, displacementMode, mode))
         }
       }
     }
@@ -4340,12 +5540,12 @@ async function loadVisualizationData(
     if (inFlightRequests.length > 0) {
       const fetchedSessions = await Promise.all(inFlightRequests)
       for (const cached of fetchedSessions) {
-        setSuspensionCacheEntry(sessionCache, visualizationSessionCacheKey(cached.sessionRef, signalChoices, displacementMode), cached)
+        setSuspensionCacheEntry(sessionCache, visualizationSessionCacheKey(cached.sessionRef, signalChoices, displacementMode, mode), cached)
       }
     }
   }
 
-  const sessionCacheKeys = sessionRefs.map((sessionRef) => visualizationSessionCacheKey(sessionRef, signalChoices, displacementMode))
+  const sessionCacheKeys = sessionRefs.map((sessionRef) => visualizationSessionCacheKey(sessionRef, signalChoices, displacementMode, mode))
   const composedCacheKey = `visualization-data|${sessionCacheKeys.join('\n')}`
   const composedData = getSuspensionComposedCacheEntry<VisualizationData>(sessionCache, composedCacheKey)
   if (composedData) {
@@ -4382,21 +5582,21 @@ async function fetchVisualizationLibrarySessions(
   displacementMode: DisplacementUnitMode,
   sessions: SessionRecord[],
   dataSource: LibraryDataSource,
+  mode: SuspensionVisualizationMode,
 ) {
   const [signalResponses, events, metrics] = await Promise.all([
     Promise.all(
       refs.map((ref) =>
         dataSource.querySignals(libraryId, {
           sessions: [ref],
-          signals: signalRequestsForSession(ref, signalChoices, displacementMode),
+          signals: signalRequestsForSession(ref, signalChoices, displacementMode, mode),
         }),
       ),
     ),
-    dataSource.queryEvents(libraryId, { sessions: refs }),
-    dataSource.queryMetrics(libraryId, {
-      sessions: refs,
-      eventTypes: [COMPRESSION_EVENT_TYPE, REBOUND_EVENT_TYPE],
-    }),
+    mode === 'simple' ? dataSource.queryEvents(libraryId, { sessions: refs }) : Promise.resolve({ rows: [], warnings: [] }),
+    mode === 'simple'
+      ? dataSource.queryMetrics(libraryId, { sessions: refs, eventTypes: [COMPRESSION_EVENT_TYPE, REBOUND_EVENT_TYPE] })
+      : Promise.resolve({ rows: [], warnings: [] }),
   ])
   const signalWarnings = signalResponses.flatMap((response) => response.warnings)
   const signalSessions = signalResponses.flatMap((response) => response.sessions)
@@ -4490,22 +5690,24 @@ function visualizationEntities(studySet: StudySet): VisualizationEntity[] {
   return [...sessionEntities, ...groupingEntities]
 }
 
-function visualizationSettingsKey(studySet: StudySet) {
+function visualizationSettingsKey(studySet: StudySet, mode: SuspensionVisualizationMode) {
+  const prefix = mode === 'phase' ? 'phase' : 'simple'
   if (studySet.id) {
-    return `study-set:${studySet.id}`
+    return `${prefix}:study-set:${studySet.id}`
   }
   if (studySet.provenance.startsWith('Temporary one-session Study Set')) {
-    return `temporary:${stableStudySetKey(studySet)}`
+    return `${prefix}:temporary:${stableStudySetKey(studySet)}`
   }
   const name = studySet.displayName.trim() || 'untitled'
   const provenance = studySet.provenance.trim() || 'interactive'
-  return `unsaved:${name}:${provenance}`
+  return `${prefix}:unsaved:${name}:${provenance}`
 }
 
 function restoredVisualizationSettings(
   cacheKey: string,
   entities: VisualizationEntity[],
   tracks: TrackRecord[],
+  mode: SuspensionVisualizationMode,
 ): SuspensionVisualizationSettings {
   const cached = restoredVisualizationSettingsRecord(cacheKey)
   const defaultSelectedEntityIds = entities.filter((entity) => entity.kind === 'session').map((entity) => entity.id)
@@ -4534,12 +5736,43 @@ function restoredVisualizationSettings(
     excludeInactivePeriods: cached?.excludeInactivePeriods ?? true,
     signalChoices: cached?.signalChoices ? { ...cached.signalChoices } : {},
     frequencyDisplayModes: normalizedFrequencyDisplayModes(cached?.frequencyDisplayModes),
-    showDisplacementMm: cached?.showDisplacementMm ?? false,
+    showDisplacementMm: cached?.showDisplacementMm ?? mode === 'phase',
     showDisplacementStatsOnChart: cached?.showDisplacementStatsOnChart ?? true,
     showVelocityStatsOnChart: cached?.showVelocityStatsOnChart ?? true,
     showStrokeLengthStatsOnChart: cached?.showStrokeLengthStatsOnChart ?? true,
+    phaseDensityBins: cached?.phaseDensityBins === 48 || cached?.phaseDensityBins === 96 ? cached.phaseDensityBins : 72,
+    phaseContourMasses: normalizedPhaseContourMasses(cached?.phaseContourMasses),
+    phaseConditionalBins: typeof cached?.phaseConditionalBins === 'number' && Number.isInteger(cached.phaseConditionalBins) && cached.phaseConditionalBins >= 20 && cached.phaseConditionalBins <= 120
+      ? cached.phaseConditionalBins
+      : PHASE_DEFAULT_CONDITIONAL_DISTRIBUTION_BINS,
+    phaseRenderMode: cached?.phaseRenderMode === 'line' || cached?.phaseRenderMode === 'scatter' ? cached.phaseRenderMode : 'density',
+    phaseMarkOpacity: typeof cached?.phaseMarkOpacity === 'number' && cached.phaseMarkOpacity >= 0.02 && cached.phaseMarkOpacity <= 0.8 ? cached.phaseMarkOpacity : 0.08,
+    phaseScatterMarkSize: typeof cached?.phaseScatterMarkSize === 'number' && cached.phaseScatterMarkSize >= 1 && cached.phaseScatterMarkSize <= 5 ? cached.phaseScatterMarkSize : 1,
+    phaseShowGridlines: cached?.phaseShowGridlines ?? false,
+    phaseXAxisAuto: cached?.phaseXAxisAuto ?? true,
+    phaseYAxisAuto: cached?.phaseYAxisAuto ?? true,
+    phaseXAxisRange: phaseAxisRangeValue(cached?.phaseXAxisRange, PHASE_DISPLACEMENT_MM_BOUNDS),
+    phaseYAxisRange: phaseAxisRangeValue(cached?.phaseYAxisRange, PHASE_VELOCITY_BOUNDS),
+    phasePositionConditionMm: phaseAxisRangeValue(cached?.phasePositionConditionMm, PHASE_DISPLACEMENT_MM_BOUNDS),
+    phasePositionConditionNormalized: phaseAxisRangeValue(cached?.phasePositionConditionNormalized, PHASE_DISPLACEMENT_NORMALIZED_BOUNDS),
+    phaseVelocityCondition: phaseAxisRangeValue(cached?.phaseVelocityCondition, PHASE_VELOCITY_BOUNDS),
   }
 }
+
+function normalizedPhaseContourMasses(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [...PHASE_DEFAULT_CONTOUR_MASSES]
+  }
+  return PHASE_CONTOUR_MASS_OPTIONS.filter((mass) => value.includes(mass))
+}
+
+type PhasePoint = { timeS: number; x: number; y: number; breakBefore?: boolean }
+type PhaseSeries = { id: string; label: string; color: string; points: PhasePoint[] }
+type PhaseContourPath = { mass: number; d: string }
+
+const phasePointsCache = new WeakMap<VisualizationData, Map<string, PhasePoint[]>>()
+const phaseContourPathCache = new WeakMap<PhasePoint[], Map<string, PhaseContourPath[]>>()
+const phaseDensityCellCache = new WeakMap<PhasePoint[], Map<string, PhaseDensityCell[]>>()
 
 function restoredVisualizationSettingsRecord(cacheKey: string): Partial<SuspensionVisualizationSettings> | null {
   const cached = visualizationSettingsCache.get(cacheKey)
@@ -4598,7 +5831,11 @@ function normalizedSelectedEntityIds(
 function normalizedSelectedEnds(value: SuspensionEnd[] | undefined) {
   const validEnds = new Set<SuspensionEnd>(['front', 'rear'])
   const ends = (value ?? ['front', 'rear']).filter((end): end is SuspensionEnd => validEnds.has(end))
-  return ends.length > 0 ? ends : (['front', 'rear'] as SuspensionEnd[])
+  return orderedSuspensionEnds(ends.length > 0 ? ends : ['front', 'rear'])
+}
+
+function orderedSuspensionEnds(ends: SuspensionEnd[]) {
+  return (['front', 'rear'] as const).filter((end) => ends.includes(end))
 }
 
 function normalizedFrequencyDisplayModes(value: unknown): FrequencyDisplayModes {
@@ -5138,6 +6375,480 @@ function entitySignalValues(entity: VisualizationEntity, data: VisualizationData
     entitySignalValuesCache.set(data, nextCache)
   }
   return values
+}
+
+function phasePointsForEntityEnd(
+  entity: VisualizationEntity,
+  data: VisualizationData,
+  displacementRole: string,
+  velocityRole: string,
+  track: TrackRecord | null,
+  sectors: TrackSector[] | null,
+  displacementScale = 1,
+) {
+  const cacheKey = [
+    entity.id,
+    entity.sessionRefs.map(sessionRefId).join(','),
+    displacementRole,
+    velocityRole,
+    track ? `${track.id}:${track.revision}` : 'all-track',
+    sectors?.map((sector) => sector.id).join(',') ?? 'all-sectors',
+    displacementScale,
+  ].join('|')
+  const cachedForData = phasePointsCache.get(data)
+  const cached = cachedForData?.get(cacheKey)
+  if (cached) {
+    return cached
+  }
+  const points: PhasePoint[] = []
+  const intervalsBySession = track && sectors ? sectorIntervalsForEntity(entity, track, sectors) : null
+  for (const sessionRef of entity.sessionRefs) {
+    const key = sessionRefId(sessionRef)
+    const times = data.timeBySession[key] ?? []
+    const signals = data.signalsBySession[key] ?? {}
+    const displacement = signals[displacementRole] ?? []
+    const velocity = signals[velocityRole] ?? []
+    const intervals = intervalsBySession?.get(key) ?? null
+    const limit = Math.min(times.length, displacement.length, velocity.length)
+    let previousIncludedIndex: number | null = null
+    let previousVelocity: number | null = null
+    for (let index = 0; index < limit; index += 1) {
+      const x = displacement[index]
+      const y = velocity[index]
+      if (!Number.isFinite(times[index]) || !Number.isFinite(x) || !Number.isFinite(y) || (intervals && !timeInSectorIntervals(times[index], intervals))) {
+        continue
+      }
+      const startsCompressionCycle = previousVelocity !== null && previousVelocity <= 0 && y > 0
+      points.push({
+        timeS: times[index],
+        x: x * displacementScale,
+        y,
+        breakBefore: previousIncludedIndex === null || index !== previousIncludedIndex + 1 || startsCompressionCycle,
+      })
+      previousIncludedIndex = index
+      previousVelocity = y
+    }
+  }
+  const nextCache = cachedForData ?? new Map<string, PhasePoint[]>()
+  nextCache.set(cacheKey, points)
+  if (!cachedForData) {
+    phasePointsCache.set(data, nextCache)
+  }
+  return points
+}
+
+function timeInSectorIntervals(timeS: number, intervals: Array<SectorInterval & { endInclusive: boolean }>) {
+  return intervals.some((interval) => timeS >= interval.startS && (interval.endInclusive ? timeS <= interval.endS : timeS < interval.endS))
+}
+
+function phaseDomain(series: PhaseSeries[]) {
+  const points = series.flatMap((item) => item.points)
+  const xExtent = finiteExtent(points.map((point) => point.x))
+  const yExtent = finiteExtent(points.map((point) => point.y))
+  const xMax = xExtent.count > 0 ? roundPhaseAxisUpper(Math.max(1, xExtent.max * 1.04), PHASE_DISPLACEMENT_AXIS_STEP) : 100
+  const yLimit = yExtent.count > 0 ? roundPhaseAxisUpper(Math.max(100, Math.abs(yExtent.min), Math.abs(yExtent.max)) * 1.08, PHASE_VELOCITY_AXIS_STEP) : 1000
+  return { x: [0, xMax] as [number, number], y: [-yLimit, yLimit] as [number, number] }
+}
+
+function phaseConditionalValues(
+  points: PhasePoint[],
+  target: Extract<PhaseChartVariant, 'velocity_given_position' | 'position_given_velocity'>,
+  positionConditionRange: PhaseAxisRange,
+  velocityConditionRange: PhaseAxisRange,
+) {
+  const values: number[] = []
+  if (target === 'velocity_given_position') {
+    for (const point of points) {
+      if (point.x >= positionConditionRange[0] && point.x <= positionConditionRange[1]) {
+        values.push(point.y)
+      }
+    }
+  } else {
+    for (const point of points) {
+      if (point.y >= velocityConditionRange[0] && point.y <= velocityConditionRange[1]) {
+        values.push(point.x)
+      }
+    }
+  }
+  return values
+}
+
+function phaseConditionalChartTitle(
+  target: Extract<PhaseChartVariant, 'velocity_given_position' | 'position_given_velocity'>,
+  positionConditionRange: PhaseAxisRange,
+  velocityConditionRange: PhaseAxisRange,
+  xLabel: string,
+) {
+  if (target === 'velocity_given_position') {
+    const unit = xLabel.includes('(mm)') ? 'mm' : '%'
+    return `Velocity conditional on position from ${formatPhaseAxisRangeValue(positionConditionRange[0])} to ${formatPhaseAxisRangeValue(positionConditionRange[1])} ${unit}`
+  }
+  return `Position conditional on velocity from ${formatPhaseAxisRangeValue(velocityConditionRange[0])} to ${formatPhaseAxisRangeValue(velocityConditionRange[1])} mm/s`
+}
+
+function phaseConditionalDataDomain(
+  series: PhaseConditionalSeries[] | null,
+  target: PhaseChartVariant,
+): PhaseAxisRange | null {
+  if (!series || (target !== 'velocity_given_position' && target !== 'position_given_velocity')) {
+    return null
+  }
+  const values: number[] = []
+  for (const item of series) {
+    for (const value of item.values) {
+      if (Number.isFinite(value)) {
+        values.push(value)
+      }
+    }
+  }
+  if (values.length === 0) {
+    return [0, 1]
+  }
+  values.sort((left, right) => left - right)
+  const minimum = values.length >= 1000
+    ? d3.quantileSorted(values, PHASE_CONDITIONAL_LOWER_QUANTILE) ?? values[0]
+    : values[0]
+  const maximum = values.length >= 1000
+    ? d3.quantileSorted(values, PHASE_CONDITIONAL_UPPER_QUANTILE) ?? values[values.length - 1]
+    : values[values.length - 1]
+  const minimumPadding = target === 'velocity_given_position' ? 10 : 0.1
+  const padding = Math.max((maximum - minimum) * 0.02, minimumPadding)
+  return [minimum - padding, maximum + padding]
+}
+
+function equalWidthConditionalHistogram(values: number[], xDomain: PhaseAxisRange, bins: number): ConditionalHistogram {
+  const [minimum, maximum] = xDomain
+  const span = maximum - minimum
+  const counts = new Uint32Array(bins)
+  let underflowCount = 0
+  let overflowCount = 0
+  let total = 0
+  if (span <= 0 || bins <= 0) {
+    return { bins: [], underflowCount, overflowCount, total }
+  }
+  for (const value of values) {
+    if (!Number.isFinite(value)) {
+      continue
+    }
+    total += 1
+    if (value < minimum) {
+      underflowCount += 1
+      continue
+    }
+    if (value > maximum) {
+      overflowCount += 1
+      continue
+    }
+    const index = Math.min(bins - 1, Math.floor(((value - minimum) / span) * bins))
+    counts[index] += 1
+  }
+  const histogram = Array.from(counts, (count, index) => ({
+    x0: minimum + (index / bins) * span,
+    x1: minimum + ((index + 1) / bins) * span,
+    count,
+    total,
+    proportion: total > 0 ? count / total : 0,
+  }))
+  return { bins: histogram, underflowCount, overflowCount, total }
+}
+
+function formatConditionalTailCount(count: number, total: number) {
+  return `${count.toLocaleString()} (${formatProportion(total > 0 ? count / total : 0)})`
+}
+
+function phaseJointHistogram(points: PhasePoint[], xDomain: PhaseAxisRange, yDomain: PhaseAxisRange, bins: number) {
+  const counts = Array.from({ length: bins * bins }, () => 0)
+  const xSpan = xDomain[1] - xDomain[0]
+  const ySpan = yDomain[1] - yDomain[0]
+  if (xSpan <= 0 || ySpan <= 0) {
+    return { counts, total: 0 }
+  }
+  let total = 0
+  for (const point of points) {
+    if (point.x < xDomain[0] || point.x > xDomain[1] || point.y < yDomain[0] || point.y > yDomain[1]) {
+      continue
+    }
+    const xIndex = Math.min(bins - 1, Math.floor(((point.x - xDomain[0]) / xSpan) * bins))
+    const yIndex = Math.min(bins - 1, Math.floor(((point.y - yDomain[0]) / ySpan) * bins))
+    const displayRow = bins - 1 - yIndex
+    counts[displayRow * bins + xIndex] += 1
+    total += 1
+  }
+  return { counts, total }
+}
+
+function phaseProbabilityContourPaths(points: PhasePoint[], xDomain: PhaseAxisRange, yDomain: PhaseAxisRange, bins: number, contourMasses: number[]) {
+  const cacheKey = `${xDomain[0]}:${xDomain[1]}:${yDomain[0]}:${yDomain[1]}:${bins}:${contourMasses.join(',')}`
+  const cachedForPoints = phaseContourPathCache.get(points)
+  const cached = cachedForPoints?.get(cacheKey)
+  if (cached) {
+    return cached
+  }
+  const histogram = phaseJointHistogram(points, xDomain, yDomain, bins)
+  const path = d3.geoPath()
+  const contours = [...contourMasses].reverse().flatMap((mass) => {
+    const threshold = probabilityMassThreshold(histogram.counts, mass)
+    if (threshold === null) {
+      return []
+    }
+    const contour = d3.contours()
+      .size([bins, bins])
+      .smooth(true)
+      .thresholds([Math.max(Number.EPSILON, threshold - 1e-6)])(histogram.counts)[0]
+    const d = contour ? path(contour) : null
+    return d ? [{ mass, d }] : []
+  })
+  const nextCache = cachedForPoints ?? new Map<string, PhaseContourPath[]>()
+  nextCache.set(cacheKey, contours)
+  if (!cachedForPoints) {
+    phaseContourPathCache.set(points, nextCache)
+  }
+  return contours
+}
+
+function probabilityMassThreshold(counts: number[], mass: number) {
+  const positive = counts.filter((count) => count > 0).sort((left, right) => right - left)
+  const total = d3.sum(positive)
+  if (total <= 0) {
+    return null
+  }
+  const target = total * mass
+  let cumulative = 0
+  for (const count of positive) {
+    cumulative += count
+    if (cumulative >= target) {
+      return count
+    }
+  }
+  return positive[positive.length - 1] ?? null
+}
+
+function phaseContourDasharray(mass: number) {
+  if (mass <= 0.5) {
+    return undefined
+  }
+  if (mass <= 0.8) {
+    return '6 3'
+  }
+  if (mass <= 0.95) {
+    return '2 3'
+  }
+  return mass <= 0.99 ? '8 3 2 3' : '1 2'
+}
+
+function phaseContourStrokeWidth(mass: number) {
+  return mass <= 0.5 ? 2.2 : mass <= 0.8 ? 1.8 : mass <= 0.95 ? 1.4 : 1.15
+}
+
+function phaseContourStrokeOpacity(mass: number) {
+  return mass <= 0.5 ? 0.95 : mass <= 0.8 ? 0.8 : 0.68
+}
+
+function formatContourMass(mass: number) {
+  const percentage = mass * 100
+  return `${Number.isInteger(percentage) ? percentage.toFixed(0) : percentage.toFixed(1)}%`
+}
+
+function roundPhaseAxisUpper(value: number, step: number) {
+  return Math.ceil(value / step) * step
+}
+
+function clampPhaseAxisRange(range: PhaseAxisRange, bounds: PhaseAxisRange): PhaseAxisRange {
+  const [minimumBound, maximumBound] = bounds
+  const minimum = Math.max(minimumBound, Math.min(maximumBound - 1, range[0]))
+  const maximum = Math.max(minimum + 1, Math.min(maximumBound, range[1]))
+  return [minimum, maximum]
+}
+
+function phaseAxisRangesEqual(left: PhaseAxisRange, right: PhaseAxisRange) {
+  return left[0] === right[0] && left[1] === right[1]
+}
+
+function phaseAxisRangeValue(value: unknown, bounds: readonly [number, number]): PhaseAxisRange {
+  if (Array.isArray(value) && value.length === 2 && value.every((item) => typeof item === 'number' && Number.isFinite(item))) {
+    return clampPhaseAxisRange([value[0], value[1]], [bounds[0], bounds[1]])
+  }
+  return [bounds[0], bounds[1]]
+}
+
+function formatPhaseAxisRangeValue(value: number) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1)
+}
+
+type PhaseDensityCell = { xIndex: number; yIndex: number; x0: number; x1: number; y0: number; y1: number; count: number; maxCount: number }
+
+function phaseDensityCells(points: PhasePoint[], xDomain: [number, number], yDomain: [number, number], bins: number): PhaseDensityCell[] {
+  const cacheKey = `${xDomain[0]}:${xDomain[1]}:${yDomain[0]}:${yDomain[1]}:${bins}`
+  const cachedForPoints = phaseDensityCellCache.get(points)
+  const cached = cachedForPoints?.get(cacheKey)
+  if (cached) {
+    return cached
+  }
+  const counts = new Map<number, number>()
+  const xSpan = xDomain[1] - xDomain[0]
+  const ySpan = yDomain[1] - yDomain[0]
+  if (xSpan <= 0 || ySpan <= 0) {
+    return []
+  }
+  for (const point of points) {
+    const xIndex = Math.floor(((point.x - xDomain[0]) / xSpan) * bins)
+    const yIndex = Math.floor(((point.y - yDomain[0]) / ySpan) * bins)
+    if (xIndex < 0 || xIndex >= bins || yIndex < 0 || yIndex >= bins) {
+      continue
+    }
+    const key = yIndex * bins + xIndex
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  const maxCount = Math.max(1, ...counts.values())
+  const cells = Array.from(counts.entries()).map(([key, count]) => {
+    const xIndex = key % bins
+    const yIndex = Math.floor(key / bins)
+    return {
+      xIndex,
+      yIndex,
+      x0: xDomain[0] + (xIndex / bins) * xSpan,
+      x1: xDomain[0] + ((xIndex + 1) / bins) * xSpan,
+      y0: yDomain[0] + (yIndex / bins) * ySpan,
+      y1: yDomain[0] + ((yIndex + 1) / bins) * ySpan,
+      count,
+      maxCount,
+    }
+  })
+  const nextCache = cachedForPoints ?? new Map<string, PhaseDensityCell[]>()
+  nextCache.set(cacheKey, cells)
+  if (!cachedForPoints) {
+    phaseDensityCellCache.set(points, nextCache)
+  }
+  return cells
+}
+
+function densityOpacity(count: number, maxCount: number, logarithmic: boolean) {
+  const normalized = logarithmic ? Math.log1p(count) / Math.log1p(maxCount) : count / maxCount
+  return 0.12 + normalized * 0.68
+}
+
+function samplePhasePoints(points: PhasePoint[], maxPoints: number) {
+  if (points.length <= maxPoints) {
+    return points
+  }
+  const bucketCount = Math.max(1, Math.floor(maxPoints / 6))
+  const selectedIndexes = new Set<number>([0, points.length - 1])
+  for (let bucket = 0; bucket < bucketCount; bucket += 1) {
+    const start = Math.floor((bucket * points.length) / bucketCount)
+    const end = Math.max(start, Math.floor(((bucket + 1) * points.length) / bucketCount) - 1)
+    let minX = start
+    let maxX = start
+    let minY = start
+    let maxY = start
+    for (let index = start + 1; index <= end; index += 1) {
+      if (points[index].x < points[minX].x) minX = index
+      if (points[index].x > points[maxX].x) maxX = index
+      if (points[index].y < points[minY].y) minY = index
+      if (points[index].y > points[maxY].y) maxY = index
+    }
+    selectedIndexes.add(start)
+    selectedIndexes.add(end)
+    selectedIndexes.add(minX)
+    selectedIndexes.add(maxX)
+    selectedIndexes.add(minY)
+    selectedIndexes.add(maxY)
+  }
+  const indexes = Array.from(selectedIndexes).sort((left, right) => left - right)
+  const breakCounts = new Uint32Array(points.length)
+  for (let index = 0; index < points.length; index += 1) {
+    breakCounts[index] = (index > 0 ? breakCounts[index - 1] : 0) + (points[index].breakBefore ? 1 : 0)
+  }
+  return indexes.map((index, outputIndex) => {
+    const previousIndex = indexes[outputIndex - 1] ?? -1
+    const hasBreak = outputIndex === 0 || breakCounts[index] > (previousIndex >= 0 ? breakCounts[previousIndex] : 0)
+    return { ...points[index], breakBefore: hasBreak }
+  })
+}
+
+function canvasPhasePoints(points: PhasePoint[], renderMode: Exclude<PhaseRenderMode, 'density'>) {
+  if (points.length <= PHASE_CANVAS_RAW_POINT_LIMIT) {
+    return points
+  }
+  return renderMode === 'line'
+    ? samplePhaseLinePoints(points, PHASE_LINE_TARGET_HZ, PHASE_LINE_MAX_POINTS)
+    : samplePhasePoints(points, PHASE_SCATTER_MAX_POINTS)
+}
+
+function samplePhaseLinePoints(points: PhasePoint[], targetHz: number, maxPoints: number) {
+  if (points.length <= maxPoints && phaseSampleRateHz(points) <= targetHz) {
+    return points
+  }
+  const targetIntervalS = 1 / targetHz
+  const backbone = new Set<number>([0, points.length - 1])
+  let nextTargetTimeS = points[0]?.timeS ?? 0
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index]
+    if (point.breakBefore) {
+      backbone.add(index)
+      nextTargetTimeS = point.timeS + targetIntervalS
+    } else if (point.timeS >= nextTargetTimeS) {
+      backbone.add(index)
+      while (nextTargetTimeS <= point.timeS) {
+        nextTargetTimeS += targetIntervalS
+      }
+    }
+  }
+  const backboneIndexes = Array.from(backbone).sort((left, right) => left - right)
+  const remainingBudget = Math.max(0, maxPoints - backboneIndexes.length)
+  if (remainingBudget === 0) {
+    return sampledPhasePointsAtIndexes(points, backboneIndexes)
+  }
+
+  const extrema = new Set<number>()
+  for (let item = 0; item < backboneIndexes.length - 1; item += 1) {
+    const start = backboneIndexes[item]
+    const end = backboneIndexes[item + 1]
+    let minX = start
+    let maxX = start
+    let minY = start
+    let maxY = start
+    for (let index = start + 1; index <= end; index += 1) {
+      if (points[index].x < points[minX].x) minX = index
+      if (points[index].x > points[maxX].x) maxX = index
+      if (points[index].y < points[minY].y) minY = index
+      if (points[index].y > points[maxY].y) maxY = index
+    }
+    extrema.add(minX)
+    extrema.add(maxX)
+    extrema.add(minY)
+    extrema.add(maxY)
+  }
+  const extremaIndexes = Array.from(extrema).filter((index) => !backbone.has(index)).sort((left, right) => left - right)
+  const retainedExtrema = extremaIndexes.length <= remainingBudget
+    ? extremaIndexes
+    : extremaIndexes.filter((_, index) => index % Math.ceil(extremaIndexes.length / remainingBudget) === 0).slice(0, remainingBudget)
+  return sampledPhasePointsAtIndexes(points, [...backboneIndexes, ...retainedExtrema].sort((left, right) => left - right))
+}
+
+function phaseSampleRateHz(points: PhasePoint[]) {
+  const gaps = points.slice(1).map((point, index) => point.timeS - points[index].timeS).filter((gap) => Number.isFinite(gap) && gap > 0)
+  const medianGapS = d3.median(gaps)
+  return medianGapS && medianGapS > 0 ? 1 / medianGapS : Number.POSITIVE_INFINITY
+}
+
+function sampledPhasePointsAtIndexes(points: PhasePoint[], indexes: number[]) {
+  const breakCounts = new Uint32Array(points.length)
+  for (let index = 0; index < points.length; index += 1) {
+    breakCounts[index] = (index > 0 ? breakCounts[index - 1] : 0) + (points[index].breakBefore ? 1 : 0)
+  }
+  return indexes.map((index, outputIndex) => {
+    const previousIndex = indexes[outputIndex - 1] ?? -1
+    const hasBreak = outputIndex === 0 || breakCounts[index] > (previousIndex >= 0 ? breakCounts[previousIndex] : 0)
+    return { ...points[index], breakBefore: hasBreak }
+  })
+}
+
+function formatPhaseTick(value: number) {
+  const absolute = Math.abs(value)
+  if (absolute >= 1000) {
+    return `${(value / 1000).toFixed(absolute >= 10000 ? 0 : 1)}k`
+  }
+  return Number.isInteger(value) ? String(value) : value.toFixed(1)
 }
 
 function rowsGroupedBySession(rows: TableQueryRow[]) {

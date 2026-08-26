@@ -7,6 +7,7 @@
 
 #include "ConfigManager.h"
 #include "I2CManager.h"
+#include "PowerManager.h"
 #include "SensorRegistry.h"
 #include "DebugLog.h"
 #include "esp_timer.h"
@@ -26,7 +27,9 @@ static constexpr uint16_t kHalfTurn = kCountsPerTurn / 2;
 static constexpr float kDegreesPerCount = 360.0f / float(kCountsPerTurn);
 static constexpr uint32_t kDefaultDiagnosticIntervalMs = 250;
 static constexpr int32_t kDirectionMinDeltaCounts = int32_t(kCountsPerTurn / 720); // about 0.5 deg
+static constexpr uint8_t kDiagnosticColumnCount = 7;
 static constexpr uint16_t kMaxAsyncRateHz = 1000;
+static constexpr uint32_t kDeferredRecoveryFailureStreak = 3;
 
 void copyField_(char* dst, size_t cap, const char* src) {
   if (!dst || cap == 0) return;
@@ -159,7 +162,105 @@ void AS5048BAngleSensor::applyParams(const Params& p) {
   copyField_(m_rawDomain, sizeof(m_rawDomain), p.primaryDomain);
 }
 
+void AS5048BAngleSensor::setRuntimeFailure_(SensorRuntimeFailureStage stage,
+                                            int16_t resultCode,
+                                            uint8_t expectedBytes,
+                                            uint8_t receivedBytes) const {
+  m_lastRuntimeFailure.stage = stage;
+  m_lastRuntimeFailure.resultCode = resultCode;
+  m_lastRuntimeFailure.expectedBytes = expectedBytes;
+  m_lastRuntimeFailure.receivedBytes = receivedBytes;
+}
+
+void AS5048BAngleSensor::resetRuntimeDiagnostics_() {
+  const uint32_t beginCount = m_runtimeDiagnostics.beginCount + 1;
+  m_runtimeDiagnostics = SensorRuntimeDiagnostics{};
+  m_runtimeDiagnostics.present = true;
+  copyField_(m_runtimeDiagnostics.sensorName,
+             sizeof(m_runtimeDiagnostics.sensorName),
+             name());
+  copyField_(m_runtimeDiagnostics.kind,
+             sizeof(m_runtimeDiagnostics.kind),
+             asyncClientKind());
+  m_runtimeDiagnostics.busIndex = m_busIndex;
+  m_runtimeDiagnostics.address = m_i2cAddr;
+  m_runtimeDiagnostics.beginCount = beginCount;
+  m_runtimeDiagnostics.lastBeginUptimeMs = millis();
+  m_lastRuntimeFailure = SensorRuntimeFailure{};
+  m_lastRawRuntimeFailure = SensorRuntimeFailure{};
+  m_runtimeSessionRawFailureBase = 0;
+  m_runtimeSessionDiagnosticFailureBase = 0;
+  m_runtimeReadFailureStreak = 0;
+  m_runtimeReadFailureActive = false;
+}
+
+void AS5048BAngleSensor::resetSessionRuntimeDiagnostics_() const {
+  m_runtimeDiagnostics.eventCount = 0;
+  m_runtimeDiagnostics.eventsTotal = 0;
+  m_runtimeDiagnostics.eventsDropped = 0;
+  m_runtimeDiagnostics.readFailureStreakMax = 0;
+  m_runtimeDiagnostics.readRecoveries = 0;
+  m_runtimeSessionRawFailureBase = m_rawReadFailures;
+  m_runtimeSessionDiagnosticFailureBase = m_diagnosticReadFailures;
+  m_runtimeReadFailureStreak = 0;
+  m_runtimeReadFailureActive = false;
+}
+
+void AS5048BAngleSensor::recordRuntimeEvent_(SensorRuntimeEventType type) const {
+  ++m_runtimeDiagnostics.eventsTotal;
+  if (m_runtimeDiagnostics.eventCount >= SensorRuntimeDiagnostics::kMaxEvents) {
+    ++m_runtimeDiagnostics.eventsDropped;
+    return;
+  }
+
+  SensorRuntimeEvent& event =
+    m_runtimeDiagnostics.events[m_runtimeDiagnostics.eventCount++];
+  event = SensorRuntimeEvent{};
+  event.uptimeMs = millis();
+  event.acquisitionSeq = m_asyncNextSeq;
+  event.rawReadFailures = m_rawReadFailures - m_runtimeSessionRawFailureBase;
+  event.raw = m_haveLastGoodRaw ? (uint16_t)normalizeCount_(m_lastGoodRaw) : 0;
+  event.type = type;
+  switch (type) {
+    case SensorRuntimeEventType::ReadFailureStarted:
+    case SensorRuntimeEventType::ReadRecovered:
+      event.failure = m_lastRawRuntimeFailure;
+      break;
+    default:
+      event.failure = m_lastReadOk ? SensorRuntimeFailure{} : m_lastRawRuntimeFailure;
+      break;
+  }
+  event.haveSample = m_haveLastGoodRaw;
+  event.readOk = m_lastReadOk;
+  event.reused = m_lastReadReused;
+  event.analogRailEnabled = PowerManager::analogRailEnabled();
+  event.analogRailFault = PowerManager::analogRailFaultActive();
+}
+
+void AS5048BAngleSensor::updateReadTransition_(bool readOk) const {
+  if (!readOk) {
+    ++m_runtimeReadFailureStreak;
+    if (m_runtimeReadFailureStreak > m_runtimeDiagnostics.readFailureStreakMax) {
+      m_runtimeDiagnostics.readFailureStreakMax = m_runtimeReadFailureStreak;
+    }
+    if (!m_runtimeReadFailureActive) {
+      m_runtimeReadFailureActive = true;
+      recordRuntimeEvent_(SensorRuntimeEventType::ReadFailureStarted);
+    }
+    return;
+  }
+
+  if (m_runtimeReadFailureActive) {
+    ++m_runtimeDiagnostics.readRecoveries;
+    recordRuntimeEvent_(SensorRuntimeEventType::ReadRecovered);
+  }
+  m_runtimeReadFailureActive = false;
+  m_runtimeReadFailureStreak = 0;
+}
+
 void AS5048BAngleSensor::begin() {
+  m_deferredRecoveryPending = false;
+  resetRuntimeDiagnostics_();
   m_wire = I2CManager::bus(m_busIndex);
   m_warnedNoBus = false;
   m_warnedRead = false;
@@ -176,6 +277,7 @@ void AS5048BAngleSensor::begin() {
   m_lastMagnitude = 0;
   m_lastReadOk = false;
   m_lastReadReused = false;
+  m_rawReadFailures = 0;
   m_diagnosticReadFailures = 0;
   m_calUnwrapInit = false;
   m_calLastUnwrapped = 0;
@@ -186,16 +288,20 @@ void AS5048BAngleSensor::begin() {
   I2CBusScheduler::registerClient(this);
 
   if (!m_wire) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusUnavailable);
+    m_runtimeDiagnostics.initializationFailure = m_lastRuntimeFailure;
     AS5048_LOGW("sensor '%s': I2C bus %u unavailable\n",
                 name(), (unsigned)m_busIndex);
     return;
   }
 
   if (!probe_()) {
+    m_runtimeDiagnostics.initializationFailure = m_lastRuntimeFailure;
     AS5048_LOGW("sensor '%s': no AS5048B response at 0x%02X on bus %u\n",
                 name(), (unsigned)m_i2cAddr, (unsigned)m_busIndex);
     return;
   }
+  m_runtimeDiagnostics.initialProbeOk = true;
 
   uint16_t raw = 0;
   if (readRawAngle_(raw)) {
@@ -212,6 +318,9 @@ void AS5048BAngleSensor::begin() {
                 directionName_(m_directionSign),
                 (unsigned long)busHz_(m_busIndex),
                 (m_readMode == I2CReadMode::RepeatedStart) ? "repeated" : "stop");
+  } else {
+    m_lastRawRuntimeFailure = m_lastRuntimeFailure;
+    m_runtimeDiagnostics.initializationFailure = m_lastRawRuntimeFailure;
   }
 }
 
@@ -226,15 +335,43 @@ bool AS5048BAngleSensor::reconfigureFromSpec(const SensorSpec& spec) {
 }
 
 void AS5048BAngleSensor::onLoggingStart() {
+  resetSessionRuntimeDiagnostics_();
   m_asyncLoggingActive = true;
   m_asyncNextSeq = 0;
   m_asyncLastLoggedSeq = 0;
   resetAsyncSnapshot_();
+  recordRuntimeEvent_(SensorRuntimeEventType::LoggingStart);
   (void)acquireAsyncSample_();
 }
 
 void AS5048BAngleSensor::onLoggingStop() {
+  recordRuntimeEvent_(SensorRuntimeEventType::LoggingStop);
   m_asyncLoggingActive = false;
+  if (m_runtimeReadFailureActive &&
+      m_runtimeReadFailureStreak >= kDeferredRecoveryFailureStreak) {
+    m_deferredRecoveryPending = true;
+    AS5048_LOGW("sensor '%s': recovery deferred until log finalization read_streak=%lu\n",
+                name(), (unsigned long)m_runtimeReadFailureStreak);
+  }
+}
+
+void AS5048BAngleSensor::onLoggingFinalized() {
+  if (!m_deferredRecoveryPending) return;
+
+  m_deferredRecoveryPending = false;
+  AS5048_LOGI("sensor '%s': attempting deferred post-session recovery\n", name());
+  begin();
+
+  if (m_runtimeDiagnostics.initialProbeOk && m_lastReadOk) {
+    AS5048_LOGI("sensor '%s': deferred post-session recovery complete\n", name());
+    return;
+  }
+
+  m_deferredRecoveryPending = true;
+  AS5048_LOGW("sensor '%s': deferred recovery incomplete probe=%d read=%d\n",
+              name(),
+              m_runtimeDiagnostics.initialProbeOk ? 1 : 0,
+              m_lastReadOk ? 1 : 0);
 }
 
 uint16_t AS5048BAngleSensor::asyncTargetRateHz() const {
@@ -250,22 +387,49 @@ bool AS5048BAngleSensor::asyncAcquire() {
   return acquireAsyncSample_();
 }
 
+void AS5048BAngleSensor::asyncSchedulerStarting() {
+  recordRuntimeEvent_(SensorRuntimeEventType::SchedulerStart);
+}
+
+void AS5048BAngleSensor::asyncSchedulerStopped() {
+  recordRuntimeEvent_(SensorRuntimeEventType::SchedulerStop);
+}
+
 bool AS5048BAngleSensor::probe_() const {
-  if (!m_wire) return false;
-  if (!I2CManager::lock(m_wire)) return false;
+  if (!m_wire) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusUnavailable);
+    return false;
+  }
+  if (!I2CManager::lock(m_wire)) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusLock);
+    return false;
+  }
   m_wire->beginTransmission(m_i2cAddr);
-  const bool ok = (m_wire->endTransmission(true) == 0);
+  const uint8_t result = (uint8_t)m_wire->endTransmission(true);
   I2CManager::unlock(m_wire);
-  return ok;
+  if (result != 0) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::Probe, result);
+    return false;
+  }
+  return true;
 }
 
 bool AS5048BAngleSensor::readRegBytesLocked_(uint8_t reg, uint8_t* out, uint8_t len) const {
-  if (!m_wire || !out || len == 0) return false;
+  if (!m_wire) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusUnavailable);
+    return false;
+  }
+  if (!out || len == 0) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::RequestBytes, -1, len, 0);
+    return false;
+  }
 
   m_wire->beginTransmission(m_i2cAddr);
   m_wire->write(reg);
   const bool stopAfterRegister = (m_readMode == I2CReadMode::StopThenRead);
-  if (m_wire->endTransmission(stopAfterRegister) != 0) {
+  const uint8_t txResult = (uint8_t)m_wire->endTransmission(stopAfterRegister);
+  if (txResult != 0) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::RegisterAddress, txResult);
     return false;
   }
   if (stopAfterRegister) delayMicroseconds(5);
@@ -275,12 +439,19 @@ bool AS5048BAngleSensor::readRegBytesLocked_(uint8_t reg, uint8_t* out, uint8_t 
     while (m_wire->available() > 0) {
       (void)m_wire->read();
     }
+    setRuntimeFailure_(SensorRuntimeFailureStage::RequestBytes,
+                       0,
+                       len,
+                       (got > 255u) ? 255u : (uint8_t)got);
     return false;
   }
 
   for (uint8_t i = 0; i < len; ++i) {
     const int v = m_wire->read();
-    if (v < 0) return false;
+    if (v < 0) {
+      setRuntimeFailure_(SensorRuntimeFailureStage::ReadByte, v, len, i);
+      return false;
+    }
     out[i] = (uint8_t)v;
   }
   return true;
@@ -291,8 +462,14 @@ bool AS5048BAngleSensor::readOutputBlock_(OutputSample& out) const {
   if (!m_wire) {
     m_wire = I2CManager::bus(m_busIndex);
   }
-  if (!m_wire) return false;
-  if (!I2CManager::lock(m_wire)) return false;
+  if (!m_wire) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusUnavailable);
+    return false;
+  }
+  if (!I2CManager::lock(m_wire)) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusLock);
+    return false;
+  }
   uint8_t bytes[2] = {0, 0};
   const bool ok = readRegBytesLocked_(kAngleMsbReg, bytes, sizeof(bytes));
   I2CManager::unlock(m_wire);
@@ -312,8 +489,14 @@ bool AS5048BAngleSensor::readDiagnostics_(OutputSample& out) const {
   if (!m_wire) {
     m_wire = I2CManager::bus(m_busIndex);
   }
-  if (!m_wire) return false;
-  if (!I2CManager::lock(m_wire)) return false;
+  if (!m_wire) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusUnavailable);
+    return false;
+  }
+  if (!I2CManager::lock(m_wire)) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusLock);
+    return false;
+  }
 
   uint8_t agc = 0;
   uint8_t diagnostic = 0;
@@ -478,6 +661,9 @@ int AS5048BAngleSensor::readRawAngleOnce_() const {
     }
     m_lastReadOk = false;
     m_lastReadReused = m_haveLastGoodRaw;
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusUnavailable);
+    m_lastRawRuntimeFailure = m_lastRuntimeFailure;
+    ++m_rawReadFailures;
     return m_haveLastGoodRaw ? m_lastGoodRaw : 0;
   }
 
@@ -490,7 +676,12 @@ int AS5048BAngleSensor::readRawAngleOnce_() const {
   }
 
   uint16_t raw = 0;
-  if (readRawAngle_(raw)) return int(raw);
+  for (uint8_t attempt = 0; attempt < 3; ++attempt) {
+    if (readRawAngle_(raw)) return int(raw);
+    delayMicroseconds(150);
+  }
+
+  m_lastRawRuntimeFailure = m_lastRuntimeFailure;
 
   if (!m_warnedRead) {
     AS5048_LOGW("sensor '%s': read failed at 0x%02X on bus %u bus_hz=%lu mode=%s; reusing last good sample\n",
@@ -502,6 +693,7 @@ int AS5048BAngleSensor::readRawAngleOnce_() const {
     m_warnedRead = true;
     logFailureProbe_();
   }
+  ++m_rawReadFailures;
   m_lastReadOk = false;
   m_lastReadReused = m_haveLastGoodRaw;
   m_nextReadAttemptMs = now + (m_haveLastGoodRaw ? 250UL : 1000UL);
@@ -599,9 +791,11 @@ bool AS5048BAngleSensor::acquireAsyncSample_() const {
   snapshot.diagnostic = m_lastDiagnostic;
   snapshot.agc = m_lastAgc;
   snapshot.magnitude = m_lastMagnitude;
+  snapshot.rawReadFailures = m_rawReadFailures;
   snapshot.diagnosticReadFailures = m_diagnosticReadFailures;
   snapshot.seq = ++m_asyncNextSeq;
   snapshot.acquiredUs = (uint64_t)esp_timer_get_time();
+  updateReadTransition_(snapshot.readOk);
 
   publishAsyncSnapshot_(snapshot);
   return snapshot.readOk;
@@ -609,7 +803,7 @@ bool AS5048BAngleSensor::acquireAsyncSample_() const {
 
 uint8_t AS5048BAngleSensor::columnCount() const {
   uint8_t count = (m_includeRaw && m_mode != OutputMode::RAW) ? 2 : 1;
-  if (m_includeDiagColumns) count += 3;
+  if (m_includeDiagColumns) count += kDiagnosticColumnCount;
   return count;
 }
 
@@ -634,12 +828,16 @@ void AS5048BAngleSensor::getColumnName(uint8_t idx, char* out, size_t cap) const
   }
 
   const uint8_t diagStart = (m_includeRaw && m_mode != OutputMode::RAW) ? 2 : 1;
-  if (m_includeDiagColumns && idx >= diagStart && idx < diagStart + 3) {
+  if (m_includeDiagColumns && idx >= diagStart && idx < diagStart + kDiagnosticColumnCount) {
     String s = String(name());
     switch (idx - diagStart) {
       case 0: s += "_agc [counts]"; break;
       case 1: s += "_diag [flags]"; break;
       case 2: s += "_mag [counts]"; break;
+      case 3: s += "_read_ok [flags]"; break;
+      case 4: s += "_reused [flags]"; break;
+      case 5: s += "_read_failures [count]"; break;
+      case 6: s += "_diag_failures [count]"; break;
       default: break;
     }
     s.toCharArray(out, cap);
@@ -672,6 +870,18 @@ void AS5048BAngleSensor::sampleValues(float* out, uint8_t max) {
   }
   if (m_includeDiagColumns && w < max) {
     out[w++] = m_haveDiagnostics ? float(m_lastMagnitude) : NAN;
+  }
+  if (m_includeDiagColumns && w < max) {
+    out[w++] = m_lastReadOk ? 1.0f : 0.0f;
+  }
+  if (m_includeDiagColumns && w < max) {
+    out[w++] = m_lastReadReused ? 1.0f : 0.0f;
+  }
+  if (m_includeDiagColumns && w < max) {
+    out[w++] = float(m_rawReadFailures);
+  }
+  if (m_includeDiagColumns && w < max) {
+    out[w++] = float(m_diagnosticReadFailures);
   }
 }
 
@@ -719,6 +929,18 @@ void AS5048BAngleSensor::sampleValuesFromAsync_(float* out, uint8_t max) {
   if (m_includeDiagColumns && w < max) {
     out[w++] = (have && snapshot.haveDiagnostics) ? float(snapshot.magnitude) : NAN;
   }
+  if (m_includeDiagColumns && w < max) {
+    out[w++] = (have && snapshot.readOk) ? 1.0f : 0.0f;
+  }
+  if (m_includeDiagColumns && w < max) {
+    out[w++] = (have && snapshot.reused) ? 1.0f : 0.0f;
+  }
+  if (m_includeDiagColumns && w < max) {
+    out[w++] = have ? float(snapshot.rawReadFailures) : float(m_rawReadFailures);
+  }
+  if (m_includeDiagColumns && w < max) {
+    out[w++] = have ? float(snapshot.diagnosticReadFailures) : float(m_diagnosticReadFailures);
+  }
 }
 
 bool AS5048BAngleSensor::describeColumn(uint8_t idx, SensorColumnDescriptor& out) const {
@@ -727,7 +949,7 @@ bool AS5048BAngleSensor::describeColumn(uint8_t idx, SensorColumnDescriptor& out
 
   const bool hasRawColumn = (m_includeRaw && m_mode != OutputMode::RAW);
   const uint8_t diagStart = hasRawColumn ? 2 : 1;
-  const bool diagColumn = m_includeDiagColumns && idx >= diagStart && idx < diagStart + 3;
+  const bool diagColumn = m_includeDiagColumns && idx >= diagStart && idx < diagStart + kDiagnosticColumnCount;
   if (diagColumn) {
     copyField_(out.sensorName, sizeof(out.sensorName), name());
     out.outputMode = OutputMode::RAW;
@@ -753,6 +975,22 @@ bool AS5048BAngleSensor::describeColumn(uint8_t idx, SensorColumnDescriptor& out
       case 2:
         copyField_(out.quantity, sizeof(out.quantity), "mag");
         copyField_(out.unit, sizeof(out.unit), "counts");
+        break;
+      case 3:
+        copyField_(out.quantity, sizeof(out.quantity), "read_ok");
+        copyField_(out.unit, sizeof(out.unit), "flags");
+        break;
+      case 4:
+        copyField_(out.quantity, sizeof(out.quantity), "reused");
+        copyField_(out.unit, sizeof(out.unit), "flags");
+        break;
+      case 5:
+        copyField_(out.quantity, sizeof(out.quantity), "read_failures");
+        copyField_(out.unit, sizeof(out.unit), "count");
+        break;
+      case 6:
+        copyField_(out.quantity, sizeof(out.quantity), "diag_failures");
+        copyField_(out.unit, sizeof(out.unit), "count");
         break;
       default:
         break;
@@ -833,6 +1071,27 @@ bool AS5048BAngleSensor::describeSensorMetadata(SensorMetadataDescriptor& out) c
   out.countsPerTurn = kCountsPerTurn;
   out.wrapThresholdCounts = kHalfTurn;
   out.assumeTurn0AtStart = false;
+  return true;
+}
+
+bool AS5048BAngleSensor::describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out) const {
+  out = m_runtimeDiagnostics;
+  out.present = true;
+  copyField_(out.sensorName, sizeof(out.sensorName), name());
+  copyField_(out.kind, sizeof(out.kind), asyncClientKind());
+  out.busIndex = m_busIndex;
+  out.address = m_i2cAddr;
+  out.rawReadFailures = m_rawReadFailures - m_runtimeSessionRawFailureBase;
+  out.diagnosticReadFailures =
+    m_diagnosticReadFailures - m_runtimeSessionDiagnosticFailureBase;
+  out.haveLastGoodRaw = m_haveLastGoodRaw;
+  out.lastReadOk = m_lastReadOk;
+  out.lastReadReused = m_lastReadReused;
+  out.lastGoodRaw = m_haveLastGoodRaw ? (uint16_t)normalizeCount_(m_lastGoodRaw) : 0;
+  out.lastFailure =
+    (out.rawReadFailures > 0 || !m_lastReadOk)
+      ? m_lastRawRuntimeFailure
+      : SensorRuntimeFailure{};
   return true;
 }
 
@@ -957,7 +1216,7 @@ const ParamDef* AS5048BAngleSensor::paramDefs(size_t& count) {
     {"async_rate_hz",    ParamType::Int,    "0",   "0",     "1000", nullptr, "Async I2C acquisition rate; 0 follows logger sample rate"},
     {"output_mode",      ParamType::Enum,   "1",   nullptr, nullptr, nullptr, "Output method: RAW counts, LINEAR degrees, or transformed degrees"},
     {"include_raw",      ParamType::Bool,   "true", nullptr, nullptr, nullptr, "Append raw absolute angle counts after primary"},
-    {"include_diag",     ParamType::Bool,   "false", nullptr, nullptr, nullptr, "Append AS5048B AGC, diagnostic flags, and magnitude columns"},
+    {"include_diag",     ParamType::Bool,   "false", nullptr, nullptr, nullptr, "Append AS5048B magnetic diagnostics, read state, and failure counters"},
     {"diag_interval_ms", ParamType::Int,    "250", "0",     "5000", nullptr, "Minimum interval between AS5048B diagnostic reads"},
     {"end",              ParamType::Enum,   "",    nullptr, nullptr, "front,rear", "Optional semantic end for log metadata"},
     {"primary_domain",   ParamType::Enum,   "",    nullptr, nullptr, "wheel,suspension,brake,drivetrain,frame,steering", "Optional semantic domain for primary output"},

@@ -75,6 +75,13 @@ def _schema(*, accel_storage_type: str = "int16") -> dict:
                 "component": "x",
                 "coordinate_frame": "sensor_native",
                 "vector_group": "accel_raw",
+                "calibration_ref": "frame_imu_factory",
+                "transform_chain": ["sensor_native_to_body_local"],
+                "notes": "native signed acceleration",
+                "required": True,
+                "primary": True,
+                "calibrated": True,
+                "transformed": True,
                 "unit": "count",
                 "storage_type": accel_storage_type,
                 "byte_offset": 4,
@@ -127,6 +134,26 @@ def _bdq_bytes(*, accel_storage_type: str = "int16") -> bytes:
         "sample_period_us": 2000,
         "timezone": "Australia/Perth",
         "log_format": "bodaqs_compact_binary",
+        "sensors": {
+            "frame_imu": {
+                "name": "frame_imu",
+                "type": "BMI270",
+                "domain": "frame",
+                "raw_unit": "count",
+                "calibration": {
+                    "type": "factory",
+                    "input_unit": "count",
+                    "output_unit": "m/s^2",
+                    "invert": False,
+                },
+            }
+        },
+        "device_configs": {
+            "frame_imu": {
+                "kind": "bmi270",
+                "status": "matched",
+            }
+        },
         "imu_configs": {
             "frame_imu": {
                 "contract_id": "bodaqs.bmi270_imu_mvp.v3",
@@ -156,7 +183,23 @@ def _bdq_bytes(*, accel_storage_type: str = "int16") -> bytes:
             _json_chunk(1, 0, metadata),
             _json_chunk(2, 1, _schema(accel_storage_type=accel_storage_type)),
             _chunk(3, 2, data),
-            _json_chunk(5, 3, {"summary_format": "bdq.final_summary.v1", "samples_written": len(frames)}),
+            _json_chunk(
+                5,
+                3,
+                {
+                    "summary_format": "bdq.final_summary.v1",
+                    "samples_written": len(frames),
+                    "sensor_runtime_diagnostics": {
+                        "sensor_count": 1,
+                        "sensors": {
+                            "frame_imu": {
+                                "kind": "bmi270",
+                                "session": {"raw_read_failures": 2},
+                            }
+                        },
+                    },
+                },
+            ),
         ]
     )
 
@@ -239,6 +282,18 @@ def test_bdq_metadata_preserves_vector_and_mount_semantics(tmp_path: Path) -> No
     assert accel_x["component"] == "x"
     assert accel_x["coordinate_frame"] == "sensor_native"
     assert accel_x["vector_group"] == "accel_raw"
+    assert accel_x["calibration_ref"] == "frame_imu_factory"
+    assert accel_x["transform_chain"] == ["sensor_native_to_body_local"]
+    assert accel_x["notes"] == "native signed acceleration"
+    assert accel_x["required"] is True
+    assert accel_x["primary"] is True
+    assert accel_x["calibrated"] is True
+    assert accel_x["transformed"] is True
+    assert metadata["sensors"]["frame_imu"]["calibration"]["output_unit"] == "m/s^2"
+    assert metadata["device_configs"]["frame_imu"]["status"] == "matched"
+    assert metadata["qc"]["sensor_runtime_diagnostics"]["sensors"]["frame_imu"]["session"][
+        "raw_read_failures"
+    ] == 2
     assert metadata["imu_configs"]["frame_imu"]["imu_rate_hz"] == 200
     assert metadata["imu_configs"]["frame_imu"]["max_output_rate_hz"] == 50
     assert metadata["imu_configs"]["frame_imu"]["output_rate_hz"] == 50

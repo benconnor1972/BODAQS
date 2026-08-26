@@ -422,6 +422,8 @@ Optional fields:
 - `warnings`: array
 - `time`: object
 - `run_stats`: object
+- `sensor_runtime_diagnostics`: object
+- `imu_runtime_diagnostics`: object
 
 Suggested `time` fields:
 - `monotonic`: boolean
@@ -433,6 +435,13 @@ Logger firmware should put runtime QC counters such as `samples_dropped`,
 `queue_max`, `flush_count`, `sampler_late_ticks`,
 `sampler_late_max_lag_ms`, and `missed_sample_slots` in `qc.run_stats` rather
 than appending them to the CSV data file.
+
+Firmware may report `rows_format_failed` and `storage_write_failures` in
+`qc.run_stats`. `sensor_runtime_diagnostics` provides a format-neutral health
+summary for configured sensors, including initialization/configuration status,
+read failure and recovery counts, retained-event counts, and the most recent
+structured failure. A separate `imu_runtime_diagnostics` object may contain
+the larger IMU-specific FIFO, timing, validation, and recovery record.
 
 ### 7.9 `provenance`
 

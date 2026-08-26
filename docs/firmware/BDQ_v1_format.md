@@ -174,6 +174,18 @@ Current writer fields:
 }
 ```
 
+Current firmware may additionally include:
+
+- `sensors`: the same sensor identity, tracking, calibration, device
+  configuration, and IMU configuration descriptors used by the CSV JSON
+  sidecar;
+- `device_configs`: the retained top-level device-configuration compatibility
+  map; and
+- `imu_configs`: the retained top-level IMU-configuration compatibility map.
+
+These objects are optional for older BDQ v1 files. Readers should preserve them
+when projecting BDQ into the common logger metadata model.
+
 Minimum parser-relevant fields:
 
 - `format`
@@ -273,8 +285,15 @@ preserves that NaN without setting the frame-level `sensor_err` bit. A NaN in a
 channel that does not opt in, or an infinity in any channel, remains a sensor
 value error.
 
-Current firmware caps emitted sensor columns at 64. Parsers should not rely on
-that cap; they should trust the schema and frame size.
+Signal and diagnostic channel objects may also carry the common logger column
+semantics `calibration_ref`, `transform_chain`, `notes`, `required`, `primary`,
+`calibrated`, and `transformed`. These fields describe interpretation and do not
+change the binary storage layout.
+
+Current firmware supports at most 64 emitted sensor columns and refuses to start
+a standard CSV or BDQ session whose configured column count exceeds that limit.
+Parsers should not rely on the limit; they should trust the schema and frame
+size.
 
 ## 9. Storage Types In Frames
 
@@ -489,7 +508,7 @@ payload lengths remain authoritative for parsing.
 
 Current firmware may also append optional diagnostic objects. In particular,
 `sensor_runtime_diagnostics` contains bounded, transition-only runtime evidence
-for supported sensors such as the AS5600:
+for supported sensors such as the AS5600 and AS5048B:
 
 - initialization probe/configuration status and failure stage;
 - logging and scheduler boundary events;
@@ -500,7 +519,7 @@ for supported sensors such as the AS5600:
 - `events_total`, `events_recorded`, and `events_dropped` so a full event ring is
   visible rather than silently truncated.
 
-The AS5600 event ring holds at most 32 entries and is serialized only after
+Each sensor event ring holds at most 32 entries and is serialized only after
 sampling and the I2C scheduler have stopped. Repeated failures are coalesced;
 normal samples do not create events. This object is additive, does not widen
 data frames, and does not require parsers to understand it.
@@ -513,6 +532,11 @@ I2C scheduler client summaries may include:
 
 As with all final-summary fields, these diagnostics can be absent after an
 unclean shutdown.
+
+Firmware serializes metadata, schema, and final-summary JSON in two passes: a
+count/CRC pass followed by a buffered write pass. This avoids constructing a
+contiguous JSON `String` while retaining the existing chunk framing and CRC
+contract.
 
 `storage_write_stalls` is a bounded recorder-write diagnostic object. It is
 present when timing instrumentation is enabled and contains a threshold, total
