@@ -18,6 +18,8 @@ struct LogMetadataContext {
   bool humanReadableTime = false;
   LogFormat logFormat = LogFormat::BodaqsStandard;
   uint32_t samplesDropped = 0;
+  uint32_t rowsFormatFailed = 0;
+  uint32_t storageWriteFailures = 0;
   uint16_t queueMax = 0;
   uint16_t queueDepth = 0;
   uint32_t flushCount = 0;

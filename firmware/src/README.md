@@ -56,7 +56,7 @@ This document summarizes the major modules in the project, what each one is resp
   and shown in the web UI title bar.
 - `ConfigManager::loggerId()` returns a trimmed, filename-safe derivative of
   `logger_name` for API/session identifiers without changing the stored name.
-- `log_format` controls the emitted log file format. `bodaqs_standard` is the normal headed BODAQS CSV; `syn_bike_raw` emits a headerless syn.bike import CSV and a JSON metadata file that binds columns by index; `bodaqs_compact_binary` writes a self-contained `.bdq` compact binary log.
+- `log_format` controls the emitted log file format. `bodaqs_standard` is the normal headed BODAQS CSV; `bodaqs_compact_binary` writes a self-contained `.bdq` compact binary log. Deprecated syn.bike format keys are accepted on load and silently select `bodaqs_compact_binary`.
 - `omit_metadata=false` keeps the default behaviour of writing a same-stem JSON log metadata file at log close. Set `true` to skip metadata generation.
 - Idle timeout config is saved in minutes (`auto_sleep_idle_min`, `wifi_idle_timeout_min`). Legacy `_ms` keys are still accepted on load for migration.
 - Fixed per‑sensor KV capacity (currently 16). Exceeding keys will drop extra pairs.
@@ -108,16 +108,18 @@ This document summarizes the major modules in the project, what each one is resp
 - `output_mode`, `include_raw`, `include_angle`, `include_diag`
 - `include_angle` appends a diagnostic AS5600 `ANGLE` register column so it can
   be compared with the normal raw `RAW_ANGLE` register readout.
-- For AS5600, `include_diag` adds AGC/status/magnitude plus read-state and
+- For AS5600 and AS5048B, `include_diag` adds AGC/status/magnitude plus read-state and
   failure-counter columns (`read_ok`, `reused`, `read_failures`,
   `diag_failures`).
 - AS5600 metadata includes a read-only startup snapshot of key device registers
   (`ZPOS`, `MPOS`, `MANG`, `CONF`, `RAW ANGLE`, `ANGLE`, `STATUS`, `AGC`, and
   `MAGNITUDE`) under `device_config`.
-- BDQ final summaries include bounded AS5600 runtime transition diagnostics
-  (logging/scheduler boundaries, the start and recovery of read/configuration
-  failures, failure stage/result, and analog-rail state). These diagnostics do
-  not add sample columns or successful-path I2C transactions.
+- BDQ final summaries include bounded AS5600 and AS5048B runtime transition
+  diagnostics (logging/scheduler boundaries, the start and recovery of
+  read/configuration failures, failure stage/result, and analog-rail state).
+  CSV JSON metadata contains the corresponding compact sensor-health summary;
+  these diagnostics do not add sample columns or successful-path I2C
+  transactions.
 
 **Notes**
 - `ZERO` calibration captures the installed zero point and then asks for a small positive movement so the firmware can set `direction`.
@@ -143,6 +145,14 @@ This document summarizes the major modules in the project, what each one is resp
 - `LINEAR` mode reports unwrapped mm using the calibrated unwrapped span.
 - The sensor resets its unwrap tracker to turn 0 at each logging start when `assume_turn0_at_start=true`.
 
+For `AS5600StringPotI2C`, the I2C-specific parameters also include
+`slow_filter`, `include_angle`, `include_diag`, and `diag_interval_ms`. The I2C
+variant applies and records the same volatile AS5600 configuration, device
+register snapshot, magnetic diagnostics, read-quality columns, runtime events,
+and deferred post-session recovery as `AS5600AngleSensor`. Existing string-pot
+measurement columns retain their previous order; optional health columns are
+appended after them.
+
 ---
 
 ## `StorageManager`
@@ -156,9 +166,15 @@ This document summarizes the major modules in the project, what each one is resp
 
 **Notes**
 - `SD_MMC.begin()` and error handling live here.
-- `bodaqs_standard` logs `sample_id`, timestamp, all active sensor columns, and `mark`, with a header. Run statistics are written to the same-stem JSON metadata file under `qc.run_stats`.
-- `syn_bike_raw` logs headerless rows as `sample_id,front_raw,rear_raw,lat,long,speed`; GPS fields are blank for now and no CSV footer is emitted for third-party compatibility.
+- `bodaqs_standard` logs `sample_id`, timestamp, all active sensor columns, and
+  `mark`, with a header. Run statistics and generic configured-sensor health
+  summaries are written to the same-stem JSON metadata file under `qc`.
 - `bodaqs_compact_binary` writes `.bdq` logs with embedded metadata and channel schema. No separate JSON sidecar or automatic ZIP archive is generated for compact binary sessions.
+- Direct syn.bike CSV output is deprecated. Legacy `syn_bike_raw` configuration values fall back to `bodaqs_compact_binary`; data.syn.bike files can be generated downstream by the BODAQS analysis tooling.
+- Standard CSV and BDQ logging refuse configurations with more than 64 emitted
+  sensor columns. CSV rows are formatted in a session-allocated worst-case
+  buffer; formatting and storage-write failures are counted in metadata rather
+  than being silently omitted.
 - When metadata is enabled and written successfully, log close also creates a
   same-stem session ZIP via `<stem>.zip.tmp` then renames it to `<stem>.zip`.
 - After the ZIP is written successfully, the loose same-stem CSV and JSON are
@@ -436,7 +452,7 @@ void DBG_IMPL(DebugLevel lvl, const char* fmt, ...);
 
 ## Configuration Keys (globals)
 
-- `logger_name`, `sample_rate_hz`, `timestamp_mode` (`human|fast`), `log_format` (`bodaqs_standard|syn_bike_raw|bodaqs_compact_binary`), `omit_metadata`, `auto_sleep_idle_min`, `wifi_idle_timeout_min`, `tz`
+- `logger_name`, `sample_rate_hz`, `timestamp_mode` (`human|fast`), `log_format` (`bodaqs_standard|bodaqs_compact_binary`; deprecated syn.bike values fall back to compact binary), `omit_metadata`, `auto_sleep_idle_min`, `wifi_idle_timeout_min`, `tz`
 - `debounce_ms`
 - Button pins: `web_button_pin`, `log_button_pin`, `mark_button_pin`, `nav_up_pin`, `nav_down_pin`, `nav_left_pin`, `nav_right_pin`, `nav_enter_pin`
 - Network/time: `wifi_ssid`, `wifi_password`, `ntp_servers`, `time_check_url`

@@ -1322,10 +1322,9 @@ namespace {
   static uint8_t  s_rateIdx = 0;   // selection within Rates::kList
   static uint8_t  s_logFormatIdx = 0;
   static uint8_t  s_wifiModeIdx = 0;
-  static constexpr uint8_t kLogFormatCount = 3;
+  static constexpr uint8_t kLogFormatCount = 2;
   static constexpr LogFormat kLogFormatOptions[kLogFormatCount] = {
     LogFormat::BodaqsStandard,
-    LogFormat::SynBikeRaw,
     LogFormat::BodaqsCompactBinary
   };
   static constexpr uint8_t kWiFiModeCount = 2;

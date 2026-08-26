@@ -526,6 +526,13 @@ def bdq_to_log_metadata(info: BdqReadResult) -> dict[str, Any]:
             "coordinate_frame",
             "vector_group",
             "processing_role",
+            "calibration_ref",
+            "transform_chain",
+            "notes",
+            "required",
+            "primary",
+            "calibrated",
+            "transformed",
             "semantic_selection_excluded",
             "semantic_selection_exclusion_reason",
         ):
@@ -565,6 +572,13 @@ def bdq_to_log_metadata(info: BdqReadResult) -> dict[str, Any]:
     if info.detected_errors:
         run_stats["bdq_parser_errors"] = list(info.detected_errors)
 
+    qc: dict[str, Any] = {
+        "run_stats": run_stats,
+    }
+    sensor_runtime_diagnostics = run_stats.get("sensor_runtime_diagnostics")
+    if isinstance(sensor_runtime_diagnostics, Mapping):
+        qc["sensor_runtime_diagnostics"] = copy.deepcopy(dict(sensor_runtime_diagnostics))
+
     log_metadata = {
         "contract": {
             "name": "bdq.v1",
@@ -601,9 +615,7 @@ def bdq_to_log_metadata(info: BdqReadResult) -> dict[str, Any]:
             "device_id": _text_or_none(metadata.get("device_id")),
             "hardware_version": _text_or_none(metadata.get("hardware_version")),
         },
-        "qc": {
-            "run_stats": run_stats,
-        },
+        "qc": qc,
         "bdq": {
             "metadata": dict(metadata),
             "channel_schema": dict(schema),
@@ -616,6 +628,12 @@ def bdq_to_log_metadata(info: BdqReadResult) -> dict[str, Any]:
     imu_configs = metadata.get("imu_configs")
     if isinstance(imu_configs, Mapping):
         log_metadata["imu_configs"] = copy.deepcopy(dict(imu_configs))
+    device_configs = metadata.get("device_configs")
+    if isinstance(device_configs, Mapping):
+        log_metadata["device_configs"] = copy.deepcopy(dict(device_configs))
+    sensors = metadata.get("sensors")
+    if isinstance(sensors, Mapping):
+        log_metadata["sensors"] = copy.deepcopy(dict(sensors))
     return log_metadata
 
 

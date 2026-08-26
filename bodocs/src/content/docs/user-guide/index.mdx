@@ -291,7 +291,7 @@ The `Settings` submenu contains:
 | Item | Purpose |
 | --- | --- |
 | `WiFi mode: STA/AP` | Select station mode or access-point mode. |
-| `Log format` | Select BODAQS CSV, syn.bike CSV, or BODAQS compact binary. |
+| `Log format` | Select BODAQS CSV or BODAQS compact binary. |
 | `Reset time` | Force an RTC time sync using station Wi-Fi/NTP. |
 | `Health` | Show SD, battery, analog rail, and sampling status. |
 | `Restart` | Restart the firmware. |
@@ -316,7 +316,6 @@ the new mode.
 The logger supports:
 
 - `BODAQS CSV`: the normal logger CSV format.
-- `syn.bike CSV`: a compatibility output for data.syn.bike workflows.
 - `BODAQS compact binary`: compact `.bdq` logs for compatible downstream tools.
 
 </Flag>
@@ -326,7 +325,7 @@ It is generally recommended that you record your logs in BODAQS compact binary f
 
 If you want to manually inspect your files, then BODAQS CSV also works fine.
 
-syn.bike CSV is offered as an option but we generally think that if you want to visualize your data using syn.bike it's better to log in a BODAQS native format and have the Import Manager generate syn.bike files, as this method preserves the log metadata.
+If you want to visualize your data using data.syn.bike, log in a BODAQS native format and have the Import Manager generate the syn.bike files. This preserves the complete recording and its metadata.
 </Aside>
 
 

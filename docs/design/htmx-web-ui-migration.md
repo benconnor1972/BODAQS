@@ -492,7 +492,7 @@ At 375px width, form rows stack vertically (label above input), the nav bar wrap
 │  │  Sample rate  [_______] Hz            │  │     legend (lavender-grey)
 │  │                                        │  │
 │  │  Log format:                          │  │
-│  │  ○ BODAQS CSV  ○ syn.bike  ○ binary   │  │
+│  │       ○ BODAQS CSV  ○ binary          │  │
 │  │                                        │  │
 │  │              [ Save  Saving... ]       │  │  ← button (lavender-grey bg)
 │  └───────────────────────────────────────┘  │

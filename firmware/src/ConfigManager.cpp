@@ -465,7 +465,6 @@ static String minutesStringFromMs_(uint32_t ms) {
 const char* ConfigManager::logFormatKey(LogFormat format) {
   switch (format) {
     case LogFormat::BodaqsCompactBinary: return "bodaqs_compact_binary";
-    case LogFormat::SynBikeRaw: return "syn_bike_raw";
     case LogFormat::BodaqsStandard:
     default: return "bodaqs_standard";
   }
@@ -474,7 +473,6 @@ const char* ConfigManager::logFormatKey(LogFormat format) {
 const char* ConfigManager::logFormatLabel(LogFormat format) {
   switch (format) {
     case LogFormat::BodaqsCompactBinary: return "BODAQS compact binary";
-    case LogFormat::SynBikeRaw: return "syn.bike CSV";
     case LogFormat::BodaqsStandard:
     default: return "BODAQS CSV";
   }
@@ -495,7 +493,7 @@ bool ConfigManager::parseLogFormat(const char* text, LogFormat& out) {
       keyEquals(text, "syn_bike_csv") ||
       keyEquals(text, "syn.bike_csv") ||
       keyEquals(text, "synbike_raw")) {
-    out = LogFormat::SynBikeRaw;
+    out = LogFormat::BodaqsCompactBinary;
     return true;
   }
   if (keyEquals(text, "bodaqs_compact_binary") ||

@@ -20,6 +20,7 @@ export function Modal({
   dataSource,
   onClose,
   onOpenAnalysis,
+  onOpenAnalyses,
   onOpenSignalInspector,
   onSessionBookmarksChanged,
   bookmarkRefreshToken = 0,
@@ -31,6 +32,7 @@ export function Modal({
   dataSource: LibraryDataSource
   onClose: () => void
   onOpenAnalysis: (viewId: string, studySet: StudySet) => void
+  onOpenAnalyses: (viewIds: string[], studySet: StudySet) => string[]
   onOpenSignalInspector: (session: SessionRecord, initialWindow?: { startS: number; endS: number } | null) => void
   onSessionBookmarksChanged?: (session: SessionRecord) => void
   bookmarkRefreshToken?: number
@@ -68,6 +70,7 @@ export function Modal({
               dataSource,
               onClose,
               onOpenAnalysis,
+              onOpenAnalyses,
               onOpenSignalInspector,
               onSessionBookmarksChanged,
               bookmarkRefreshToken,
@@ -304,6 +307,7 @@ function modalContent(
   dataSource: LibraryDataSource,
   onClose: () => void,
   onOpenAnalysis: (viewId: string, studySet: StudySet) => void,
+  onOpenAnalyses: (viewIds: string[], studySet: StudySet) => string[],
   onOpenSignalInspector: (session: SessionRecord, initialWindow?: { startS: number; endS: number } | null) => void,
   onSessionBookmarksChanged: ((session: SessionRecord) => void) | undefined,
   bookmarkRefreshToken: number,
@@ -481,6 +485,7 @@ function modalContent(
         dataSource={dataSource}
         onClose={onClose}
         onOpenAnalysis={onOpenAnalysis}
+        onOpenAnalyses={onOpenAnalyses}
       />
     )
   }

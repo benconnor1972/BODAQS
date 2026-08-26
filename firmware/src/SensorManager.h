@@ -8,22 +8,6 @@
 struct LoggerConfig;
 
 namespace SensorManager {
-  struct SynBikeRawColumnBinding {
-    bool available = false;
-    uint16_t valueIndex = 0;
-    bool invert = false;
-    char sensorName[16] = {0};
-    char csvHeader[96] = {0};
-    char end[16] = {0};
-    char domain[24] = {0};
-    char source[24] = {0};
-  };
-
-  struct SynBikeRawBindings {
-    SynBikeRawColumnBinding front;
-    SynBikeRawColumnBinding rear;
-  };
-
   struct PreviewValue {
     char sensorName[16] = {0};
     char unit[24] = {0};
@@ -68,10 +52,10 @@ namespace SensorManager {
   uint16_t describeSensorColumns(SensorColumnDescriptor* out, uint16_t maxOut);
   bool describeSensorColumnAt(uint16_t columnIndex, SensorColumnDescriptor& out);
   uint16_t describeSensors(SensorMetadataDescriptor* out, uint16_t maxOut);
+  bool describeSensorAt(uint16_t sensorIndex, SensorMetadataDescriptor& out);
   bool describeRuntimeDiagnosticsAt(uint8_t sensorIndex, SensorRuntimeDiagnostics& out);
   uint16_t describeSensorColumnRawFlags(bool* out, uint16_t maxOut);
   uint16_t readSuspensionPreview(PreviewMode mode, PreviewValue* out, uint16_t maxOut);
-  bool resolveSynBikeRawBindings(SynBikeRawBindings& out);
   bool gpsStatus(SensorGpsStatus& out);
   void resetTimingStats();
   const SensorTimingStats& timingStats();

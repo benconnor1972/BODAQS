@@ -15,25 +15,12 @@ There is BODAQS Analysis software now too. More on this soon - in the meantime, 
 <iframe width="560" height="315" src="https://www.youtube.com/embed/HjcBr6v1-Ec?si=BpmfVnZtHPK2Y7TU" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
 </Aside>
 
-The BODAQS analysis software is currently a work in progress. Below we explain what needs to be done to get insight you can use out of your log data, and the different ways to do it in the BODAQS ecosystem. 
-
-Long story short: 
- - We recommend you use the **BODAQS Import Manager** to load and pre-process your files. 
- - If you're mainly interested in standard suspension metrics, we recommend you use **data.syn.bike** to visualize your results
- - If you want to explore on your own, we recommend the **BODAQS Analysis** bundle for Jupyter Lab 
-
-## What the software does
-
-Regardless of which of the options you use, getting from your recorded logs to meaningful data presentation requires the following steps:
- - **Loading the data** from the logger to a computer
- - **Pre-processing**, which includes detecting sensor zero points, applying shock linkage transformations, calculating velocity from displacement, event detection and metric calculation, adding setup notes, linking GPS data from other sources, and similar operations.
- - **Session selection**, which means choosing the log or log(s) you want to do analysis on.
- - **Visualization** of the selected data.
+BODAQS now has its own analysis software. For most applications, we recommend you use it. Alternative workflows include using data.syn.bike for visualization, or for advanced users with a data science bent, Jupyter Lab.   
 
 <MiniAside>
 Originally, BODAQS exclusively used an interactive computing platform called **Jupyter Lab** to process, select and visualize logger data. Jupyter Lab is widely used in science, engineering, finance and other quantitative disciplines.
 
-	Jupyter Lab has a distinctive notebook-style way of working may feel familiar to you if you work in one of those disciplines. For everyone else, it tends to present a bit of a learning curve.
+	Jupyter Lab has a distinctive notebook-style way of working that may feel familiar to you if you work in one of those disciplines. For everyone else, it tends to present a bit of a learning curve.
 
 	The reason we made the software this way was that it made it quick and easy to try out new ideas (we still use it for that). But pure notebook-based working is probably best left for power users.
 
@@ -43,22 +30,26 @@ Originally, BODAQS exclusively used an interactive computing platform called **J
 
 Right now there are two ways we recommend doing data analysis with BODAQS:
 
-#### Workflow 1: BODAQS Import Manager -> data.syn.bike
-This workflow is best for **most users**. It looks like this:
- - Download, install and set up the BODAQS Import Manager. Instructions are [here](/software-guide/setup-import-manager/)
+#### Recommended Workflow: BODAQS Import Manager -> BODAQS Workbench
+This is what we recommend for **most users**. It looks like this:
+ - Download, install and set up the BODAQS Desktop package. Instructions are [here](/software-guide/setup-import-manager/)
+ - Import files from your logger using the Import Manager. The processed files are stored in a library on your computer.
+ - Launch the BODAQS Workbench analysis application. Instructions are [here](/user-guide/analysis-with-workbench/)
+
+#### Alternative 1: BODAQS Import Manager -> data.syn.bike
+If you prefer to use syn.bike's visualization tools, you can:
+ - Download, install and set up the BODAQS Desktop package. Instructions are [here](/software-guide/setup-import-manager/)
  - Import files from your logger using the Import Manager. The processed files are stored in a library on your computer.
  - Visit data.syn.bike and upload selected files to visualize them. Instructions are [here](/user-guide/analysis-with-syn-bike/)
 
-#### Workflow 2: BODAQS Import Manager -> Jupyter Lab notebooks 
+#### Alternative 2: BODAQS Import Manager -> Jupyter Lab notebooks 
 This workflow is best for power users, Python natives and the extremely curious. It looks like this:
- - Download, install and set up the BODAQS Import Manager. Instructions are [here](/software-guide/setup-import-manager/)
+ - Download, install and set up the BODAQS Desktop package. Instructions are [here](/software-guide/setup-import-manager/)
  - Download, install and set up a Python / Jupyter Lab analysis environment on your computer. Instructions are [here](/software-guide/setup-python-and-jlab/)
  - Import files from your logger using the Import Manager. The processed files are stored in a library on your computer.
  - Use Jupyter Lab notebooks to visualize your data. Instructions are [here](/user-guide/analysis-with-jupyter-lab/)
 
-<MiniAside>
-	This isn't the end state for the project. We are working on our own tools for analysis and management of log data, but this will take some time. We will be releasing them progressively as they are completed. 
-</MiniAside>
+
 
 
 

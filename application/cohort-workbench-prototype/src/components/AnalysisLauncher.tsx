@@ -1,4 +1,4 @@
-import { AlertTriangle, Ban, CheckCircle2, CircleX, HelpCircle, Loader2, Play, ShieldAlert, X } from 'lucide-react'
+import { AlertTriangle, Ban, CheckCircle2, ChevronsRight, CircleX, HelpCircle, Loader2, Play, ShieldAlert, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
 import type {
@@ -26,16 +26,19 @@ export function AnalysisLauncher({
   dataSource,
   onClose,
   onOpenAnalysis,
+  onOpenAnalyses,
 }: {
   studySet: StudySet
   tracks: TrackRecord[]
   dataSource: LibraryDataSource
   onClose: () => void
   onOpenAnalysis: (viewId: string, studySet: StudySet) => void
+  onOpenAnalyses: (viewIds: string[], studySet: StudySet) => string[]
 }) {
   const [items, setItems] = useState<AnalysisLauncherItem[]>([])
   const [loading, setLoading] = useState(true)
   const [notice, setNotice] = useState('')
+  const [selectedViewIds, setSelectedViewIds] = useState<string[]>([])
 
   useEffect(() => {
     let cancelled = false
@@ -43,6 +46,7 @@ export function AnalysisLauncher({
     async function load() {
       setLoading(true)
       setNotice('')
+      setSelectedViewIds([])
       try {
         let views = await listViews(dataSource)
         if (views.length === 0) {
@@ -107,6 +111,29 @@ export function AnalysisLauncher({
     }
   }, [dataSource, studySet])
 
+  const selectedOpenableViewIds = items
+    .filter((item) => selectedViewIds.includes(item.view.id) && analysisViewCanOpen(item))
+    .map((item) => item.view.id)
+
+  function toggleSelectedView(viewId: string, checked: boolean) {
+    setSelectedViewIds((current) => checked
+      ? Array.from(new Set([...current, viewId]))
+      : current.filter((candidate) => candidate !== viewId))
+  }
+
+  function openAllSelected() {
+    if (selectedOpenableViewIds.length === 0) {
+      return
+    }
+    const blockedViewIds = onOpenAnalyses(selectedOpenableViewIds, studySet)
+    if (blockedViewIds.length > 0) {
+      setSelectedViewIds(blockedViewIds)
+      setNotice(`${blockedViewIds.length} selected analysis tab${blockedViewIds.length === 1 ? ' was' : 's were'} blocked by the browser. Allow pop-ups for this site and try again.`)
+      return
+    }
+    onClose()
+  }
+
   return (
     <div className="analysis-launcher">
       <section className="analysis-launcher-intro">
@@ -138,30 +165,53 @@ export function AnalysisLauncher({
         <div className="analysis-view-list">
           {items.map((item) => (
             <AnalysisViewCard
+              checked={selectedViewIds.includes(item.view.id)}
               key={item.view.id}
               item={item}
               onOpen={() => onOpenAnalysis(item.view.id, studySet)}
+              onSelectedChange={(checked) => toggleSelectedView(item.view.id, checked)}
             />
           ))}
+          <div className="analysis-view-bulk-actions">
+            <button className="primary-action compact-row-action" disabled={selectedOpenableViewIds.length === 0} onClick={openAllSelected}>
+              <ChevronsRight size={17} />
+              Open all selected
+            </button>
+          </div>
         </div>
       )}
     </div>
   )
 }
 
-function AnalysisViewCard({ item, onOpen }: { item: AnalysisLauncherItem; onOpen: () => void }) {
+function AnalysisViewCard({ checked, item, onOpen, onSelectedChange }: {
+  checked: boolean
+  item: AnalysisLauncherItem
+  onOpen: () => void
+  onSelectedChange: (checked: boolean) => void
+}) {
   const status = item.adequacy?.status ?? 'unknown'
   const statusMeta = analysisStatusMeta(status)
-  const isSupported = item.view.id === 'simple-suspension' || item.view.id === 'suspension-phase-diagram' || item.view.id === 'track-analysis-lap-timing'
+  const isSupported = analysisViewIsSupported(item.view.id)
   const isBlocked = item.adequacy?.status === 'blocked'
-  const canOpen = isSupported && !isBlocked
+  const canOpen = analysisViewCanOpen(item)
 
   return (
     <article className={`analysis-view-card analysis-status-${status}`}>
       <div className="analysis-view-card-header">
-        <div>
-          <p className="analysis-view-category">{item.view.category || 'Analysis'}</p>
-          <h3>{item.view.displayName}</h3>
+        <div className="analysis-view-card-heading">
+          <input
+            aria-label={`Select ${item.view.displayName}`}
+            checked={checked}
+            className="analysis-view-selector"
+            disabled={!canOpen}
+            onChange={(event) => onSelectedChange(event.target.checked)}
+            type="checkbox"
+          />
+          <div>
+            <p className="analysis-view-category">{item.view.category || 'Analysis'}</p>
+            <h3>{item.view.displayName}</h3>
+          </div>
         </div>
         <div className="analysis-view-card-header-actions">
           <span className={`analysis-status-badge analysis-status-badge-${status}`}>
@@ -202,6 +252,14 @@ function AnalysisViewCard({ item, onOpen }: { item: AnalysisLauncherItem; onOpen
       )}
     </article>
   )
+}
+
+function analysisViewIsSupported(viewId: string) {
+  return viewId === 'simple-suspension' || viewId === 'suspension-phase-diagram' || viewId === 'track-analysis-lap-timing'
+}
+
+function analysisViewCanOpen(item: AnalysisLauncherItem) {
+  return analysisViewIsSupported(item.view.id) && item.adequacy?.status !== 'blocked'
 }
 
 function AdequacyMatrix({ adequacy, view }: { adequacy: AnalysisAdequacyResult; view: AnalysisViewRecord }) {

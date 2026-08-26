@@ -23,8 +23,10 @@ not reset a bus, reinitialize a sensor, or retry volatile configuration writes
 while logging. This keeps potentially disruptive control transactions out of
 the acquisition path and avoids disturbing other devices on a shared bus.
 
-The AS5600 rotary-angle implementation detects an unresolved run of at least
-three read failures, or an unresolved configuration failure, at session stop.
+The AS5600 rotary-angle and I2C string-pot implementations detect an unresolved
+run of at least three read failures, or an unresolved configuration failure,
+at session stop. The AS5048B angle implementation applies the same read-failure
+policy without AS5600-specific configuration writes.
 It records the original failure diagnostics in the completed BDQ, then uses
 `onLoggingFinalized()` to:
 
@@ -35,8 +37,8 @@ It records the original failure diagnostics in the completed BDQ, then uses
 - reset its asynchronous sample snapshot.
 
 If recovery is incomplete, another attempt remains pending for the next safe
-post-session boundary. Logging remains resilient: a missing AS5600 does not
-block starting or completing a session.
+post-session boundary. Logging remains resilient: a missing AS5600 or AS5048B
+does not block starting or completing a session.
 
 This first implementation is deliberately sensor-level. It does not reset or
 recreate the shared I2C bus. Whole-bus recovery should be added only if field

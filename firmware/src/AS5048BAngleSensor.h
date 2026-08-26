@@ -39,6 +39,7 @@ public:
   void applyConfig(const LoggerConfig&) override {}
   void onLoggingStart() override;
   void onLoggingStop() override;
+  void onLoggingFinalized() override;
 
   bool muted() const override { return m_muted; }
   void setMuted(bool m) override { m_muted = m; }
@@ -49,6 +50,7 @@ public:
   void sampleValues(float* out, uint8_t max) override;
   bool describeColumn(uint8_t idx, SensorColumnDescriptor& out) const override;
   bool describeSensorMetadata(SensorMetadataDescriptor& out) const override;
+  bool describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out) const override;
 
   const char* label() const override { return "AS5048B Angle"; }
   const char* name() const override { return m_name; }
@@ -87,6 +89,8 @@ public:
   uint16_t asyncTargetRateHz() const override;
   bool asyncMuted() const override { return m_muted; }
   bool asyncAcquire() override;
+  void asyncSchedulerStarting() override;
+  void asyncSchedulerStopped() override;
 
   static const ParamDef* paramDefs(size_t& count);
   static Sensor* create(const char* instanceName, const ParamPack& params, bool mutedDefault);
@@ -117,6 +121,7 @@ private:
     uint8_t diagnostic = 0;
     uint8_t agc = 0;
     uint16_t magnitude = 0;
+    uint32_t rawReadFailures = 0;
     uint32_t diagnosticReadFailures = 0;
     uint32_t seq = 0;
     uint64_t acquiredUs = 0;
@@ -130,6 +135,14 @@ private:
   bool refreshDiagnostics_(bool force) const;
   void maybeWarnDiagnostics_() const;
   void logFailureProbe_() const;
+  void setRuntimeFailure_(SensorRuntimeFailureStage stage,
+                          int16_t resultCode = 0,
+                          uint8_t expectedBytes = 0,
+                          uint8_t receivedBytes = 0) const;
+  void resetRuntimeDiagnostics_();
+  void resetSessionRuntimeDiagnostics_() const;
+  void recordRuntimeEvent_(SensorRuntimeEventType type) const;
+  void updateReadTransition_(bool readOk) const;
   bool readRawAngle_(uint16_t& out) const;
   int readRawAngleOnce_() const;
   int32_t calibrationCountsFromRaw_(int raw) const;
@@ -182,7 +195,16 @@ private:
   mutable uint16_t m_lastMagnitude = 0;
   mutable bool m_lastReadOk = false;
   mutable bool m_lastReadReused = false;
+  mutable uint32_t m_rawReadFailures = 0;
   mutable uint32_t m_diagnosticReadFailures = 0;
+  mutable SensorRuntimeFailure m_lastRuntimeFailure;
+  mutable SensorRuntimeFailure m_lastRawRuntimeFailure;
+  mutable SensorRuntimeDiagnostics m_runtimeDiagnostics;
+  mutable uint32_t m_runtimeSessionRawFailureBase = 0;
+  mutable uint32_t m_runtimeSessionDiagnosticFailureBase = 0;
+  mutable uint32_t m_runtimeReadFailureStreak = 0;
+  mutable bool m_runtimeReadFailureActive = false;
+  bool m_deferredRecoveryPending = false;
 
   mutable bool m_calUnwrapInit = false;
   mutable int32_t m_calLastUnwrapped = 0;

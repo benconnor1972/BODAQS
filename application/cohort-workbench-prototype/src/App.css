@@ -3694,6 +3694,32 @@ button {
   gap: var(--space-3);
 }
 
+.analysis-view-card-heading {
+  display: flex;
+  align-items: flex-start;
+  min-width: 0;
+  gap: var(--space-3);
+}
+
+.analysis-view-selector {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  margin: 2px 0 0;
+  accent-color: var(--teal);
+  cursor: pointer;
+}
+
+.analysis-view-selector:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.analysis-view-bulk-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
 .analysis-view-category {
   margin: 0 0 2px;
   color: var(--muted);
@@ -4899,7 +4925,8 @@ button {
 }
 
 .viz-frequency-extra-option input.viz-mark-opacity-slider,
-.viz-frequency-extra-option input.viz-mark-size-slider {
+.viz-frequency-extra-option input.viz-mark-size-slider,
+.viz-frequency-extra-option input.viz-conditional-bins-slider {
   width: 132px;
   height: 18px;
   accent-color: var(--teal);
@@ -5029,6 +5056,11 @@ button {
 
 .viz-phase-range-slider.disabled {
   opacity: 0.45;
+}
+
+.viz-phase-range-slider.interactive {
+  cursor: pointer;
+  touch-action: none;
 }
 
 .viz-entity-chip {
@@ -7591,6 +7623,29 @@ button {
 
 .phase-diagram-tile .viz-sector-row .viz-chart {
   min-height: 310px;
+}
+
+.viz-phase-contour-level-legend text {
+  fill: var(--muted);
+  font-size: 10px;
+}
+
+.viz-phase-conditional-chart,
+.viz-phase-conditional-chart .viz-frequency-chart-block {
+  display: grid;
+  min-width: 0;
+}
+
+.viz-phase-tail-label {
+  fill: var(--muted);
+  font-size: 10px;
+  font-weight: var(--weight-semibold);
+}
+
+.viz-phase-conditional-title {
+  fill: var(--ink);
+  font-size: 12px;
+  font-weight: var(--weight-semibold);
 }
 
 .viz-axis {

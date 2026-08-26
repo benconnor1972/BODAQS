@@ -1513,6 +1513,17 @@ function App() {
     setStatusMessage(`Analysis view "${viewId}" is not implemented in this prototype yet.`)
   }
 
+  function openAnalysisViews(viewIds: string[], studySet: StudySet) {
+    const blockedViewIds = openAnalysisTabs(viewIds, studySet)
+    const openedCount = viewIds.length - blockedViewIds.length
+    if (blockedViewIds.length > 0) {
+      setStatusMessage(`Opened ${openedCount} analysis tab${openedCount === 1 ? '' : 's'}; ${blockedViewIds.length} ${blockedViewIds.length === 1 ? 'was' : 'were'} blocked by the browser.`)
+    } else {
+      setStatusMessage(`Opened ${openedCount} analysis tabs for ${studySet.displayName || 'Study Set'}.`)
+    }
+    return blockedViewIds
+  }
+
   function updateSessionAfterNoteSave(updatedSession: SessionRecord) {
     applyUpdatedSessions([updatedSession])
   }
@@ -2860,6 +2871,7 @@ function App() {
           bookmarkRefreshToken={bookmarkRefreshToken}
           onClose={() => setModal(null)}
           onOpenAnalysis={openAnalysisView}
+          onOpenAnalyses={openAnalysisViews}
           onOpenSignalInspector={(session, initialWindow = null) =>
             setModal({ kind: 'signal-inspector', session, initialWindow })
           }
@@ -3097,6 +3109,7 @@ function AnalysisRoutePage({
           onOpenAnalysis={(viewId, nextStudySet) => {
             window.location.href = analysisRouteUrl(viewId, nextStudySet)
           }}
+          onOpenAnalyses={openAnalysisTabs}
           onOpenSignalInspector={(session, initialWindow = null) =>
             setRouteModal({ kind: 'signal-inspector', session, initialWindow })
           }
@@ -3212,6 +3225,19 @@ function analysisRouteUrl(viewId: string, studySet: StudySet) {
     params.set('scope', persistAnalysisScope(studySet))
   }
   return `${baseUrl}#/analysis/${encodeURIComponent(viewId)}?${params.toString()}`
+}
+
+function openAnalysisTabs(viewIds: string[], studySet: StudySet) {
+  const blockedViewIds: string[] = []
+  for (const viewId of Array.from(new Set(viewIds))) {
+    const opened = window.open(analysisRouteUrl(viewId, studySet), '_blank')
+    if (opened) {
+      opened.opener = null
+    } else {
+      blockedViewIds.push(viewId)
+    }
+  }
+  return blockedViewIds
 }
 
 function persistAnalysisScope(studySet: StudySet) {
