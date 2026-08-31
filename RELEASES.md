@@ -21,7 +21,7 @@ ESP32 logger firmware for BODAQS devices.
 
 Latest release:
 
-- [BODAQS Firmware 0.4.2](https://github.com/benconnor1972/BODAQS/releases/tag/firmware-v0.4.2)
+- [BODAQS Firmware 0.5.0](https://github.com/benconnor1972/BODAQS/releases/tag/firmware-v0.5.0)
 
 ## Analysis Package
 
