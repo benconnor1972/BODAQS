@@ -1011,7 +1011,7 @@ def test_data_syn_bike_export_uses_preferred_logger_gps_stream():
                     "stream_name": "gps_logger",
                     "source_kind": "logger_sensor",
                     "time_col": "time_s",
-                    "channel_info": {
+                    "signals": {
                         "latitude_deg": {
                             "sensor": "gps0",
                             "source": "logger_gps",
@@ -1412,9 +1412,11 @@ def test_run_sources_once_notifies_library_api_after_successful_import(tmp_path,
     archive_path = _write_session_archive(source_root / "inbox", stem="session_001")
     _set_old_mtime(archive_path)
     notified_library_ids: list[str | None] = []
+    notified_changed_sessions: list[list[dict[str, object]]] = []
 
-    def fake_notify(source):
+    def fake_notify(source, *, changed_sessions=None):
         notified_library_ids.append(source.library_id)
+        notified_changed_sessions.append([dict(item) for item in changed_sessions or []])
         return {
             "attempted": True,
             "notified": True,
@@ -1427,6 +1429,7 @@ def test_run_sources_once_notifies_library_api_after_successful_import(tmp_path,
 
     assert report["totals"]["imported"] == 1
     assert notified_library_ids == ["default-library"]
+    assert notified_changed_sessions[0][0]["session_id"] == "session_001"
     assert report["sources"][0]["library_api_notification"]["notified"] is True
     revision_path = artifacts_dir / "library_catalog_revision.json"
     revision = json.loads(revision_path.read_text(encoding="utf-8"))

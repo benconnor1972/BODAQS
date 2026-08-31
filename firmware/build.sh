@@ -50,7 +50,7 @@ CHIP="esp32s3"
 DEFAULT_PORT="auto"
 
 # Upload baud rate. Leave empty to auto-select per board
-# (V1RC3: 460800, Thing Plus: 921600). Set to a specific value to
+# (A8: 460800, Thing Plus: 921600). Set to a specific value to
 # force one rate for all boards.
 FLASH_BAUD=""
 

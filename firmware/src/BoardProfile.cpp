@@ -210,7 +210,7 @@ static const BoardProfile THING_PLUS_S3_PROTO_F_ADC_DIAGNOSTIC = [] {
 }();
 
 static const BoardProfile V1RC3_PROFILE = {
-  .name = "BODAQS V1RC3",
+  .name = "BODAQS A8",
 
   .storage = {
     .type = StorageType::SDMMC,
@@ -399,6 +399,7 @@ const BoardProfile& GetBoardProfileByName(const char* name) {
   if (strcmp(name, THING_PLUS_S3_BODAQS_4_F.name) == 0) return THING_PLUS_S3_BODAQS_4_F;
   if (strcmp(name, THING_PLUS_S3_PROTO_F_ADC_DIAGNOSTIC.name) == 0) return THING_PLUS_S3_PROTO_F_ADC_DIAGNOSTIC;
   if (strcmp(name, V1RC3_PROFILE.name) == 0) return V1RC3_PROFILE;
+  if (strcmp(name, "BODAQS V1RC3") == 0) return V1RC3_PROFILE;
   if (strcmp(name, "BODAQS S3 Mini N4R2") == 0) return V1RC3_PROFILE;
 
   return THING_PLUS_S3_BODAQS_4_D;

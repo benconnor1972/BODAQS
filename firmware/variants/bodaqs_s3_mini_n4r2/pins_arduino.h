@@ -6,7 +6,7 @@
 #define USB_VID          0x303A
 #define USB_PID          0x1001
 #define USB_MANUFACTURER "BODAQS"
-#define USB_PRODUCT      "BODAQS V1RC3"
+#define USB_PRODUCT      "BODAQS A8"
 #define USB_SERIAL       ""
 
 static const uint8_t TX = 43;
