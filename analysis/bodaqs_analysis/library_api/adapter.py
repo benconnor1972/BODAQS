@@ -97,6 +97,7 @@ class LibraryAdapter:
     _GPS_POINTS_CACHE_NAMESPACE = "gps_points"
     _TIMESERIES_PREVIEW_CACHE_NAMESPACE = "timeseries_preview"
     _SESSION_CATALOG_CACHE_NAMESPACE = "session_catalog"
+    _SESSION_CATALOG_LATEST_CACHE_NAMESPACE = "session_catalog_latest"
     _ANALYSIS_ADEQUACY_CACHE_TTL_S = 900.0
     _ANALYSIS_INPUT_CACHE_TTL_S = 900.0
     _GPS_POINTS_CACHE_TTL_S = 900.0
@@ -112,6 +113,9 @@ class LibraryAdapter:
         self._libraries_cache: list[dict[str, Any]] | None = None
         self._catalog_cache: dict[str, dict[str, Any]] = {}
         self._catalog_cache_keys: dict[str, str] = {}
+        self._catalog_cache_revisions: dict[str, int | None] = {}
+        self._catalog_base_cache: dict[str, tuple[dict[str, Any], int | None]] = {}
+        self._pending_catalog_changed_sessions: dict[str, list[dict[str, Any]]] = {}
         self._cache = InMemoryLruCache(max_entries=1024, default_ttl_s=900.0)
         self._persistent_cache = PersistentJsonCache(self.libraries_root / self._SERVICE_CACHE_DIR_NAME)
         self._timing_samples: list[dict[str, Any]] = []
@@ -182,6 +186,8 @@ class LibraryAdapter:
     ) -> dict[str, Any]:
         wanted = str(library_id).strip()
         library = self.get_library(wanted)
+        if changed_sessions:
+            self._pending_catalog_changed_sessions[wanted] = [dict(item) for item in changed_sessions]
         self._invalidate_catalog_cache(wanted)
         self._invalidate_analysis_adequacy_cache()
         self._invalidate_analysis_input_cache()
@@ -228,6 +234,7 @@ class LibraryAdapter:
         timing["dependency_ms"] = self._elapsed_ms(dependency_start)
         timing["validation_mode"] = dependency.get("validation_mode")
         catalog_revision = dependency.get("catalog_revision")
+        current_revision = self._catalog_revision_number(dependency)
         if isinstance(catalog_revision, Mapping):
             timing["catalog_revision"] = catalog_revision.get("revision")
         cache_key = stable_cache_digest(dependency)
@@ -238,8 +245,10 @@ class LibraryAdapter:
                 timing["total_ms"] = self._elapsed_ms(total_start)
                 self._record_timing_sample(timing)
                 return copy.deepcopy(self._catalog_cache[wanted])
-            self._catalog_cache.pop(wanted, None)
+            previous_catalog = self._catalog_cache.pop(wanted)
             self._catalog_cache_keys.pop(wanted, None)
+            previous_revision = self._catalog_cache_revisions.pop(wanted, None)
+            self._catalog_base_cache[wanted] = (copy.deepcopy(previous_catalog), previous_revision)
             self._record_catalog_cache_event("memory_stale")
         if not refresh:
             persistent_start = time.perf_counter()
@@ -248,6 +257,8 @@ class LibraryAdapter:
             if persisted is not None and isinstance(persisted.value, dict):
                 self._catalog_cache[wanted] = copy.deepcopy(persisted.value)
                 self._catalog_cache_keys[wanted] = cache_key
+                self._catalog_cache_revisions[wanted] = current_revision
+                self._store_latest_catalog(wanted, library_root, cache_key, dependency)
                 timing["cache_status"] = "persistent_hit"
                 self._record_catalog_cache_event("persistent_hit")
                 timing["row_count"] = len(self._catalog_cache[wanted].get("rows") or [])
@@ -255,12 +266,48 @@ class LibraryAdapter:
                 self._record_timing_sample(timing)
                 return copy.deepcopy(self._catalog_cache[wanted])
 
+        cached_rows: dict[str, Mapping[str, Any]] | None = None
+        rebuild_session_keys: set[str] | None = None
+        if not refresh:
+            base = self._catalog_base_cache.pop(wanted, None)
+            if base is None:
+                base = self._load_latest_catalog(wanted, library_root)
+            revision_payload = load_catalog_revision(library_root) or {}
+            changed_sessions = self._pending_catalog_changed_sessions.pop(wanted, None)
+            if changed_sessions is None:
+                raw_changed = revision_payload.get("changed_sessions")
+                changed_sessions = (
+                    [dict(item) for item in raw_changed if isinstance(item, Mapping)]
+                    if isinstance(raw_changed, list)
+                    else []
+                )
+            if (
+                base is not None
+                and current_revision is not None
+                and base[1] == current_revision - 1
+                and changed_sessions
+            ):
+                cached_rows = {
+                    str(row.get("session_key")): row
+                    for row in base[0].get("rows") or []
+                    if isinstance(row, Mapping) and row.get("session_key")
+                }
+                rebuild_session_keys = self._changed_session_keys(changed_sessions)
+                timing["incremental"] = True
+                timing["changed_session_count"] = len(rebuild_session_keys)
+        else:
+            self._catalog_base_cache.pop(wanted, None)
+            self._pending_catalog_changed_sessions.pop(wanted, None)
+
         build_start = time.perf_counter()
         self._catalog_cache[wanted] = build_session_catalog(
             library_root,
             library_id=wanted,
+            cached_rows=cached_rows,
+            rebuild_session_keys=rebuild_session_keys,
         )
         self._catalog_cache_keys[wanted] = cache_key
+        self._catalog_cache_revisions[wanted] = current_revision
         timing["build_ms"] = self._elapsed_ms(build_start)
         persistent_write_start = time.perf_counter()
         self._persistent_cache.set(
@@ -270,6 +317,7 @@ class LibraryAdapter:
             ttl_s=None,
             metadata=self._session_catalog_persistent_cache_metadata(dependency),
         )
+        self._store_latest_catalog(wanted, library_root, cache_key, dependency)
         timing["persistent_write_ms"] = self._elapsed_ms(persistent_write_start)
         self._persistent_cache.prune_namespace(
             self._SESSION_CATALOG_CACHE_NAMESPACE,
@@ -1919,23 +1967,130 @@ class LibraryAdapter:
 
     @staticmethod
     def _session_catalog_persistent_cache_metadata(dependency: Mapping[str, Any]) -> dict[str, Any]:
+        catalog_revision = dependency.get("catalog_revision")
         return {
             "cache_schema": dependency.get("cache_schema"),
             "cache_version": dependency.get("cache_version"),
             "library_id": dependency.get("library_id"),
             "library_root": dependency.get("library_root"),
+            "catalog_revision": (
+                catalog_revision.get("revision") if isinstance(catalog_revision, Mapping) else None
+            ),
         }
+
+    @staticmethod
+    def _catalog_revision_number(dependency: Mapping[str, Any]) -> int | None:
+        revision = dependency.get("catalog_revision")
+        if not isinstance(revision, Mapping) or revision.get("revision") is None:
+            return None
+        try:
+            return int(revision["revision"])
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _changed_session_keys(changed_sessions: Sequence[Mapping[str, Any]]) -> set[str]:
+        keys: set[str] = set()
+        for item in changed_sessions:
+            session_key = str(item.get("session_key") or "").strip()
+            if session_key:
+                keys.add(session_key)
+                continue
+            run_id = str(item.get("run_id") or "").strip()
+            session_id = str(item.get("session_id") or "").strip()
+            if run_id and session_id:
+                keys.add(make_session_key(run_id, session_id))
+        return keys
+
+    @staticmethod
+    def _latest_catalog_cache_key(library_id: str, library_root: Path) -> str:
+        return stable_cache_digest(
+            {
+                "cache_schema": "bodaqs.session_catalog_latest_key",
+                "cache_version": 1,
+                "library_id": str(library_id),
+                "library_root": str(library_root.resolve()),
+            }
+        )
+
+    def _load_latest_catalog(
+        self,
+        library_id: str,
+        library_root: Path,
+    ) -> tuple[dict[str, Any], int | None] | None:
+        key = self._latest_catalog_cache_key(library_id, library_root)
+        record = self._persistent_cache.get(self._SESSION_CATALOG_LATEST_CACHE_NAMESPACE, key)
+        if record is None or not isinstance(record.value, dict):
+            return None
+        if isinstance(record.value.get("rows"), list):
+            catalog = record.value
+        else:
+            catalog_key = str(record.value.get("catalog_cache_key") or "").strip()
+            catalog_record = (
+                self._persistent_cache.get(self._SESSION_CATALOG_CACHE_NAMESPACE, catalog_key)
+                if catalog_key
+                else None
+            )
+            if catalog_record is None or not isinstance(catalog_record.value, dict):
+                return None
+            catalog = catalog_record.value
+        revision = record.metadata.get("catalog_revision")
+        try:
+            revision_number = int(revision) if revision is not None else None
+        except (TypeError, ValueError):
+            revision_number = None
+        return copy.deepcopy(catalog), revision_number
+
+    def _store_latest_catalog(
+        self,
+        library_id: str,
+        library_root: Path,
+        catalog_cache_key: str,
+        dependency: Mapping[str, Any],
+    ) -> None:
+        key = self._latest_catalog_cache_key(library_id, library_root)
+        self._persistent_cache.set(
+            self._SESSION_CATALOG_LATEST_CACHE_NAMESPACE,
+            key,
+            {"catalog_cache_key": str(catalog_cache_key)},
+            ttl_s=None,
+            metadata=self._session_catalog_persistent_cache_metadata(dependency),
+        )
 
     def _invalidate_catalog_cache(self, library_id: str | None = None) -> None:
         self._catalog_cache_invalidations += 1
         if library_id:
             wanted = str(library_id).strip()
-            self._catalog_cache.pop(wanted, None)
-            self._catalog_cache_keys.pop(wanted, None)
+            previous_catalog = self._catalog_cache.pop(wanted, None)
+            previous_key = self._catalog_cache_keys.pop(wanted, None)
+            previous_revision = self._catalog_cache_revisions.pop(wanted, None)
+            if previous_catalog is not None:
+                self._catalog_base_cache[wanted] = (copy.deepcopy(previous_catalog), previous_revision)
+            if previous_key is None:
+                try:
+                    library_root = self._library_root(wanted)
+                    previous_key = stable_cache_digest(
+                        self._session_catalog_cache_dependency(wanted, library_root)
+                    )
+                except LibraryApiError:
+                    previous_key = None
+            if previous_key is not None:
+                current_revision = None
+                try:
+                    current_revision = self._catalog_revision_number(
+                        self._session_catalog_cache_dependency(wanted, self._library_root(wanted))
+                    )
+                except LibraryApiError:
+                    pass
+                if previous_revision is None or previous_revision == current_revision:
+                    self._persistent_cache.delete(self._SESSION_CATALOG_CACHE_NAMESPACE, previous_key)
         else:
             self._catalog_cache.clear()
             self._catalog_cache_keys.clear()
-        self._persistent_cache.invalidate_namespace(self._SESSION_CATALOG_CACHE_NAMESPACE)
+            self._catalog_cache_revisions.clear()
+            self._catalog_base_cache.clear()
+            self._persistent_cache.invalidate_namespace(self._SESSION_CATALOG_CACHE_NAMESPACE)
+            self._persistent_cache.invalidate_namespace(self._SESSION_CATALOG_LATEST_CACHE_NAMESPACE)
 
     def _catalog_cache_library_diagnostics(self) -> list[dict[str, Any]]:
         diagnostics: list[dict[str, Any]] = []

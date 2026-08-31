@@ -33,7 +33,7 @@ import { InfoTip } from './Common'
 const FRONT_COLOR = '#008c95'
 const REAR_COLOR = '#101820'
 const UNKNOWN_COLOR = '#8b9793'
-const ENTITY_SERIES_COLORS = ['#008c95', '#101820', '#4f7477', '#6faeaa', '#6f7b80', '#b88a43', '#2d5f64', '#9aa7a3']
+const ENTITY_SERIES_COLORS = ['#008c95', '#101820', '#d55e00', '#0072b2', '#cc79a7', '#e69f00', '#6f4c9b', '#009e73']
 const COMPRESSION_EVENT_TYPE = 'compressions_all'
 const REBOUND_EVENT_TYPE = 'rebounds_all'
 const SCATTER_X_METRIC = 'm_stroke_disp_max'
@@ -5745,7 +5745,7 @@ function restoredVisualizationSettings(
     phaseConditionalBins: typeof cached?.phaseConditionalBins === 'number' && Number.isInteger(cached.phaseConditionalBins) && cached.phaseConditionalBins >= 20 && cached.phaseConditionalBins <= 120
       ? cached.phaseConditionalBins
       : PHASE_DEFAULT_CONDITIONAL_DISTRIBUTION_BINS,
-    phaseRenderMode: cached?.phaseRenderMode === 'line' || cached?.phaseRenderMode === 'scatter' ? cached.phaseRenderMode : 'density',
+    phaseRenderMode: cached?.phaseRenderMode === 'density' || cached?.phaseRenderMode === 'scatter' ? cached.phaseRenderMode : 'line',
     phaseMarkOpacity: typeof cached?.phaseMarkOpacity === 'number' && cached.phaseMarkOpacity >= 0.02 && cached.phaseMarkOpacity <= 0.8 ? cached.phaseMarkOpacity : 0.08,
     phaseScatterMarkSize: typeof cached?.phaseScatterMarkSize === 'number' && cached.phaseScatterMarkSize >= 1 && cached.phaseScatterMarkSize <= 5 ? cached.phaseScatterMarkSize : 1,
     phaseShowGridlines: cached?.phaseShowGridlines ?? false,

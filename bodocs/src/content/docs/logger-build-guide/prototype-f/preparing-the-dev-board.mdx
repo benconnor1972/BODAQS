@@ -6,7 +6,6 @@ sidebar:
 ---
 import {Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 import Lede from '@components/Lede.astro';
-import MiniAside from '@components/MiniAside.astro';
 import Flag from '@components/Flag.astro';
 
 <Lede>
@@ -40,7 +39,7 @@ Find the `Flash addresses` section in the release notes. Note the addresses for 
 
 #### Option 1: Browser flasher for Windows users
 
-<Aside title={"Chromium only"}>The ESPTool requires a chromium-based web browser such as Google Chrome, Microsoft Edge, or
+<Aside type="note" title="Chromium only">The ESPTool requires a chromium-based web browser such as Google Chrome, Microsoft Edge, or
   Brave</Aside>
 
 This is the easiest installation method for most Windows users. Use **Google Chrome** or **Microsoft Edge**.
@@ -71,10 +70,10 @@ If the board does not start automatically after flashing, press the **Reset** bu
 
 <Tabs>
   <TabItem label="Via Pip (preferred)">
-    <MiniAside>
+    <Aside type="note">
       For comprehensive setup for Apple computers see
       [The official installation guide](https://github.com/RavenSystem/esp-homekit-devices/wiki/Install-ESPTool-on-macOS)
-    </MiniAside>
+    </Aside>
     - Install [Python](https://www.python.org/downloads/) 3.10 or newer if it is not already installed.
     - Install `esptool` by running:
 
@@ -83,10 +82,10 @@ If the board does not start automatically after flashing, press the **Reset** bu
     ```
   </TabItem>
   <TabItem label="Via Homebrew (MacOs only)">
-    <MiniAside type={'caution'}>
+    <Aside type="note">
       The homebrew method is a quick way to get `esptool` installed on macOS, but it may not always have the latest version.
       For best results, install via pip
-    </MiniAside>
+    </Aside>
     If you have Homebrew installed, you can install `esptool` by running:
 
     ```bash

@@ -39,6 +39,7 @@ from bodaqs_analysis.library_api.catalog_revision import catalog_revision_path, 
 from bodaqs_analysis.library_api_service import create_app
 from bodaqs_analysis.library_api_service.app import _mp4_creation_time_unix_s
 import bodaqs_analysis.library_api.adapter as adapter_module
+import bodaqs_analysis.library_api.catalog as catalog_module
 from bodaqs_analysis.widgets.contracts import EntitySelectionSnapshot, ScopeEntity, SelectionSnapshot
 from bodaqs_analysis.widgets.entity_scope import build_entity_selection_snapshot
 from bodaqs_analysis.widgets.metric_widget_data import build_metric_viz_df
@@ -2059,7 +2060,12 @@ def test_library_adapter_persists_analysis_adequacy_across_adapter_instances(tmp
     invalidated_diagnostics = restarted_adapter.cache_diagnostics()
     invalidated_explain = restarted_adapter.explain_analysis_view_adequacy_cache_key("simple-suspension", request)
 
-    assert invalidated_diagnostics["persistent_cache"]["entry_count"] == 0
+    assert (
+        invalidated_diagnostics["persistent_cache"]["namespaces"]
+        .get("analysis_adequacy", {})
+        .get("entry_count", 0)
+        == 0
+    )
     assert invalidated_explain["cached"] is False
     assert invalidated_explain["memory_cached"] is False
     assert invalidated_explain["persistent_cached"] is False
@@ -2608,6 +2614,108 @@ def test_library_adapter_catalog_cache_detects_revision_change_without_notificat
     diagnostics = adapter.cache_diagnostics()
     assert diagnostics["catalog_cache"]["event_counts"]["memory_stale"] == 1
     assert diagnostics["catalog_cache"]["event_counts"]["rebuilt"] == 2
+
+
+def test_library_adapter_rebuilds_only_revision_changed_catalog_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(library_root, library_id="default-library", display_name="Default Library")
+    _write_catalog_fixture_session(library_root, run_id="run_1", session_id="session_1")
+    adapter = LibraryAdapter(libraries_root)
+    assert adapter.get_catalog("default-library")["row_count"] == 1
+
+    _make_session(library_root, "run_2", "session_2")
+    touch_catalog_revision(
+        library_root,
+        reason="import_agent_sessions_imported",
+        actor="import_agent",
+        changed_sessions=[{"run_id": "run_2", "session_id": "session_2"}],
+    )
+    original = catalog_module._build_session_catalog_row
+    rebuilt: list[str] = []
+
+    def record_rebuild(*args, **kwargs):
+        rebuilt.append(str(kwargs["session_id"]))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(catalog_module, "_build_session_catalog_row", record_rebuild)
+    restarted = LibraryAdapter(libraries_root)
+    catalog = restarted.get_catalog("default-library")
+
+    assert catalog["row_count"] == 2
+    assert rebuilt == ["session_2"]
+    diagnostics = restarted.cache_diagnostics()
+    timing = next(item for item in reversed(diagnostics["timings"]) if item["operation"] == "get_catalog")
+    assert timing["incremental"] is True
+    assert timing["changed_session_count"] == 1
+
+
+def test_library_adapter_catalog_invalidation_preserves_other_library_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    libraries_root = tmp_path / "libraries"
+    first_root = libraries_root / "first"
+    second_root = libraries_root / "second"
+    _make_library_definition(first_root, library_id="first", display_name="First")
+    _make_library_definition(second_root, library_id="second", display_name="Second")
+    _write_catalog_fixture_session(first_root, library_id="first")
+    _write_catalog_fixture_session(second_root, library_id="second")
+    adapter = LibraryAdapter(libraries_root)
+    assert adapter.get_catalog("first")["row_count"] == 1
+    assert adapter.get_catalog("second")["row_count"] == 1
+
+    adapter.invalidate_library_catalog("first")
+
+    def fail_build(*_args, **_kwargs):
+        raise AssertionError("The unaffected library should retain its persistent catalog cache.")
+
+    monkeypatch.setattr(adapter_module, "build_session_catalog", fail_build)
+    assert LibraryAdapter(libraries_root).get_catalog("second")["row_count"] == 1
+
+
+def test_catalog_uses_complete_persisted_gps_route_statistics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_parquet_read(*_args, **_kwargs):
+        raise AssertionError("Complete persisted GPS statistics should avoid a Parquet read.")
+
+    monkeypatch.setattr(catalog_module.pd, "read_parquet", fail_parquet_read)
+    summary = catalog_module._gps_source_summary(
+        source_id="gps_logger",
+        stream_name="gps_logger",
+        metadata={
+            "time_col": "time_s",
+            "position_columns": {"latitude": "latitude_deg", "longitude": "longitude_deg"},
+            "route_reconstruction": {
+                "output_points": 3,
+                "position_bbox": {
+                    "min_longitude": 115.0,
+                    "min_latitude": -32.0,
+                    "max_longitude": 115.1,
+                    "max_latitude": -31.9,
+                },
+                "route_distance_m": 120.0,
+                "covered_duration_s": 2.0,
+                "gap_s_median": 1.0,
+                "gap_s_max": 1.0,
+                "gap_count_over_threshold": 0,
+            },
+        },
+        source_info={},
+        dataframe_path=tmp_path / "missing.parquet",
+        session_duration_s=2.0,
+        window_range=(0.0, 2.0),
+    )
+
+    assert summary is not None
+    assert summary["point_count"] == 3
+    assert summary["route_distance_m"] == 120.0
+    assert summary["_coverage_ratio"] == 1.0
 
 
 def test_library_adapter_reuses_persisted_catalog_on_restart(

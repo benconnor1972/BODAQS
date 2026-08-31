@@ -31,6 +31,29 @@
     "zero_min_samples": 10,
     "clip_0_1": false,
     "prefer_postprocessing_transformations": true,
+    "raw_signal_dropout_filter": {
+      "mode": "detect_and_repair",
+      "max_repair_gap_ms": 100.0,
+      "context_ms": 25.0,
+      "max_boundary_extension_ms": 25.0,
+      "detectors": {
+        "bounded_analog": {
+          "enabled": true,
+          "rail_margin_fraction": 0.05,
+          "minimum_excursion_fraction": 0.015,
+          "innovation_sigma": 8.0,
+          "transient_return_enabled": true,
+          "transient_max_duration_ms": 25.0
+        },
+        "wrapped_encoder": {
+          "enabled": true,
+          "modulus": 4096,
+          "minimum_excursion_fraction": 0.015,
+          "innovation_sigma": 8.0
+        }
+      },
+      "overrides": []
+    },
     "motion_derivation": {
       "enabled": true,
       "sources": [

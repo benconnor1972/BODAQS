@@ -27,6 +27,13 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 try:
+    from PIL import Image, ImageDraw, ImageTk
+except Exception:  # pragma: no cover - Pillow is included in packaged desktop builds.
+    Image = None
+    ImageDraw = None
+    ImageTk = None
+
+try:
     from tksheet import Sheet
 except Exception:  # pragma: no cover - dependency presence is checked in packaged builds.
     Sheet = None
@@ -87,6 +94,7 @@ from .import_agent_profile_builders import (
     copy_source_note_assets,
     derive_profile_id,
     discover_bike_profiles,
+    fork_session_note_template,
     format_lut_text,
     library_bike_profiles_dir,
     load_session_note_field_catalog,
@@ -149,17 +157,134 @@ _SOURCE_TYPE_LABELS = {
     SOURCE_TYPE_FILESYSTEM_ARCHIVE: "Local archive folder",
     SOURCE_TYPE_LOGGER_WIFI: "Wi-Fi logger",
 }
+_SOURCE_TYPE_ICONS = {
+    SOURCE_TYPE_FILESYSTEM_ARCHIVE: "💾",
+    SOURCE_TYPE_LOGGER_WIFI: "📶",
+}
+_SOURCE_TYPE_TOOLTIPS = {
+    SOURCE_TYPE_FILESYSTEM_ARCHIVE: "Local folder",
+    SOURCE_TYPE_LOGGER_WIFI: "WiFi logger connection",
+}
+_LIBRARY_LINK_PALETTE = (
+    "#008C95",
+    "#3B6FB6",
+    "#C47A00",
+    "#7A5CC7",
+    "#3A7D44",
+    "#B74D59",
+    "#A84D8C",
+    "#8A6240",
+    "#237F9D",
+    "#727A25",
+)
 _SOURCE_TYPE_BY_LABEL = {label: value for value, label in _SOURCE_TYPE_LABELS.items()}
 _LOGGER_WIFI_CLEANUP_LABELS = {
     LOGGER_WIFI_CLEANUP_NONE: "Keep files on logger",
-    LOGGER_WIFI_CLEANUP_MOVE_TO_UPLOADED: "Move to uploaded",
-    LOGGER_WIFI_CLEANUP_DELETE: "Delete from logger",
+    LOGGER_WIFI_CLEANUP_MOVE_TO_UPLOADED: "Move files to logger's uploaded folder",
+    LOGGER_WIFI_CLEANUP_DELETE: "Delete files from logger",
 }
 _LOGGER_WIFI_CLEANUP_BY_LABEL = {
     label: value for value, label in _LOGGER_WIFI_CLEANUP_LABELS.items()
 }
 _SOURCE_ENABLED_CHECKED = "☑"
 _SOURCE_ENABLED_UNCHECKED = "☐"
+
+
+def _manager_library_link_colors(library_ids: Sequence[str]) -> dict[str, str]:
+    """Assign stable, distinct-enough colours without changing the persisted config."""
+
+    colors: dict[str, str] = {}
+    available = list(range(len(_LIBRARY_LINK_PALETTE)))
+    for library_id in library_ids:
+        digest = hashlib.sha256(str(library_id).encode("utf-8")).digest()
+        preferred = int.from_bytes(digest[:4], "big") % len(_LIBRARY_LINK_PALETTE)
+        if available:
+            palette_index = min(
+                available,
+                key=lambda candidate: (candidate - preferred) % len(_LIBRARY_LINK_PALETTE),
+            )
+            available.remove(palette_index)
+        else:
+            palette_index = preferred
+        colors[str(library_id)] = _LIBRARY_LINK_PALETTE[palette_index]
+    return colors
+
+
+def _ordered_manager_sources(
+    sources: Sequence[Any],
+    library_order: Mapping[str, int],
+) -> list[Any]:
+    """Group source rows by their target library for a crossover-free display."""
+
+    unknown_rank = len(library_order)
+    return sorted(
+        sources,
+        key=lambda source: (
+            library_order.get(str(source.library_id), unknown_rank),
+            str(source.display_name).casefold(),
+            str(source.source_id).casefold(),
+        ),
+    )
+
+
+def _manager_link_curve_points(
+    width: float,
+    source_y: float,
+    library_y: float,
+    *,
+    steps: int = 28,
+) -> list[float]:
+    """Return a cubic S-curve as a Canvas-compatible flat point list."""
+
+    start_x = 2.0
+    end_x = max(start_x, float(width) - 2.0)
+    span = end_x - start_x
+    control_1_x = start_x + span * 0.42
+    control_2_x = end_x - span * 0.42
+    point_count = max(2, int(steps))
+    points: list[float] = []
+    for index in range(point_count + 1):
+        t = index / point_count
+        inverse = 1.0 - t
+        x = (
+            inverse**3 * start_x
+            + 3.0 * inverse**2 * t * control_1_x
+            + 3.0 * inverse * t**2 * control_2_x
+            + t**3 * end_x
+        )
+        y = (
+            inverse**3 * source_y
+            + 3.0 * inverse**2 * t * source_y
+            + 3.0 * inverse * t**2 * library_y
+            + t**3 * library_y
+        )
+        points.extend((x, y))
+    return points
+
+
+def _manager_child_window_position(
+    *,
+    manager_x: int,
+    manager_y: int,
+    manager_width: int,
+    manager_height: int,
+    child_width: int,
+    child_height: int,
+) -> tuple[int, int]:
+    """Centre a child over the manager and keep it inside when it fits."""
+
+    manager_width = max(1, int(manager_width))
+    manager_height = max(1, int(manager_height))
+    child_width = max(1, int(child_width))
+    child_height = max(1, int(child_height))
+    centered_x = int(manager_x) + (manager_width - child_width) // 2
+    centered_y = int(manager_y) + (manager_height - child_height) // 2
+    max_x = int(manager_x) + manager_width - child_width
+    max_y = int(manager_y) + manager_height - child_height
+    return (
+        max(int(manager_x), min(centered_x, max_x)),
+        max(int(manager_y), min(centered_y, max_y)),
+    )
 
 
 def _app_window_title() -> str:
@@ -940,6 +1065,16 @@ class ImportAgentManagerWindow:
 
         self._library_choice_map: dict[str, str] = {}
         self._source_runtime_status: dict[str, str] = {}
+        self._manager_library_order: dict[str, int] = {}
+        self._manager_library_link_colors: dict[str, str] = {}
+        self._manager_sources_by_id: dict[str, Any] = {}
+        self._source_type_images: dict[str, Any] = {}
+        self._watch_state_images: dict[str, Any] = {}
+        self._manager_links_image: Optional[Any] = None
+        self._manager_links_redraw_after_id: Optional[str] = None
+        self._manager_tooltip_after_id: Optional[str] = None
+        self._manager_tooltip_key: Optional[tuple[str, str, str, str]] = None
+        self._manager_tooltip_window: Optional[tk.Toplevel] = None
         self.sources_root_entry: Optional[ttk.Entry] = None
         self.libraries_root_entry: Optional[ttk.Entry] = None
         self.sources_root_browse_button: Optional[ttk.Button] = None
@@ -950,8 +1085,8 @@ class ImportAgentManagerWindow:
         self.add_source_button: Optional[ttk.Button] = None
         self.apply_app_settings_button: Optional[ttk.Button] = None
         self.processed_archive_retention_days_entry: Optional[ttk.Entry] = None
-        self.open_web_app_button: Optional[ttk.Button] = None
-        self.stop_web_app_button: Optional[ttk.Button] = None
+        self.watch_toggle_button: Optional[ttk.Button] = None
+        self.workbench_toggle_button: Optional[ttk.Button] = None
         self.library_choice_combo: Optional[ttk.Combobox] = None
         self.source_type_combo: Optional[ttk.Combobox] = None
         self.wifi_frame: Optional[ttk.LabelFrame] = None
@@ -960,6 +1095,7 @@ class ImportAgentManagerWindow:
 
         self.libraries_tree: Optional[ttk.Treeview] = None
         self.sources_tree: Optional[ttk.Treeview] = None
+        self.manager_links_canvas: Optional[tk.Canvas] = None
         self.log_text: Optional[tk.Text] = None
         self.notebook: Optional[ttk.Notebook] = None
 
@@ -981,6 +1117,40 @@ class ImportAgentManagerWindow:
         height = min(760, max(560, screen_height - 120))
         self.root.geometry(f"{width}x{height}")
         self.root.minsize(min(980, width), min(620, height))
+
+    def _wait_for_manager_dialog(
+        self,
+        dialog: tk.Toplevel,
+        *,
+        focus_widget: Optional[tk.Misc] = None,
+        owner: Optional[tk.Misc] = None,
+    ) -> None:
+        """Show a modal child centred within the Import Manager window."""
+
+        owner_window = owner or self.root
+        dialog.withdraw()
+        self.root.update_idletasks()
+        dialog.update_idletasks()
+        child_width = max(int(dialog.winfo_width()), int(dialog.winfo_reqwidth()))
+        child_height = max(int(dialog.winfo_height()), int(dialog.winfo_reqheight()))
+        x, y = _manager_child_window_position(
+            manager_x=int(self.root.winfo_rootx()),
+            manager_y=int(self.root.winfo_rooty()),
+            manager_width=int(self.root.winfo_width()),
+            manager_height=int(self.root.winfo_height()),
+            child_width=child_width,
+            child_height=child_height,
+        )
+        # The leading '+' makes negative values absolute virtual-desktop
+        # coordinates (for example '+-1200'), rather than offsets from the
+        # right or bottom edge of the primary display.
+        dialog.geometry(f"+{x}+{y}")
+        dialog.transient(owner_window)
+        dialog.deiconify()
+        dialog.lift(owner_window)
+        dialog.grab_set()
+        (focus_widget or dialog).focus_set()
+        self.root.wait_window(dialog)
 
     def _apply_window_icon(self) -> None:
         try:
@@ -1017,6 +1187,38 @@ class ImportAgentManagerWindow:
     def _configure_styles(self) -> None:
         style = ttk.Style(self.root)
         style.configure("Workbench.TButton", padding=(12, 10))
+        style.configure("ManagerSources.Treeview", rowheight=28)
+        style.configure("ManagerLibraries.Treeview", rowheight=28)
+        style.configure("ManagerToggleInactive.TButton", padding=(10, 7))
+        style.configure(
+            "ManagerToggleActive.TButton",
+            padding=(10, 7),
+            foreground="#007A82",
+        )
+        style.map(
+            "ManagerToggleActive.TButton",
+            foreground=[("disabled", "#7C888A"), ("!disabled", "#007A82")],
+        )
+        try:
+            item_layout = style.layout("Treeview.Item")
+            if item_layout:
+                style.layout(
+                    "ManagerSources.Treeview.Item",
+                    [
+                        (
+                            "Treeitem.padding",
+                            {
+                                "sticky": "nswe",
+                                "children": [
+                                    ("Treeitem.image", {"sticky": ""}),
+                                    ("Treeitem.text", {"sticky": "nswe"}),
+                                ],
+                            },
+                        )
+                    ],
+                )
+        except tk.TclError:
+            pass
 
     def _build(self) -> None:
         self._configure_styles()
@@ -1046,43 +1248,38 @@ class ImportAgentManagerWindow:
 
     def _build_manager_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(2, weight=1)
-        parent.rowconfigure(4, weight=1)
-
-        ttk.Label(
-            parent,
-            text=(
-                "Manage configured libraries and sources, validate source configurations, "
-                "run one-shot imports, or start and stop the in-process watch loop."
-            ),
-            wraplength=980,
-            justify="left",
-        ).grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        parent.rowconfigure(1, weight=1)
+        parent.rowconfigure(3, weight=1)
 
         overview = ttk.Frame(parent)
-        overview.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        overview.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         overview.columnconfigure(0, weight=1)
         ttk.Label(overview, textvariable=self.summary_var, wraplength=980, justify="left").grid(
             row=0, column=0, sticky="w"
         )
-        ttk.Label(overview, textvariable=self.watch_state_var, wraplength=980, justify="left").grid(
-            row=1, column=0, sticky="w", pady=(4, 0)
-        )
-        ttk.Label(overview, textvariable=self.library_service_state_var, wraplength=980, justify="left").grid(
-            row=2, column=0, sticky="w", pady=(4, 0)
-        )
 
         lists = ttk.Frame(parent)
-        lists.grid(row=2, column=0, sticky="nsew")
-        lists.columnconfigure(0, weight=1)
-        lists.columnconfigure(1, weight=1)
+        lists.grid(row=1, column=0, sticky="nsew")
+        lists.columnconfigure(0, weight=7)
+        lists.columnconfigure(1, weight=0, minsize=76)
+        lists.columnconfigure(2, weight=3)
         lists.rowconfigure(1, weight=1)
 
-        ttk.Label(lists, text="Libraries").grid(row=0, column=0, sticky="w", pady=(0, 4))
-        ttk.Label(lists, text="Sources").grid(row=0, column=1, sticky="w", pady=(0, 4), padx=(12, 0))
+        style = ttk.Style(self.root)
+        heading_font = style.lookup("Treeview.Heading", "font") or style.lookup("Treeview", "font") or "TkDefaultFont"
+        try:
+            checkbox_column_width = max(
+                int(self.root.tk.call("font", "measure", heading_font, heading))
+                for heading in ("Enabled", "Reprocess", "Add Note", "Syn Export")
+            ) + 24
+        except tk.TclError:
+            checkbox_column_width = 82
+
+        ttk.Label(lists, text="Sources").grid(row=0, column=0, sticky="w", pady=(0, 4))
+        ttk.Label(lists, text="Libraries").grid(row=0, column=2, sticky="w", pady=(0, 4))
 
         libraries_frame = ttk.Frame(lists)
-        libraries_frame.grid(row=1, column=0, sticky="nsew")
+        libraries_frame.grid(row=1, column=2, sticky="nsew")
         libraries_frame.columnconfigure(0, weight=1)
         libraries_frame.rowconfigure(0, weight=1)
         libraries_tree = ttk.Treeview(
@@ -1090,94 +1287,126 @@ class ImportAgentManagerWindow:
             columns=("display_name", "syn_export"),
             show="headings",
             height=9,
+            style="ManagerLibraries.Treeview",
         )
-        libraries_xscroll = ttk.Scrollbar(libraries_frame, orient="horizontal", command=libraries_tree.xview)
-        libraries_tree.configure(xscrollcommand=libraries_xscroll.set)
         libraries_tree.heading("display_name", text="Library Name", anchor="w")
         libraries_tree.heading("syn_export", text="Syn Export", anchor="w")
-        libraries_tree.column("display_name", width=260, anchor="w")
-        libraries_tree.column("syn_export", width=90, anchor="center", stretch=False)
+        libraries_tree.column("display_name", width=150, minwidth=150, anchor="w", stretch=False)
+        libraries_tree.column(
+            "syn_export",
+            width=checkbox_column_width,
+            minwidth=checkbox_column_width,
+            anchor="center",
+            stretch=False,
+        )
         libraries_tree.grid(row=0, column=0, sticky="nsew")
-        libraries_xscroll.grid(row=1, column=0, sticky="ew")
         libraries_tree.bind("<Button-1>", self._on_libraries_tree_click)
         libraries_tree.bind("<Button-3>", self._on_libraries_tree_context)
+        libraries_tree.bind("<Motion>", self._on_manager_tree_motion, add="+")
+        libraries_tree.bind("<Leave>", self._hide_manager_tooltip, add="+")
+        libraries_tree.bind("<ButtonPress>", self._hide_manager_tooltip, add="+")
+        libraries_tree.bind("<<TreeviewSelect>>", self._schedule_manager_link_redraw, add="+")
+        libraries_tree.bind("<Configure>", self._schedule_manager_link_redraw, add="+")
+        libraries_tree.configure(yscrollcommand=self._on_manager_tree_yview_changed)
         self.libraries_tree = libraries_tree
 
+        link_background = ttk.Style(self.root).lookup("TFrame", "background") or "#F0F0F0"
+        links_canvas = tk.Canvas(
+            lists,
+            width=76,
+            background=link_background,
+            borderwidth=0,
+            highlightthickness=0,
+            takefocus=False,
+        )
+        links_canvas.grid(row=1, column=1, sticky="nsew")
+        links_canvas.bind("<Configure>", self._schedule_manager_link_redraw, add="+")
+        self.manager_links_canvas = links_canvas
+
         sources_frame = ttk.Frame(lists)
-        sources_frame.grid(row=1, column=1, sticky="nsew", padx=(12, 0))
+        sources_frame.grid(row=1, column=0, sticky="nsew")
         sources_frame.columnconfigure(0, weight=1)
         sources_frame.rowconfigure(0, weight=1)
         sources_tree = ttk.Treeview(
             sources_frame,
             columns=(
+                "display_name",
                 "enabled",
                 "force_reprocess",
-                "display_name",
-                "source_type",
-                "status",
-                "library_name",
-                "bike_name",
                 "attach_note",
+                "status",
+                "bike_name",
             ),
-            show="headings",
+            show=("tree", "headings"),
             height=9,
+            style="ManagerSources.Treeview",
         )
-        sources_xscroll = ttk.Scrollbar(sources_frame, orient="horizontal", command=sources_tree.xview)
-        sources_tree.configure(xscrollcommand=sources_xscroll.set)
-        sources_tree.heading("enabled", text="Enabled", anchor="w")
-        sources_tree.heading("force_reprocess", text="Allow Reprocessing", anchor="w")
+        sources_tree.heading("#0", text="", anchor="center")
         sources_tree.heading("display_name", text="Source Name", anchor="w")
-        sources_tree.heading("source_type", text="Type", anchor="w")
-        sources_tree.heading("status", text="Status", anchor="w")
-        sources_tree.heading("library_name", text="Target Library", anchor="w")
-        sources_tree.heading("bike_name", text="Bike Name", anchor="w")
-        sources_tree.heading("attach_note", text="Attach Note", anchor="w")
-        sources_tree.column("enabled", width=80, anchor="center", stretch=False)
-        sources_tree.column("force_reprocess", width=130, anchor="center", stretch=False)
-        sources_tree.column("display_name", width=180, anchor="w")
-        sources_tree.column("source_type", width=120, anchor="w")
-        sources_tree.column("status", width=180, anchor="w")
-        sources_tree.column("library_name", width=170, anchor="w")
-        sources_tree.column("bike_name", width=190, anchor="w")
-        sources_tree.column("attach_note", width=95, anchor="center", stretch=False)
+        sources_tree.heading("enabled", text="Enabled", anchor="w")
+        sources_tree.heading("force_reprocess", text="Reprocess", anchor="w")
+        sources_tree.heading("attach_note", text="Add Note", anchor="w")
+        sources_tree.heading("status", text="Last Activity", anchor="w")
+        sources_tree.heading("bike_name", text="Bike Profile", anchor="w")
+        sources_tree.column("#0", width=46, minwidth=46, anchor="center", stretch=False)
+        sources_tree.column("display_name", width=135, minwidth=135, anchor="w", stretch=False)
+        for column in ("enabled", "force_reprocess", "attach_note"):
+            sources_tree.column(
+                column,
+                width=checkbox_column_width,
+                minwidth=checkbox_column_width,
+                anchor="center",
+                stretch=False,
+            )
+        sources_tree.column("status", width=145, minwidth=145, anchor="w", stretch=False)
+        sources_tree.column("bike_name", width=145, minwidth=145, anchor="w", stretch=False)
         sources_tree.grid(row=0, column=0, sticky="nsew")
-        sources_xscroll.grid(row=1, column=0, sticky="ew")
         sources_tree.bind("<Button-1>", self._on_sources_tree_click)
         sources_tree.bind("<Button-3>", self._on_sources_tree_context)
+        sources_tree.bind("<Motion>", self._on_manager_tree_motion, add="+")
+        sources_tree.bind("<Leave>", self._hide_manager_tooltip, add="+")
+        sources_tree.bind("<ButtonPress>", self._hide_manager_tooltip, add="+")
+        sources_tree.bind("<<TreeviewSelect>>", self._schedule_manager_link_redraw, add="+")
+        sources_tree.bind("<Configure>", self._schedule_manager_link_redraw, add="+")
+        sources_tree.configure(yscrollcommand=self._on_manager_tree_yview_changed)
         self.sources_tree = sources_tree
+        self._source_type_images = self._build_source_type_images()
+        self._watch_state_images = self._build_watch_state_images()
 
         actions = ttk.Frame(parent)
-        actions.grid(row=3, column=0, sticky="ew", pady=(10, 8))
-        for col in range(8):
+        actions.grid(row=2, column=0, sticky="ew", pady=(10, 8))
+        for col in range(6):
             actions.columnconfigure(col, weight=0)
-        actions.columnconfigure(5, weight=1)
+        actions.columnconfigure(4, weight=1)
         ttk.Button(actions, text="Refresh", command=self._refresh_ui_from_config).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(actions, text="Sync Workspace", command=self._sync_workspace_from_roots).grid(
             row=0, column=1, padx=(0, 8)
         )
         ttk.Button(actions, text="Import Now", command=self._import_now).grid(row=0, column=2, padx=(0, 8))
-        ttk.Button(actions, text="Start Watch", command=self._start_watch).grid(row=0, column=3, padx=(0, 8))
-        ttk.Button(actions, text="Stop Watch", command=self._stop_watch).grid(row=0, column=4, padx=(0, 8))
+        watch_button_options: dict[str, Any] = {
+            "text": "Watch stopped",
+            "command": self._toggle_watch,
+            "style": "ManagerToggleInactive.TButton",
+        }
+        watch_stopped_image = self._watch_state_images.get("stopped")
+        if watch_stopped_image is not None:
+            watch_button_options.update({"image": watch_stopped_image, "compound": "left"})
+        self.watch_toggle_button = ttk.Button(actions, **watch_button_options)
+        self.watch_toggle_button.grid(row=0, column=3, padx=(0, 8))
         workbench_button_image = self._load_workbench_button_image()
-        open_button_options: dict[str, Any] = {
-            "text": "Open BODAQS Workbench",
-            "command": self._open_web_app,
-            "style": "Workbench.TButton",
+        workbench_button_options: dict[str, Any] = {
+            "text": "Workbench stopped",
+            "command": self._toggle_web_app,
+            "style": "ManagerToggleInactive.TButton",
         }
         if workbench_button_image is not None:
-            open_button_options.update({"image": workbench_button_image, "compound": "left"})
-        self.open_web_app_button = ttk.Button(actions, **open_button_options)
-        self.open_web_app_button.grid(row=0, column=6, sticky="e", padx=(12, 8))
-        self.stop_web_app_button = ttk.Button(
-            actions,
-            text="Stop BODAQS Workbench",
-            command=self._stop_web_app,
-            style="Workbench.TButton",
-        )
-        self.stop_web_app_button.grid(row=0, column=7, sticky="e", padx=(0, 8))
+            workbench_button_options.update({"image": workbench_button_image, "compound": "left"})
+        self.workbench_toggle_button = ttk.Button(actions, **workbench_button_options)
+        self.workbench_toggle_button.grid(row=0, column=5, sticky="e", padx=(12, 8))
+        self._refresh_watch_toggle_button()
 
         logs = ttk.Frame(parent)
-        logs.grid(row=4, column=0, sticky="nsew")
+        logs.grid(row=3, column=0, sticky="nsew")
         logs.columnconfigure(0, weight=1)
         logs.rowconfigure(1, weight=1)
         ttk.Label(logs, text="Activity").grid(row=0, column=0, sticky="w", pady=(0, 4))
@@ -1186,7 +1415,7 @@ class ImportAgentManagerWindow:
         self.log_text = text
 
         ttk.Label(parent, textvariable=self.manager_status_var, wraplength=980, justify="left").grid(
-            row=5, column=0, sticky="ew", pady=(8, 0)
+            row=4, column=0, sticky="ew", pady=(8, 0)
         )
 
     def _build_provision_tab(self, parent: ttk.Frame) -> None:
@@ -1650,7 +1879,7 @@ class ImportAgentManagerWindow:
         ttk.Button(buttons, text="Select Logger", command=choose).grid(row=0, column=1)
         tree.bind("<Double-1>", lambda _event: choose())
         dialog.protocol("WM_DELETE_WINDOW", cancel)
-        self.root.wait_window(dialog)
+        self._wait_for_manager_dialog(dialog, focus_widget=tree)
         return selected.get("result")
 
     def _logger_status_text(self, *, upload_mode: bool, session_count: Any = None) -> str:
@@ -1985,6 +2214,7 @@ class ImportAgentManagerWindow:
                 self.add_source_button.configure(state="disabled")
             if self.apply_app_settings_button is not None:
                 self.apply_app_settings_button.configure(state="disabled")
+            self._refresh_watch_toggle_button()
             self._refresh_web_app_controls(has_config=False)
             if select_provision_when_missing and self.notebook is not None:
                 self.notebook.select(1)
@@ -2002,12 +2232,10 @@ class ImportAgentManagerWindow:
             self.retain_processed_archives_forever_var.set(retention_days is None)
             self.processed_archive_retention_days_var.set("" if retention_days is None else str(retention_days))
         self._sync_processed_archive_retention_control()
-        enabled_count = sum(1 for source in config.sources if source.enabled)
         self.summary_var.set(
-            "Managed roots: "
-            f"sources={config.sources_root} | libraries={config.libraries_root} | "
-            f"libraries={len(config.libraries)} | sources={len(config.sources)} | "
-            f"enabled sources={enabled_count} | start at login={'yes' if config.auto_start else 'no'}"
+            "Managed roots:\n"
+            f"Sources: {config.sources_root} ({len(config.sources)})\n"
+            f"Libraries: {config.libraries_root} ({len(config.libraries)})"
         )
         self._render_libraries(config.libraries)
         self._render_sources(config.sources)
@@ -2032,26 +2260,45 @@ class ImportAgentManagerWindow:
             self.add_source_button.configure(state="normal")
         if self.apply_app_settings_button is not None:
             self.apply_app_settings_button.configure(state="normal")
+        self._refresh_watch_toggle_button()
         self._refresh_web_app_controls(has_config=True)
         self._refresh_tray()
 
+    def _refresh_watch_toggle_button(self) -> None:
+        button = self.watch_toggle_button
+        if button is None:
+            return
+        running = self._watch_running()
+        image = self._watch_state_images.get("active" if running else "stopped")
+        options: dict[str, Any] = {
+            "text": "Watch active" if running else "Watch stopped",
+            "style": "ManagerToggleActive.TButton" if running else "ManagerToggleInactive.TButton",
+            "state": (
+                "normal"
+                if running or (self.controller.has_config() and self._has_enabled_sources() and not self._import_now_running())
+                else "disabled"
+            ),
+        }
+        if image is not None:
+            options["image"] = image
+        button.configure(**options)
+
     def _refresh_web_app_controls(self, *, has_config: bool) -> None:
-        if self.open_web_app_button is not None:
-            self.open_web_app_button.configure(state="normal" if has_config else "disabled")
-        if self.stop_web_app_button is not None:
-            self.stop_web_app_button.configure(
-                state="normal" if self.library_api_service is not None and self.library_api_service.is_running() else "disabled"
+        service = self._library_api_service_for_current_config(create=False) if has_config else None
+        running = service is not None and service.is_running()
+        if self.workbench_toggle_button is not None:
+            self.workbench_toggle_button.configure(
+                text="Workbench active" if running else "Workbench stopped",
+                style="ManagerToggleActive.TButton" if running else "ManagerToggleInactive.TButton",
+                state="normal" if has_config else "disabled",
             )
         if not has_config:
             return
-        service = self._library_api_service_for_current_config(create=False)
-        if service is not None and service.is_running():
+        if running and service is not None:
             self.library_service_state_var.set(f"BODAQS Workbench available at {service.web_url}")
         else:
             base_url = f"http://{_LIBRARY_SERVICE_HOST}:{_LIBRARY_SERVICE_PORT}"
-            self.library_service_state_var.set(
-                f"BODAQS Workbench stopped. Use Open BODAQS Workbench to start {base_url}."
-            )
+            self.library_service_state_var.set(f"BODAQS Workbench stopped ({base_url}).")
 
     def _maybe_show_first_run_workspace_modal(self) -> None:
         if self._first_run_workspace_modal_shown or self.controller.has_config() or self.startup_launch:
@@ -2597,6 +2844,11 @@ class ImportAgentManagerWindow:
         if self.libraries_tree is None:
             return
         self.libraries_tree.delete(*self.libraries_tree.get_children())
+        library_ids = [str(library.library_id) for library in libraries]
+        self._manager_library_order = {
+            library_id: index for index, library_id in enumerate(library_ids)
+        }
+        self._manager_library_link_colors = _manager_library_link_colors(library_ids)
         for library in libraries:
             self.libraries_tree.insert(
                 "",
@@ -2611,40 +2863,46 @@ class ImportAgentManagerWindow:
                     ),
                 ),
             )
+        self._schedule_manager_link_redraw()
 
     def _render_sources(self, sources: Sequence[Any]) -> None:
         if self.sources_tree is None:
             return
         self.sources_tree.delete(*self.sources_tree.get_children())
-        for source in sources:
+        ordered_sources = _ordered_manager_sources(sources, self._manager_library_order)
+        self._manager_sources_by_id = {
+            str(source.source_id): source for source in ordered_sources
+        }
+        for source in ordered_sources:
             status_text = self._source_runtime_status.get(source.source_id)
             if status_text is None:
-                status_text = "not checked" if source.source_type == SOURCE_TYPE_LOGGER_WIFI else "-"
-            library_name = self._managed_library_display_name(source.library_id)
+                status_text = "-"
             bike_name = self._source_bike_display_name(source.source_root)
+            icon_image = self._source_type_images.get(source.source_type)
             self.sources_tree.insert(
                 "",
                 "end",
                 iid=source.source_id,
+                image=icon_image or "",
+                text="" if icon_image is not None else _SOURCE_TYPE_ICONS.get(source.source_type, "•"),
                 values=(
+                    source.display_name,
                     _SOURCE_ENABLED_CHECKED if source.enabled else _SOURCE_ENABLED_UNCHECKED,
                     (
                         _SOURCE_ENABLED_CHECKED
                         if getattr(source, "force_reprocess", False)
                         else _SOURCE_ENABLED_UNCHECKED
                     ),
-                    source.display_name,
-                    _SOURCE_TYPE_LABELS.get(source.source_type, source.source_type),
-                    status_text,
-                    library_name,
-                    bike_name,
                     (
                         _SOURCE_ENABLED_CHECKED
                         if getattr(source, "attach_session_note_on_import", False)
                         else _SOURCE_ENABLED_UNCHECKED
                     ),
+                    status_text,
+                    bike_name,
                 ),
             )
+        self._schedule_manager_link_redraw()
 
     def _managed_library_config(self, library_id: str) -> Any:
         config = self.controller.require_config()
@@ -2665,6 +2923,371 @@ class ImportAgentManagerWindow:
         except Exception:
             return "Unavailable"
         return str(profile.get("display_name") or profile.get("bike_profile_id") or "Unnamed bike")
+
+    def _build_source_type_images(self) -> dict[str, Any]:
+        if Image is None or ImageDraw is None or ImageTk is None:
+            return {}
+
+        scale = 4
+        size = 22
+        pixel_size = size * scale
+        stroke = "#40545A"
+
+        def scaled_box(values: Sequence[float]) -> tuple[int, int, int, int]:
+            scaled = [round(value * scale) for value in values]
+            return scaled[0], scaled[1], scaled[2], scaled[3]
+
+        def finish(image: Any) -> Any:
+            resized = image.resize((size, size), Image.Resampling.LANCZOS)
+            return ImageTk.PhotoImage(resized, master=self.root)
+
+        archive = Image.new("RGBA", (pixel_size, pixel_size), (0, 0, 0, 0))
+        archive_draw = ImageDraw.Draw(archive)
+        archive_draw.rounded_rectangle(
+            scaled_box((3, 2, 19, 20)),
+            radius=2 * scale,
+            outline=stroke,
+            width=2 * scale,
+        )
+        archive_draw.rectangle(
+            scaled_box((7, 3, 16, 9)),
+            outline=stroke,
+            width=2 * scale,
+        )
+        archive_draw.rounded_rectangle(
+            scaled_box((6, 13, 16, 19)),
+            radius=scale,
+            outline=stroke,
+            width=2 * scale,
+        )
+
+        wifi = Image.new("RGBA", (pixel_size, pixel_size), (0, 0, 0, 0))
+        wifi_draw = ImageDraw.Draw(wifi)
+        for index, height in enumerate((5, 9, 13, 17)):
+            left = 2.5 + index * 4.5
+            wifi_draw.rounded_rectangle(
+                scaled_box((left, 20 - height, left + 3, 20)),
+                radius=round(1.2 * scale),
+                fill=stroke,
+            )
+
+        return {
+            SOURCE_TYPE_FILESYSTEM_ARCHIVE: finish(archive),
+            SOURCE_TYPE_LOGGER_WIFI: finish(wifi),
+        }
+
+    def _build_watch_state_images(self) -> dict[str, Any]:
+        if Image is None or ImageDraw is None or ImageTk is None:
+            return {}
+
+        scale = 4
+        size = 18
+        pixel_size = size * scale
+
+        def finish(image: Any) -> Any:
+            resized = image.resize((size, size), Image.Resampling.LANCZOS)
+            return ImageTk.PhotoImage(resized, master=self.root)
+
+        stopped = Image.new("RGBA", (pixel_size, pixel_size), (0, 0, 0, 0))
+        stopped_draw = ImageDraw.Draw(stopped)
+        stopped_draw.ellipse(
+            (2 * scale, 2 * scale, 16 * scale, 16 * scale),
+            outline="#7C888A",
+            width=2 * scale,
+        )
+        stopped_draw.ellipse(
+            (7 * scale, 7 * scale, 11 * scale, 11 * scale),
+            fill="#7C888A",
+        )
+
+        active = Image.new("RGBA", (pixel_size, pixel_size), (0, 0, 0, 0))
+        active_draw = ImageDraw.Draw(active)
+        active_draw.ellipse(
+            (1 * scale, 1 * scale, 17 * scale, 17 * scale),
+            fill="#008C95",
+        )
+        active_draw.ellipse(
+            (7 * scale, 7 * scale, 11 * scale, 11 * scale),
+            fill="#FFFFFF",
+        )
+
+        return {"stopped": finish(stopped), "active": finish(active)}
+
+    def _manager_tree_column_id(self, tree: ttk.Treeview, display_column: str) -> Optional[str]:
+        if display_column == "#0":
+            return "#0"
+        try:
+            index = int(display_column.removeprefix("#")) - 1
+            return str(tree["columns"][index])
+        except (IndexError, TypeError, ValueError):
+            return None
+
+    def _manager_tree_tooltip_text(
+        self,
+        tree: ttk.Treeview,
+        row_id: str,
+        display_column: str,
+    ) -> Optional[str]:
+        column_id = self._manager_tree_column_id(tree, display_column)
+        if column_id is None:
+            return None
+        if tree is self.sources_tree and column_id == "#0":
+            source = self._manager_sources_by_id.get(str(row_id))
+            if source is None:
+                return None
+            return _SOURCE_TYPE_TOOLTIPS.get(str(source.source_type))
+        if column_id not in {"display_name", "status", "bike_name"}:
+            return None
+
+        text = str(tree.set(row_id, column_id) or "")
+        if not text:
+            return None
+        bounds = tree.bbox(row_id, display_column)
+        if not bounds:
+            return None
+        cell_width = int(bounds[2])
+        font_name = ttk.Style(self.root).lookup(tree.cget("style") or "Treeview", "font") or "TkDefaultFont"
+        try:
+            text_width = int(tree.tk.call("font", "measure", font_name, text))
+        except tk.TclError:
+            text_width = len(text) * 8
+        return text if text_width > max(0, cell_width - 16) else None
+
+    def _on_manager_tree_motion(self, event: tk.Event) -> None:
+        tree = event.widget
+        if tree not in {self.sources_tree, self.libraries_tree}:
+            self._hide_manager_tooltip()
+            return
+        region = tree.identify("region", event.x, event.y)
+        row_id = str(tree.identify_row(event.y) or "")
+        display_column = str(tree.identify_column(event.x) or "")
+        if region not in {"tree", "cell"} or not row_id or not display_column:
+            self._hide_manager_tooltip()
+            return
+        text = self._manager_tree_tooltip_text(tree, row_id, display_column)
+        if text is None:
+            self._hide_manager_tooltip()
+            return
+
+        key = (str(tree), row_id, display_column, text)
+        if key == self._manager_tooltip_key:
+            return
+        self._hide_manager_tooltip()
+        self._manager_tooltip_key = key
+        x_root = int(event.x_root) + 12
+        y_root = int(event.y_root) + 16
+        self._manager_tooltip_after_id = self.root.after(
+            350,
+            lambda: self._show_manager_tooltip(key, text, x_root, y_root),
+        )
+
+    def _show_manager_tooltip(
+        self,
+        key: tuple[str, str, str, str],
+        text: str,
+        x_root: int,
+        y_root: int,
+    ) -> None:
+        self._manager_tooltip_after_id = None
+        if self._manager_tooltip_key != key:
+            return
+        tooltip = tk.Toplevel(self.root)
+        tooltip.wm_overrideredirect(True)
+        try:
+            tooltip.wm_attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        label = tk.Label(
+            tooltip,
+            text=text,
+            justify="left",
+            background="#FFFBEA",
+            foreground="#24383C",
+            relief="solid",
+            borderwidth=1,
+            padx=7,
+            pady=4,
+        )
+        label.pack()
+        tooltip.update_idletasks()
+        x = min(x_root, max(0, tooltip.winfo_screenwidth() - tooltip.winfo_reqwidth() - 8))
+        y = min(y_root, max(0, tooltip.winfo_screenheight() - tooltip.winfo_reqheight() - 8))
+        tooltip.wm_geometry(f"+{x}+{y}")
+        self._manager_tooltip_window = tooltip
+
+    def _hide_manager_tooltip(self, _event: Optional[tk.Event] = None) -> None:
+        if self._manager_tooltip_after_id is not None:
+            try:
+                self.root.after_cancel(self._manager_tooltip_after_id)
+            except tk.TclError:
+                pass
+        self._manager_tooltip_after_id = None
+        self._manager_tooltip_key = None
+        if self._manager_tooltip_window is not None:
+            try:
+                self._manager_tooltip_window.destroy()
+            except tk.TclError:
+                pass
+        self._manager_tooltip_window = None
+
+    def _on_manager_tree_yview_changed(self, _first: str, _last: str) -> None:
+        self._hide_manager_tooltip()
+        self._schedule_manager_link_redraw()
+
+    def _schedule_manager_link_redraw(self, _event: Optional[tk.Event] = None) -> None:
+        if self.manager_links_canvas is None:
+            return
+        if self._manager_links_redraw_after_id is not None:
+            return
+        self._manager_links_redraw_after_id = self.root.after_idle(self._redraw_manager_links)
+
+    def _manager_link_row_y(self, tree: ttk.Treeview, item_id: str) -> Optional[float]:
+        bounds = tree.bbox(item_id)
+        if not bounds or self.manager_links_canvas is None:
+            return None
+        _x, y, _width, height = bounds
+        return tree.winfo_rooty() + y + height / 2.0 - self.manager_links_canvas.winfo_rooty()
+
+    def _muted_manager_link_color(self, color: str, amount: float = 0.72) -> str:
+        canvas = self.manager_links_canvas
+        if canvas is None:
+            return color
+        try:
+            foreground = canvas.winfo_rgb(color)
+            background = canvas.winfo_rgb(str(canvas.cget("background")))
+        except tk.TclError:
+            return color
+        channels = [
+            round((front / 257) * (1.0 - amount) + (back / 257) * amount)
+            for front, back in zip(foreground, background)
+        ]
+        return "#{:02X}{:02X}{:02X}".format(*channels)
+
+    def _redraw_manager_links(self) -> None:
+        self._manager_links_redraw_after_id = None
+        canvas = self.manager_links_canvas
+        sources_tree = self.sources_tree
+        libraries_tree = self.libraries_tree
+        if canvas is None or sources_tree is None or libraries_tree is None:
+            return
+
+        canvas.delete("all")
+        width = max(4, canvas.winfo_width())
+        selected_sources = {str(item_id) for item_id in sources_tree.selection()}
+        selected_libraries = {str(item_id) for item_id in libraries_tree.selection()}
+        has_selection = bool(selected_sources or selected_libraries)
+
+        links: list[tuple[bool, str, str, float, float]] = []
+        for source_id in sources_tree.get_children(""):
+            source = self._manager_sources_by_id.get(str(source_id))
+            if source is None:
+                continue
+            library_id = str(source.library_id)
+            if not libraries_tree.exists(library_id):
+                continue
+            source_y = self._manager_link_row_y(sources_tree, str(source_id))
+            library_y = self._manager_link_row_y(libraries_tree, library_id)
+            if source_y is None or library_y is None:
+                continue
+            highlighted = str(source_id) in selected_sources or library_id in selected_libraries
+            links.append((highlighted, str(source_id), library_id, source_y, library_y))
+
+        line_specs: list[tuple[list[float], str, int, float]] = []
+        for highlighted, _source_id, library_id, source_y, library_y in sorted(links, key=lambda item: item[0]):
+            color = self._manager_library_link_colors.get(library_id, "#6B777A")
+            if has_selection and not highlighted:
+                color = self._muted_manager_link_color(color)
+            line_specs.append(
+                (
+                    _manager_link_curve_points(width, source_y, library_y),
+                    color,
+                    3 if highlighted else 2,
+                    source_y,
+                )
+            )
+
+        endpoint_specs: list[tuple[float, str, int]] = []
+        for library_id in libraries_tree.get_children(""):
+            library_y = self._manager_link_row_y(libraries_tree, str(library_id))
+            if library_y is None:
+                continue
+            color = self._manager_library_link_colors.get(str(library_id), "#6B777A")
+            highlighted = str(library_id) in selected_libraries or any(
+                self._manager_sources_by_id.get(source_id) is not None
+                and str(self._manager_sources_by_id[source_id].library_id) == str(library_id)
+                for source_id in selected_sources
+            )
+            radius = 4 if highlighted else 3
+            endpoint_specs.append((library_y, color, radius))
+
+        if Image is not None and ImageDraw is not None and ImageTk is not None:
+            render_scale = 4
+            height = max(4, canvas.winfo_height())
+            try:
+                background_16 = canvas.winfo_rgb(str(canvas.cget("background")))
+                background = tuple(channel // 257 for channel in background_16)
+            except tk.TclError:
+                background = (240, 240, 240)
+            raster = Image.new(
+                "RGB",
+                (width * render_scale, height * render_scale),
+                background,
+            )
+            draw = ImageDraw.Draw(raster)
+            for points, color, line_width, source_y in line_specs:
+                scaled_points = [
+                    (round(points[index] * render_scale), round(points[index + 1] * render_scale))
+                    for index in range(0, len(points), 2)
+                ]
+                draw.line(
+                    scaled_points,
+                    fill=color,
+                    width=line_width * render_scale,
+                    joint="curve",
+                )
+                draw.ellipse(
+                    (
+                        0,
+                        round((source_y - 2) * render_scale),
+                        4 * render_scale,
+                        round((source_y + 2) * render_scale),
+                    ),
+                    fill=color,
+                )
+            for library_y, color, radius in endpoint_specs:
+                draw.ellipse(
+                    (
+                        (width - radius * 2) * render_scale,
+                        round((library_y - radius) * render_scale),
+                        width * render_scale,
+                        round((library_y + radius) * render_scale),
+                    ),
+                    fill=color,
+                )
+            raster = raster.resize((width, height), Image.Resampling.LANCZOS)
+            self._manager_links_image = ImageTk.PhotoImage(raster, master=self.root)
+            canvas.create_image(0, 0, image=self._manager_links_image, anchor="nw")
+            return
+
+        self._manager_links_image = None
+        for points, color, line_width, source_y in line_specs:
+            canvas.create_line(
+                *points,
+                fill=color,
+                width=line_width,
+                capstyle=tk.ROUND,
+                joinstyle=tk.ROUND,
+            )
+            canvas.create_oval(0, source_y - 2, 4, source_y + 2, fill=color, outline="")
+        for library_y, color, radius in endpoint_specs:
+            canvas.create_oval(
+                width - radius * 2,
+                library_y - radius,
+                width,
+                library_y + radius,
+                fill=color,
+                outline="",
+            )
 
     def _selected_source_id(self) -> Optional[str]:
         if self.sources_tree is None:
@@ -2764,8 +3387,7 @@ class ImportAgentManagerWindow:
 
         ttk.Button(buttons, text="Cancel", command=dialog.destroy).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(buttons, text="Apply", command=accept).grid(row=0, column=1)
-        combo.focus_set()
-        self.root.wait_window(dialog)
+        self._wait_for_manager_dialog(dialog, focus_widget=combo)
         return result["library_id"]
 
     def _choose_source_dialog(self, *, title: str, exclude_source_id: Optional[str] = None) -> Optional[Any]:
@@ -2799,8 +3421,7 @@ class ImportAgentManagerWindow:
 
         ttk.Button(buttons, text="Cancel", command=dialog.destroy).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(buttons, text="Copy", command=accept).grid(row=0, column=1)
-        combo.focus_set()
-        self.root.wait_window(dialog)
+        self._wait_for_manager_dialog(dialog, focus_widget=combo)
         return result["source"]
 
     def _managed_library_bike_profile_choices(
@@ -2868,8 +3489,7 @@ class ImportAgentManagerWindow:
 
         ttk.Button(buttons, text="Cancel", command=dialog.destroy).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(buttons, text="Apply", command=accept).grid(row=0, column=1)
-        combo.focus_set()
-        self.root.wait_window(dialog)
+        self._wait_for_manager_dialog(dialog, focus_widget=combo)
         return result["profile"]
 
     def _unique_library_bike_profile_path(self, profiles_dir: Path, profile: Mapping[str, Any]) -> Path:
@@ -3105,7 +3725,7 @@ class ImportAgentManagerWindow:
         form.grid(row=0, column=0, sticky="ew")
         form.columnconfigure(1, weight=1)
         bike_choices, bike_choice_map = self._managed_library_bike_profile_choices(source.library_id)
-        bike_create_from_var = tk.StringVar(value=bike_choices[0] if bike_choices else "")
+        bike_create_from_var = tk.StringVar(value="")
         ttk.Label(form, text="Load from").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 6))
         create_from_frame = ttk.Frame(form)
         create_from_frame.grid(row=0, column=1, sticky="ew", pady=(0, 6))
@@ -3444,12 +4064,20 @@ class ImportAgentManagerWindow:
                 return
             load_bike_profile_into_editor(candidate_profile)
 
-        ttk.Button(
+        bike_load_button = ttk.Button(
             create_from_frame,
             text="Load",
             command=create_bike_from_selected,
-            state=("normal" if bike_choices else "disabled"),
-        ).grid(row=0, column=1, sticky="e", padx=(8, 0))
+            state="disabled",
+        )
+        bike_load_button.grid(row=0, column=1, sticky="e", padx=(8, 0))
+
+        def sync_bike_load_button(*_args: Any) -> None:
+            bike_load_button.configure(
+                state="normal" if bike_create_from_var.get() in bike_choice_map else "disabled"
+            )
+
+        bike_create_from_var.trace_add("write", sync_bike_load_button)
         ttk.Button(edit_frame, text="Add Row", command=add_lut_row).grid(row=0, column=0, sticky="w", padx=(0, 6))
         ttk.Button(edit_frame, text="Insert Before Selected", command=insert_lut_row).grid(row=0, column=1, sticky="w", padx=(0, 6))
         ttk.Button(edit_frame, text="Delete Selected Row", command=delete_lut_row).grid(row=0, column=2, sticky="w")
@@ -3532,7 +4160,7 @@ class ImportAgentManagerWindow:
         )
         ttk.Button(buttons, text="Cancel", command=dialog.destroy).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(buttons, text="Save", command=save_and_close).grid(row=0, column=1)
-        self.root.wait_window(dialog)
+        self._wait_for_manager_dialog(dialog)
         if saved["ok"]:
             self._set_manager_status(f"Saved bike profile for source '{source.source_id}'.")
 
@@ -3651,8 +4279,7 @@ class ImportAgentManagerWindow:
 
         ttk.Button(buttons, text="Cancel", command=dialog.destroy).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(buttons, text="Save", command=save).grid(row=0, column=1)
-        lut_text.focus_set()
-        self.root.wait_window(dialog)
+        self._wait_for_manager_dialog(dialog, focus_widget=lut_text)
         if saved["ok"]:
             self._set_manager_status(f"Saved rear-wheel LUT for source '{source.source_id}'.")
 
@@ -3682,6 +4309,13 @@ class ImportAgentManagerWindow:
         title_var = tk.StringVar(value=str(template.get("title") or "Source bike setup"))
         description_var = tk.StringVar(value=str(template.get("description") or ""))
         allow_custom_var = tk.BooleanVar(value=bool(template.get("allow_custom_fields", True)))
+        try:
+            _bike_profile_path, target_bike_profile = load_source_bike_profile(source.source_root)
+            target_template_display_name = str(
+                target_bike_profile.get("display_name") or source.display_name
+            ).strip()
+        except Exception:
+            target_template_display_name = str(source.display_name).strip()
         note_choices, note_choice_map = self._managed_source_asset_choices(
             exclude_source_id=source.source_id,
             loader=load_source_session_note_template,
@@ -3939,7 +4573,7 @@ class ImportAgentManagerWindow:
             update_custom_block_visibility()
             canvas.configure(scrollregion=canvas.bbox("all"))
 
-        def create_note_from_selected() -> None:
+        def create_note_from_selected(*, reuse_identity: bool) -> None:
             selected_label = note_create_from_var.get()
             if not selected_label:
                 return
@@ -3947,26 +4581,45 @@ class ImportAgentManagerWindow:
             if candidate is None:
                 return
             candidate_source, candidate_template = candidate
+            action_label = "Use the existing template" if reuse_identity else "Create a new template"
             if not messagebox.askyesno(
                 _APP_DISPLAY_NAME,
-                f"Replace the note profile currently shown with '{candidate_template.get('title')}' "
-                f"from source '{candidate_source.display_name}'?",
+                f"{action_label} from '{candidate_template.get('title')}' "
+                f"on source '{candidate_source.display_name}'?",
                 parent=dialog,
             ):
                 return
-            template_state["template"] = copy.deepcopy(dict(candidate_template))
-            title_var.set(str(candidate_template.get("title") or "Source bike setup"))
-            description_var.set(str(candidate_template.get("description") or ""))
-            allow_custom_var.set(bool(candidate_template.get("allow_custom_fields", True)))
+            selected_template = copy.deepcopy(dict(candidate_template))
+            if not reuse_identity:
+                existing_ids = [
+                    str(candidate_payload.get("template_id") or "")
+                    for _candidate_source, candidate_payload in note_choice_map.values()
+                ]
+                existing_ids.append(str(template_state["template"].get("template_id") or ""))
+                selected_template = fork_session_note_template(
+                    selected_template,
+                    display_name=target_template_display_name,
+                    existing_ids=existing_ids,
+                )
+            template_state["template"] = selected_template
+            title_var.set(str(selected_template.get("title") or "Source bike setup"))
+            description_var.set(str(selected_template.get("description") or ""))
+            allow_custom_var.set(bool(selected_template.get("allow_custom_fields", True)))
             reset_catalog_for_template(template_state["template"])
             render_note_fields()
 
         ttk.Button(
             note_create_frame,
-            text="Create",
-            command=create_note_from_selected,
+            text="Create new",
+            command=lambda: create_note_from_selected(reuse_identity=False),
             state=("normal" if note_choices else "disabled"),
         ).grid(row=0, column=1, sticky="e", padx=(8, 0))
+        ttk.Button(
+            note_create_frame,
+            text="Use existing",
+            command=lambda: create_note_from_selected(reuse_identity=True),
+            state=("normal" if note_choices else "disabled"),
+        ).grid(row=0, column=2, sticky="e", padx=(8, 0))
         allow_custom_var.trace_add("write", update_custom_block_visibility)
         reset_catalog_for_template(template_state["template"])
         render_note_fields()
@@ -4012,9 +4665,7 @@ class ImportAgentManagerWindow:
 
         ttk.Button(buttons, text="Cancel", command=dialog.destroy).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(buttons, text="Save", command=save).grid(row=0, column=1)
-        dialog.lift(parent_window)
-        dialog.focus_force()
-        self.root.wait_window(dialog)
+        self._wait_for_manager_dialog(dialog, owner=parent_window)
         if saved["ok"]:
             self._set_manager_status(f"Saved note template for source '{source.source_id}'.")
         return saved["ok"]
@@ -4053,15 +4704,15 @@ class ImportAgentManagerWindow:
         if region != "cell":
             return None
         column = self.sources_tree.identify_column(event.x)
-        if column not in {"#1", "#2", "#8"}:
+        if column not in {"#2", "#3", "#4"}:
             return None
         source_id = self.sources_tree.identify_row(event.y)
         if not source_id:
             return None
         self.sources_tree.selection_set(source_id)
-        if column == "#1":
+        if column == "#2":
             self._toggle_source_enabled(source_id)
-        elif column == "#2":
+        elif column == "#3":
             self._toggle_source_force_reprocess(source_id)
         else:
             self._toggle_source_session_note_attach(source_id)
@@ -4196,9 +4847,7 @@ class ImportAgentManagerWindow:
         ttk.Button(buttons, text="Cancel", command=dialog.destroy).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(buttons, text="Remove", command=accept).grid(row=0, column=1)
         dialog.bind("<Escape>", lambda _event: dialog.destroy())
-        dialog.lift(self.root)
-        dialog.focus_force()
-        self.root.wait_window(dialog)
+        self._wait_for_manager_dialog(dialog)
         return result["delete_files"]
 
     def _confirm_delete_from_disk(self, *, title: str, folder_path: Path) -> bool:
@@ -4247,10 +4896,7 @@ class ImportAgentManagerWindow:
         confirm_var.trace_add("write", sync_delete_button)
         dialog.bind("<Return>", lambda _event: accept())
         dialog.bind("<Escape>", lambda _event: dialog.destroy())
-        dialog.lift(self.root)
-        dialog.focus_force()
-        confirm_entry.focus_set()
-        self.root.wait_window(dialog)
+        self._wait_for_manager_dialog(dialog, focus_widget=confirm_entry)
         return bool(result["ok"])
 
     def _show_details_dialog(self, *, title: str, rows: Sequence[tuple[str, str]]) -> None:
@@ -4269,9 +4915,7 @@ class ImportAgentManagerWindow:
         buttons.grid(row=len(rows), column=0, columnspan=2, sticky="e", padx=12, pady=(8, 12))
         ttk.Button(buttons, text="Close", command=dialog.destroy).grid(row=0, column=0)
         dialog.bind("<Escape>", lambda _event: dialog.destroy())
-        dialog.lift(self.root)
-        dialog.focus_force()
-        self.root.wait_window(dialog)
+        self._wait_for_manager_dialog(dialog)
 
     def _show_selected_library_details(self) -> None:
         library_id = self._selected_library_id()
@@ -4342,15 +4986,12 @@ class ImportAgentManagerWindow:
         logger_id_var = tk.StringVar(value=source.logger_wifi.logger_id)
         fixed_address_var = tk.BooleanVar(value=bool(source.logger_wifi.base_url))
         address_var = tk.StringVar(value=source.logger_wifi.base_url or "")
-        cleanup_label = next(
-            (
-                label
-                for label, value in _LOGGER_WIFI_CLEANUP_BY_LABEL.items()
-                if value == source.logger_wifi.cleanup_mode
-            ),
-            _LOGGER_WIFI_CLEANUP_LABELS[LOGGER_WIFI_CLEANUP_NONE],
+        cleanup_mode = (
+            source.logger_wifi.cleanup_mode
+            if source.logger_wifi.cleanup_mode in _LOGGER_WIFI_CLEANUP_LABELS
+            else LOGGER_WIFI_CLEANUP_NONE
         )
-        cleanup_var = tk.StringVar(value=cleanup_label)
+        cleanup_var = tk.StringVar(value=cleanup_mode)
         request_timeout_var = tk.StringVar(value=f"{float(source.logger_wifi.request_timeout_s):g}")
         download_timeout_var = tk.StringVar(value=f"{float(source.logger_wifi.download_timeout_s):g}")
         status_var = tk.StringVar(value="Logger ID is the stable identity. Fixed address is optional.")
@@ -4374,13 +5015,24 @@ class ImportAgentManagerWindow:
         verify_button = ttk.Button(dialog, text="Verify", command=lambda: verify())
         verify_button.grid(row=2, column=2, sticky="e", padx=(0, 12), pady=4)
 
-        ttk.Label(dialog, text="After import").grid(row=3, column=0, sticky="w", padx=(12, 8), pady=4)
-        ttk.Combobox(
-            dialog,
-            textvariable=cleanup_var,
-            values=list(_LOGGER_WIFI_CLEANUP_BY_LABEL),
-            state="readonly",
-        ).grid(row=3, column=1, sticky="ew", padx=(0, 12), pady=4)
+        cleanup_frame = ttk.LabelFrame(dialog, text="Logger files after successful import", padding=(10, 6))
+        cleanup_frame.grid(row=3, column=0, columnspan=3, sticky="ew", padx=12, pady=(8, 4))
+        for column, (mode, label) in enumerate(_LOGGER_WIFI_CLEANUP_LABELS.items()):
+            ttk.Radiobutton(
+                cleanup_frame,
+                text=label,
+                variable=cleanup_var,
+                value=mode,
+            ).grid(row=0, column=column, sticky="w", padx=(0 if column == 0 else 16, 0))
+        ttk.Label(
+            cleanup_frame,
+            text=(
+                "The logger is only asked to move or delete its copy after the downloaded file "
+                "has been validated and imported successfully."
+            ),
+            wraplength=700,
+            justify="left",
+        ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(5, 0))
 
         timeouts = ttk.Frame(dialog)
         timeouts.grid(row=4, column=0, columnspan=3, sticky="w", padx=12, pady=(6, 2))
@@ -4425,10 +5077,7 @@ class ImportAgentManagerWindow:
                     download_timeout_var.get(),
                     field_name="Wi-Fi download timeout",
                 ),
-                "cleanup_mode": _LOGGER_WIFI_CLEANUP_BY_LABEL.get(
-                    cleanup_var.get().strip(),
-                    LOGGER_WIFI_CLEANUP_NONE,
-                ),
+                "cleanup_mode": cleanup_var.get().strip() or LOGGER_WIFI_CLEANUP_NONE,
             }
             if base_url:
                 payload["base_url"] = base_url
@@ -4529,9 +5178,7 @@ class ImportAgentManagerWindow:
         ttk.Button(buttons, text="Save", command=save).grid(row=0, column=1)
         dialog.bind("<Escape>", lambda _event: dialog.destroy())
         sync_fixed_address_state()
-        dialog.lift(self.root)
-        dialog.focus_force()
-        self.root.wait_window(dialog)
+        self._wait_for_manager_dialog(dialog)
 
         if saved["ok"]:
             self._refresh_ui_from_config()
@@ -4705,11 +5352,10 @@ class ImportAgentManagerWindow:
         sync_entry_state()
         dialog.bind("<Return>", lambda _event: save())
         dialog.bind("<Escape>", lambda _event: dialog.destroy())
-        dialog.lift(self.root)
-        dialog.focus_force()
-        if bool(enabled_var.get()):
-            base_entry.focus_set()
-        self.root.wait_window(dialog)
+        self._wait_for_manager_dialog(
+            dialog,
+            focus_widget=base_entry if bool(enabled_var.get()) else None,
+        )
 
     def _toggle_source_enabled(self, source_id: str) -> None:
         if not self._guard_watch_inactive(action_label="Toggle Source"):
@@ -4802,6 +5448,13 @@ class ImportAgentManagerWindow:
         config = self.controller.app_config
         return bool(config and any(source.enabled for source in config.sources))
 
+    def _toggle_watch(self) -> None:
+        if self._watch_running():
+            self._stop_watch()
+        else:
+            self._start_watch()
+        self._refresh_watch_toggle_button()
+
     def _library_api_service_for_current_config(self, *, create: bool) -> Optional[LibraryApiServiceProcess]:
         config = self.controller.app_config
         if config is None:
@@ -4841,6 +5494,13 @@ class ImportAgentManagerWindow:
         self.library_service_state_var.set(f"BODAQS Workbench available at {service.web_url}")
         self._set_manager_status(f"{message} Opened {service.web_url}")
         self._refresh_web_app_controls(has_config=True)
+
+    def _toggle_web_app(self) -> None:
+        service = self._library_api_service_for_current_config(create=False)
+        if service is not None and service.is_running():
+            self._stop_web_app()
+        else:
+            self._open_web_app()
 
     def _stop_web_app(self) -> None:
         service = self._library_api_service_for_current_config(create=False)
@@ -5403,6 +6063,7 @@ class ImportAgentManagerWindow:
         )
         self.import_now_thread.start()
         self._set_manager_status("Import started.")
+        self._refresh_watch_toggle_button()
         self._refresh_tray()
 
     def _queue_import_now_progress(self, progress: Mapping[str, Any]) -> None:
@@ -5441,7 +6102,7 @@ class ImportAgentManagerWindow:
         finally:
             self.event_queue.put({"kind": "import_now_finished"})
 
-    def _handle_import_now_complete(self, report: dict[str, Any], snapshot: dict[str, Any]) -> None:
+    def _handle_import_now_complete(self, report: dict[str, Any], _snapshot: dict[str, Any]) -> None:
         totals = report.get("totals", {})
         self._set_manager_status(
             "Import complete: "
@@ -5456,8 +6117,6 @@ class ImportAgentManagerWindow:
                 f"seen={source_totals['seen']} imported={source_totals['imported']} "
                 f"deferred={source_totals['deferred_unsettled']} failed={source_totals['failed']}"
             )
-        self._apply_snapshot(snapshot)
-
     def _start_watch(self, *, show_errors: bool = True) -> None:
         if self._watch_running():
             return
@@ -5467,6 +6126,7 @@ class ImportAgentManagerWindow:
             supervisor = self.controller.make_enabled_supervisor()
         except Exception as exc:
             self._set_manager_status(f"Unable to start watch: {exc}")
+            self._refresh_watch_toggle_button()
             if show_errors:
                 messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
             return
@@ -5475,11 +6135,13 @@ class ImportAgentManagerWindow:
         self.watch_service.start()
         self.watch_state_var.set("Watcher starting...")
         self._set_manager_status("Started watch loop.")
+        self._refresh_watch_toggle_button()
         self._refresh_tray()
 
     def _stop_watch(self) -> None:
         if self.watch_service is None:
             self.watch_state_var.set("Watcher stopped.")
+            self._refresh_watch_toggle_button()
             return
         stopped = self.watch_service.stop()
         if stopped:
@@ -5488,6 +6150,7 @@ class ImportAgentManagerWindow:
             self._set_manager_status("Stopped watch loop.")
         else:
             self.watch_state_var.set("Watcher stop requested; waiting for background loop to exit...")
+        self._refresh_watch_toggle_button()
         self._refresh_tray()
 
     def _remove_selected_library(self) -> None:
@@ -5652,16 +6315,6 @@ class ImportAgentManagerWindow:
             self._set_manager_status(f"Open logger web UI failed: {exc}")
             messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
 
-    def _apply_snapshot(self, snapshot: dict[str, Any]) -> None:
-        if not snapshot:
-            return
-        due_count = sum(1 for item in snapshot.get("sources", []) if item.get("due_now"))
-        paused_count = sum(1 for item in snapshot.get("sources", []) if item.get("paused"))
-        self.watch_state_var.set(
-            f"Watcher snapshot: active={snapshot.get('active_source_count', 0)} "
-            f"paused={paused_count} due_now={due_count}"
-        )
-
     def _poll_event_queue(self) -> None:
         while True:
             try:
@@ -5675,8 +6328,6 @@ class ImportAgentManagerWindow:
                 self._append_log("Watcher started.")
             elif kind == "watch_reports":
                 reports = item.get("reports", [])
-                snapshot = item.get("snapshot", {})
-                self._apply_snapshot(snapshot)
                 for report in reports:
                     self._update_source_status_from_report(report)
                     totals = _aggregate_reports([report])
@@ -5714,7 +6365,6 @@ class ImportAgentManagerWindow:
             elif kind == "watch_stopped":
                 self.watch_state_var.set("Watcher stopped.")
                 self._append_log("Watcher stopped.")
-                self._apply_snapshot(item.get("snapshot", {}))
                 if self.watch_service is not None and not self.watch_service.running:
                     self.watch_service = None
             elif kind == "tray_show_window":
@@ -5734,6 +6384,7 @@ class ImportAgentManagerWindow:
                 self._quit_application()
 
             self._refresh_tray()
+        self._refresh_watch_toggle_button()
         self.root.after(250, self._poll_event_queue)
 
     def _on_close(self) -> None:

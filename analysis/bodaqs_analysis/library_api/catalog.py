@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+import numpy as np
 import pandas as pd
 
 from bodaqs_analysis.artifacts import (
@@ -97,6 +98,8 @@ def build_session_catalog(
     library_root: str | Path,
     *,
     library_id: str | None = None,
+    cached_rows: Mapping[str, Mapping[str, Any]] | None = None,
+    rebuild_session_keys: set[str] | None = None,
 ) -> dict[str, Any]:
     """Build a compact JSON-serializable catalog for one processed library."""
 
@@ -112,6 +115,16 @@ def build_session_catalog(
     for run_id in list_runs(store):
         run_manifest = _read_json_object(store.path_run_manifest(run_id)) or {}
         for session_id in list_sessions(store, run_id):
+            session_key = make_session_key(str(run_id), str(session_id))
+            cached_row = cached_rows.get(session_key) if cached_rows is not None else None
+            if (
+                isinstance(cached_row, Mapping)
+                and cached_row.get("schema") == SESSION_CATALOG_ROW_SCHEMA
+                and int(cached_row.get("version") or -1) == SESSION_CATALOG_ROW_VERSION
+                and (rebuild_session_keys is None or session_key not in rebuild_session_keys)
+            ):
+                rows.append(dict(cached_row))
+                continue
             rows.append(
                 _build_session_catalog_row(
                     store,
@@ -423,6 +436,16 @@ def _gps_source_summary(
     session_duration_s: float,
     window_range: tuple[float | None, float | None],
 ) -> dict[str, Any] | None:
+    persisted = _persisted_gps_source_summary(
+        source_id=source_id,
+        stream_name=stream_name,
+        metadata=metadata,
+        source_info=source_info,
+        session_duration_s=session_duration_s,
+    )
+    if persisted is not None:
+        return persisted
+
     known_columns = _parquet_columns(dataframe_path)
     if known_columns is not None and not known_columns:
         return None
@@ -527,6 +550,53 @@ def _gps_source_summary(
         "gap_threshold_s": GPS_GAP_THRESHOLD_S,
         "_coverage_ratio": coverage_ratio,
         "_warnings": warnings,
+    }
+
+
+def _persisted_gps_source_summary(
+    *,
+    source_id: str,
+    stream_name: str,
+    metadata: Mapping[str, Any],
+    source_info: Mapping[str, Any],
+    session_duration_s: float,
+) -> dict[str, Any] | None:
+    """Return a catalog GPS summary when preprocessing persisted all statistics."""
+
+    route = _gps_route_reconstruction(metadata, source_info)
+    required = {"output_points", "position_bbox", "route_distance_m", "covered_duration_s"}
+    if not required.issubset(route):
+        return None
+    latitude_col, longitude_col, elevation_col = _gps_columns(metadata, None)
+    if latitude_col is None or longitude_col is None:
+        return None
+    median_gap_s = _number_or_none(route.get("gap_s_median"))
+    covered_duration_s = _number_or_none(route.get("covered_duration_s")) or 0.0
+    coverage_ratio = (
+        min(1.0, max(0.0, covered_duration_s / session_duration_s))
+        if session_duration_s > 0
+        else 0.0
+    )
+    return {
+        "source_id": source_id,
+        "kind": _gps_source_kind(source_id, metadata, source_info=source_info, latitude_col=latitude_col),
+        "stream_name": stream_name,
+        "timebase": _gps_timebase(metadata),
+        "position_columns": {"latitude": latitude_col, "longitude": longitude_col},
+        "elevation_column": elevation_col,
+        "quality_columns": _gps_quality_columns(metadata, source_info),
+        "route_reconstruction": route,
+        **_gps_quality_summary(metadata, source_info),
+        "point_count": int(route.get("output_points") or 0),
+        "position_bbox": route.get("position_bbox"),
+        "route_distance_m": _number_or_none(route.get("route_distance_m")),
+        "nominal_sample_rate_hz": (1.0 / median_gap_s) if median_gap_s and median_gap_s > 0 else None,
+        "median_gap_s": median_gap_s,
+        "max_gap_s": _number_or_none(route.get("gap_s_max")),
+        "gap_count_over_threshold": int(route.get("gap_count_over_threshold") or 0),
+        "gap_threshold_s": GPS_GAP_THRESHOLD_S,
+        "_coverage_ratio": coverage_ratio,
+        "_warnings": [],
     }
 
 
@@ -1296,17 +1366,11 @@ def _event_summary(
 
     for event_type in event_type_dirs:
         path = store.path_events_df(run_id, session_id, event_type)
-        try:
-            df = pd.read_parquet(path)
-        except Exception:
+        row_count = _parquet_row_count(path)
+        if row_count is None:
             continue
-        total_count += int(len(df))
-        if "schema_id" in df.columns:
-            counts = df["schema_id"].astype(str).value_counts(dropna=False)
-            for key, value in counts.items():
-                by_type[str(key)] = by_type.get(str(key), 0) + int(value)
-        else:
-            by_type[str(event_type)] = by_type.get(str(event_type), 0) + int(len(df))
+        total_count += row_count
+        by_type[str(event_type)] = by_type.get(str(event_type), 0) + row_count
 
     schema_ids = sorted(set(event_type_dirs))
     schema_id = schema_ids[0] if len(schema_ids) == 1 else None
@@ -1331,14 +1395,19 @@ def _metric_summary(
 
     for schema_id in schema_ids:
         path = store.path_metrics_df(run_id, session_id, schema_id)
+        columns = _parquet_columns(path)
+        row_count_for_schema = _parquet_row_count(path)
+        if columns is None or row_count_for_schema is None:
+            continue
+        row_count += row_count_for_schema
+        metric_columns.update(str(col) for col in columns if str(col) not in _METRIC_ID_COLUMNS)
+        if "event_id" not in columns:
+            continue
         try:
-            df = pd.read_parquet(path)
+            df = pd.read_parquet(path, columns=["event_id"])
         except Exception:
             continue
-        row_count += int(len(df))
-        metric_columns.update(str(col) for col in df.columns if str(col) not in _METRIC_ID_COLUMNS)
-        if "event_id" in df.columns:
-            event_ids.update(str(value) for value in df["event_id"].dropna().unique())
+        event_ids.update(str(value) for value in df["event_id"].dropna().unique())
 
     return {
         "metric_count": len(metric_columns),
@@ -1563,21 +1632,19 @@ def _gps_summary_distance_m(gps_summary: Mapping[str, Any]) -> float | None:
 
 
 def _gps_route_distance_m(latitudes: list[Any], longitudes: list[Any]) -> float | None:
-    points: list[tuple[float, float]] = []
-    for lat, lon in zip(latitudes, longitudes):
-        try:
-            lat_f = float(lat)
-            lon_f = float(lon)
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(lat_f) and math.isfinite(lon_f):
-            points.append((lat_f, lon_f))
-    if len(points) < 2:
+    lat = pd.to_numeric(pd.Series(latitudes), errors="coerce").to_numpy(dtype=float)
+    lon = pd.to_numeric(pd.Series(longitudes), errors="coerce").to_numpy(dtype=float)
+    valid = np.isfinite(lat) & np.isfinite(lon)
+    lat = lat[valid]
+    lon = lon[valid]
+    if lat.size < 2:
         return None
-    total = 0.0
-    for (lat1, lon1), (lat2, lon2) in zip(points, points[1:]):
-        total += _haversine_m(lat1, lon1, lat2, lon2)
-    return total
+    phi = np.radians(lat)
+    d_phi = np.diff(phi)
+    d_lambda = np.radians(np.diff(lon))
+    a = np.sin(d_phi / 2.0) ** 2 + np.cos(phi[:-1]) * np.cos(phi[1:]) * np.sin(d_lambda / 2.0) ** 2
+    a = np.clip(a, 0.0, 1.0)
+    return float(np.sum(2.0 * 6_371_000.0 * np.arctan2(np.sqrt(a), np.sqrt(1.0 - a))))
 
 
 def _gps_position_bbox(latitudes: list[Any], longitudes: list[Any]) -> dict[str, float] | None:
@@ -1720,7 +1787,25 @@ def _parquet_columns(path: Path) -> set[str] | None:
         return {str(name) for name in pq.read_schema(path).names}
     except Exception:
         try:
-            return {str(name) for name in pd.read_parquet(path).columns}
+            from fastparquet import ParquetFile
+
+            return {str(name) for name in ParquetFile(path).columns}
+        except Exception:
+            return None
+
+
+def _parquet_row_count(path: Path) -> int | None:
+    if not path.exists():
+        return None
+    try:
+        import pyarrow.parquet as pq
+
+        return int(pq.ParquetFile(path).metadata.num_rows)
+    except Exception:
+        try:
+            from fastparquet import ParquetFile
+
+            return int(ParquetFile(path).count())
         except Exception:
             return None
 

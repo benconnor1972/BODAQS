@@ -24,10 +24,6 @@ If you have or are building a Prototype F logger, it's fairly simple: other than
 
 It only gets complicated if you want to run more than one I2C sensor - and even then, only if you are running them on the same bus. See [I2C bus assignment](#i2c-bus-assignment) if this applies to you.
 
-<Aside type="tip" title="Picture placeholder">
-  Proposed picture: annotated Prototype F connector panel showing one sensor mapped to each connector.
-</Aside>
-
 #### BODAQS A8: direct wiring or intermediate connectors
 
 A8 loggers make the wiring decision more interesting. Each logger connector can carry more than one signal, so you are not just deciding which sensor goes into which socket: you are designing a small wiring harness.
@@ -50,10 +46,6 @@ For example, if I just want to run two linear potentiometers and a handlebar swi
 - Handlebar switch permanently wired into one plug, plugged into the switch / UART connector.
 
 If that's all you want, this is the cleanest approach and keeps the number of joints and plugs to a minimum. The downside is that it's harder to change if I want to add more sensors later. 
-
-<Aside type="tip" title="Picture placeholder">
-  Proposed diagram: simple A8 permanent harness with two analog pots into one ADC connector and the bar switch wired to the switch / UART connector.
-</Aside>
 
 ##### Option 2: the sweet spot - permanent wiring with plug-in options
 
@@ -250,10 +242,6 @@ This method requires only heat shrink and, optionally, some caulking silicone. I
 7. Heat shrink the whole joint.
 
 
-<Aside type="tip" title="Picture placeholder">
-  Proposed picture sequence: stripped wires, soldered Y-joint, insulated finished joint.
-</Aside>
-
 #### Method 2: 3D-printed TPU boot
 
 This method requires heat shrink, caulking silicone and a special 'boot' printed from flexible filament (TBU). Its advantage is that the y-junctions can be made waterproof and quite compact. The disadvantage is the special part needed. 
@@ -269,10 +257,6 @@ This method requires heat shrink, caulking silicone and a special 'boot' printed
 9. Apply heat shrink to the stem of the boot.
 10. Squirt caulking silicone into the hole in the centre of the boot until it starts to come out the legs between the boot and the wires. Wait for the silicone to cure.
 
-<Aside type="tip" title="Picture placeholder">
-  Proposed picture: printed TPU boot with cables entering and finished Y-connection installed.
-</Aside>
-
 #### Method 3: junction PCB
 
 This method uses a small junction PCB to make it easier to make the soldered joints. It also uses heat shrink, caulking silicone and a 3d printed shell. **This is the easiest method** to make compact, waterproof and reliable joints, but it uses more special parts. 
@@ -284,8 +268,4 @@ This method uses a small junction PCB to make it easier to make the soldered joi
 5. Fit the two halves of the shell around the PCB assembly.
 6. Apply heat shrink to the stem of the shell.
 10. Squirt caulking silicone into the hole in the centre of the shell until it starts to come out the legs between the shell and the wires. Wait for the silicone to cure.
-
-<Aside type="tip" title="Picture placeholder">
-  Proposed picture: bare junction PCB, populated PCB, and sealed finished assembly.
-</Aside>
 

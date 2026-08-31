@@ -53,6 +53,10 @@ from .preprocess_filters import (
 from .motion_derivation import derive_motion_channels
 from .bike_profile import apply_signal_transforms, load_bike_profile, parse_bike_profile, resolve_normalization_ranges
 from .preprocess_profile import load_preprocess_config, preprocess_config_from_profile, validate_preprocess_config
+from .raw_signal_dropouts import (
+    DEFAULT_RAW_SIGNAL_DROPOUT_FILTER,
+    apply_raw_signal_dropout_filter,
+)
 from .sensor_aliases import canonical_end, canonical_sensor_id
 from .signalname import SignalNameError, SignalNameParts, format_signal_name, parse_signal_name
 
@@ -1147,7 +1151,11 @@ def _logger_linear_materialization_report() -> Dict[str, Any]:
     }
 
 
-def _materialize_logger_linear_calibrations(session: Dict[str, Any]) -> Dict[str, Any]:
+def _materialize_logger_linear_calibrations(
+    session: Dict[str, Any],
+    *,
+    source_overrides: Optional[Mapping[str, str]] = None,
+) -> Dict[str, Any]:
     report = _logger_linear_materialization_report()
 
     df = session.get("df")
@@ -1297,7 +1305,13 @@ def _materialize_logger_linear_calibrations(session: Dict[str, Any]) -> Dict[str
             continue
 
         counts_per_output_unit = span_abs / sensor_full_travel
-        values = pd.to_numeric(df[column], errors="coerce").astype(float)
+        effective_source_column = str((source_overrides or {}).get(column, column))
+        if effective_source_column not in df.columns:
+            report["warnings"].append(
+                f"Repaired source column {effective_source_column!r} for {column!r} is unavailable; using raw source"
+            )
+            effective_source_column = column
+        values = pd.to_numeric(df[effective_source_column], errors="coerce").astype(float)
         materialized = (values - zero_reference) / counts_per_output_unit
         if invert_flag:
             materialized = -materialized
@@ -1315,8 +1329,8 @@ def _materialize_logger_linear_calibrations(session: Dict[str, Any]) -> Dict[str
             "role": quantity,
             "quantity": quantity,
             "domain": info.get("domain"),
-            "source": [column],
-            "source_columns": [column],
+            "source": [effective_source_column],
+            "source_columns": [effective_source_column],
             "calibration_ref": info.get("calibration_ref"),
             "calibration": dict(calibration),
             "origin": "analysis",
@@ -1324,6 +1338,7 @@ def _materialize_logger_linear_calibrations(session: Dict[str, Any]) -> Dict[str
             "derivation": {
                 "method": derivation_method,
                 "source_col": column,
+                "effective_source_col": effective_source_column,
                 "calibration_type": calibration_type,
                 "counts_per_output_unit": float(counts_per_output_unit),
                 "output_unit": output_unit,
@@ -1342,22 +1357,23 @@ def _materialize_logger_linear_calibrations(session: Dict[str, Any]) -> Dict[str
         if "nominal_rate_hz" in info:
             channel_info_updates[output_column]["nominal_rate_hz"] = info.get("nominal_rate_hz")
 
-        report["generated"].append(
-            {
-                "source_column": column,
-                "output_column": output_column,
-                "sensor": info.get("sensor"),
-                "end": info.get("end"),
-                "domain": info.get("domain"),
-                "quantity": quantity,
-                "unit": output_unit,
-                "calibration_type": calibration_type,
-                "counts_per_output_unit": float(counts_per_output_unit),
-                "zero_reference": float(zero_reference),
-                "zero_reference_source": zero_reference_source,
-                "invert": invert_flag,
-            }
-        )
+        generated_record = {
+            "source_column": column,
+            "output_column": output_column,
+            "sensor": info.get("sensor"),
+            "end": info.get("end"),
+            "domain": info.get("domain"),
+            "quantity": quantity,
+            "unit": output_unit,
+            "calibration_type": calibration_type,
+            "counts_per_output_unit": float(counts_per_output_unit),
+            "zero_reference": float(zero_reference),
+            "zero_reference_source": zero_reference_source,
+            "invert": invert_flag,
+        }
+        if effective_source_column != column:
+            generated_record["effective_source_column"] = effective_source_column
+        report["generated"].append(generated_record)
         generated_signal_infos.append(
             {
                 "output_column": output_column,
@@ -2551,6 +2567,7 @@ def _preprocess_loaded_session(session: Dict[str, Any],
                                butterworth_generate_residuals: bool = False,
                                motion_derivation: Optional[Mapping[str, Any]] = None,
                                activity_detection: Optional[Mapping[str, Any]] = None,
+                               raw_signal_dropout_filter: Optional[Mapping[str, Any]] = None,
                                va_cols: Optional[Sequence[str]] = None,
                                va_window_points: int = 11,
                                va_poly_order: int = 3,
@@ -2577,6 +2594,7 @@ def _preprocess_loaded_session(session: Dict[str, Any],
             prefer_postprocessing_transformations = bool(cfg.get("ignore_on_logger_transformations"))
         motion_derivation = cfg.get("motion_derivation", motion_derivation)
         activity_detection = cfg.get("activity_detection", activity_detection)
+        raw_signal_dropout_filter = cfg.get("raw_signal_dropout_filter", raw_signal_dropout_filter)
         gps_source_policy = cfg.get("gps_source_policy", gps_source_policy)
         butterworth_smoothing = cfg.get("butterworth_smoothing", butterworth_smoothing)
         butterworth_generate_residuals = bool(
@@ -2617,7 +2635,17 @@ def _preprocess_loaded_session(session: Dict[str, Any],
     session = build_signals_registry(session, strict=False)
     session = build_logger_gps_route_stream(session, gps_source_policy=gps_source_policy)
     session = refresh_gps_source_metadata(session, gps_source_policy=gps_source_policy)
-    logger_calibration_meta = _materialize_logger_linear_calibrations(session)
+    dropout_result = apply_raw_signal_dropout_filter(
+        session,
+        raw_signal_dropout_filter or DEFAULT_RAW_SIGNAL_DROPOUT_FILTER,
+    )
+    transforms["raw_signal_dropouts"] = dropout_result.report
+    if dropout_result.report.get("applied"):
+        session = build_signals_registry(session, strict=False)
+    logger_calibration_meta = _materialize_logger_linear_calibrations(
+        session,
+        source_overrides=dropout_result.repaired_source_columns,
+    )
     transforms["logger_calibration"] = logger_calibration_meta
     if logger_calibration_meta.get("applied"):
         session = build_signals_registry(session, strict=False)

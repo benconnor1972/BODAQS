@@ -1,3 +1,4 @@
+import copy
 import json
 import logging
 from pathlib import Path
@@ -35,7 +36,16 @@ from bodaqs_analysis.pipeline import (
     preprocess_resolved,
     preprocess_session,
 )
-from bodaqs_analysis.preprocess_profile import default_preprocess_config, validate_preprocess_config
+from bodaqs_analysis.preprocess_profile import (
+    DEFAULT_PREPROCESS_PROFILE_CONFIG,
+    default_preprocess_config,
+    normalize_preprocess_config_keys,
+    validate_preprocess_config,
+)
+from bodaqs_analysis.raw_signal_dropouts import (
+    DEFAULT_RAW_SIGNAL_DROPOUT_FILTER,
+    apply_raw_signal_dropout_filter,
+)
 from bodaqs_analysis.signal_registry import build_signals_registry
 from bodaqs_analysis.signal_selectors import resolve_signal_selector
 from bodaqs_analysis.signal_standardize import validate_signals_semantics
@@ -3499,3 +3509,217 @@ def test_preprocess_log_selector_imports_without_ipydatagrid(tmp_path):
 
     assert len(selected) == 1
     assert selected[0] == csv_path.resolve()
+
+
+def _raw_dropout_test_session(values: np.ndarray, *, sensor_type: str) -> dict:
+    raw_col = "test_raw_dom_suspension [counts]"
+    disp_col = "test_disp_dom_suspension [mm]"
+    raw_values = np.asarray(values, dtype=np.int32)
+    return {
+        "df": pd.DataFrame(
+            {
+                "time_s": np.arange(raw_values.size, dtype=float) / 500.0,
+                raw_col: raw_values,
+                disp_col: raw_values.astype(float) / 20.0,
+            }
+        ),
+        "meta": {
+            "sample_rate_hz": 500.0,
+            "declared_sensors": {
+                "test_sensor": {
+                    "type": sensor_type,
+                    "calibration": {"sensor_zero_count": 0, "sensor_full_count": 4095},
+                }
+            },
+            "channel_info": {
+                raw_col: {
+                    "unit": "counts",
+                    "quantity": "raw",
+                    "sensor": "test_sensor",
+                    "end": "front",
+                    "domain": "suspension",
+                    "origin": "logger",
+                    "calibration": {
+                        "type": "linear",
+                        "input_unit": "counts",
+                        "output_unit": "mm",
+                        "sensor_zero_count": 0,
+                        "sensor_full_count": 4095,
+                        "sensor_full_travel": 200,
+                    },
+                },
+                disp_col: {
+                    "unit": "mm",
+                    "quantity": "disp",
+                    "sensor": "test_sensor",
+                    "end": "front",
+                    "domain": "suspension",
+                    "origin": "logger",
+                },
+            },
+        },
+    }
+
+
+def test_raw_dropout_filter_repairs_analog_burst_without_changing_raw() -> None:
+    values = np.rint(1200 + np.linspace(0, 120, 200)).astype(np.int32)
+    values[80:86] = 0
+    session = _raw_dropout_test_session(values, sensor_type="analog_pot")
+    original = session["df"]["test_raw_dom_suspension [counts]"].copy()
+
+    result = apply_raw_signal_dropout_filter(session, DEFAULT_RAW_SIGNAL_DROPOUT_FILTER)
+
+    signal = result.report["signals"][0]
+    assert signal["detected_samples"] == 6
+    assert signal["repaired_samples"] == 6
+    pd.testing.assert_series_equal(session["df"][original.name], original)
+    repaired_col = result.repaired_source_columns[original.name]
+    assert (session["df"].loc[80:85, repaired_col] > 1000).all()
+    assert (session["df"].loc[80:85, "test_disp_dom_suspension [mm]"] > 50).all()
+
+
+def test_raw_dropout_filter_expands_analog_rail_core_over_corrupt_shoulders() -> None:
+    values = np.full(120, 1830, dtype=np.int32)
+    values[60:65] = [650, 0, 0, 0, 770]
+    values[65:] = 1862
+    session = _raw_dropout_test_session(values, sensor_type="analog_pot")
+    original = session["df"]["test_raw_dom_suspension [counts]"].copy()
+
+    result = apply_raw_signal_dropout_filter(session, DEFAULT_RAW_SIGNAL_DROPOUT_FILTER)
+
+    signal = result.report["signals"][0]
+    interval = signal["intervals"][0]
+    assert interval["core_start_index"] == 61
+    assert interval["core_end_index"] == 63
+    assert interval["start_index"] == 60
+    assert interval["end_index"] == 64
+    assert interval["core_sample_count"] == 3
+    assert interval["sample_count"] == 5
+    assert interval["boundary_extension_before_samples"] == 1
+    assert interval["boundary_extension_after_samples"] == 1
+    assert signal["detected_samples"] == 5
+    assert signal["repaired_samples"] == 5
+    repaired_col = result.repaired_source_columns[original.name]
+    repaired = session["df"].loc[60:64, repaired_col]
+    assert repaired.between(1830, 1862).all()
+    assert repaired.is_monotonic_increasing
+    repaired_displacement = session["df"].loc[60:64, "test_disp_dom_suspension [mm]"]
+    assert repaired_displacement.between(91.5, 93.1).all()
+    pd.testing.assert_series_equal(session["df"][original.name], original)
+
+
+def test_raw_dropout_filter_boundary_expansion_can_be_disabled() -> None:
+    values = np.full(120, 1830, dtype=np.int32)
+    values[60:65] = [650, 0, 0, 0, 770]
+    values[65:] = 1862
+    session = _raw_dropout_test_session(values, sensor_type="analog_pot")
+    config = copy.deepcopy(DEFAULT_RAW_SIGNAL_DROPOUT_FILTER)
+    config["max_boundary_extension_ms"] = 0.0
+    config["detectors"]["bounded_analog"]["transient_return_enabled"] = False
+
+    result = apply_raw_signal_dropout_filter(session, config)
+
+    interval = result.report["signals"][0]["intervals"][0]
+    assert interval["start_index"] == 61
+    assert interval["end_index"] == 63
+    assert interval["sample_count"] == 3
+    assert interval["boundary_extension_before_samples"] == 0
+    assert interval["boundary_extension_after_samples"] == 0
+
+
+def test_raw_dropout_filter_repairs_nonrail_single_sample_transient() -> None:
+    values = np.rint(1800 + np.linspace(0, 40, 120)).astype(np.int32)
+    values[60] = 620
+    session = _raw_dropout_test_session(values, sensor_type="analog_pot")
+
+    result = apply_raw_signal_dropout_filter(session, DEFAULT_RAW_SIGNAL_DROPOUT_FILTER)
+
+    signal = result.report["signals"][0]
+    interval = next(item for item in signal["intervals"] if item["start_index"] <= 60 <= item["end_index"])
+    assert interval["start_index"] == 60
+    assert interval["end_index"] == 60
+    assert interval["detection_kinds"] == ["bounded_analog_transient_return"]
+    assert interval["repaired"] is True
+    repaired_col = result.repaired_source_columns["test_raw_dom_suspension [counts]"]
+    assert session["df"].loc[60, repaired_col] > 1800
+
+
+def test_raw_dropout_filter_repairs_nonrail_multisample_transient() -> None:
+    values = np.full(140, 2170, dtype=np.int32)
+    values[60:65] = [896, 878, 2160, 1325, 1126]
+    values[65:] = 2140
+    session = _raw_dropout_test_session(values, sensor_type="analog_pot")
+
+    result = apply_raw_signal_dropout_filter(session, DEFAULT_RAW_SIGNAL_DROPOUT_FILTER)
+
+    signal = result.report["signals"][0]
+    interval = next(item for item in signal["intervals"] if item["start_index"] <= 60 <= item["end_index"])
+    assert interval["start_index"] == 60
+    assert interval["end_index"] == 64
+    assert interval["detection_kinds"] == ["bounded_analog_transient_return"]
+    repaired_col = result.repaired_source_columns["test_raw_dom_suspension [counts]"]
+    assert session["df"].loc[60:64, repaired_col].between(2140, 2170).all()
+
+
+def test_raw_dropout_filter_transient_detector_extends_discontinuous_rail_shoulders() -> None:
+    values = np.full(140, 2104, dtype=np.int32)
+    values[60:69] = [1048, 1054, 0, 0, 0, 0, 0, 0, 0]
+    values[69:] = 2125
+    session = _raw_dropout_test_session(values, sensor_type="analog_pot")
+
+    result = apply_raw_signal_dropout_filter(session, DEFAULT_RAW_SIGNAL_DROPOUT_FILTER)
+
+    interval = result.report["signals"][0]["intervals"][0]
+    assert interval["start_index"] == 60
+    assert interval["end_index"] == 68
+    assert interval["core_start_index"] == 62
+    assert interval["detection_kinds"] == [
+        "bounded_analog_rail",
+        "bounded_analog_transient_return",
+    ]
+    repaired_col = result.repaired_source_columns["test_raw_dom_suspension [counts]"]
+    assert session["df"].loc[60:68, repaired_col].between(2104, 2125).all()
+
+
+def test_raw_dropout_filter_transient_detector_preserves_sustained_fast_stroke() -> None:
+    stroke = np.array(
+        [1112, 1131, 1150, 1231, 1297, 1503, 1621, 1863, 1966, 2186, 2283, 2470, 2549, 2692, 2745, 2844, 2888, 2937],
+        dtype=np.int32,
+    )
+    values = np.r_[np.full(50, 1110), stroke, np.full(50, 2940)]
+    session = _raw_dropout_test_session(values, sensor_type="analog_pot")
+
+    result = apply_raw_signal_dropout_filter(session, DEFAULT_RAW_SIGNAL_DROPOUT_FILTER)
+
+    signal = result.report["signals"][0]
+    assert signal["detected_samples"] == 0
+    assert result.repaired_source_columns == {}
+
+
+def test_raw_dropout_filter_distinguishes_wrapped_encoder_wrap_from_teleport() -> None:
+    legitimate_wrap = np.mod(np.arange(4080, 4140), 4096)
+    values = np.r_[np.full(50, 3500), legitimate_wrap, np.full(50, 3520)].astype(np.int32)
+    values[25] = 0
+    session = _raw_dropout_test_session(values, sensor_type="as5600_angle_i2c")
+
+    result = apply_raw_signal_dropout_filter(session, DEFAULT_RAW_SIGNAL_DROPOUT_FILTER)
+
+    signal = result.report["signals"][0]
+    assert signal["detected_samples"] == 1
+    assert signal["intervals"][0]["start_index"] == 25
+    repaired_col = result.repaired_source_columns["test_raw_dom_suspension [counts]"]
+    assert session["df"].loc[25, repaired_col] == 3500
+
+
+def test_legacy_preprocess_config_inherits_dropout_repair_mode() -> None:
+    legacy = copy.deepcopy(DEFAULT_PREPROCESS_PROFILE_CONFIG)
+    legacy.pop("raw_signal_dropout_filter")
+
+    normalized = normalize_preprocess_config_keys(legacy)
+
+    assert normalized["raw_signal_dropout_filter"]["mode"] == "detect_and_repair"
+    assert normalized["raw_signal_dropout_filter"]["max_boundary_extension_ms"] == 25.0
+    assert normalized["raw_signal_dropout_filter"]["detectors"]["bounded_analog"][
+        "transient_return_enabled"
+    ] is True
+    validate_preprocess_config(normalized)

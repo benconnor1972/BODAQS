@@ -93,6 +93,7 @@ from bodaqs_import_manager.import_agent_profile_builders import (
     build_session_note_template_from_field_ids,
     copy_source_note_assets,
     derive_profile_id,
+    fork_session_note_template,
     front_head_angle_from_profile,
     front_vertical_transform_from_profile,
     load_session_note_field_catalog,
@@ -2820,6 +2821,29 @@ def test_derive_profile_id_slugifies_and_suffixes_duplicates():
     assert profile_id == "alice-s-enduro-wet-setup-3"
 
 
+def test_fork_session_note_template_starts_new_identity_at_version_one():
+    template = build_session_note_template_from_field_ids(
+        field_ids=["bike", "rider", "front_tokens"],
+        template_id="existing-bike-setup",
+        template_version="2.4",
+        title="Existing bike setup",
+        catalog=load_session_note_field_catalog(),
+    )
+
+    forked = fork_session_note_template(
+        template,
+        display_name="Sandra's LEVO SL",
+        existing_ids=["sandra-s-levo-sl-setup"],
+    )
+
+    assert forked["template_id"] == "sandra-s-levo-sl-setup-2"
+    assert forked["template_version"] == "1.0"
+    assert forked["title"] == "Sandra's LEVO SL setup"
+    assert forked["fields"] == template["fields"]
+    assert template["template_id"] == "existing-bike-setup"
+    assert template["template_version"] == "2.4"
+
+
 def test_import_agent_bike_profile_builder_updates_basic_fields_and_lut(tmp_path):
     library = provision_import_agent_library(tmp_path / "libraries", display_name="Alice Library")
     source = provision_import_agent_source(
@@ -3909,24 +3933,20 @@ def test_import_manager_import_now_guard_allows_watch_start_when_idle():
 class _FakeSourcesTree:
     def __init__(self) -> None:
         self.columns = (
+            "display_name",
             "enabled",
             "force_reprocess",
-            "display_name",
-            "source_type",
-            "status",
-            "library_name",
-            "bike_name",
             "attach_note",
+            "status",
+            "bike_name",
         )
         self.values = [
-            "✓",
-            "✓",
             "Demo Source",
-            "Wi-Fi logger",
-            "not checked",
-            "Demo Library",
-            "Demo Bike",
+            "✓",
+            "✓",
             "",
+            "-",
+            "Demo Bike",
         ]
 
     def __getitem__(self, key: str):
@@ -3947,7 +3967,7 @@ class _FakeSourcesTree:
         raise AssertionError(f"Unexpected item call: option={option!r}, kwargs={kwargs!r}")
 
 
-def test_import_manager_source_runtime_status_updates_status_column_not_type_column():
+def test_import_manager_source_runtime_status_updates_named_status_column():
     window = object.__new__(import_agent_setup_module.ImportAgentManagerWindow)
     window._source_runtime_status = {}
     tree = _FakeSourcesTree()
@@ -3955,5 +3975,201 @@ def test_import_manager_source_runtime_status_updates_status_column_not_type_col
 
     window._set_source_runtime_status("source-a", "waiting for upload mode")
 
-    assert tree.values[3] == "Wi-Fi logger"
+    assert tree.values[0] == "Demo Source"
     assert tree.values[4] == "waiting for upload mode"
+
+
+class _FakeSourcesClickTree:
+    def __init__(self, column: str) -> None:
+        self.column = column
+        self.selected: str | None = None
+
+    def identify(self, kind: str, _x: int, _y: int) -> str:
+        assert kind == "region"
+        return "cell"
+
+    def identify_column(self, _x: int) -> str:
+        return self.column
+
+    def identify_row(self, _y: int) -> str:
+        return "source-a"
+
+    def selection_set(self, source_id: str) -> None:
+        self.selected = source_id
+
+
+@pytest.mark.parametrize(
+    ("column", "expected_action"),
+    [("#2", "enabled"), ("#3", "reprocess"), ("#4", "note")],
+)
+def test_import_manager_source_checkbox_columns_follow_reordered_layout(column, expected_action):
+    window = object.__new__(import_agent_setup_module.ImportAgentManagerWindow)
+    tree = _FakeSourcesClickTree(column)
+    window.sources_tree = tree
+    actions: list[tuple[str, str]] = []
+    window._toggle_source_enabled = lambda source_id: actions.append(("enabled", source_id))
+    window._toggle_source_force_reprocess = lambda source_id: actions.append(("reprocess", source_id))
+    window._toggle_source_session_note_attach = lambda source_id: actions.append(("note", source_id))
+    event = type("Event", (), {"x": 10, "y": 10})()
+
+    result = window._on_sources_tree_click(event)
+
+    assert result == "break"
+    assert tree.selected == "source-a"
+    assert actions == [(expected_action, "source-a")]
+
+
+def test_import_manager_source_type_icons_cover_archive_and_wifi_sources():
+    assert import_agent_setup_module._SOURCE_TYPE_ICONS[
+        import_agent_setup_module.SOURCE_TYPE_FILESYSTEM_ARCHIVE
+    ] == "💾"
+    assert import_agent_setup_module._SOURCE_TYPE_ICONS[
+        import_agent_setup_module.SOURCE_TYPE_LOGGER_WIFI
+    ] == "📶"
+
+
+def test_import_manager_source_type_tooltips_describe_connection_kind():
+    assert import_agent_setup_module._SOURCE_TYPE_TOOLTIPS[
+        import_agent_setup_module.SOURCE_TYPE_FILESYSTEM_ARCHIVE
+    ] == "Local folder"
+    assert import_agent_setup_module._SOURCE_TYPE_TOOLTIPS[
+        import_agent_setup_module.SOURCE_TYPE_LOGGER_WIFI
+    ] == "WiFi logger connection"
+
+
+def test_import_manager_sources_group_by_visual_library_order_without_mutating_input():
+    source_type = type("Source", (), {})
+    sources = []
+    for source_id, display_name, library_id in (
+        ("source-z", "Zulu", "library-b"),
+        ("source-a2", "Alpha", "library-a"),
+        ("source-a1", "Alpha", "library-a"),
+        ("source-b", "Bravo", "library-b"),
+    ):
+        source = source_type()
+        source.source_id = source_id
+        source.display_name = display_name
+        source.library_id = library_id
+        sources.append(source)
+
+    ordered = import_agent_setup_module._ordered_manager_sources(
+        sources,
+        {"library-b": 0, "library-a": 1},
+    )
+
+    assert [source.source_id for source in ordered] == [
+        "source-b",
+        "source-z",
+        "source-a1",
+        "source-a2",
+    ]
+    assert [source.source_id for source in sources] == [
+        "source-z",
+        "source-a2",
+        "source-a1",
+        "source-b",
+    ]
+
+
+def test_import_manager_library_link_colors_are_repeatable_and_distinct_within_palette():
+    library_ids = ["library-a", "library-b", "library-c"]
+
+    first = import_agent_setup_module._manager_library_link_colors(library_ids)
+    second = import_agent_setup_module._manager_library_link_colors(library_ids)
+
+    assert first == second
+    assert len(set(first.values())) == len(library_ids)
+
+
+def test_import_manager_link_curve_connects_row_centres_monotonically():
+    points = import_agent_setup_module._manager_link_curve_points(76, 32, 96, steps=8)
+    x_values = points[0::2]
+    y_values = points[1::2]
+
+    assert (x_values[0], y_values[0]) == (2.0, 32.0)
+    assert (x_values[-1], y_values[-1]) == (74.0, 96.0)
+    assert x_values == sorted(x_values)
+    assert y_values == sorted(y_values)
+
+
+def test_import_manager_child_window_is_centred_inside_manager_on_secondary_screen():
+    assert import_agent_setup_module._manager_child_window_position(
+        manager_x=-1500,
+        manager_y=120,
+        manager_width=1100,
+        manager_height=760,
+        child_width=600,
+        child_height=300,
+    ) == (-1250, 350)
+
+
+def test_import_manager_child_window_uses_manager_origin_when_child_is_larger():
+    assert import_agent_setup_module._manager_child_window_position(
+        manager_x=1800,
+        manager_y=40,
+        manager_width=900,
+        manager_height=600,
+        child_width=1000,
+        child_height=700,
+    ) == (1800, 40)
+
+
+class _FakeManagerButton:
+    def __init__(self) -> None:
+        self.options: dict[str, object] = {}
+
+    def configure(self, **options) -> None:
+        self.options.update(options)
+
+
+class _FakeStringVar:
+    def __init__(self) -> None:
+        self.value = ""
+
+    def set(self, value: str) -> None:
+        self.value = value
+
+
+def test_import_manager_watch_toggle_visually_reflects_running_state():
+    window = object.__new__(import_agent_setup_module.ImportAgentManagerWindow)
+    window.watch_toggle_button = _FakeManagerButton()
+    window._watch_state_images = {"active": "active-image", "stopped": "stopped-image"}
+    window.watch_service = type("Watch", (), {"running": True})()
+    window.import_now_thread = None
+    window.controller = type(
+        "Controller",
+        (),
+        {
+            "app_config": type("Config", (), {"sources": ()})(),
+            "has_config": lambda self: True,
+        },
+    )()
+
+    window._refresh_watch_toggle_button()
+
+    assert window.watch_toggle_button.options["text"] == "Watch active"
+    assert window.watch_toggle_button.options["style"] == "ManagerToggleActive.TButton"
+    assert window.watch_toggle_button.options["image"] == "active-image"
+    assert window.watch_toggle_button.options["state"] == "normal"
+
+
+def test_import_manager_workbench_toggle_visually_reflects_running_state():
+    window = object.__new__(import_agent_setup_module.ImportAgentManagerWindow)
+    window.workbench_toggle_button = _FakeManagerButton()
+    window.library_service_state_var = _FakeStringVar()
+    service = type(
+        "Service",
+        (),
+        {
+            "web_url": "http://127.0.0.1:8765/",
+            "is_running": lambda self: True,
+        },
+    )()
+    window._library_api_service_for_current_config = lambda *, create: service
+
+    window._refresh_web_app_controls(has_config=True)
+
+    assert window.workbench_toggle_button.options["text"] == "Workbench active"
+    assert window.workbench_toggle_button.options["style"] == "ManagerToggleActive.TButton"
+    assert window.workbench_toggle_button.options["state"] == "normal"
+    assert window.library_service_state_var.value == "BODAQS Workbench available at http://127.0.0.1:8765/"

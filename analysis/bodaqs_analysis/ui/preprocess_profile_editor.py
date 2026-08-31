@@ -120,6 +120,9 @@ class PreprocessProfileEditor:
 
         self.profiles_dir = Path(profiles_dir)
         self.current_profile_path: Optional[Path] = Path(profile_path) if profile_path is not None else None
+        self._raw_signal_dropout_filter = copy.deepcopy(
+            DEFAULT_PREPROCESS_PROFILE_CONFIG["raw_signal_dropout_filter"]
+        )
 
         if profile_path is not None:
             initial_profile = load_preprocess_profile(profile_path)
@@ -204,6 +207,18 @@ class PreprocessProfileEditor:
         self.w_prefer_postprocessing_transformations = W.Checkbox(
             description="Prefer post-processing transformations"
         )
+        self.w_raw_dropout_mode = W.Dropdown(
+            options=[
+                ("Off", "off"),
+                ("Detect only", "detect"),
+                ("Detect and repair", "detect_and_repair"),
+            ],
+            description="Raw dropouts",
+            layout=W.Layout(width="320px"),
+        )
+        self.w_raw_dropout_max_gap_ms = W.FloatText(description="Max repair (ms)")
+        self.w_raw_dropout_context_ms = W.FloatText(description="Context (ms)")
+        self.w_raw_dropout_boundary_ms = W.FloatText(description="Boundary (ms)")
         self.w_motion_enabled = W.Checkbox(description="Enable motion derivation")
         self.w_motion_sources = W.Textarea(description="Sources", layout=_full_width_layout(height="110px"))
         self.w_motion_primary = W.Textarea(description="Primary", layout=_full_width_layout(height="155px"))
@@ -321,6 +336,14 @@ class PreprocessProfileEditor:
                     _row([self.w_zero_window_s, self.w_zero_min_samples]),
                     self.w_clip_0_1,
                     self.w_prefer_postprocessing_transformations,
+                    self.w_raw_dropout_mode,
+                    _row(
+                        [
+                            self.w_raw_dropout_max_gap_ms,
+                            self.w_raw_dropout_context_ms,
+                            self.w_raw_dropout_boundary_ms,
+                        ]
+                    ),
                     W.HTML("<b>Motion derivation</b>"),
                     W.HTML(
                         "<p style='margin:0;color:#555'>Generate primary/secondary filtered displacement, "
@@ -422,6 +445,21 @@ class PreprocessProfileEditor:
         self.w_prefer_postprocessing_transformations.value = bool(
             cfg.get("prefer_postprocessing_transformations", False)
         )
+        dropout_filter = cfg.get("raw_signal_dropout_filter")
+        dropout_filter = dropout_filter if isinstance(dropout_filter, Mapping) else {}
+        self._raw_signal_dropout_filter = copy.deepcopy(dict(dropout_filter))
+        _set_dropdown_value(
+            self.w_raw_dropout_mode,
+            dropout_filter.get("mode", "detect_and_repair"),
+            "detect_and_repair",
+        )
+        self.w_raw_dropout_max_gap_ms.value = float(
+            dropout_filter.get("max_repair_gap_ms", 100.0)
+        )
+        self.w_raw_dropout_context_ms.value = float(dropout_filter.get("context_ms", 25.0))
+        self.w_raw_dropout_boundary_ms.value = float(
+            dropout_filter.get("max_boundary_extension_ms", 25.0)
+        )
         self.w_motion_enabled.value = bool(motion.get("enabled", False))
         self.w_motion_sources.value = _json_text(motion.get("sources") or [])
         self.w_motion_primary.value = _json_text(motion.get("primary") or {})
@@ -482,6 +520,15 @@ class PreprocessProfileEditor:
             self.w_activity_detection.value,
             field_name="activity_detection",
         )
+        raw_signal_dropout_filter = copy.deepcopy(self._raw_signal_dropout_filter)
+        raw_signal_dropout_filter["mode"] = str(self.w_raw_dropout_mode.value)
+        raw_signal_dropout_filter["max_repair_gap_ms"] = float(
+            self.w_raw_dropout_max_gap_ms.value
+        )
+        raw_signal_dropout_filter["context_ms"] = float(self.w_raw_dropout_context_ms.value)
+        raw_signal_dropout_filter["max_boundary_extension_ms"] = float(
+            self.w_raw_dropout_boundary_ms.value
+        )
 
         config: Dict[str, Any] = {
             "schema_path": str(self.w_schema_path.value or "").strip(),
@@ -511,6 +558,7 @@ class PreprocessProfileEditor:
             "zero_min_samples": int(self.w_zero_min_samples.value),
             "clip_0_1": bool(self.w_clip_0_1.value),
             "prefer_postprocessing_transformations": bool(self.w_prefer_postprocessing_transformations.value),
+            "raw_signal_dropout_filter": raw_signal_dropout_filter,
             "motion_derivation": motion_derivation,
             "butterworth_smoothing": [
                 {"cutoff_hz": float(cfg.cutoff_hz), "order": int(cfg.order)}

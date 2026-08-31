@@ -68,13 +68,18 @@ def _to_seconds(series: pd.Series) -> np.ndarray:
     # Already numeric → assume seconds
     return pd.to_numeric(s, errors="coerce").to_numpy(dtype=float)
 
-def _robust_dt(df: pd.DataFrame, meta: dict) -> float:
+def _robust_dt(
+    df: pd.DataFrame,
+    meta: dict,
+    *,
+    time_s: Optional[np.ndarray] = None,
+) -> float:
     """Try meta['dt'], else estimate from 't' column."""
     dt_val = float(meta.get("dt", np.nan))
     if np.isfinite(dt_val) and dt_val > 0:
         return dt_val
     if "time_s" in df.columns and len(df) > 1:
-        t_sec = _to_seconds(df["time_s"])
+        t_sec = time_s if time_s is not None else _to_seconds(df["time_s"])
         diffs = np.diff(t_sec)
         diffs = diffs[(diffs > 0) & np.isfinite(diffs)]
         if diffs.size:
@@ -98,6 +103,87 @@ def _series_get(df: pd.DataFrame, name: str):
     if name not in df.columns:
         raise KeyError(f"Series '{name}' not found in event_analysis_df columns.")
     return df[name].to_numpy()
+
+
+class _DetectionContext:
+    """Per-detection immutable array and derived-signal cache."""
+
+    def __init__(self, df: pd.DataFrame):
+        self.df = df
+        self.time_s = _to_seconds(df["time_s"])
+        self._float_series: dict[str, np.ndarray] = {}
+        self._phased_inputs: dict[
+            tuple[str, tuple[tuple[str, Any, Any, int], ...], float, int],
+            tuple[np.ndarray, dict[str, np.ndarray], dict[str, int]],
+        ] = {}
+        self._band_keys: dict[int, tuple[tuple[str, Any, Any, int], ...]] = {}
+        self._finite_bounds: dict[str, tuple[float, float]] = {}
+
+    def float_series(self, name: str) -> np.ndarray:
+        cached = self._float_series.get(name)
+        if cached is None:
+            cached = _series_get(self.df, name).astype(float, copy=False)
+            self._float_series[name] = cached
+        return cached
+
+    def phased_inputs(
+        self,
+        *,
+        series_name: str,
+        bands: Mapping[str, Any],
+        smooth_ms: Optional[float],
+        dt: float,
+    ) -> tuple[np.ndarray, dict[str, np.ndarray], dict[str, int]]:
+        smooth_win = 1
+        if smooth_ms is not None and np.isfinite(dt) and dt > 0:
+            smooth_win = max(1, int(round((float(smooth_ms) / 1000.0) / dt)))
+
+        bands_identity = id(bands)
+        bands_key = self._band_keys.get(bands_identity)
+        if bands_key is None:
+            bands_key = tuple(
+                (
+                    name,
+                    (bands.get(name, {}) or {}).get("min", -np.inf),
+                    (bands.get(name, {}) or {}).get("max", np.inf),
+                    int((bands.get(name, {}) or {}).get("dwell_samples", 1) or 1),
+                )
+                for name in ("neg", "zero", "pos")
+            )
+            self._band_keys[bands_identity] = bands_key
+
+        key = (series_name, bands_key, float(dt), smooth_win)
+        cached = self._phased_inputs.get(key)
+        if cached is not None:
+            return cached
+
+        y = self.float_series(series_name)
+        if smooth_win > 1:
+            kernel = np.ones(smooth_win, dtype=float) / smooth_win
+            y_s = np.convolve(y, kernel, mode="same")
+        else:
+            y_s = y
+
+        masks: dict[str, np.ndarray] = {}
+        dwells: dict[str, int] = {}
+        for name in ("neg", "zero", "pos"):
+            cfg = bands.get(name, {}) or {}
+            bmin = cfg.get("min", -np.inf)
+            bmax = cfg.get("max", np.inf)
+            masks[name] = (y_s >= bmin) & (y_s <= bmax)
+            dwells[name] = int(cfg.get("dwell_samples", 1) or 1)
+
+        cached = (y, masks, dwells)
+        self._phased_inputs[key] = cached
+        return cached
+
+    def finite_bounds(self, name: str) -> tuple[float, float]:
+        cached = self._finite_bounds.get(name)
+        if cached is None:
+            arr = self.float_series(name)
+            cached = (float(np.nanmin(arr)), float(np.nanmax(arr)))
+            self._finite_bounds[name] = cached
+        return cached
 
 def _nan_frac(arr):
     return float(np.mean(np.isnan(arr))) if arr.size else 1.0
@@ -409,7 +495,7 @@ def _hash_event_params(ev_resolved: dict, *, schema_version: str = "") -> str:
     b = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
     return hashlib.sha256(b).hexdigest()
 
-def _trigger_local_extrema(df, dt, ev, base_t0_sec=None):
+def _trigger_local_extrema(df, dt, ev, base_t0_sec=None, *, context=None):
     trig = ev["trigger"]
     signal = trig.get("signal")            # 'disp' | 'vel' | 'acc'
     kind = trig.get("kind")                # 'min' | 'max'
@@ -418,8 +504,12 @@ def _trigger_local_extrema(df, dt, ev, base_t0_sec=None):
     edge_ignore_s = trig.get("edge_ignore_s")
 
     series_name = ev["inputs"].get(signal)
-    y = _series_get(df, series_name).copy()
-    t = _to_seconds(df["time_s"])
+    if context is not None:
+        y = context.float_series(series_name)
+        t = context.time_s
+    else:
+        y = _series_get(df, series_name).copy()
+        t = _to_seconds(df["time_s"])
     n = len(y)
     if n == 0:
         return []
@@ -494,7 +584,7 @@ def _trigger_local_extrema(df, dt, ev, base_t0_sec=None):
         })
     return out
 
-def _trigger_threshold_crossing(df, dt, ev, base_t0_sec=None):
+def _trigger_threshold_crossing(df, dt, ev, base_t0_sec=None, *, context=None):
     """
     Implements 'simple_threshold_crossing' (and legacy 'threshold_crossing').
 
@@ -511,8 +601,12 @@ def _trigger_threshold_crossing(df, dt, ev, base_t0_sec=None):
     hyster = float(trig.get("hysteresis", 0.0))
 
     series_name = ev["inputs"].get(signal)   # e.g. 'rear_shock [mm]_vel'
-    y = _series_get(df, series_name).astype(float)
-    t = _to_seconds(df["time_s"])
+    if context is not None:
+        y = context.float_series(series_name)
+        t = context.time_s
+    else:
+        y = _series_get(df, series_name).astype(float)
+        t = _to_seconds(df["time_s"])
     n = len(y)
     if n == 0:
         return []
@@ -520,8 +614,11 @@ def _trigger_threshold_crossing(df, dt, ev, base_t0_sec=None):
     # optional displacement for scoring
     disp_col = ev["inputs"].get("disp")
     if disp_col:
-        x_raw = _series_get(df, disp_col)
-        x = np.asarray(x_raw, dtype=float)
+        x = (
+            context.float_series(disp_col)
+            if context is not None
+            else np.asarray(_series_get(df, disp_col), dtype=float)
+        )
     else:
         x = None
 
@@ -567,13 +664,19 @@ def _trigger_threshold_crossing(df, dt, ev, base_t0_sec=None):
 
     return out
 
-def _trigger_zero_crossing(df, dt, ev, base_t0_sec=None):
+def _trigger_zero_crossing(df, dt, ev, base_t0_sec=None, *, context=None):
     trig = ev["trigger"].copy()
     trig.setdefault("value", 0.0)
     ev2 = dict(ev); ev2["trigger"] = trig
-    return _trigger_threshold_crossing(df, dt, ev2, base_t0_sec=base_t0_sec)
+    return _trigger_threshold_crossing(
+        df,
+        dt,
+        ev2,
+        base_t0_sec=base_t0_sec,
+        context=context,
+    )
 
-def _trigger_phased_threshold_crossing(df, dt, ev, base_t0_sec=None):
+def _trigger_phased_threshold_crossing(df, dt, ev, base_t0_sec=None, *, context=None):
     """
     Phased threshold crossing trigger.
 
@@ -607,12 +710,16 @@ def _trigger_phased_threshold_crossing(df, dt, ev, base_t0_sec=None):
 
     # signal -> column
     series_name = ev["inputs"].get(signal)
-    y = _series_get(df, series_name).astype(float)
+    y = (
+        context.float_series(series_name)
+        if context is not None
+        else _series_get(df, series_name).astype(float)
+    )
     n = len(y)
     if n == 0:
         return []
 
-    t = _to_seconds(df["time_s"])
+    t = context.time_s if context is not None else _to_seconds(df["time_s"])
 
     search = trig.get("search", {}) or {}
     bands = trig.get("bands", {}) or {}
@@ -625,46 +732,34 @@ def _trigger_phased_threshold_crossing(df, dt, ev, base_t0_sec=None):
     if i0 >= i1:
         return []
 
-    # --- Optional smoothing ---
+    # --- Optional smoothing and band masks ---
     smooth_ms = search.get("smooth_ms")
-    if smooth_ms is not None and np.isfinite(dt) and dt > 0:
-        win = int(round((smooth_ms / 1000.0) / dt))
-        if win > 1:
-            kernel = np.ones(win, dtype=float) / win
-            y_s = np.convolve(y, kernel, mode="same")
+    if context is not None:
+        y, masks, dwells = context.phased_inputs(
+            series_name=series_name,
+            bands=bands,
+            smooth_ms=smooth_ms,
+            dt=dt,
+        )
+    else:
+        if smooth_ms is not None and np.isfinite(dt) and dt > 0:
+            win = int(round((smooth_ms / 1000.0) / dt))
+            if win > 1:
+                kernel = np.ones(win, dtype=float) / win
+                y_s = np.convolve(y, kernel, mode="same")
+            else:
+                y_s = y
         else:
             y_s = y
-    else:
-        y_s = y
 
-    # --- Build band masks & dwell requirements ---
-    def _band_masks(bands_def):
-        def _one(name):
-            cfg = bands_def.get(name, {}) or {}
+        masks = {}
+        dwells = {}
+        for name in ("neg", "zero", "pos"):
+            cfg = bands.get(name, {}) or {}
             bmin = cfg.get("min", -np.inf)
             bmax = cfg.get("max", np.inf)
-            dwell = int(cfg.get("dwell_samples", 1) or 1)
-            mask = (y_s >= bmin) & (y_s <= bmax)
-            return mask, dwell
-
-        neg_mask, neg_dwell = _one("neg")
-        zero_mask, zero_dwell = _one("zero")
-        pos_mask, pos_dwell = _one("pos")
-        return (neg_mask, zero_mask, pos_mask,
-                neg_dwell, zero_dwell, pos_dwell)
-
-    neg_mask, zero_mask, pos_mask, neg_dwell, zero_dwell, pos_dwell = _band_masks(bands)
-
-    masks = {
-        "neg": neg_mask,
-        "zero": zero_mask,
-        "pos": pos_mask,
-    }
-    dwells = {
-        "neg": neg_dwell,
-        "zero": zero_dwell,
-        "pos": pos_dwell,
-    }
+            masks[name] = (y_s >= bmin) & (y_s <= bmax)
+            dwells[name] = int(cfg.get("dwell_samples", 1) or 1)
 
     sequence_aliases = {
         "rising": ("neg", "zero", "pos"),
@@ -879,11 +974,14 @@ def _eval_simple_tests(df, t0_idx, t, tests, inputs_map):
             return False
     return True
 
-def _apply_conditions(df, dt, ev, t0_idx, inputs_map):
+def _apply_conditions(df, dt, ev, t0_idx, inputs_map, *, context=None):
     """
     Evaluate pre/post conditions for an event candidate using a fully-resolved inputs_map.
     """
-    t = _to_seconds(df["time_s"])
+    if not ev.get("preconditions") and not ev.get("postconditions"):
+        return True
+
+    t = context.time_s if context is not None else _to_seconds(df["time_s"])
 
     def make_slice(within):
         start_s, end_s = within
@@ -1156,8 +1254,9 @@ def _compute_metrics(
     trig_results: dict | None = None,
     primary_trigger_id: str | None = None,
     smoothed_signal_cache: dict[tuple[str, int], np.ndarray] | None = None,
+    context: _DetectionContext | None = None,
 ):
-    t = _to_seconds(df["time_s"])
+    t = context.time_s if context is not None else _to_seconds(df["time_s"])
     seg = df.iloc[start_idx:end_idx]
     metrics = ev.get("metrics", []) or []
     out = {}
@@ -1262,7 +1361,7 @@ def _compute_metrics(
             if not col or col not in df.columns:
                 continue
 
-            y_full = df[col].to_numpy(dtype=float)
+            y_full = context.float_series(col) if context is not None else df[col].to_numpy(dtype=float)
 
             # optional smoothing: apply to the full signal before slicing the
             # interval so short intervals are not biased by convolution edges.
@@ -1442,7 +1541,8 @@ def detect_events_from_schema(
     if _t0_ts is not None and pd.isna(_t0_ts):
         _t0_ts = None
 
-    dt = _robust_dt(df, meta)
+    context = _DetectionContext(df)
+    dt = _robust_dt(df, meta, time_s=context.time_s)
     if not np.isfinite(dt) or dt <= 0:
         logger.warning(
             "Invalid dt; skipping time-based distances/edge windows; using prominence-only."
@@ -1478,7 +1578,7 @@ def detect_events_from_schema(
 
     rows = []
     n = len(df)
-    tvec = df["time_s"].to_numpy()
+    tvec = context.time_s
     smoothed_signal_cache: dict[tuple[str, int], np.ndarray] = {}
 
     # Contract: event_id must be unique per *instance*.
@@ -1579,16 +1679,24 @@ def detect_events_from_schema(
 
         # ---- Trigger detection ----
         if ttype == "local_extrema":
-            cands = _trigger_local_extrema(df, dt, ev_resolved, base_t0_sec=None)
+            cands = _trigger_local_extrema(
+                df, dt, ev_resolved, base_t0_sec=None, context=context
+            )
             prefer_key_default = "t0_index"
         elif ttype in ("simple_threshold_crossing", "threshold_crossing"):
-            cands = _trigger_threshold_crossing(df, dt, ev_resolved, base_t0_sec=None)
+            cands = _trigger_threshold_crossing(
+                df, dt, ev_resolved, base_t0_sec=None, context=context
+            )
             prefer_key_default = "t0_index"
         elif ttype == "zero_crossing":
-            cands = _trigger_zero_crossing(df, dt, ev_resolved, base_t0_sec=None)
+            cands = _trigger_zero_crossing(
+                df, dt, ev_resolved, base_t0_sec=None, context=context
+            )
             prefer_key_default = "t0_index"
         elif ttype == "phased_threshold_crossing":
-            cands = _trigger_phased_threshold_crossing(df, dt, ev_resolved, base_t0_sec=None)
+            cands = _trigger_phased_threshold_crossing(
+                df, dt, ev_resolved, base_t0_sec=None, context=context
+            )
             prefer_key_default = "t0_index"
         elif ttype == "custom":
             logger.warning(
@@ -1661,6 +1769,8 @@ def detect_events_from_schema(
 
         pre_n  = _sec_to_samples_opt(pre_s, dt)  or 0
         post_n = _sec_to_samples_opt(post_s, dt) or 0
+        schema_version = schema.get("version") or schema.get("schema_version") or ""
+        params_hash = _hash_event_params(ev_resolved, schema_version=schema_version)
 
         kept = 0
         rej = {"conditions": 0, "metric_conditions": 0, "nan": 0, "clipped": 0, "saved": 0}
@@ -1673,26 +1783,30 @@ def detect_events_from_schema(
             edge_clip = (start_idx == 0 or end_idx == len(df))
 
             # ---- CONDITIONS ----
-            if not _apply_conditions(df, dt, ev_resolved, t0_idx, inputs_map):
+            if not _apply_conditions(
+                df, dt, ev_resolved, t0_idx, inputs_map, context=context
+            ):
                 rej["conditions"] += 1
                 logger.debug("%s(%s): candidate t0_idx=%d failed conditions", ev_id, event_context, t0_idx)
                 continue
             kept += 1
 
-            seg = df.iloc[start_idx:end_idx]
-            nan_frac = float(seg.isna().any(axis=1).mean())
-            if (max_nan_fraction is not None) and (nan_frac > max_nan_fraction):
-                rej["nan"] += 1
-                continue
+            if max_nan_fraction is not None:
+                seg = df.iloc[start_idx:end_idx]
+                nan_frac = float(seg.isna().any(axis=1).mean())
+                if nan_frac > max_nan_fraction:
+                    rej["nan"] += 1
+                    continue
 
             if skip_if_clipped:
                 clipped = False
                 for key, colname in inputs_map.items():
                     if colname not in df.columns:
                         continue
-                    arr = df[colname].to_numpy()
+                    arr = context.float_series(colname)
                     seg_arr = arr[start_idx:end_idx]
-                    if np.any(seg_arr == np.nanmin(arr)) or np.any(seg_arr == np.nanmax(arr)):
+                    arr_min, arr_max = context.finite_bounds(colname)
+                    if np.any(seg_arr == arr_min) or np.any(seg_arr == arr_max):
                         clipped = True; break
                 if clipped:
                     rej["clipped"] += 1
@@ -1728,13 +1842,21 @@ def detect_events_from_schema(
 
                 # Run the appropriate trigger type (SECONDARIES: all windowed via base_t0_sec)
                 if st_type == "local_extrema":
-                    st_cands = _trigger_local_extrema(df, dt, st_ev, base_t0_sec=base_t0_sec)
+                    st_cands = _trigger_local_extrema(
+                        df, dt, st_ev, base_t0_sec=base_t0_sec, context=context
+                    )
                 elif st_type in ("simple_threshold_crossing", "threshold_crossing"):
-                    st_cands = _trigger_threshold_crossing(df, dt, st_ev, base_t0_sec=base_t0_sec)
+                    st_cands = _trigger_threshold_crossing(
+                        df, dt, st_ev, base_t0_sec=base_t0_sec, context=context
+                    )
                 elif st_type == "zero_crossing":
-                    st_cands = _trigger_zero_crossing(df, dt, st_ev, base_t0_sec=base_t0_sec)
+                    st_cands = _trigger_zero_crossing(
+                        df, dt, st_ev, base_t0_sec=base_t0_sec, context=context
+                    )
                 elif st_type == "phased_threshold_crossing":
-                    st_cands = _trigger_phased_threshold_crossing(df, dt, st_ev, base_t0_sec=base_t0_sec)
+                    st_cands = _trigger_phased_threshold_crossing(
+                        df, dt, st_ev, base_t0_sec=base_t0_sec, context=context
+                    )
                 else:
                     logger.warning(
                         "Secondary trigger type %r not implemented for %r.",
@@ -1806,6 +1928,7 @@ def detect_events_from_schema(
                 trig_results=trig_results,
                 primary_trigger_id=primary_id,
                 smoothed_signal_cache=smoothed_signal_cache,
+                context=context,
             )
             if not _apply_metric_conditions(m, ev_resolved):
                 rej["metric_conditions"] += 1
@@ -1819,7 +1942,6 @@ def detect_events_from_schema(
 
             # ---- Contract mapping ----
             schema_id = ev_id                      # schema event definition id
-            schema_version = schema.get("version") or schema.get("schema_version") or ""
             event_name = ev.get("label") or schema_id
             signal = (trig.get("signal") or "")    # schema terminology
             signal_col = inputs_map.get(signal) if signal else None
@@ -1865,7 +1987,7 @@ def detect_events_from_schema(
 
                 # ---- Provenance & QC (required) ----
                 "detector_version": "schema/v0",
-                "params_hash": _hash_event_params(ev_resolved, schema_version=schema_version),
+                "params_hash": params_hash,
 
                 # ---- Optional / future-proof ----
                 "qc_flags": qc_flags or None,
@@ -1899,7 +2021,7 @@ def detect_events_from_schema(
             for k in ("disp","vel","acc","disp_norm"):
                 colk = inputs_map.get(k)
                 if colk in df.columns:
-                    row[f"{k}_at_trigger"] = float(df.iloc[t0_idx][colk])
+                    row[f"{k}_at_trigger"] = float(context.float_series(colk)[t0_idx])
 
             # Save secondary trigger times (if any)
             if sec_outputs:

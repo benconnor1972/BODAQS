@@ -401,6 +401,32 @@ def _logger_route_dataframe(df: pd.DataFrame, columns: GPSColumnSet) -> tuple[pd
     finite_ages = ages[np.isfinite(ages)]
     gaps = np.diff(route["time_s"].to_numpy(dtype=float)) if len(route.index) >= 2 else np.array([], dtype=float)
     finite_gaps = gaps[np.isfinite(gaps) & (gaps > 0)]
+    route_lat = route["latitude_deg"].to_numpy(dtype=float)
+    route_lon = route["longitude_deg"].to_numpy(dtype=float)
+    if route_lat.size:
+        position_bbox = {
+            "min_longitude": float(np.min(route_lon)),
+            "min_latitude": float(np.min(route_lat)),
+            "max_longitude": float(np.max(route_lon)),
+            "max_latitude": float(np.max(route_lat)),
+        }
+    else:
+        position_bbox = None
+    if route_lat.size >= 2:
+        phi = np.radians(route_lat)
+        d_phi = np.diff(phi)
+        d_lambda = np.radians(np.diff(route_lon))
+        haversine_a = (
+            np.sin(d_phi / 2.0) ** 2
+            + np.cos(phi[:-1]) * np.cos(phi[1:]) * np.sin(d_lambda / 2.0) ** 2
+        )
+        haversine_a = np.clip(haversine_a, 0.0, 1.0)
+        route_distance_m = float(
+            np.sum(2.0 * 6_371_000.0 * np.arctan2(np.sqrt(haversine_a), np.sqrt(1.0 - haversine_a)))
+        )
+    else:
+        route_distance_m = None
+    gap_threshold_s = 5.0
     meta = {
         "input_rows": initial_rows,
         "output_points": int(len(route.index)),
@@ -413,6 +439,11 @@ def _logger_route_dataframe(df: pd.DataFrame, columns: GPSColumnSet) -> tuple[pd
         "age_ms_max": float(np.max(finite_ages)) if finite_ages.size else None,
         "gap_s_median": float(np.median(finite_gaps)) if finite_gaps.size else None,
         "gap_s_max": float(np.max(finite_gaps)) if finite_gaps.size else None,
+        "gap_count_over_threshold": int(np.count_nonzero(finite_gaps > gap_threshold_s)),
+        "gap_threshold_s": gap_threshold_s,
+        "covered_duration_s": float(np.sum(np.minimum(finite_gaps, gap_threshold_s))),
+        "position_bbox": position_bbox,
+        "route_distance_m": route_distance_m,
     }
     return route, meta
 

@@ -67,6 +67,28 @@ def derive_profile_id(
         suffix += 1
 
 
+def fork_session_note_template(
+    template: Mapping[str, Any],
+    *,
+    display_name: str,
+    existing_ids: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Create a new template lineage from an existing template's form definition."""
+
+    validate_session_note_template(template)
+    title = f"{display_name.strip()} setup" if display_name.strip() else "Session note template"
+    forked = copy.deepcopy(dict(template))
+    forked["template_id"] = derive_profile_id(
+        title,
+        existing_ids=existing_ids,
+        fallback="session-note-template",
+    )
+    forked["template_version"] = "1.0"
+    forked["title"] = title
+    validate_session_note_template(forked)
+    return forked
+
+
 def _profile_id_should_follow_display_name(profile_id: Any) -> bool:
     text = _optional_text(profile_id)
     return text is None or text in {"bike_profile", "default_import_agent_bike"}

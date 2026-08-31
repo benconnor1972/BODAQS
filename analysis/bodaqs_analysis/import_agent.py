@@ -53,6 +53,7 @@ from .io_bdq import is_bdq_path, read_bdq
 from .io_fit import refresh_fit_inspection_index
 from .pipeline import preprocess_session
 from .preprocess_profile import load_preprocess_config, resolve_preprocess_config_paths
+from .raw_signal_dropouts import RAW_SIGNAL_DROPOUT_BEHAVIOR_VERSION
 from .session_note_presets import BikeSetupPreset, load_bike_setup_preset
 from .session_notes import (
     SessionNoteStore,
@@ -906,6 +907,7 @@ class ImportSourceRunner:
         )
         self.lock = ImportAgentLock(self.store.path_library_dir() / "import_agent.lock")
         self.preprocess_profile_sha256: Optional[str] = None
+        self.effective_preprocess_config_sha256: Optional[str] = None
         self.bike_profile_sha256: Optional[str] = None
         self.preprocess_config: Optional[Dict[str, Any]] = None
         self.resolved_preprocess_profile_path: Optional[Path] = None
@@ -935,8 +937,10 @@ class ImportSourceRunner:
             bike_profile_path = self._resolve_bike_profile_path()
             self.preprocess_profile_sha256 = _sha256_file(preprocess_profile_path)
             self.bike_profile_sha256 = _sha256_file(bike_profile_path)
+            normalized_preprocess_config = load_preprocess_config(preprocess_profile_path)
+            self.effective_preprocess_config_sha256 = _sha256_jsonable(normalized_preprocess_config)
             self.preprocess_config = resolve_preprocess_config_paths(
-                load_preprocess_config(preprocess_profile_path),
+                normalized_preprocess_config,
                 base_dir=preprocess_profile_path.parent,
             )
 
@@ -1961,6 +1965,8 @@ class ImportSourceRunner:
                 "input_kind": input_kind,
                 "raw_session_identity": raw_session_identity,
                 "preprocess_profile_sha256": self.preprocess_profile_sha256,
+                "effective_preprocess_config_sha256": self.effective_preprocess_config_sha256,
+                "raw_signal_dropout_behavior": RAW_SIGNAL_DROPOUT_BEHAVIOR_VERSION,
                 "bike_profile_sha256": self.bike_profile_sha256,
                 "include_events": self.source.include_events,
                 "include_metrics": self.source.include_metrics,
@@ -2037,6 +2043,8 @@ class ImportSourceRunner:
             "preprocess_profile_path": str(preprocess_profile_path),
             "preprocess_profile_selection_path": str(self.source.preprocess_profile_path),
             "preprocess_profile_sha256": self.preprocess_profile_sha256,
+            "effective_preprocess_config_sha256": self.effective_preprocess_config_sha256,
+            "raw_signal_dropout_behavior": RAW_SIGNAL_DROPOUT_BEHAVIOR_VERSION,
             "bike_profile_path": str(bike_profile_path),
             "bike_profile_selection_path": str(self.source.bike_profile_path),
             "bike_profile_sha256": self.bike_profile_sha256,

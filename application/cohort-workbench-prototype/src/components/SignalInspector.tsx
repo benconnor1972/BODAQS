@@ -4775,7 +4775,7 @@ function signalInspectorPlotToken(name: string, fallback: number) {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
-function duplicateAwareSignalLabels<T extends Pick<SessionSignalSummary, 'column' | 'displayName' | 'motionSourceId' | 'sensor' | 'streamName' | 'analysisVariant'>>(
+function duplicateAwareSignalLabels<T extends Pick<SessionSignalSummary, 'column' | 'displayName' | 'motionSourceId' | 'sensor' | 'streamName' | 'analysisVariant' | 'derivation'>>(
   signals: T[],
 ) {
   const baseLabels = signals.map((signal) => signal.displayName || signal.column)
@@ -4788,9 +4788,20 @@ function duplicateAwareSignalLabels<T extends Pick<SessionSignalSummary, 'column
     if ((counts.get(label) ?? 0) <= 1) {
       return label
     }
+    const repairLabels = signals
+      .filter((_candidate, candidateIndex) => baseLabels[candidateIndex] === label)
+      .map(rawRepairLabel)
+    if (repairLabels.some(Boolean)) {
+      return `${label} (${rawRepairLabel(signal) ?? 'unrepaired'})`
+    }
     const sourceId = signal.analysisVariant?.trim() || signal.motionSourceId?.trim() || signal.sensor?.trim() || signalStreamName(signal)
     return sourceId ? `${label} (${sourceId})` : label
   })
+}
+
+function rawRepairLabel(signal: Pick<SessionSignalSummary, 'derivation'>) {
+  const method = normalizeSignalText(signal.derivation?.method)
+  return method === 'raw_signal_dropout_repair' ? 'repaired' : ''
 }
 
 function buildSignalChartModel(data: TimeseriesWindowResponse): SignalChartModel {

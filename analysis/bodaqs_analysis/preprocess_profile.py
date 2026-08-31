@@ -7,6 +7,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from .raw_signal_dropouts import (
+    DEFAULT_RAW_SIGNAL_DROPOUT_FILTER,
+    validate_raw_signal_dropout_config,
+)
+
 
 PREPROCESS_PROFILE_SCHEMA = "bodaqs.preprocess_profile"
 PREPROCESS_PROFILE_VERSION = 1
@@ -59,6 +64,7 @@ DEFAULT_PREPROCESS_PROFILE_CONFIG: Dict[str, Any] = {
     "zero_min_samples": 10,
     "clip_0_1": False,
     "prefer_postprocessing_transformations": False,
+    "raw_signal_dropout_filter": copy.deepcopy(DEFAULT_RAW_SIGNAL_DROPOUT_FILTER),
     "motion_derivation": {
         "enabled": False,
         "sources": [
@@ -199,6 +205,10 @@ def normalize_preprocess_config_keys(config: Mapping[str, Any]) -> Dict[str, Any
     if "prefer_postprocessing_transformations" not in out and "ignore_on_logger_transformations" in out:
         out["prefer_postprocessing_transformations"] = bool(out["ignore_on_logger_transformations"])
     out.pop("ignore_on_logger_transformations", None)
+    # Profiles created before raw dropout filtering existed inherit the safe
+    # current behaviour without requiring a schema-version migration.
+    if "raw_signal_dropout_filter" not in out:
+        out["raw_signal_dropout_filter"] = copy.deepcopy(DEFAULT_RAW_SIGNAL_DROPOUT_FILTER)
     return out
 
 
@@ -408,6 +418,7 @@ def validate_preprocess_config(config: Mapping[str, Any], *, label: str = "") ->
         raise ValueError(f"Preprocess config 'butterworth_generate_residuals' must be boolean{label}")
     _validate_motion_derivation(config.get("motion_derivation"), label=label)
     _validate_activity_detection(config.get("activity_detection"), label=label)
+    validate_raw_signal_dropout_config(config.get("raw_signal_dropout_filter"), label=label)
 
     for key in ("zero_window_s", "active_disp_thresh", "active_vel_thresh"):
         _require_number(config, key, label=label)

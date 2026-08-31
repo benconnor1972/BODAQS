@@ -27,7 +27,7 @@ Now the fun really begins. Check that you have all the things shown in the pictu
 <Lightbox thumbnailWidth={600} src="/src/assets/pics/logger-build-guide/Build-overview.png" alt="Build-overview"/>
 
 ### Solder headers to PCB and dev board
-<Aside title="Soldering">
+<Aside type="note" title="Soldering">
   It is assumed that you have basic soldering skills. If not, there are [many online resources](https://www.youtube.com/watch?v=rK38rpUy568&t=15) -
   it's not particularly difficult and having some familiarity will greatly increase your success rate at building the logger.
 </Aside>
@@ -134,7 +134,7 @@ The dev board is installed in the PCB with a removeable pin/socket arrangement. 
 </Flag>
 
 
-<Aside title="The UART connection">
+<Aside type="note" title="The UART connection">
   In addition to analog and I2C, the PCB breaks out a UART connection. This is not currently in use.
   In future it could be used to connect a GPS module. The pins can also be re-assigned in firmware
   to provide access to a second I2C bus, which may be useful for avoiding I2C address conflicts.

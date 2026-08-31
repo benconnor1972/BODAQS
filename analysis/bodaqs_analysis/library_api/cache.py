@@ -269,6 +269,11 @@ class PersistentJsonCache:
                 records.append(record)
         return records
 
+    def delete(self, namespace: str, key: str) -> bool:
+        """Delete one cache entry without disturbing sibling entries."""
+
+        return self._unlink_silent(self._entry_path(namespace, key))
+
     def invalidate_namespace(self, namespace: str) -> int:
         namespace_dir = self._namespace_dir(namespace)
         if not namespace_dir.exists():
