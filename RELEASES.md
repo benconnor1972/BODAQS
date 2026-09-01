@@ -9,11 +9,11 @@ Repository releases page:
 
 ## BODAQS Desktop
 
-Bundles the Import Manager, BODAQS Workbench analysis app, library service and optional demonstration library into one Windows install package.
+Bundles the Import Manager, BODAQS Workbench analysis app and library service into one install package. Builds for Windows, MacOS and Linux.
 
 Latest release:
 
-- [BODAQS Desktop 0.2.1-beta](https://github.com/benconnor1972/BODAQS/releases/tag/Desktop-v0.2.1-beta)
+- [BODAQS Desktop 0.3.0-beta](https://github.com/benconnor1972/BODAQS/releases/tag/Desktop-v0.3.0-beta)
 
 ## Firmware
 
@@ -38,6 +38,7 @@ Latest release:
 
 Use these links if you prefer GitHub's release search view:
 
+- [Desktop releases](https://github.com/benconnor1972/BODAQS/releases?q=desktop)
 - [Firmware releases](https://github.com/benconnor1972/BODAQS/releases?q=firmware)
 - [Analysis releases](https://github.com/benconnor1972/BODAQS/releases?q=analysis)
 
