@@ -67,8 +67,8 @@ are also available from **Help → About BODAQS Desktop** in the Import Manager.
 | Platform | Package | Release status |
 | --- | --- | --- |
 | Windows x64 | `bodaqs-desktop-setup-0.2.2-beta.exe` | Unsigned; SHA-256 to be published after the release build. |
-| macOS Apple Silicon | `BODAQS-Import-Manager-0.2.2-beta.dmg` | Developer ID signed, notarized, and stapled. Download the `macos-arm64-0.2.2-beta` build artifact. |
-| macOS Intel | `BODAQS-Import-Manager-0.2.2-beta.dmg` | Developer ID signed, notarized, and stapled. Download the `macos-x64-0.2.2-beta` build artifact. |
+| macOS Apple Silicon | `BODAQS-Import-Manager-0.2.2-beta-macos-arm64.dmg` | Developer ID signed, notarized, and stapled. Download the `macos-arm64-0.2.2-beta` build artifact. |
+| macOS Intel | `BODAQS-Import-Manager-0.2.2-beta-macos-x64.dmg` | Developer ID signed, notarized, and stapled. Download the `macos-x64-0.2.2-beta` build artifact. |
 | Linux x64 | `BODAQS-Import-Manager-0.2.2-beta-linux-x64.tar.gz` | Keylessly signed with Sigstore. The `linux-x64-0.2.2-beta` artifact also includes its `.sigstore.json` verification bundle. |
 
 The macOS package is a drag-to-Applications DMG. The Linux package is a

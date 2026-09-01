@@ -430,6 +430,9 @@ Create a staging folder with:
 
 Example:
 
+The example below is for Apple Silicon; use the `macos-x64` suffix on an Intel
+build host.
+
 ```bash
 mkdir -p build/dmg-root
 cp -R "dist/pyinstaller/BODAQS Import Manager.app" build/dmg-root/
@@ -440,7 +443,7 @@ hdiutil create \
   -srcfolder build/dmg-root \
   -ov \
   -format UDZO \
-  "dist/BODAQS-Import-Manager-0.1.4-dev.dmg"
+  "dist/BODAQS-Import-Manager-0.1.4-dev-macos-arm64.dmg"
 ```
 
 Then sign, notarize, and staple the DMG:
@@ -448,21 +451,21 @@ Then sign, notarize, and staple the DMG:
 ```bash
 codesign --force --timestamp \
   --sign "Developer ID Application: YOUR NAME (TEAMID)" \
-  "dist/BODAQS-Import-Manager-0.1.4-dev.dmg"
+  "dist/BODAQS-Import-Manager-0.1.4-dev-macos-arm64.dmg"
 
 xcrun notarytool submit \
-  "dist/BODAQS-Import-Manager-0.1.4-dev.dmg" \
+  "dist/BODAQS-Import-Manager-0.1.4-dev-macos-arm64.dmg" \
   --keychain-profile "BODAQS-notary" \
   --wait
 
 xcrun stapler staple \
-  "dist/BODAQS-Import-Manager-0.1.4-dev.dmg"
+  "dist/BODAQS-Import-Manager-0.1.4-dev-macos-arm64.dmg"
 ```
 
 Final release artifact:
 
 ```text
-import-manager/dist/BODAQS-Import-Manager-<version>.dmg
+import-manager/dist/BODAQS-Import-Manager-<version>-macos-<arm64|x64>.dmg
 ```
 
 ## Test Plan

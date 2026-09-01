@@ -56,6 +56,20 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Validate Windows release-signing script
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'import-manager/sign_windows_release.ps1'),
+            [ref]$tokens,
+            [ref]$parseErrors
+          ) | Out-Null
+          if (@($parseErrors).Count -gt 0) {
+            $parseErrors | Format-List | Out-String | Write-Error
+            throw 'Windows release-signing script contains PowerShell parse errors.'
+          }
       - name: Derive build version from release-candidate tag
         if: startsWith(github.ref, 'refs/tags/Desktop-v')
         shell: pwsh
@@ -210,7 +224,7 @@ jobs:
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
         run: |
           app="import-manager/dist/pyinstaller/BODAQS Import Manager.app"
-          dmg="import-manager/dist/BODAQS-Import-Manager-${BUILD_VERSION}.dmg"
+          dmg="import-manager/dist/BODAQS-Import-Manager-${BUILD_VERSION}-macos-${{ matrix.arch }}.dmg"
           dmg_root="$RUNNER_TEMP/bodaqs-dmg-root"
           notary_key="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
           notary_result="$RUNNER_TEMP/bodaqs-notary-result.json"
@@ -271,7 +285,7 @@ jobs:
         if: ${{ !startsWith(github.ref, 'refs/tags/Desktop-v') }}
         run: |
           app="import-manager/dist/pyinstaller/BODAQS Import Manager.app"
-          dmg="import-manager/dist/BODAQS-Import-Manager-${BUILD_VERSION}.dmg"
+          dmg="import-manager/dist/BODAQS-Import-Manager-${BUILD_VERSION}-macos-${{ matrix.arch }}.dmg"
           dmg_root="$RUNNER_TEMP/bodaqs-dmg-root"
 
           rm -rf "$dmg_root"
@@ -290,7 +304,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: unsigned-macos-${{ matrix.arch }}-${{ env.BUILD_VERSION }}
-          path: import-manager/dist/BODAQS-Import-Manager-*.dmg
+          path: import-manager/dist/BODAQS-Import-Manager-*-macos-${{ matrix.arch }}.dmg
           if-no-files-found: error
           retention-days: 7
       - name: Upload signed and notarized macOS DMG
@@ -298,7 +312,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: macos-${{ matrix.arch }}-${{ env.BUILD_VERSION }}
-          path: import-manager/dist/BODAQS-Import-Manager-*.dmg
+          path: import-manager/dist/BODAQS-Import-Manager-*-macos-${{ matrix.arch }}.dmg
           if-no-files-found: error
           retention-days: 7
 

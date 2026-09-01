@@ -36,10 +36,14 @@ Each successful non-tag run retains unsigned build artifacts for seven days:
 | macOS x64 | `macos-15-intel` | `.dmg` containing the application bundle |
 | Linux x64 | `ubuntu-latest` | Portable PyInstaller `.tar.gz` bundle |
 
-For a `Desktop-v*` tag, the macOS artifacts are signed and notarized DMGs named
-`macos-arm64-<version>` and `macos-x64-<version>`. The Linux artifact is
-`linux-x64-<version>` and contains the archive plus its
-`.tar.gz.sigstore.json` verification bundle. The Windows artifact is named
+For a `Desktop-v*` tag, the macOS Actions artifacts are named
+`macos-arm64-<version>` and `macos-x64-<version>`. Their enclosed, signed and
+notarized DMGs are respectively named
+`BODAQS-Import-Manager-<version>-macos-arm64.dmg` and
+`BODAQS-Import-Manager-<version>-macos-x64.dmg`, so both can be attached to one
+GitHub Release without renaming. The Linux artifact is `linux-x64-<version>`
+and contains the archive plus its `.tar.gz.sigstore.json` verification bundle.
+The Windows artifact is named
 `windows-x64-<version>-certum-signing-candidate` and contains the unsigned
 installer plus a SHA-256 manifest for manual Certum signing.
 
@@ -120,9 +124,12 @@ Signing certificate stored in SimplySign. This keeps the signing credential out
 of GitHub Actions while retaining automated builds and tests.
 
 Follow [Windows Certum Release Signing](Windows%20Certum%20Release%20Signing.md)
-after every successful `Desktop-v*` build. Only the signed and locally verified
-installer, together with a newly generated checksum, may be attached to the
-GitHub Release.
+after every successful `Desktop-v*` build. The guarded
+`import-manager/sign_windows_release.ps1` script accepts the downloaded
+candidate ZIP directly, validates it, invokes the local SimplySign-backed
+certificate, verifies the signature and timestamp, and prepares a clean release
+directory. Only that signed installer and its newly generated checksum may be
+attached to the GitHub Release.
 
 ## Linux release signing
 

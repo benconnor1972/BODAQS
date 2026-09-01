@@ -5,6 +5,8 @@
 # Produces an unsigned .app (and, by default, an unsigned .dmg) using the macOS
 # PyInstaller spec. Code signing and notarization are intentionally optional and
 # OFF by default so that local unsigned development builds stay first-class.
+# DMG filenames include macos-arm64 or macos-x64 so both release builds can be
+# attached to the same GitHub Release without an asset-name collision.
 #
 # The build also produces the BODAQS Library Service and bundles it inside the
 # .app at Contents/Resources/service/, along with the web app dist if available.
@@ -60,6 +62,16 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+machine_arch="$(uname -m)"
+case "${machine_arch}" in
+    arm64|aarch64) package_arch="arm64" ;;
+    x86_64|amd64) package_arch="x64" ;;
+    *)
+        echo "error: unsupported macOS packaging architecture: ${machine_arch}" >&2
+        exit 1
+        ;;
+esac
+
 # Pick an interpreter: explicit --python, then repo .venv, then python3.
 if [[ -z "${python_bin}" ]]; then
     if [[ -x "${repo_root}/.venv/bin/python" ]]; then
@@ -77,6 +89,7 @@ echo "==> Desktop:      ${app_version}"
 echo "==> Manager:      ${manager_version}"
 echo "==> Service:      ${service_version}"
 echo "==> Workbench:    ${workbench_version}"
+echo "==> Architecture: ${package_arch}"
 echo "==> Working dir:  ${import_manager_dir}"
 
 "${python_bin}" -c "import PyInstaller" >/dev/null 2>&1 || {
@@ -226,7 +239,7 @@ fi
 
 if [[ "${make_dmg}" -eq 1 ]]; then
     dmg_root="${import_manager_dir}/build/dmg-root"
-    dmg_path="${import_manager_dir}/dist/BODAQS-Import-Manager-${app_version}.dmg"
+    dmg_path="${import_manager_dir}/dist/BODAQS-Import-Manager-${app_version}-macos-${package_arch}.dmg"
     echo "==> Staging DMG contents"
     rm -rf "${dmg_root}"
     mkdir -p "${dmg_root}"

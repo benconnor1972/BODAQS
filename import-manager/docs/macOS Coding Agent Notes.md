@@ -332,7 +332,7 @@ Suggested outputs:
 
 ```text
 import-manager/dist/pyinstaller/BODAQS Import Manager.app
-import-manager/dist/BODAQS-Import-Manager-<version>.dmg
+import-manager/dist/BODAQS-Import-Manager-<version>-macos-<arm64|x64>.dmg
 ```
 
 ## Tests To Run After Code Changes
