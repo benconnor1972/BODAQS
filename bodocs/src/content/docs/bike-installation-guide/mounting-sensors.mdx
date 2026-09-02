@@ -6,17 +6,105 @@ sidebar:
 ---
 
 import {Aside} from '@astrojs/starlight/components';
+import Flag from '@components/Flag.astro';
+import MiniAside from '@components/MiniAside.astro';
+import Lightbox from '@components/Lightbox.astro';
+import Lede from '@components/Lede.astro';
 
-<Aside type="note" title="Content still needed">
-  This page is a placeholder for sensor mounting guidance.
+<Aside type="note" title="Work in progress">
+  This page is still under construction.
 </Aside>
 
-This page will cover safe, repeatable ways to mount sensors to a bike and protect them during riding.
+This page will eventually cover mounting methods for the full range of supported sensors.
 
-## Content to add
+## Linear Potentiometers
 
-- Front and rear suspension sensor mounting examples.
-- Alignment, travel, and clearance checks.
-- Mounting hardware and bracket considerations.
-- Cable routing and strain relief at the sensor.
-- Pre-ride inspection checklist.
+Linear potentiometers are the most popular option for measuring suspension travel. Details on which ones to buy are [here](/logger-build-guide/bodaqs-a8/sourcing-hardware/#sensors). The pots I recommend are a reasonable budget choice: if you want something really nice, then try BYB pots.
+
+The important principles to observe when mounting linear pots:
+- **No bending**: linear pots are not designed to resist bending forces: they should ideally be moved in pure tension and compression along their long axis. This is the reason many linear pots are supplied with [rose joints](https://en.wikipedia.org/wiki/Rod_end_bearing) on the ends. A rose-jointed pot can accommodate small mounting misalignments without overloading the pot. Practical installation on a bicycle often means taking liberties with this rule, particularly for rear suspension - more below.
+
+- **Keep it out of the way**: you don't want your pots to get damaged in a crash if you can help it. You really don't want any part of your clothing or person to get snagged while riding. A tidy installation is worth the extra time.
+
+- **Minimise exposure to elements**: The quality of sealing increases with the cost of the pot, but almost nothing will withstand indiscriminate washdown or being ridden in appalling conditions. If possible, add protection for the sliding surfaces - and take them off if the heavens open.
+
+Some tips, tricks and hacks for Miran pots can be found [here].
+
+### Linear Potentiometers for measuring fork travel
+
+There are numerous ways to mount a pot on a suspension fork. My favoured method is to use 3d printed mountings top and bottom. There are a variety of BODAQS designs available for download [here](https://github.com/benconnor1972/BODAQS/tree/main/mechanical/linear-potentiometer-mounts)
+
+<Aside type="tip" title="Make them strong">
+I recommend using the strongest and most resilient filament you can for 3d printed pot mounts, ideally carbon-filled nylon or PPA.
+</Aside>
+
+<Aside type="tip" title="Your fork not covered here?">
+There are a lot of different fork designs on the market and the major players update theirs every few years, so it is impossible to accommodate all the options. The repository includes [Fusion design files](https://github.com/benconnor1972/BODAQS/tree/main/mechanical/linear-potentiometer-mounts/Fork/f3z) for these mounts, so feel free to modify them if necessary. If you aren't a Fusion user, [email me](mailt0:info@bodaqs.net) and as long as you can provide a few critical dimensions I can probably make a version that will work for you.
+</Aside>
+
+The files in the repo are named systematically. `fork-lower-band-type-od44_5-af7mm-fox36-lyrik-miran.stl`, for example:
+- `fork` means it is for forks
+- `lower` means it is the lower-end mount
+- `band-type` is the style of mount
+- `od44_5` means it has an outside diameter of 44.5mm and should fit forks with a lower dimension of around that
+- `af7mm` means the clevis is 7mm so it will fit any rose joint that is 7mm across the flats of the sphere. 7mm is standard for Miran KPM12J pots. BYB pots are 6mm across the flats.  
+- `fox36-lyrik` lists known-compatible forks (others may also fit - check the OD of the lower leg)
+- `miran` lists the known-compatible potentiometers (others may also fit - check the AF dimension of the rose joint).
+
+
+#### The top mounting
+
+For the top mount, there are three designs available:
+
+<Flag src="/src/assets/pics/bike-installation-guide/pot-upper-steerer.png" alt="pot upper steerer">
+The **steerer type** design is fixed to the bike using an expanding plug in the underside of the steerer tube. You need the version that is exactly the right size for your bike's steerer. If you have something else mounted in the steerer tube, like a multi-tool or mass damper, this version won't work. 
+</Flag>
+
+<Flag src="/src/assets/pics/bike-installation-guide/pot-upper-steerer-section.png" alt="pot upper steerer section">
+This design is printed in two parts. The wedge part needs to be stopped part way through printing and an M6 nut inserted into the print in the hexagonal void.
+</Flag>
+
+<Flag src="/src/assets/pics/bike-installation-guide/pot-upper-steerer-install.jpg" alt="pot upper steerer install">
+It is installed by loosely fitting the wedge piece into the main mount and loosely installing an M6 capscrew, then pushing the mount up inside the steerer tube from below (clean the steerer tube first). Tighten the capscrew to draw the wedge down and expand the plug inside teh steerer tube. Don't over-tighten. For additional security, ziptie the mount to the fork crown.
+</Flag>
+
+<Flag src="/src/assets/pics/bike-installation-guide/pot-upper-crown.png" alt="pot upper crown">
+The **crown type** design has a think shell that matches the contours of the fork's crown and is held in place with zipties. 
+</Flag>
+
+<Flag src="/src/assets/pics/bike-installation-guide/pot-upper-crown-ziptie.jpg" alt="pot upper crown ziptie">
+Two zipties go around the vertical section of the crown. A third ziptie goes around the bridge and gives the upper of the other two zipties something to hold onto, so it does not slide down the sloping part of the bridge.
+</Flag>
+
+<Flag src="/src/assets/pics/bike-installation-guide/pot-upper-crown-install.jpg" alt="pot upper crown install">
+</Flag>
+
+<Flag src="/src/assets/pics/bike-installation-guide/pot-upper-stanchion.png" alt="pot upper stanchion">
+The **stanchion type** design is only suitable for use with dual crown forks. It is ziptied onto the stanchion between the crowns.
+</Flag>
+
+Both the steerer type and crown type design are intended to run on the right hand fork leg at the 7 o'clock position - as far out of harms way as you can practically get. For installation on dual crown forks, go as far in this direction as possible but ensure the top section of the pot does not clash with the frame at full lock.
+
+#### The bottom mounting
+
+For the bottom mount, there are two designs:
+
+<Flag src="/src/assets/pics/bike-installation-guide/pot-lower-band.png" alt="pot lower band">
+The **band type** design clamps to the fork lower leg with an M4 capscrew that also captures the bottom of the pot. I favour 
+this design as it is very solid and does not require cable ties to be cut to remove. 
+</Flag>
+
+<Flag src="/src/assets/pics/bike-installation-guide/pot-lower-band-twist.jpg" alt="pot lower band twist">
+It has one big disadvantage however: it *absolutely requires* printing in nylon or PPA. To get it on and off the lower leg it needs to be bent / twisted quite a bit, and weaker filaments will simply break.
+</Flag>
+
+<Flag src="/src/assets/pics/bike-installation-guide/pot-lower-band-install.jpg" alt="pot lower band install">
+</Flag>
+
+<Flag src="/src/assets/pics/bike-installation-guide/pot-upper-stanchion.png" alt="pot lower ziptie">
+The **ziptie type** design is, as the name implies, held on with zip ties. Look carefully and you'll see it is really just a stanchion-type upper mount printed at a different diameter. 
+</Flag>
+
+### Linear Potentiometers for measuring shock travel
+
+**work in progress**
