@@ -24,6 +24,12 @@ preserve session GPS streams and publish compact GPS summaries, but track
 construction, trackpoint definition, cutline generation, and session-to-track
 matching belong to the geospatial analysis layer.
 
+Session-scoped distance-domain gradient, twistiness, and suspension-activity
+fields are defined separately by
+`BODAQS_Spatial_Context_Stream_Contract_v0_draft.md`. A spatial-context stream
+uses cumulative distance travelled within one session; it is not a root-scoped
+track and its coordinate is not reusable-track `station_m`.
+
 ---
 
 ## 2. Design Principles
@@ -755,6 +761,14 @@ entries may remain available for future queries.
 
 Heading, gradient, curvature, and related path properties should be treated as
 derived profiles.
+
+A derived `TrackProfile` contains properties of reusable track geometry under a
+geospatial policy. It must not contain session suspension activity. A
+session-scoped spatial-context stream may independently derive gradient and
+twistiness from the GPS evidence for that session, using the effective
+preprocess-profile parameters recorded with that stream. Geospatial-policy
+profile defaults do not silently override a persisted spatial-context effective
+configuration.
 
 An implementation may return them directly from a track detail endpoint or cache
 them in a derived profile object. In either case the payload should include:

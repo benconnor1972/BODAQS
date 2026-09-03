@@ -36,10 +36,13 @@ The profile captures parameters that are logically part of the high-level prepro
 
 - event schema selection
 - optional FIT import policy and field selection
+- optional session spatial-context derivation policy
 - zeroing and normalization-output policy
 - motion-derivation policy for analysis displacement, velocity, and acceleration channels
 - legacy optional Butterworth smoothing behavior
 - activity-mask signal and threshold settings
+- distance-source, spatial-grid, estimator, and smoothing settings for optional
+  spatial-context derivation
 - strict vs tolerant ingestion mode
 
 ### 2.2 What the profile does not control
@@ -68,6 +71,7 @@ This contract depends on, or should be read alongside:
 - `docs/analysis/contracts/BODAQS_event_schema_specification_v0_2_0.md`
 - `docs/analysis/contracts/BODAQS_Minimum_Signal_Registry_Semantics_v0_1_1.md`
 - `docs/analysis/contracts/BODAQS_Bike_Profile_Contract_v0_draft.md`
+- `docs/analysis/contracts/BODAQS_Spatial_Context_Stream_Contract_v0_draft.md`
 
 The profile does not replace those contracts. It points at them.
 
@@ -222,6 +226,47 @@ class MotionDerivationConfigV1(TypedDict, total=False):
     primary: MotionDerivationProfileConfigV1
     secondary: list[MotionDerivationProfileConfigV1]
 
+class SpatialDistanceConfigV1(TypedDict, total=False):
+    source_priority: list[str]
+    grid_interval_m: float
+    distance_model: str
+    max_interpolation_gap_s: float
+    minimum_nominal_gps_rate_hz: float
+    minimum_gps_coverage_ratio: float
+    quality_action: str
+
+class SpatialGradientConfigV1(TypedDict, total=False):
+    enabled: bool
+    altitude_source: str
+    estimator: str
+    regression_window_m: float
+    smoothing_kernel: str
+    smoothing_distance_m: float
+
+class SpatialTwistinessConfigV1(TypedDict, total=False):
+    enabled: bool
+    estimator: str
+    geometry_window_m: float
+    smoothing_kernel: str
+    smoothing_distance_m: float
+
+class SpatialSuspensionActivityConfigV1(TypedDict, total=False):
+    enabled: bool
+    use_preprocess_active_mask: bool
+    front_selector: SignalSelectorConfigV1 | None
+    rear_selector: SignalSelectorConfigV1 | None
+    smoothing_kernel: str
+    smoothing_distance_m: float
+    combined_method: str
+
+class SpatialContextConfigV1(TypedDict, total=False):
+    enabled: bool
+    algorithm_version: int
+    distance: SpatialDistanceConfigV1
+    gradient: SpatialGradientConfigV1
+    twistiness: SpatialTwistinessConfigV1
+    suspension_activity: SpatialSuspensionActivityConfigV1
+
 class PreprocessRunConfigV1(TypedDict, total=False):
     schema_path: str
     strict: bool
@@ -233,6 +278,7 @@ class PreprocessRunConfigV1(TypedDict, total=False):
     clip_0_1: bool
     prefer_postprocessing_transformations: bool
     motion_derivation: MotionDerivationConfigV1 | None
+    spatial_context: SpatialContextConfigV1 | None
     butterworth_smoothing: list[ButterworthSmoothingConfigV1]
     butterworth_generate_residuals: bool
     active_signal_disp_selector: SignalSelectorConfigV1 | None
@@ -275,6 +321,7 @@ class PreprocessRunConfigV1(TypedDict, total=False):
 | `imu_attitude` | object or `null` | Optional policy for persisting the offline frame-IMU fused inertial product; when absent or `null`, it is disabled |
 | `prefer_postprocessing_transformations` | boolean | If true, post-processing bike-profile transforms supersede logger-originated signals with equivalent semantics |
 | `motion_derivation` | object or `null` | Optional policy for generating primary and secondary filtered displacement/velocity/acceleration channels |
+| `spatial_context` | object or `null` | Optional policy for deriving a session-scoped distance-domain spatial-context stream; absent, `null`, or `enabled: false` means disabled |
 | `sample_rate_hz` | number or `null` | Explicit preprocessing sample-rate override; if absent or `null`, infer from `time_s` |
 
 ### 6.4 Config-field rules
@@ -288,6 +335,18 @@ class PreprocessRunConfigV1(TypedDict, total=False):
 - If `prefer_postprocessing_transformations` is true, logger-originated displacement signals that have the same semantics as a bike-profile transform are retained in the dataframe but excluded from semantic selection, and the post-processing signal is preferred.
 - `motion_derivation` is optional in v1 so older profiles can still be read. New profiles SHOULD include it, even when `enabled` is `false`.
 - When `motion_derivation.enabled` is `true`, the preprocessing pipeline generates the configured motion-analysis channels after zeroing and bike-profile transforms, and before normalization, activity-mask resolution, event detection, and metrics.
+- `spatial_context` is optional in v1 so existing profiles remain valid. New
+  profiles may omit it or include it with `enabled: false`.
+- When `spatial_context.enabled` is true, spatial-context derivation occurs
+  after bike-profile wheel transforms, motion derivation, and activity-mask
+  generation. The effective configuration and all source/filter provenance
+  must be stored with the derived stream.
+- Spatial-context suspension activity consumes full-resolution filtered
+  wheel-domain displacement. The primary displacement must not first be
+  resampled onto the coarser spatial grid.
+- `spatial_context.suspension_activity.rear_selector` must resolve a
+  wheel-domain displacement signal. Rear activity is omitted when that signal
+  is unavailable; rear-shock displacement must not be substituted.
 - `butterworth_smoothing` may be empty.
 - `butterworth_smoothing` is the legacy append-only displacement smoothing policy. It is retained in v1 for current pipeline compatibility and is expected to be superseded by `motion_derivation`.
 - `active_signal_disp_selector` and `active_signal_vel_selector` use the same semantic selector fields as bike-profile normalization ranges and transforms.
@@ -480,7 +539,187 @@ This ordering means that normalized `[1]` displacement channels used for event
 thresholds can represent the filtered primary analysis displacement rather than
 the unfiltered source.
 
-## 8. Legacy Butterworth smoothing config contract
+## 8. Spatial context config contract
+
+`spatial_context` describes optional derivation of the session-scoped,
+distance-domain product defined by
+`BODAQS_Spatial_Context_Stream_Contract_v0_draft.md`.
+
+The block is intentionally parameter-rich during the JupyterLab exploratory
+phase. Persisted results must record the normalized effective configuration so
+that later Workbench consumers do not depend on notebook state.
+
+### 8.1 Canonical exploratory shape
+
+```json
+{
+  "enabled": true,
+  "algorithm_version": 1,
+  "distance": {
+    "source_priority": [
+      "recorded_gps_or_fit_distance",
+      "gps_geometry"
+    ],
+    "grid_interval_m": 0.5,
+    "distance_model": "local_projection",
+    "max_interpolation_gap_s": 5.0,
+    "minimum_nominal_gps_rate_hz": 1.0,
+    "minimum_gps_coverage_ratio": 0.99,
+    "minimum_distance_support_fraction": 0.5,
+    "maximum_implied_speed_mps": 50.0,
+    "quality_action": "warn"
+  },
+  "gradient": {
+    "enabled": true,
+    "altitude_source": "gps",
+    "estimator": "local_linear_regression",
+    "regression_window_m": 20.0,
+    "smoothing_kernel": "centred_exponential",
+    "smoothing_distance_m": 15.0
+  },
+  "twistiness": {
+    "enabled": true,
+    "estimator": "local_polynomial",
+    "geometry_window_m": 5.0,
+    "polynomial_order": 2,
+    "smoothing_kernel": "centred_exponential",
+    "smoothing_distance_m": 7.5
+  },
+  "suspension_activity": {
+    "enabled": true,
+    "use_preprocess_active_mask": true,
+    "front_selector": {
+      "end": "front",
+      "quantity": "disp",
+      "domain": "wheel",
+      "unit": "mm",
+      "processing_role": "primary_analysis"
+    },
+    "rear_selector": {
+      "end": "rear",
+      "quantity": "disp",
+      "domain": "wheel",
+      "unit": "mm",
+      "processing_role": "primary_analysis"
+    },
+    "minimum_support_fraction": 0.25,
+    "smoothing_kernel": "centred_exponential",
+    "smoothing_distance_m": 4.0,
+    "combined_method": "mean_both_required"
+  }
+}
+```
+
+These values are provisional notebook defaults, not contract constants.
+
+### 8.2 Top-level rules
+
+- `enabled` is boolean. Missing, `null`, or `enabled: false` disables spatial
+  context without affecting existing preprocessing outputs.
+- `algorithm_version` is a positive integer identifying calculation semantics.
+  It is separate from the preprocess-profile document version and the spatial
+  stream schema version.
+- `distance` is required when enabled.
+- `gradient`, `twistiness`, and `suspension_activity` are independently
+  optional. Missing blocks are disabled.
+- At least one metric block must be enabled when `spatial_context.enabled` is
+  true.
+- Consumers may accept additional estimator-specific fields but must preserve
+  them in effective configuration and provenance.
+
+### 8.3 Distance rules
+
+- `source_priority` is an ordered, non-empty list of recognized candidate
+  kinds. Version 0 recognizes `recorded_gps_or_fit_distance` and
+  `gps_geometry`. Future versions may recognize `wheel_odometry`.
+- Source resolution uses GPS source metadata and signal-registry semantics, not
+  dataframe column-name guesses.
+- `grid_interval_m` and `max_interpolation_gap_s` must be finite numbers greater
+  than zero.
+- `distance_model` records the model used when deriving distance from GPS
+  geometry. Version 0 recognizes `geodesic` and `local_projection`.
+- `minimum_nominal_gps_rate_hz` must be finite and greater than zero when
+  present.
+- `minimum_gps_coverage_ratio` must lie within `[0, 1]` when present. It means
+  session time coverage under the configured GPS gap policy.
+- `minimum_distance_support_fraction` must lie within `(0, 1]`. Grid rows below
+  this valid-distance support fraction are ineligible for spatial metrics.
+- `maximum_implied_speed_mps` must be finite and greater than zero. Distance
+  intervals above it are excluded and reported as implausible evidence.
+- `quality_action` recognizes `warn`, `omit`, and `error`. The exploratory
+  default is `warn`; therefore the provisional 1 Hz and 0.99 thresholds are
+  diagnostic rather than hard usability boundaries.
+- The selected candidate, rejected candidates, repairs, gaps, observed cadence,
+  and observed coverage belong in stream metadata.
+
+### 8.4 Gradient and twistiness rules
+
+- Each block has its own `enabled` flag.
+- Version 0 gradient uses `altitude_source: "gps"`.
+- Gradient must be estimated from altitude against a configurable distance
+  neighbourhood. Raw point-to-point altitude differentiation is not allowed.
+- `regression_window_m`, `geometry_window_m`, and all
+  `smoothing_distance_m` values must be finite and greater than zero.
+- `polynomial_order` must be an integer of at least 2 and lower than the number
+  of usable samples in the effective twistiness window.
+- Version 0 supports `smoothing_kernel: "centred_exponential"`.
+- Twistiness is derived from curvature magnitude; signed alternating turns must
+  not cancel.
+- Estimator names and all effective estimator-specific parameters must be
+  recorded with the derived stream.
+
+### 8.5 Suspension-activity rules
+
+- `front_selector` and `rear_selector` are independently optional semantic
+  signal selectors.
+- Each selector must target `quantity: "disp"`, `domain: "wheel"`, and a
+  physical length unit supported by the implementation.
+- `processing_role: "primary_analysis"` is recommended so activity uses the
+  same filtered analysis displacement policy as existing preprocessing.
+- Activity is accumulated from absolute displacement increments at the native
+  filtered time-series resolution, mapped to distance, and only then aggregated
+  and smoothed spatially.
+- When `use_preprocess_active_mask` is true, the current preprocessing
+  `active_mask_qc` defines eligible native-rate intervals. Its policy and QC
+  must be copied into spatial-context provenance.
+- If that mask is required but unavailable, suspension activity is omitted;
+  the implementation must not silently treat the whole session as active.
+- Inactive, invalid, stationary, or unsupported evidence is omitted from both
+  movement and valid-distance support. A spatial bin without sufficient support
+  is null, not zero.
+- `minimum_support_fraction` must lie within `(0, 1]` and applies to each local
+  suspension-activity bin before spatial smoothing.
+- Rear activity is omitted if `rear_selector` cannot resolve rear-wheel motion.
+  A rear-shock-domain signal is not a fallback.
+- `combined_method: "mean_both_required"` emits the arithmetic mean only where
+  both front and rear activity are present. If either complete input series is
+  unavailable, the combined field is omitted.
+
+### 8.6 Intended runtime ordering
+
+When enabled, the intended ordering is:
+
+```text
+raw displacement
+-> dropout repair and calibration
+-> zero physical displacement
+-> apply bike-profile wheel transforms
+-> derive full-resolution filtered motion channels
+-> construct the preprocessing activity mask
+-> resolve GPS/FIT distance and build distance/time mapping
+-> accumulate full-resolution suspension movement into spatial bins
+-> calculate gradient and twistiness on spatial evidence
+-> apply centred spatial smoothing
+-> materialize spatial_context as a secondary stream
+```
+
+Event detection and ordinary event metrics remain time-domain consumers and do
+not need to wait for spatial-context derivation unless a future profile
+explicitly introduces that dependency.
+
+---
+
+## 9. Legacy Butterworth smoothing config contract
 
 Each entry in `butterworth_smoothing` must have the shape:
 
@@ -504,7 +743,7 @@ should prefer `motion_derivation` for analysis-channel bandwidth policy.
 
 ---
 
-## 9. Signal selector contract
+## 10. Signal selector contract
 
 Signal selectors identify a signal by meaning rather than by dataframe column name.
 
@@ -543,9 +782,9 @@ Rules:
 
 ---
 
-## 10. Path and resolution semantics
+## 11. Path and resolution semantics
 
-### 10.1 `schema_path`
+### 11.1 `schema_path`
 
 `schema_path` is stored as a string.
 
@@ -564,7 +803,7 @@ Public API consumers that need deterministic path handling outside notebooks sho
 
 ---
 
-## 11. Profile authoring utilities
+## 12. Profile authoring utilities
 
 The analysis package provides utility functions so notebooks and scripts do not
 need to hand-roll preprocess profile JSON:
@@ -595,7 +834,7 @@ must still validate as a normal `bodaqs.preprocess_profile` document.
 
 ---
 
-## 12. Example document
+## 13. Example document
 
 ```json
 {
@@ -657,6 +896,9 @@ must still validate as a normal `bodaqs.preprocess_profile` document.
       },
       "secondary": []
     },
+    "spatial_context": {
+      "enabled": false
+    },
     "butterworth_smoothing": [],
     "butterworth_generate_residuals": false,
     "active_signal_disp_selector": {
@@ -684,7 +926,7 @@ Normalization ranges are intentionally not embedded in this profile example; the
 
 ---
 
-## 13. Consumer behavior
+## 14. Consumer behavior
 
 Consumers implementing this contract should:
 
@@ -700,20 +942,25 @@ Consumers should fail fast on:
 - unsupported profile version
 - missing required fields
 - invalid Butterworth config entries
+- invalid enabled spatial-context config or unsupported required estimator
 - runtime binding fields embedded in the profile
 - unresolved `schema_path`
 
 ---
 
-## 14. Current limitations and open issues
+## 15. Current limitations and open issues
 
 1. There is no explicit `active_enabled` flag in v1. The current profile shape assumes an activity-mask configuration is always present. A cleaner enable/disable contract may be added in a later version.
 2. The profile assumes the target log set is homogeneous enough that one activity-mask signal selection is valid for every file being processed.
 3. This contract does not yet define profile discovery, cataloging, inheritance, or profile-composition behavior.
+4. Spatial-context GPS quality thresholds are provisional and are not yet an
+   empirical definition of usable GPS.
+5. The contract does not yet define persistence or naming for multiple
+   spatial-context parameter variants from one session.
 
 ---
 
-## 15. Suggested future evolution
+## 16. Suggested future evolution
 
 Likely v2 candidates:
 
@@ -722,3 +969,5 @@ Likely v2 candidates:
 - profile-level metadata for intended bike/platform/logger family
 - optional validation hints for expected signal presence
 - a formal JSON Schema or Pydantic model published alongside the prose contract
+- wheel-odometry distance candidates and source-fusion policy
+- named reusable spatial-context parameter presets or profile composition

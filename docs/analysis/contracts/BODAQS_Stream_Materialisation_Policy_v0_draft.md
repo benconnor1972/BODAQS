@@ -1,15 +1,16 @@
 # BODAQS stream materialisation policy (v0 draft)
 
 This policy defines where preprocessing materialises a derived signal. It is
-about timebase, evidence, and product boundaries; it is not a rule of one
-sensor per stream.
+about coordinate domain, timebase, evidence, and product boundaries; it is not
+a rule of one sensor per stream.
 
 ## Core rule
 
-Materialise a signal on its natural source or analysis timebase. Append it to
+Materialise a signal on its natural source or analysis coordinate. Append it to
 an existing stream when it shares that timebase and interpretation boundary;
-create a secondary stream when it has an independent timebase, is raw evidence
-that must remain distinct, or is a reusable fused/analysis product.
+create a secondary stream when it has an independent coordinate or timebase, is
+raw evidence that must remain distinct, or is a reusable fused/analysis
+product.
 
 The primary dataframe is the canonical logger grid. Compatible bicycle-profile
 transforms therefore remain primary signals: for example, transformed wheel or
@@ -30,12 +31,21 @@ Current examples are:
 - `imu_<sensor>`: reconstructed high-rate IMU evidence on its native clock;
 - `gps_logger`: reconstructed GPS observations on their native cadence; and
 - `inertial_<sensor>`: fused, high-rate orientation and inertial dynamics,
-  derived from a frame IMU and optionally GPS course-over-ground.
+  derived from a frame IMU and optionally GPS course-over-ground; and
+- `spatial_context`: session-scoped gradient, twistiness, and wheel suspension
+  activity on a regular cumulative-distance grid.
 
 The inertial stream is deliberately separate from `imu_<sensor>` despite
 sharing its sample grid: it is an inferred product with its own correction,
 smoothing, and confidence provenance. It never overwrites the raw/reconstructed
 IMU evidence.
+
+The spatial-context stream is separate because its primary coordinate is
+`distance_m`, not the primary logger time grid. `representative_time_s` links a
+spatial row back to session time but does not make time the stream coordinate.
+Suspension activity in this stream is accumulated from full-resolution filtered
+time-series displacement before spatial aggregation; the coarse spatial stream
+must not become the evidence used to reconstruct movement.
 
 ## Compatibility and selection
 

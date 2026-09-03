@@ -11,6 +11,7 @@ from .raw_signal_dropouts import (
     DEFAULT_RAW_SIGNAL_DROPOUT_FILTER,
     validate_raw_signal_dropout_config,
 )
+from .spatial_context import DEFAULT_SPATIAL_CONTEXT_CONFIG
 
 
 PREPROCESS_PROFILE_SCHEMA = "bodaqs.preprocess_profile"
@@ -91,6 +92,7 @@ DEFAULT_PREPROCESS_PROFILE_CONFIG: Dict[str, Any] = {
         },
         "secondary": [],
     },
+    "spatial_context": copy.deepcopy(DEFAULT_SPATIAL_CONTEXT_CONFIG),
     "butterworth_smoothing": [],
     "butterworth_generate_residuals": False,
     "activity_detection": {
@@ -417,6 +419,7 @@ def validate_preprocess_config(config: Mapping[str, Any], *, label: str = "") ->
     if not isinstance(config.get("butterworth_generate_residuals"), bool):
         raise ValueError(f"Preprocess config 'butterworth_generate_residuals' must be boolean{label}")
     _validate_motion_derivation(config.get("motion_derivation"), label=label)
+    _validate_spatial_context(config.get("spatial_context"), label=label)
     _validate_activity_detection(config.get("activity_detection"), label=label)
     validate_raw_signal_dropout_config(config.get("raw_signal_dropout_filter"), label=label)
 
@@ -656,6 +659,231 @@ def _validate_motion_profile(profile: Mapping[str, Any], *, key: str, label: str
         _require_positive_number(profile, field, label=f"{label} ({key})")
     for field in required_positive_ints:
         _require_positive_int(profile, field, label=f"{label} ({key})")
+
+
+def _validate_spatial_context(value: Any, *, label: str) -> None:
+    if value is None:
+        return
+    if not isinstance(value, Mapping):
+        raise ValueError(f"Preprocess config 'spatial_context' must be object or null{label}")
+
+    allowed = {
+        "enabled",
+        "algorithm_version",
+        "distance",
+        "gradient",
+        "twistiness",
+        "suspension_activity",
+    }
+    _reject_unknown_fields(value, allowed, key="spatial_context", label=label)
+    if "enabled" in value and not isinstance(value.get("enabled"), bool):
+        raise ValueError(f"Preprocess config 'spatial_context.enabled' must be boolean{label}")
+    enabled = bool(value.get("enabled", False))
+    if not enabled:
+        return
+
+    _require_positive_int(value, "algorithm_version", label=f"{label} (spatial_context)")
+    distance = value.get("distance")
+    if not isinstance(distance, Mapping):
+        raise ValueError(f"Preprocess config 'spatial_context.distance' must be an object when enabled{label}")
+    _validate_spatial_distance(distance, label=label)
+
+    enabled_metric_count = 0
+    gradient = value.get("gradient")
+    if gradient is not None:
+        if not isinstance(gradient, Mapping):
+            raise ValueError(f"Preprocess config 'spatial_context.gradient' must be object or null{label}")
+        _validate_spatial_gradient(gradient, label=label)
+        enabled_metric_count += int(bool(gradient.get("enabled", False)))
+
+    twistiness = value.get("twistiness")
+    if twistiness is not None:
+        if not isinstance(twistiness, Mapping):
+            raise ValueError(f"Preprocess config 'spatial_context.twistiness' must be object or null{label}")
+        _validate_spatial_twistiness(twistiness, label=label)
+        enabled_metric_count += int(bool(twistiness.get("enabled", False)))
+
+    activity = value.get("suspension_activity")
+    if activity is not None:
+        if not isinstance(activity, Mapping):
+            raise ValueError(
+                f"Preprocess config 'spatial_context.suspension_activity' must be object or null{label}"
+            )
+        _validate_spatial_activity(activity, label=label)
+        enabled_metric_count += int(bool(activity.get("enabled", False)))
+
+    if enabled_metric_count == 0:
+        raise ValueError(
+            "Preprocess config 'spatial_context' must enable at least one metric block"
+            f"{label}"
+        )
+
+
+def _validate_spatial_distance(value: Mapping[str, Any], *, label: str) -> None:
+    key = "spatial_context.distance"
+    allowed = {
+        "source_priority",
+        "grid_interval_m",
+        "distance_model",
+        "max_interpolation_gap_s",
+        "minimum_nominal_gps_rate_hz",
+        "minimum_gps_coverage_ratio",
+        "minimum_distance_support_fraction",
+        "maximum_implied_speed_mps",
+        "quality_action",
+    }
+    _reject_unknown_fields(value, allowed, key=key, label=label)
+    priority = value.get("source_priority")
+    if not isinstance(priority, list) or not priority:
+        raise ValueError(f"Preprocess config '{key}.source_priority' must be a non-empty list{label}")
+    supported = {"recorded_gps_or_fit_distance", "gps_geometry"}
+    unsupported = [str(item) for item in priority if str(item) not in supported]
+    if unsupported:
+        raise ValueError(
+            f"Preprocess config '{key}.source_priority' contains unsupported candidate(s)"
+            f"{label}: {', '.join(unsupported)}"
+        )
+    for field in (
+        "grid_interval_m",
+        "max_interpolation_gap_s",
+        "minimum_nominal_gps_rate_hz",
+        "maximum_implied_speed_mps",
+    ):
+        _require_positive_number(value, field, label=f"{label} ({key})")
+    for field in ("minimum_gps_coverage_ratio", "minimum_distance_support_fraction"):
+        _require_unit_interval(value, field, label=f"{label} ({key})")
+    if float(value.get("minimum_distance_support_fraction")) <= 0:
+        raise ValueError(
+            f"Preprocess config '{key}.minimum_distance_support_fraction' must be greater than zero{label}"
+        )
+    if str(value.get("distance_model") or "") not in {"geodesic", "local_projection"}:
+        raise ValueError(
+            f"Preprocess config '{key}.distance_model' must be 'geodesic' or 'local_projection'{label}"
+        )
+    if str(value.get("quality_action") or "") not in {"warn", "omit", "error"}:
+        raise ValueError(
+            f"Preprocess config '{key}.quality_action' must be 'warn', 'omit', or 'error'{label}"
+        )
+
+
+def _validate_spatial_gradient(value: Mapping[str, Any], *, label: str) -> None:
+    key = "spatial_context.gradient"
+    allowed = {
+        "enabled",
+        "altitude_source",
+        "estimator",
+        "regression_window_m",
+        "smoothing_kernel",
+        "smoothing_distance_m",
+    }
+    _reject_unknown_fields(value, allowed, key=key, label=label)
+    _require_bool(value, "enabled", key=key, label=label)
+    if not bool(value.get("enabled", False)):
+        return
+    if str(value.get("altitude_source") or "") != "gps":
+        raise ValueError(f"Preprocess config '{key}.altitude_source' must be 'gps'{label}")
+    if str(value.get("estimator") or "") != "local_linear_regression":
+        raise ValueError(f"Preprocess config '{key}.estimator' must be 'local_linear_regression'{label}")
+    _validate_spatial_smoothing(value, key=key, label=label)
+    _require_positive_number(value, "regression_window_m", label=f"{label} ({key})")
+
+
+def _validate_spatial_twistiness(value: Mapping[str, Any], *, label: str) -> None:
+    key = "spatial_context.twistiness"
+    allowed = {
+        "enabled",
+        "estimator",
+        "geometry_window_m",
+        "polynomial_order",
+        "smoothing_kernel",
+        "smoothing_distance_m",
+    }
+    _reject_unknown_fields(value, allowed, key=key, label=label)
+    _require_bool(value, "enabled", key=key, label=label)
+    if not bool(value.get("enabled", False)):
+        return
+    if str(value.get("estimator") or "") != "local_polynomial":
+        raise ValueError(f"Preprocess config '{key}.estimator' must be 'local_polynomial'{label}")
+    _require_positive_number(value, "geometry_window_m", label=f"{label} ({key})")
+    _require_positive_int(value, "polynomial_order", label=f"{label} ({key})")
+    if int(value.get("polynomial_order")) < 2:
+        raise ValueError(f"Preprocess config '{key}.polynomial_order' must be at least 2{label}")
+    _validate_spatial_smoothing(value, key=key, label=label)
+
+
+def _validate_spatial_activity(value: Mapping[str, Any], *, label: str) -> None:
+    key = "spatial_context.suspension_activity"
+    allowed = {
+        "enabled",
+        "use_preprocess_active_mask",
+        "front_selector",
+        "rear_selector",
+        "minimum_support_fraction",
+        "smoothing_kernel",
+        "smoothing_distance_m",
+        "combined_method",
+    }
+    _reject_unknown_fields(value, allowed, key=key, label=label)
+    _require_bool(value, "enabled", key=key, label=label)
+    if not bool(value.get("enabled", False)):
+        return
+    _require_bool(value, "use_preprocess_active_mask", key=key, label=label)
+    selector_count = 0
+    for end in ("front", "rear"):
+        selector_key = f"{key}.{end}_selector"
+        selector = value.get(f"{end}_selector")
+        _validate_signal_selector(selector, key=selector_key, label=label, required=False)
+        if selector is None:
+            continue
+        selector_count += 1
+        if str(selector.get("quantity") or "").strip().lower() != "disp":
+            raise ValueError(f"Preprocess config '{selector_key}.quantity' must be 'disp'{label}")
+        if str(selector.get("domain") or "").strip().lower() != "wheel":
+            raise ValueError(f"Preprocess config '{selector_key}.domain' must be 'wheel'{label}")
+        if str(selector.get("unit") or "").strip() not in {"mm", "m"}:
+            raise ValueError(f"Preprocess config '{selector_key}.unit' must be 'mm' or 'm'{label}")
+    if selector_count == 0:
+        raise ValueError(
+            f"Preprocess config '{key}' must define at least one wheel displacement selector{label}"
+        )
+    _require_unit_interval(value, "minimum_support_fraction", label=f"{label} ({key})")
+    if float(value.get("minimum_support_fraction")) <= 0:
+        raise ValueError(
+            f"Preprocess config '{key}.minimum_support_fraction' must be greater than zero{label}"
+        )
+    _validate_spatial_smoothing(value, key=key, label=label)
+    if str(value.get("combined_method") or "") != "mean_both_required":
+        raise ValueError(
+            f"Preprocess config '{key}.combined_method' must be 'mean_both_required'{label}"
+        )
+
+
+def _validate_spatial_smoothing(value: Mapping[str, Any], *, key: str, label: str) -> None:
+    if str(value.get("smoothing_kernel") or "") != "centred_exponential":
+        raise ValueError(
+            f"Preprocess config '{key}.smoothing_kernel' must be 'centred_exponential'{label}"
+        )
+    _require_positive_number(value, "smoothing_distance_m", label=f"{label} ({key})")
+
+
+def _reject_unknown_fields(value: Mapping[str, Any], allowed: set[str], *, key: str, label: str) -> None:
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise ValueError(
+            f"Preprocess config '{key}' has unsupported field(s){label}: {', '.join(unknown)}"
+        )
+
+
+def _require_bool(value: Mapping[str, Any], field: str, *, key: str, label: str) -> None:
+    if field not in value or not isinstance(value.get(field), bool):
+        raise ValueError(f"Preprocess config '{key}.{field}' must be boolean{label}")
+
+
+def _require_unit_interval(value: Mapping[str, Any], field: str, *, label: str) -> None:
+    _require_number(value, field, label=label)
+    number = float(value.get(field))
+    if number < 0 or number > 1:
+        raise ValueError(f"Preprocess config {field!r} must lie within [0, 1]{label}")
 
 
 def _validate_activity_detection(value: Any, *, label: str) -> None:

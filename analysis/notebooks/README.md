@@ -55,6 +55,8 @@ Current self-scoped consumers include:
 - `self_scoped/bodaqs_session_browser_self_scoped.ipynb`
 - `self_scoped/bodaqs_imu_attitude_explorer_self_scoped.ipynb` — reads persisted
   `attitude_<sensor>` streams for time-series and distribution inspection.
+- `self_scoped/bodaqs_spatial_context_explorer_self_scoped.ipynb` — derives and
+  visualizes configurable distance-domain context metrics for one session.
 
 ## Legacy Root-level Notebooks
 
