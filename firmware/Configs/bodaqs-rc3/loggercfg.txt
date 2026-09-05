@@ -8,7 +8,7 @@ tz=AWST-8 #This requires a POSIX timezone rule string. These can be found at htt
 ntp_servers=au.pool.ntp.org,pool.ntp.org,time.google.com 
 time_check_url=
 debounce_ms=40
-auto_sleep_idle_min=0
+auto_sleep_idle_min=30
 wifi_idle_timeout_min=5
 log_level=default
 
@@ -42,12 +42,15 @@ binding7.action=logging_toggle
 binding8.button=mark
 binding8.event=released
 binding8.action=menu_select
-binding9.button=nav_up
+binding9.button=nav_left
 binding9.event=held
-binding9.action=upload_mode_toggle
-binding10.button=nav_down
+binding9.action=sleep
+binding10.button=nav_up
 binding10.event=held
-binding10.action=web_toggle
+binding10.action=upload_mode_toggle
+binding11.button=nav_down
+binding11.event=held
+binding11.action=web_toggle
 
 # wifi - configure up to 5 wifi networks. Copy the settings block if needed.
 
