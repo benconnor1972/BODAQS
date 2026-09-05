@@ -233,6 +233,8 @@ class SpatialDistanceConfigV1(TypedDict, total=False):
     max_interpolation_gap_s: float
     minimum_nominal_gps_rate_hz: float
     minimum_gps_coverage_ratio: float
+    minimum_distance_support_fraction: float
+    maximum_implied_speed_mps: float
     quality_action: str
 
 class SpatialGradientConfigV1(TypedDict, total=False):
@@ -247,6 +249,14 @@ class SpatialTwistinessConfigV1(TypedDict, total=False):
     enabled: bool
     estimator: str
     geometry_window_m: float
+    polynomial_order: int
+    require_full_window: bool
+    minimum_source_position_observations: int
+    fit_weighting: str
+    horizontal_accuracy_weighting: bool
+    horizontal_accuracy_floor_m: float
+    robust_iterations: int
+    robust_tuning_constant: float
     smoothing_kernel: str
     smoothing_distance_m: float
 
@@ -255,6 +265,7 @@ class SpatialSuspensionActivityConfigV1(TypedDict, total=False):
     use_preprocess_active_mask: bool
     front_selector: SignalSelectorConfigV1 | None
     rear_selector: SignalSelectorConfigV1 | None
+    minimum_support_fraction: float
     smoothing_kernel: str
     smoothing_distance_m: float
     combined_method: str
@@ -341,6 +352,9 @@ class PreprocessRunConfigV1(TypedDict, total=False):
   after bike-profile wheel transforms, motion derivation, and activity-mask
   generation. The effective configuration and all source/filter provenance
   must be stored with the derived stream.
+- The preprocess-profile block does not contain a track reference or traversal
+  selection. Canonical metrics are derived for the whole session; optional
+  track traversal scoping is a later post-processing operation.
 - Spatial-context suspension activity consumes full-resolution filtered
   wheel-domain displacement. The primary displacement must not first be
   resampled onto the coarser spatial grid.
@@ -549,12 +563,18 @@ The block is intentionally parameter-rich during the JupyterLab exploratory
 phase. Persisted results must record the normalized effective configuration so
 that later Workbench consumers do not depend on notebook state.
 
+This configuration controls whole-session metric derivation only. Track id,
+track revision, sequence-matching thresholds, and traversal-selection policy
+belong to the optional post-derivation `track_scope` operation defined by the
+spatial-context stream contract. Track geometry must not become preprocessing
+evidence for gradient, twistiness, or suspension activity.
+
 ### 8.1 Canonical exploratory shape
 
 ```json
 {
   "enabled": true,
-  "algorithm_version": 1,
+  "algorithm_version": 2,
   "distance": {
     "source_priority": [
       "recorded_gps_or_fit_distance",
@@ -567,7 +587,16 @@ that later Workbench consumers do not depend on notebook state.
     "minimum_gps_coverage_ratio": 0.99,
     "minimum_distance_support_fraction": 0.5,
     "maximum_implied_speed_mps": 50.0,
-    "quality_action": "warn"
+    "quality_action": "warn",
+    "geometry_denoising": {
+      "enabled": true,
+      "estimator": "local_polynomial",
+      "window_m": 20.0,
+      "polynomial_order": 2,
+      "fit_weighting": "tricube",
+      "robust_iterations": 2,
+      "robust_tuning_constant": 4.685
+    }
   },
   "gradient": {
     "enabled": true,
@@ -580,8 +609,15 @@ that later Workbench consumers do not depend on notebook state.
   "twistiness": {
     "enabled": true,
     "estimator": "local_polynomial",
-    "geometry_window_m": 5.0,
+    "geometry_window_m": 20.0,
     "polynomial_order": 2,
+    "require_full_window": true,
+    "minimum_source_position_observations": 3,
+    "fit_weighting": "tricube",
+    "horizontal_accuracy_weighting": true,
+    "horizontal_accuracy_floor_m": 0.5,
+    "robust_iterations": 2,
+    "robust_tuning_constant": 4.685,
     "smoothing_kernel": "centred_exponential",
     "smoothing_distance_m": 7.5
   },
@@ -638,6 +674,17 @@ These values are provisional notebook defaults, not contract constants.
   than zero.
 - `distance_model` records the model used when deriving distance from GPS
   geometry. Version 0 recognizes `geodesic` and `local_projection`.
+- When `gps_geometry` is selected and `geometry_denoising.enabled` is true,
+  cumulative distance is calculated along the denoised geometry, not by
+  summing the noisy raw fixes. Version 0 uses a local-polynomial estimator.
+- `geometry_denoising.window_m` must be positive; `polynomial_order` must be a
+  positive integer; `fit_weighting` recognizes `uniform` and `tricube`;
+  `robust_iterations` must be a non-negative integer; and
+  `robust_tuning_constant` must be positive. The exploratory default is a
+  20 m, order-2, tricube-weighted fit with two robust iterations.
+- Denoising parameters and the raw and denoised route lengths must be recorded
+  in distance-source diagnostics. Denoising changes the distance coordinate;
+  it is distinct from twistiness output smoothing.
 - `minimum_nominal_gps_rate_hz` must be finite and greater than zero when
   present.
 - `minimum_gps_coverage_ratio` must lie within `[0, 1]` when present. It means
@@ -661,12 +708,49 @@ These values are provisional notebook defaults, not contract constants.
 - `regression_window_m`, `geometry_window_m`, and all
   `smoothing_distance_m` values must be finite and greater than zero.
 - `polynomial_order` must be an integer of at least 2 and lower than the number
-  of usable samples in the effective twistiness window.
+  of usable independent source-position observations in the twistiness window.
+- The local polynomial is fit directly to independent source GPS positions in
+  local Cartesian coordinates. Interpolated spatial-grid rows are evaluation
+  locations and must not be treated as additional fitting observations.
+- The polynomial derivatives are evaluated analytically and combined using the
+  parameterization-invariant planar-curvature equation.
+- `require_full_window: true` means curvature is emitted only where the complete
+  centred geometry window lies within one contiguous supported run. A run
+  shorter than the effective window is entirely null; half the window is null
+  at each run boundary or discontinuity.
+- The effective odd window length in spatial rows is at least both the configured
+  `geometry_window_m` expressed on the grid and `2 * polynomial_order + 1`.
+  With a 0.5 m grid, 20 m window, and order 2, the effective length is 41 rows
+  and the boundary exclusion is 20 rows, or 10 m, on each side. This row count
+  defines support and edge reporting, not the number of fitting observations.
+- `minimum_source_position_observations` must be an integer of at least 3.
+  It counts distinct supported source-position observations in the centred
+  geometry window, not interpolated spatial-grid rows. The exploratory hard
+  minimum is 3; 5 is a preferred-quality target when the configured geometry
+  window and observed GPS spacing can support it.
+- Full-window continuity is evaluated from valid distance/geometry support
+  before the per-centre source-observation threshold is applied. A neighbouring
+  row falling below the observation threshold does not create a geometry
+  discontinuity and must not trigger another half-window exclusion.
+- `fit_weighting` recognizes `uniform` and `tricube`; the exploratory default is
+  `tricube`, which gives nearby source observations greater influence.
+- When `horizontal_accuracy_weighting` is true and the selected GPS source
+  exposes horizontal accuracy, inverse-variance weighting is applied with
+  `horizontal_accuracy_floor_m` limiting excessive weight. Missing accuracy
+  values fall back to the median available accuracy, and a source with no
+  accuracy field falls back to distance weighting alone.
+- `robust_iterations` must be a non-negative integer and
+  `robust_tuning_constant` must be positive. These control iterative robust
+  down-weighting of source-position outliers.
 - Version 0 supports `smoothing_kernel: "centred_exponential"`.
-- Twistiness is derived from curvature magnitude; signed alternating turns must
-  not cancel.
+- Twistiness is derived from curvature magnitude after the source-geometry fit;
+  signed alternating turns at spatial scales retained by that fit must not
+  cancel. Output smoothing is not a substitute for geometry denoising because
+  it occurs after the magnitude operation.
 - Estimator names and all effective estimator-specific parameters must be
   recorded with the derived stream.
+- Excluded twistiness values are null, not zero, and smoothing must not bridge
+  the resulting gaps.
 
 ### 8.5 Suspension-activity rules
 
@@ -711,6 +795,7 @@ raw displacement
 -> calculate gradient and twistiness on spatial evidence
 -> apply centred spatial smoothing
 -> materialize spatial_context as a secondary stream
+[optional post-processing] -> match a track traversal and select existing rows
 ```
 
 Event detection and ordinary event metrics remain time-domain consumers and do

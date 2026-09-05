@@ -46,6 +46,7 @@ import type {
   TimeseriesWindowResponse,
   TimeseriesWindowSignal,
   TrackDirection,
+  TrackGeometryEditRecord,
   TrackMatchStatus,
   TrackSegmentAliasRecord,
   TrackpointMatchMode,
@@ -55,7 +56,14 @@ import type {
   TrackpointMatchQueryStatus,
   TrackRecord,
 } from '../domain/types'
-import type { CatalogRevision, LibraryDataSource, SessionNoteSaveResult, SignalSetDefinition, WorkbenchBootstrapData } from './LibraryDataSource'
+import type {
+  CatalogRevision,
+  LibraryDataSource,
+  SessionGpsPointLoadOptions,
+  SessionNoteSaveResult,
+  SignalSetDefinition,
+  WorkbenchBootstrapData,
+} from './LibraryDataSource'
 
 const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8765'
 const VITE_DEV_PORTS = new Set(['5173', '4173'])
@@ -395,14 +403,18 @@ export class LocalApiDataSource implements LibraryDataSource {
     return mapTrackpointMatchQuery(response)
   }
 
-  async loadSessionGpsPoints(session: SessionRecord, sourceId?: string | null): Promise<SessionGpsPointSet> {
+  async loadSessionGpsPoints(
+    session: SessionRecord,
+    sourceId?: string | null,
+    options?: SessionGpsPointLoadOptions,
+  ): Promise<SessionGpsPointSet> {
     const response = await requestJson<ApiObject>(
       `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(session.libraryId)}/sessions/gps/points`,
       {
         method: 'POST',
         body: JSON.stringify({
           session_ref: toApiSessionRef(session),
-          max_points: 1800,
+          max_points: options?.maxPoints ?? 1800,
           ...(sourceId ? { source_id: sourceId } : {}),
         }),
       },
@@ -821,6 +833,8 @@ function mapTrack(value: ApiObject): TrackRecord {
   const lengthM = numberValue(path.length_m)
   const policyRef = objectValue(value.default_policy_ref)
   const source = objectValue(value.source)
+  const gpsSampling = objectValue(source.gps_sampling)
+  const geometryDenoising = objectValue(source.geometry_denoising)
   return {
     id: textValue(value.track_id),
     name: textValue(value.display_name, textValue(value.track_id)),
@@ -859,6 +873,20 @@ function mapTrack(value: ApiObject): TrackRecord {
         timingRole: (textValue(alias.timing_role) === 'untimed' ? 'untimed' : 'timed') as TrackSegmentAliasRecord['timingRole'],
       }))
       .filter((alias) => alias.fromTrackpointId && alias.toTrackpointId && (alias.name || alias.timingRole === 'untimed')),
+    geometryEdits: arrayValue(value.geometry_edits)
+      .filter(isObject)
+      .filter((edit) => textValue(edit.operation) === 'replace_sector_with_connector')
+      .map((edit) => ({
+        operation: 'replace_sector_with_connector' as TrackGeometryEditRecord['operation'],
+        fromTrackpointId: textValue(edit.from_trackpoint_id),
+        toTrackpointId: textValue(edit.to_trackpoint_id),
+        fromStationM: numberValue(edit.from_station_m),
+        toStationM: numberValue(edit.to_station_m),
+        removedLengthM: numberValue(edit.removed_length_m),
+        replacementLengthM: numberValue(edit.replacement_length_m),
+        appliedAtUtc: textValue(edit.applied_at_utc),
+      }))
+      .filter((edit) => edit.fromTrackpointId && edit.toTrackpointId),
     matchSummaries: arrayValue(value.match_summaries).filter(isObject).map(mapTrackMatch),
     source: textValue(source.kind)
       ? {
@@ -872,6 +900,25 @@ function mapTrack(value: ApiObject): TrackRecord {
           gpsSourceKind: gpsSourceKindOrNull(source.gps_source_kind) ?? undefined,
           gpsStreamName: textValue(source.gps_stream_name) || undefined,
           gpsSourceSelectionMethod: textValue(source.gps_source_selection_method) || undefined,
+          gpsSampling: textValue(gpsSampling.mode)
+            ? {
+                mode: textValue(gpsSampling.mode),
+                sourcePoints: numberValue(gpsSampling.source_points),
+                returnedPoints: numberValue(gpsSampling.returned_points),
+                maxPoints: numberValue(gpsSampling.max_points),
+                stride: nullableNumberValue(gpsSampling.stride),
+              }
+            : undefined,
+          geometryDenoising: textValue(geometryDenoising.estimator) === 'local_polynomial'
+            ? {
+                estimator: 'local_polynomial',
+                windowM: numberValue(geometryDenoising.window_m),
+                polynomialOrder: numberValue(geometryDenoising.polynomial_order),
+                fitWeighting: textValue(geometryDenoising.fit_weighting) === 'uniform' ? 'uniform' : 'tricube',
+                robustIterations: numberValue(geometryDenoising.robust_iterations),
+                robustTuningConstant: numberValue(geometryDenoising.robust_tuning_constant),
+              }
+            : undefined,
         }
       : undefined,
   }
@@ -1582,6 +1629,16 @@ function toApiTrack(track: TrackRecord) {
       display_name: alias.name,
       ...(alias.timingRole === 'untimed' ? { timing_role: 'untimed' } : {}),
     })),
+    geometry_edits: (track.geometryEdits ?? []).map((edit) => ({
+      operation: edit.operation,
+      from_trackpoint_id: edit.fromTrackpointId,
+      to_trackpoint_id: edit.toTrackpointId,
+      from_station_m: edit.fromStationM,
+      to_station_m: edit.toStationM,
+      removed_length_m: edit.removedLengthM,
+      replacement_length_m: edit.replacementLengthM,
+      applied_at_utc: edit.appliedAtUtc,
+    })),
     display_state: {
       bodaqs_web_v1: {},
     },
@@ -1601,6 +1658,25 @@ function toApiTrack(track: TrackRecord) {
       gps_source_kind: track.source.gpsSourceKind,
       gps_stream_name: track.source.gpsStreamName,
       gps_source_selection_method: track.source.gpsSourceSelectionMethod,
+      gps_sampling: track.source.gpsSampling
+        ? {
+            mode: track.source.gpsSampling.mode,
+            source_points: track.source.gpsSampling.sourcePoints,
+            returned_points: track.source.gpsSampling.returnedPoints,
+            max_points: track.source.gpsSampling.maxPoints,
+            stride: track.source.gpsSampling.stride,
+          }
+        : undefined,
+      geometry_denoising: track.source.geometryDenoising
+        ? {
+            estimator: track.source.geometryDenoising.estimator,
+            window_m: track.source.geometryDenoising.windowM,
+            polynomial_order: track.source.geometryDenoising.polynomialOrder,
+            fit_weighting: track.source.geometryDenoising.fitWeighting,
+            robust_iterations: track.source.geometryDenoising.robustIterations,
+            robust_tuning_constant: track.source.geometryDenoising.robustTuningConstant,
+          }
+        : undefined,
     }
   }
   return payload

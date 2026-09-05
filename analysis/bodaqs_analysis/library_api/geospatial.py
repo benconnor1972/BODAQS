@@ -10,6 +10,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+import numpy as np
+
+from ..track_traversal import (
+    DEFAULT_TRACK_TRAVERSAL_MATCH_CONFIG,
+    match_track_traversals,
+    normalize_track_traversal_match_config,
+)
 from .errors import (
     GeospatialPolicyNotFoundError,
     InvalidGeospatialPolicyError,
@@ -690,6 +697,11 @@ def _default_geospatial_policy() -> dict[str, Any]:
         "matching_policy": {
             "position_source_preference": ["logger_sensor", "fit_enrichment"],
             "max_point_distance_m": 8.0,
+            **{
+                key: copy.deepcopy(value)
+                for key, value in DEFAULT_TRACK_TRAVERSAL_MATCH_CONFIG.items()
+                if key != "maximum_lateral_distance_m"
+            },
             "cutline_crossing_required": True,
             "multi_crossing_policy": "nearest_to_trackpoint",
             "reverse_direction_policy": "allow_and_report",
@@ -716,6 +728,20 @@ def _validate_policy_numbers(doc: Mapping[str, Any]) -> None:
         number = _number_or_none(value)
         if number is None or number < 0:
             raise InvalidGeospatialPolicyError(f"{field_name} must be a non-negative number.")
+    try:
+        traversal_config = {
+            key: doc["matching_policy"].get(key)
+            for key in DEFAULT_TRACK_TRAVERSAL_MATCH_CONFIG
+            if key != "maximum_lateral_distance_m"
+        }
+        traversal_config["maximum_lateral_distance_m"] = doc["matching_policy"].get(
+            "max_point_distance_m"
+        )
+        normalize_track_traversal_match_config(
+            traversal_config
+        )
+    except ValueError as exc:
+        raise InvalidGeospatialPolicyError(str(exc)) from exc
 
 
 def _trackpoint_result(
@@ -804,12 +830,30 @@ def _build_session_track_match_from_points(
     ]
     matching_policy = policy.get("matching_policy") if isinstance(policy.get("matching_policy"), Mapping) else {}
     max_distance_m = _number_or_none(matching_policy.get("max_point_distance_m")) or 8.0
+    traversal_config = {
+        key: matching_policy[key]
+        for key in DEFAULT_TRACK_TRAVERSAL_MATCH_CONFIG
+        if key in matching_policy
+    }
+    traversal_config["maximum_lateral_distance_m"] = max_distance_m
+    traversal_match = match_track_traversals(
+        np.asarray([point.get("time_s") for point in normalized_points], dtype=float),
+        np.asarray([point["latitude"] for point in normalized_points], dtype=float),
+        np.asarray([point["longitude"] for point in normalized_points], dtype=float),
+        track,
+        traversal_config,
+    )
     projected_to_track = [
         {
-            "point": point,
-            "projection": _nearest_track_projection(point["xy"], track_geometry),
+            "point": {"time_s": time_s},
+            "projection": {"station_m": station_m, "distance_m": distance_m},
         }
-        for point in projected_gps
+        for time_s, station_m, distance_m in zip(
+            traversal_match.time_s,
+            traversal_match.station_m,
+            traversal_match.lateral_distance_m,
+        )
+        if np.isfinite(station_m) and np.isfinite(distance_m)
     ]
     matched_projections = [
         item
@@ -847,7 +891,8 @@ def _build_session_track_match_from_points(
     session_ref_id = str(session_ref.get("session_ref_id") or "")
     gps_source_ref = _gps_source_ref(gps_summary=gps_summary, gps_points=gps_points)
     track_match_id = derive_object_id(
-        f"{session_ref_id} {track_id} {track_revision} {policy_id} {_gps_source_identity(gps_source_ref)}",
+        f"{session_ref_id} {track_id} {track_revision} {policy_id} "
+        f"{_gps_source_identity(gps_source_ref)} session_track_match_geometry_sequence_aware_v0 0.3.0",
         fallback="track-match",
     )
     return {
@@ -867,6 +912,7 @@ def _build_session_track_match_from_points(
         "status": status,
         "direction": direction,
         "coverage": coverage,
+        "traversals": copy.deepcopy(traversal_match.traversals),
         "trackpoint_results": [
             _trackpoint_result_from_geometry(
                 trackpoint,
@@ -881,8 +927,9 @@ def _build_session_track_match_from_points(
         "provenance": {
             "derived_at": _utcnow_iso(),
             "derived_by": "bodaqs_analysis.library_api.geospatial",
-            "algorithm": "session_track_match_geometry_v0",
-            "algorithm_version": "0.2.0",
+            "algorithm": "session_track_match_geometry_sequence_aware_v0",
+            "algorithm_version": "0.3.0",
+            "track_projection": copy.deepcopy(traversal_match.diagnostics),
             "gps_source": gps_source_ref,
         },
     }

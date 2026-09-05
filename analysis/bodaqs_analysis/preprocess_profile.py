@@ -731,6 +731,7 @@ def _validate_spatial_distance(value: Mapping[str, Any], *, label: str) -> None:
         "minimum_distance_support_fraction",
         "maximum_implied_speed_mps",
         "quality_action",
+        "geometry_denoising",
     }
     _reject_unknown_fields(value, allowed, key=key, label=label)
     priority = value.get("source_priority")
@@ -764,6 +765,42 @@ def _validate_spatial_distance(value: Mapping[str, Any], *, label: str) -> None:
         raise ValueError(
             f"Preprocess config '{key}.quality_action' must be 'warn', 'omit', or 'error'{label}"
         )
+    geometry_denoising = value.get("geometry_denoising")
+    if geometry_denoising is not None:
+        _validate_spatial_geometry_denoising(geometry_denoising, label=label)
+
+
+def _validate_spatial_geometry_denoising(value: Any, *, label: str) -> None:
+    key = "spatial_context.distance.geometry_denoising"
+    if not isinstance(value, Mapping):
+        raise ValueError(f"Preprocess config '{key}' must be an object or null{label}")
+    allowed = {
+        "enabled",
+        "estimator",
+        "window_m",
+        "polynomial_order",
+        "fit_weighting",
+        "robust_iterations",
+        "robust_tuning_constant",
+    }
+    _reject_unknown_fields(value, allowed, key=key, label=label)
+    _require_bool(value, "enabled", key=key, label=label)
+    if not bool(value.get("enabled", False)):
+        return
+    if str(value.get("estimator") or "") != "local_polynomial":
+        raise ValueError(f"Preprocess config '{key}.estimator' must be 'local_polynomial'{label}")
+    _require_positive_number(value, "window_m", label=f"{label} ({key})")
+    _require_positive_int(value, "polynomial_order", label=f"{label} ({key})")
+    if int(value.get("polynomial_order")) < 1:
+        raise ValueError(f"Preprocess config '{key}.polynomial_order' must be at least 1{label}")
+    if str(value.get("fit_weighting") or "") not in {"uniform", "tricube"}:
+        raise ValueError(
+            f"Preprocess config '{key}.fit_weighting' must be 'uniform' or 'tricube'{label}"
+        )
+    _require_int(value, "robust_iterations", label=f"{label} ({key})")
+    if int(value.get("robust_iterations")) < 0:
+        raise ValueError(f"Preprocess config '{key}.robust_iterations' must be at least 0{label}")
+    _require_positive_number(value, "robust_tuning_constant", label=f"{label} ({key})")
 
 
 def _validate_spatial_gradient(value: Mapping[str, Any], *, label: str) -> None:
@@ -795,6 +832,13 @@ def _validate_spatial_twistiness(value: Mapping[str, Any], *, label: str) -> Non
         "estimator",
         "geometry_window_m",
         "polynomial_order",
+        "require_full_window",
+        "minimum_source_position_observations",
+        "fit_weighting",
+        "horizontal_accuracy_weighting",
+        "horizontal_accuracy_floor_m",
+        "robust_iterations",
+        "robust_tuning_constant",
         "smoothing_kernel",
         "smoothing_distance_m",
     }
@@ -808,6 +852,48 @@ def _validate_spatial_twistiness(value: Mapping[str, Any], *, label: str) -> Non
     _require_positive_int(value, "polynomial_order", label=f"{label} ({key})")
     if int(value.get("polynomial_order")) < 2:
         raise ValueError(f"Preprocess config '{key}.polynomial_order' must be at least 2{label}")
+    _require_bool(value, "require_full_window", key=key, label=label)
+    _require_positive_int(
+        value,
+        "minimum_source_position_observations",
+        label=f"{label} ({key})",
+    )
+    if int(value.get("minimum_source_position_observations")) < 3:
+        raise ValueError(
+            f"Preprocess config '{key}.minimum_source_position_observations' must be at least 3{label}"
+        )
+    if "fit_weighting" in value and str(value.get("fit_weighting") or "") not in {
+        "uniform",
+        "tricube",
+    }:
+        raise ValueError(
+            f"Preprocess config '{key}.fit_weighting' must be 'uniform' or 'tricube'{label}"
+        )
+    if "horizontal_accuracy_weighting" in value:
+        _require_bool(
+            value,
+            "horizontal_accuracy_weighting",
+            key=key,
+            label=label,
+        )
+    if "horizontal_accuracy_floor_m" in value:
+        _require_positive_number(
+            value,
+            "horizontal_accuracy_floor_m",
+            label=f"{label} ({key})",
+        )
+    if "robust_iterations" in value:
+        _require_int(value, "robust_iterations", label=f"{label} ({key})")
+    if "robust_iterations" in value and int(value.get("robust_iterations")) < 0:
+        raise ValueError(
+            f"Preprocess config '{key}.robust_iterations' must be at least 0{label}"
+        )
+    if "robust_tuning_constant" in value:
+        _require_positive_number(
+            value,
+            "robust_tuning_constant",
+            label=f"{label} ({key})",
+        )
     _validate_spatial_smoothing(value, key=key, label=label)
 
 

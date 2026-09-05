@@ -91,7 +91,10 @@ def make_spatial_context_figure(
             row=row,
             col=1,
         )
-        figure.update_yaxes(title_text=unit, row=row, col=1)
+        yaxis_options: dict[str, Any] = {"title_text": unit}
+        if column == "twistiness_rad_per_m":
+            yaxis_options["range"] = [0.0, 0.5]
+        figure.update_yaxes(row=row, col=1, **yaxis_options)
 
     if selected_distance_range_m is not None:
         if len(selected_distance_range_m) != 2:

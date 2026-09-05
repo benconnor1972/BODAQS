@@ -287,6 +287,12 @@ Optional derived-cache location:
 Session track matches are not canonical session artifacts. They can be
 recomputed from the referenced session, track, and policy.
 
+Exact matches use sequence-aware station projection and may return a
+`traversals` list containing qualifying directed endpoint-to-endpoint passes.
+This prevents crossings and close parallel geometry from being treated as a
+series of unrelated nearest-segment choices. The detailed traversal and
+matching fields are defined by the geospatial contract.
+
 ### 4.9 Trackpoint Match Query
 
 A trackpoint match query is a derived, root-scoped, asynchronous job/index used
@@ -568,13 +574,40 @@ Minimal API example:
       "display_name": "Opening chute"
     }
   ],
+  "geometry_edits": [
+    {
+      "operation": "replace_sector_with_connector",
+      "from_trackpoint_id": "loop-entry",
+      "to_trackpoint_id": "loop-exit",
+      "from_station_m": 410.2,
+      "to_station_m": 498.7,
+      "removed_length_m": 88.5,
+      "replacement_length_m": 2.1,
+      "applied_at_utc": "2026-09-04T03:30:00Z"
+    }
+  ],
   "source": {
     "kind": "session_gps",
     "library_id": "default-library",
     "session_ref_id": "default-library|||run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
     "session_key": "run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
     "run_id": "run_2026-05-25T13-57-10_LOCAL",
-    "session_id": "2026-05-18_13-27-14"
+    "session_id": "2026-05-18_13-27-14",
+    "gps_sampling": {
+      "mode": "full",
+      "source_points": 2038,
+      "returned_points": 2038,
+      "max_points": 25000,
+      "stride": 1
+    },
+    "geometry_denoising": {
+      "estimator": "local_polynomial",
+      "window_m": 20.0,
+      "polynomial_order": 2,
+      "fit_weighting": "tricube",
+      "robust_iterations": 2,
+      "robust_tuning_constant": 4.685
+    }
   },
   "provenance": {
     "created_at": "2026-05-28T03:00:00Z",
@@ -586,6 +619,19 @@ Minimal API example:
 Track `source` is optional. A track may be authored from a session GPS path,
 imported from GPX/GeoJSON in the future, or created manually.
 
+When the Workbench creates a track from session GPS, it requests the full
+available point set up to the API safety limit and stores the denoised path.
+Version 0 uses the `geometry_denoising` policy shown above. `station_m` and
+`path.length_m` are then measured along that stored geometry; a map-preview
+stride must not become canonical track geometry.
+The source also records the GPS sampling response so a safety-cap stride is
+detectable rather than silently treated as full-resolution evidence.
+
+Existing track documents are migrated explicitly rather than on read. A
+Workbench rebuild action may reload their recorded session-GPS source, replace
+the working geometry, and re-snap trackpoints; persistence still requires the
+ordinary revision-checked track update.
+
 Track `segment_aliases` are optional labels for adjacent ordered trackpoint
 pairs. They should be ignored or dropped if either endpoint is missing, or if
 the `to_trackpoint_id` is not the first trackpoint after `from_trackpoint_id`
@@ -596,6 +642,12 @@ defaults to `timed`; `untimed` marks the segment for exclusion from lap-timing
 sector rows and timed totals. If an otherwise unnamed segment is retained for
 `timing_role`, consumers should provide a default display name such as
 `Segment 1`.
+
+Track `geometry_edits` is optional audit provenance. The initial supported
+operation, `replace_sector_with_connector`, records a user-confirmed removal
+of the directed path between two adjacent ordered trackpoints and its direct
+replacement length. Editing remains local to the Workbench until the normal
+revision-checked track update is submitted.
 
 A study set may reference a whole track by `track_id`, or a track interval by
 `track_id + from_trackpoint_id + to_trackpoint_id`.
@@ -1457,6 +1509,8 @@ rather than returning an entire auxiliary GPS/FIT stream.
 Track and policy endpoints are scoped to the configured libraries root, not to
 one processed library. Track match endpoints may return cached derived matches
 or compute new matches, depending on service capabilities.
+Exact computed matches may include sequence-matched traversal candidates;
+cache identity must change when the matching algorithm version changes.
 
 Trackpoint match query endpoints are for broad, potentially library-scale
 filtering. `POST` should return quickly with a queued/running/completed query

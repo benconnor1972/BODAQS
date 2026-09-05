@@ -38,6 +38,10 @@ export type CatalogRevision = {
   revision: number
 }
 
+export type SessionGpsPointLoadOptions = {
+  maxPoints?: number
+}
+
 export type SignalSetDefinition = {
   id: string
   displayName: string
@@ -80,7 +84,11 @@ export interface LibraryDataSource {
   loadTrackpointMatchQuery?(queryId: string): Promise<TrackpointMatchQueryRecord>
   loadTrackpointMatchQueryResults?(queryId: string, cursor?: string | null, limit?: number): Promise<TrackpointMatchQueryResults>
   cancelTrackpointMatchQuery?(queryId: string): Promise<TrackpointMatchQueryRecord>
-  loadSessionGpsPoints?(session: SessionRecord, sourceId?: string | null): Promise<SessionGpsPointSet>
+  loadSessionGpsPoints?(
+    session: SessionRecord,
+    sourceId?: string | null,
+    options?: SessionGpsPointLoadOptions,
+  ): Promise<SessionGpsPointSet>
   loadSessionNote?(session: SessionRecord): Promise<SessionNoteRecord>
   saveSessionNote?(note: SessionNoteRecord): Promise<SessionNoteRecord>
   saveSessionNotes?(notes: SessionNoteRecord[]): Promise<SessionNoteSaveResult[]>

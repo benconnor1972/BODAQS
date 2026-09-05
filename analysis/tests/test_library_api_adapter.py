@@ -2136,6 +2136,7 @@ def test_library_api_geospatial_endpoints_create_tracks_and_compute_matches(
     policy_response = client.get("/api/v1/geospatial-policies/default-geospatial-policy")
     assert policy_response.status_code == 200
     assert policy_response.json()["schema"] == "bodaqs.geospatial_policy"
+    assert policy_response.json()["matching_policy"]["heading_alignment_weight"] == 2.0
 
     track_payload = {
         "track_id": "test-track",
@@ -2181,6 +2182,18 @@ def test_library_api_geospatial_endpoints_create_tracks_and_compute_matches(
                 "display_name": "Malformed reverse alias",
             },
         ],
+        "geometry_edits": [
+            {
+                "operation": "replace_sector_with_connector",
+                "from_trackpoint_id": "start-gate",
+                "to_trackpoint_id": "finish-gate",
+                "from_station_m": 50.0,
+                "to_station_m": 90.0,
+                "removed_length_m": 40.0,
+                "replacement_length_m": 35.0,
+                "applied_at_utc": "2026-09-04T03:30:00Z",
+            }
+        ],
     }
     create_response = client.post("/api/v1/tracks", json=track_payload)
     assert create_response.status_code == 200
@@ -2195,6 +2208,7 @@ def test_library_api_geospatial_endpoints_create_tracks_and_compute_matches(
             "timing_role": "untimed",
         }
     ]
+    assert created_track["geometry_edits"] == track_payload["geometry_edits"]
 
     gps_response = client.post(
         "/api/v1/libraries/default-library/sessions/gps-summary",
@@ -2223,6 +2237,8 @@ def test_library_api_geospatial_endpoints_create_tracks_and_compute_matches(
     match = match_response.json()
     assert match["schema"] == "bodaqs.session_track_match"
     assert match["status"] == "matched"
+    assert match["provenance"]["algorithm"] == "session_track_match_geometry_sequence_aware_v0"
+    assert len(match["traversals"]) == 1
     assert match["trackpoint_results"][0]["trackpoint_id"] == "start-gate"
     assert match["trackpoint_results"][0]["crossed"] is True
     assert match["trackpoint_results"][0]["crossing_time_s"] == pytest.approx(1.0)

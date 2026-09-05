@@ -1087,12 +1087,19 @@ function cloneTrack(track: TrackRecord): TrackRecord {
       cutlineOverride: trackpoint.cutlineOverride ? { ...trackpoint.cutlineOverride } : undefined,
     })),
     segmentAliases: track.segmentAliases?.map((alias) => ({ ...alias })),
+    geometryEdits: track.geometryEdits?.map((edit) => ({ ...edit })),
     matchSummaries: track.matchSummaries.map((match) => ({
       ...match,
       trackpointResults: match.trackpointResults.map((result) => ({ ...result })),
       warnings: [...match.warnings],
     })),
-    source: track.source ? { ...track.source } : undefined,
+    source: track.source
+      ? {
+          ...track.source,
+          gpsSampling: track.source.gpsSampling ? { ...track.source.gpsSampling } : undefined,
+          geometryDenoising: track.source.geometryDenoising ? { ...track.source.geometryDenoising } : undefined,
+        }
+      : undefined,
   }
 }
 

@@ -288,6 +288,18 @@ Example:
       "display_name": "Opening chute"
     }
   ],
+  "geometry_edits": [
+    {
+      "operation": "replace_sector_with_connector",
+      "from_trackpoint_id": "loop-entry",
+      "to_trackpoint_id": "loop-exit",
+      "from_station_m": 410.2,
+      "to_station_m": 498.7,
+      "removed_length_m": 88.5,
+      "replacement_length_m": 2.1,
+      "applied_at_utc": "2026-09-04T03:30:00Z"
+    }
+  ],
   "source": {
     "kind": "session_gps",
     "library_id": "default-library",
@@ -298,7 +310,22 @@ Example:
     "gps_source_id": "gps_logger",
     "gps_source_kind": "logger_sensor",
     "gps_stream_name": "gps_logger",
-    "gps_source_selection_method": "gps_sources"
+    "gps_source_selection_method": "gps_sources",
+    "gps_sampling": {
+      "mode": "full",
+      "source_points": 2038,
+      "returned_points": 2038,
+      "max_points": 25000,
+      "stride": 1
+    },
+    "geometry_denoising": {
+      "estimator": "local_polynomial",
+      "window_m": 20.0,
+      "polynomial_order": 2,
+      "fit_weighting": "tricube",
+      "robust_iterations": 2,
+      "robust_tuning_constant": 4.685
+    }
   },
   "provenance": {
     "created_at": "2026-06-02T01:00:00Z",
@@ -324,10 +351,36 @@ Validation notes:
 - a track must contain one and only one path.
 - path coordinates are ordered in the positive track direction.
 - `length_m`, if present, must be calculated using `distance_model`.
+- A track created from session GPS should be stored as denoised geometry, not
+  as a strided map-preview path or a raw fix-to-fix polyline. Track creation
+  should request the full available source (up to the service safety limit),
+  remove repeated positions, and record the effective `geometry_denoising`
+  policy in `source`.
+- Track source provenance should also record `gps_sampling`, including source
+  and returned point counts and stride. A stride greater than one means the API
+  safety cap was reached and must remain visible to consumers.
+- The initial Workbench policy is a 20 m local quadratic fit with tricube
+  distance weighting and two Tukey robust-weight iterations. Its station
+  coordinate is cumulative geodesic distance along the stored fitted path.
+- Existing saved tracks are not rewritten merely by being opened. The
+  Workbench may offer an explicit rebuild-from-source action that replaces the
+  working path, re-snaps existing trackpoints to the denoised path, and requires
+  a normal save to persist the new track revision.
 - each `trackpoint.station_m` must lie within `[0, path.length_m]` when
   `length_m` is known.
 - trackpoints are implicitly ordered by increasing `station_m`.
 - trackpoint ids must be unique within a track.
+- `geometry_edits`, when present, records user-initiated changes to the stored
+  path. `replace_sector_with_connector` removes the directed path between two
+  ordered trackpoint anchors and inserts one direct connector between them.
+- The anchor trackpoints survive the operation. Trackpoint stations after the
+  removed sector shift by `replacement_length_m - removed_length_m`, and all
+  trackpoint positions are regenerated from the edited path.
+- Geometry edits are staged in the Workbench and do not change the persisted
+  track until the user saves a new revision. Existing match results and derived
+  profiles for an earlier revision are not valid for the edited revision.
+- Historical anchor ids in `geometry_edits` are provenance and need not remain
+  live if a user later removes those trackpoints.
 - `segment_aliases`, if present, are optional labels for adjacent ordered
   trackpoint pairs. They are an interpretation aid, not first-class track
   geometry.
@@ -480,6 +533,14 @@ Example:
   "matching_policy": {
     "position_source_preference": ["logger_sensor", "fit_enrichment"],
     "max_point_distance_m": 8.0,
+    "maximum_match_gap_s": 5.0,
+    "endpoint_tolerance_m": 15.0,
+    "minimum_track_coverage_ratio": 0.85,
+    "minimum_forward_fraction": 0.60,
+    "projection_candidate_count": 8,
+    "projection_station_separation_m": 5.0,
+    "transition_distance_weight": 0.5,
+    "heading_alignment_weight": 2.0,
     "cutline_crossing_required": true,
     "multi_crossing_policy": "nearest_to_trackpoint",
     "reverse_direction_policy": "allow_and_report"
@@ -560,6 +621,21 @@ Example:
     "session_gps_point_count": 1234,
     "matched_gps_point_count": 1198
   },
+  "traversals": [
+    {
+      "direction": "forward",
+      "start_time_s": 22.4,
+      "end_time_s": 211.8,
+      "duration_s": 189.4,
+      "start_station_m": 3.1,
+      "end_station_m": 1416.8,
+      "coverage_ratio": 0.995,
+      "forward_fraction": 0.94,
+      "matched_point_count": 967,
+      "mean_lateral_distance_m": 1.8,
+      "maximum_lateral_distance_m": 6.4
+    }
+  ],
   "trackpoint_results": [
     {
       "trackpoint_id": "rock-garden-entry",
@@ -611,6 +687,20 @@ selection or reconstruction policy that can change the match result.
 Implementations may use conservative session GPS and track bounding boxes to
 return `no_overlap` without loading full GPS point rows. Missing or invalid
 bounding boxes must fall back to exact matching rather than skipping.
+
+Exact geometry matching must resolve projected stations as an ordered sequence,
+not as independent nearest-segment choices. At crossings, overlapping
+out-and-back geometry, and close parallel sections, implementations should
+retain alternative projections and choose a coherent sequence using observed
+movement distance, heading agreement, and station continuity. Match provenance
+must identify the sequence-matching algorithm and effective thresholds.
+
+`traversals` is optional for summary-only and no-overlap results. When exact GPS
+rows are available, it lists qualifying endpoint-to-endpoint directed passes.
+The initial detector reports forward traversals that meet lateral-distance,
+match-gap, endpoint, coverage, and forward-progress rules. Consumers such as
+the spatial-context explorer may select a traversal, but that selection does
+not make track geometry the source of session-derived metrics.
 
 ---
 

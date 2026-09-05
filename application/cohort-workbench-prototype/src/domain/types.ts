@@ -266,6 +266,17 @@ export type StudyGrouping = {
   sessionRefs: string[]
 }
 
+export type TrackGeometryEditRecord = {
+  operation: 'replace_sector_with_connector'
+  fromTrackpointId: string
+  toTrackpointId: string
+  fromStationM: number
+  toStationM: number
+  removedLengthM: number
+  replacementLengthM: number
+  appliedAtUtc: string
+}
+
 export type TrackRecord = {
   id: string
   name: string
@@ -278,6 +289,7 @@ export type TrackRecord = {
   defaultPolicyId: string
   trackpoints: TrackpointRecord[]
   segmentAliases?: TrackSegmentAliasRecord[]
+  geometryEdits?: TrackGeometryEditRecord[]
   matchSummaries: SessionTrackMatchRecord[]
   source?: {
     kind: string
@@ -290,6 +302,21 @@ export type TrackRecord = {
     gpsSourceKind?: GpsSourceKind
     gpsStreamName?: string
     gpsSourceSelectionMethod?: string
+    gpsSampling?: {
+      mode: string
+      sourcePoints: number
+      returnedPoints: number
+      maxPoints: number
+      stride: number | null
+    }
+    geometryDenoising?: {
+      estimator: 'local_polynomial'
+      windowM: number
+      polynomialOrder: number
+      fitWeighting: 'uniform' | 'tricube'
+      robustIterations: number
+      robustTuningConstant: number
+    }
   }
 }
 

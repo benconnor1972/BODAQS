@@ -1,4 +1,5 @@
 import copy
+import copy
 import json
 
 import numpy as np
@@ -14,10 +15,13 @@ from bodaqs_analysis.pipeline import preprocess_resolved
 from bodaqs_analysis.preprocess_profile import default_preprocess_config, validate_preprocess_config
 from bodaqs_analysis.spatial_context import (
     DEFAULT_SPATIAL_CONTEXT_CONFIG,
+    DEFAULT_SPATIAL_CONTEXT_TRACK_SCOPE_CONFIG,
     SPATIAL_CONTEXT_STREAM_NAME,
     derive_spatial_context,
     materialize_spatial_context,
+    scope_spatial_context_to_track,
 )
+from bodaqs_analysis.track_traversal import match_track_traversals
 
 
 def _gps_registry(*, include_distance: bool = True) -> dict:
@@ -71,7 +75,7 @@ def _straight_session(
     speed_mps: float = 5.0,
     duration_s: float = 20.0,
     primary_rate_hz: float = 200.0,
-    gps_rate_hz: float = 1.0,
+    gps_rate_hz: float = 10.0,
     include_recorded_distance: bool = True,
     include_front: bool = True,
     include_rear_wheel: bool = True,
@@ -220,6 +224,115 @@ def test_gps_geometry_fallback_is_used_without_recorded_distance() -> None:
     assert np.nanmedian(result.stream_df["gradient_fraction"]) == pytest.approx(0.1, rel=0.01)
 
 
+def test_gps_geometry_distance_is_measured_along_denoised_positions() -> None:
+    session = _straight_session(include_recorded_distance=False)
+    gps = session["stream_dfs"]["gps_fit"]
+    lateral_noise_m = np.random.default_rng(42).normal(0.0, 0.5, len(gps.index))
+    gps["latitude_deg"] += np.degrees(lateral_noise_m / 6_371_000.0)
+
+    result = derive_spatial_context(
+        session,
+        _spatial_config(gradient={"enabled": False}, twistiness={"enabled": False}),
+    )
+
+    selected = result.stream_meta["distance_source"]["selected"]
+    diagnostics = selected["diagnostics"]
+    assert diagnostics["repairs"] == ["gps_geometry_denoised_before_stationing"]
+    assert diagnostics["geometry_denoising"]["window_m"] == 20.0
+    assert diagnostics["raw_geometry_distance_m"] > diagnostics["distance_m"] * 1.3
+    assert diagnostics["distance_m"] == pytest.approx(100.0, abs=3.0)
+
+
+def test_track_scope_defaults_to_last_forward_traversal_and_keeps_session_metrics() -> None:
+    session = _straight_session(duration_s=60.0)
+    gps = session["stream_dfs"]["gps_fit"]
+    time_s = gps["time_s"].to_numpy(float)
+    session_distance_m = time_s * 5.0
+    track_station_m = np.where(
+        time_s <= 20.0,
+        session_distance_m,
+        np.where(time_s <= 40.0, 100.0 - (time_s - 20.0) * 5.0, (time_s - 40.0) * 5.0),
+    )
+    gps["distance_m"] = session_distance_m
+    gps["longitude_deg"] = 115.85 + np.degrees(
+        track_station_m / (6_371_000.0 * np.cos(np.radians(-31.95)))
+    )
+    gps["altitude_m"] = 200.0 + 0.1 * session_distance_m
+    track = {
+        "track_id": "straight-track",
+        "revision": 2,
+        "path": {
+            "type": "LineString",
+            "length_m": 100.0,
+            "coordinates": [
+                [115.85, -31.95],
+                [
+                    115.85 + np.degrees(100.0 / (6_371_000.0 * np.cos(np.radians(-31.95)))),
+                    -31.95,
+                ],
+            ],
+        },
+    }
+    whole_session = derive_spatial_context(
+        session,
+        _spatial_config(twistiness={"enabled": False}, suspension_activity={"enabled": False}),
+    )
+
+    scoped = scope_spatial_context_to_track(whole_session, session, track)
+
+    assert DEFAULT_SPATIAL_CONTEXT_TRACK_SCOPE_CONFIG["traversal_selection"] == "last_forward_traversal"
+    assert scoped.stream_meta["track_scope"]["matching"]["forward_traversal_count"] == 2
+    selected = scoped.stream_meta["track_scope"]["selected_traversal"]
+    assert selected["start_time_s"] >= 40.0
+    assert scoped.stream_df["session_distance_m"].min() > 200.0
+    assert scoped.stream_df["distance_m"].min() >= 0.0
+    assert scoped.stream_df["distance_m"].max() < 100.0
+    assert scoped.stream_df["track_station_m"].notna().all()
+    assert np.nanmedian(scoped.stream_df["gradient_fraction"]) == pytest.approx(0.1, abs=1.0e-6)
+    assert scoped.stream_meta["track_scope"]["metric_source"] == "session"
+
+
+def test_sequence_aware_track_projection_resolves_overlapping_return_leg() -> None:
+    latitude = -31.95
+    longitude = 115.85
+    east_100_m = longitude + np.degrees(
+        100.0 / (6_371_000.0 * np.cos(np.radians(latitude)))
+    )
+    track = {
+        "track_id": "out-and-back",
+        "path": {
+            "type": "LineString",
+            "length_m": 200.0,
+            "coordinates": [
+                [longitude, latitude],
+                [east_100_m, latitude],
+                [longitude, latitude],
+            ],
+        },
+    }
+    time_s = np.linspace(0.0, 40.0, 201)
+    x_m = np.where(time_s <= 20.0, time_s * 5.0, (40.0 - time_s) * 5.0)
+    longitude_deg = longitude + np.degrees(
+        x_m / (6_371_000.0 * np.cos(np.radians(latitude)))
+    )
+
+    match = match_track_traversals(
+        time_s,
+        np.full(time_s.shape, latitude),
+        longitude_deg,
+        track,
+        {
+            "endpoint_tolerance_m": 3.0,
+            "minimum_track_coverage_ratio": 0.95,
+        },
+    )
+
+    assert np.min(np.diff(match.station_m)) > -5.0
+    assert match.station_m[-1] > 195.0
+    assert len(match.traversals) == 1
+    assert match.traversals[0]["coverage_ratio"] >= 0.95
+
+
 def test_repeated_logger_snapshots_are_collapsed_before_geometry_speed_qc() -> None:
     session = _straight_session(include_recorded_distance=False)
     gps = session["stream_dfs"]["gps_fit"]
@@ -335,6 +448,97 @@ def test_twistiness_matches_circle_curvature() -> None:
     )
 
     assert np.nanmedian(result.stream_df["twistiness_rad_per_m"]) == pytest.approx(1.0 / radius_m, rel=0.03)
+    assert result.stream_df["curvature_abs_rad_per_m_local"].iloc[:20].isna().all()
+    assert result.stream_df["curvature_abs_rad_per_m_local"].iloc[-20:].isna().all()
+    provenance = result.stream_meta["metric_provenance"]["twistiness"]
+    assert provenance["fit_input"] == "independent_source_position_observations"
+    assert provenance["effective_geometry_window_samples"] == 41
+    assert provenance["edge_exclusion_distance_m"] == 10.0
+
+
+def test_source_position_fit_rejects_short_wavelength_gps_zigzag() -> None:
+    session = _straight_session(duration_s=30.0)
+    gps = session["stream_dfs"]["gps_fit"]
+    lateral_error_m = np.where(np.arange(len(gps.index)) % 2 == 0, -1.5, 1.5)
+    gps["latitude_deg"] += np.degrees(lateral_error_m / 6_371_000.0)
+
+    result = derive_spatial_context(
+        session,
+        _spatial_config(
+            gradient={"enabled": False},
+            suspension_activity={"enabled": False},
+        ),
+    )
+
+    interior = result.stream_df["distance_m"].between(30.0, 120.0)
+    local = result.stream_df.loc[interior, "curvature_abs_rad_per_m_local"]
+    assert local.notna().all()
+    assert float(local.median()) < 1.0e-5
+
+
+def test_short_geometry_run_is_not_used_for_twistiness() -> None:
+    result = derive_spatial_context(
+        _straight_session(duration_s=1.0, gps_rate_hz=10.0),
+        _spatial_config(
+            gradient={"enabled": False},
+            suspension_activity={"enabled": False},
+        ),
+    )
+
+    assert result.stream_meta["status"] == "unavailable"
+    assert result.stream_df["twistiness_source_observation_count"].max() >= 5
+    assert result.stream_df["curvature_abs_rad_per_m_local"].isna().all()
+    assert result.stream_df["twistiness_rad_per_m"].isna().all()
+
+
+def test_source_observation_threshold_does_not_create_new_full_window_boundaries() -> None:
+    session = _straight_session(gps_rate_hz=10.0)
+    gps = session["stream_dfs"]["gps_fit"]
+    selected_rows = [0]
+    step_index = 0
+    while selected_rows[-1] < len(gps.index) - 1:
+        next_row = min(
+            len(gps.index) - 1,
+            selected_rows[-1] + (2 if (step_index // 10) % 2 == 0 else 3),
+        )
+        if next_row == selected_rows[-1]:
+            break
+        selected_rows.append(next_row)
+        step_index += 1
+    session["stream_dfs"]["gps_fit"] = gps.iloc[selected_rows].reset_index(drop=True)
+
+    minimum_three = derive_spatial_context(
+        session,
+        _spatial_config(
+            gradient={"enabled": False},
+            suspension_activity={"enabled": False},
+            twistiness={
+                "geometry_window_m": 5.0,
+                "minimum_source_position_observations": 3,
+            },
+        ),
+    )
+    minimum_five = derive_spatial_context(
+        session,
+        _spatial_config(
+            gradient={"enabled": False},
+            suspension_activity={"enabled": False},
+            twistiness={
+                "geometry_window_m": 5.0,
+                "minimum_source_position_observations": 5,
+            },
+        ),
+    )
+
+    base_valid = minimum_three.stream_df["curvature_abs_rad_per_m_local"].notna()
+    observation_valid = (
+        minimum_five.stream_df["twistiness_source_observation_count"] >= 5
+    )
+    expected = base_valid & observation_valid
+    actual = minimum_five.stream_df["curvature_abs_rad_per_m_local"].notna()
+    assert expected.any()
+    assert (base_valid & ~observation_valid).any()
+    assert actual.equals(expected)
 
 
 def test_quality_thresholds_warn_without_omitting_exploratory_output() -> None:
@@ -410,6 +614,13 @@ def test_spatial_context_profile_validation_and_disabled_compatibility() -> None
     with pytest.raises(ValueError, match="rear_selector.domain.*wheel"):
         validate_preprocess_config(invalid)
 
+    insufficient_observations = copy.deepcopy(config)
+    insufficient_observations["spatial_context"] = _spatial_config(
+        twistiness={"minimum_source_position_observations": 2}
+    )
+    with pytest.raises(ValueError, match="minimum_source_position_observations.*at least 3"):
+        validate_preprocess_config(insufficient_observations)
+
 
 def test_pipeline_materializes_enabled_spatial_context_stream() -> None:
     session = _straight_session(primary_rate_hz=100.0)
@@ -455,6 +666,17 @@ def test_spatial_context_figure_shows_local_and_smoothed_metrics() -> None:
     }
     assert figure.layout.shapes[0].x0 == 20.0
     assert figure.layout.shapes[0].x1 == 40.0
+
+
+def test_spatial_context_figure_fixes_twistiness_scale_to_zero_point_five() -> None:
+    result = derive_spatial_context(_straight_session(), _spatial_config())
+
+    figure = make_spatial_context_figure(
+        result.stream_df,
+        metrics=["gradient_fraction", "twistiness_rad_per_m"],
+    )
+
+    assert tuple(figure.layout.yaxis2.range) == (0.0, 0.5)
 
 
 def test_distance_selection_maps_to_separate_time_ranges_across_gap() -> None:

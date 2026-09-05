@@ -18,13 +18,23 @@ import pandas as pd
 
 from .gps_semantics import gps_source_kind, resolve_gps_columns
 from .signal_selectors import resolve_signal_selector
+from .track_traversal import (
+    DEFAULT_TRACK_TRAVERSAL_MATCH_CONFIG,
+    match_track_traversals,
+    normalize_track_traversal_match_config,
+)
 
 
 SPATIAL_CONTEXT_STREAM_NAME = "spatial_context"
 SPATIAL_CONTEXT_STREAM_SCHEMA = "bodaqs.spatial_context_stream"
 SPATIAL_CONTEXT_STREAM_VERSION = 1
-SPATIAL_CONTEXT_ALGORITHM_VERSION = 1
+SPATIAL_CONTEXT_ALGORITHM_VERSION = 2
 ACTIVE_MASK_COLUMN = "active_mask_qc"
+
+DEFAULT_SPATIAL_CONTEXT_TRACK_SCOPE_CONFIG: dict[str, Any] = {
+    "traversal_selection": "last_forward_traversal",
+    "matching": copy.deepcopy(DEFAULT_TRACK_TRAVERSAL_MATCH_CONFIG),
+}
 
 _EARTH_RADIUS_M = 6_371_000.0
 _RECORDED_DISTANCE_REVERSAL_TOLERANCE_M = 0.5
@@ -43,6 +53,15 @@ DEFAULT_SPATIAL_CONTEXT_CONFIG: dict[str, Any] = {
         "minimum_distance_support_fraction": 0.5,
         "maximum_implied_speed_mps": 50.0,
         "quality_action": "warn",
+        "geometry_denoising": {
+            "enabled": True,
+            "estimator": "local_polynomial",
+            "window_m": 20.0,
+            "polynomial_order": 2,
+            "fit_weighting": "tricube",
+            "robust_iterations": 2,
+            "robust_tuning_constant": 4.685,
+        },
     },
     "gradient": {
         "enabled": True,
@@ -55,8 +74,15 @@ DEFAULT_SPATIAL_CONTEXT_CONFIG: dict[str, Any] = {
     "twistiness": {
         "enabled": True,
         "estimator": "local_polynomial",
-        "geometry_window_m": 5.0,
+        "geometry_window_m": 20.0,
         "polynomial_order": 2,
+        "require_full_window": True,
+        "minimum_source_position_observations": 3,
+        "fit_weighting": "tricube",
+        "horizontal_accuracy_weighting": True,
+        "horizontal_accuracy_floor_m": 0.5,
+        "robust_iterations": 2,
+        "robust_tuning_constant": 4.685,
         "smoothing_kernel": "centred_exponential",
         "smoothing_distance_m": 7.5,
     },
@@ -107,6 +133,7 @@ class _GpsSource:
     valid_column: Optional[str]
     fresh_column: Optional[str]
     sequence_column: Optional[str]
+    horizontal_accuracy_column: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -117,8 +144,12 @@ class _DistanceCandidate:
     distance_m: np.ndarray
     x_m: np.ndarray
     y_m: np.ndarray
+    latitude_deg: np.ndarray
+    longitude_deg: np.ndarray
     altitude_m: np.ndarray
+    horizontal_accuracy_m: np.ndarray
     valid_pairs: np.ndarray
+    continuous_pairs: np.ndarray
     diagnostics: dict[str, Any]
 
 
@@ -134,6 +165,36 @@ def normalize_spatial_context_config(config: Optional[Mapping[str, Any]]) -> dic
     for block_name in ("gradient", "twistiness", "suspension_activity"):
         if block_name not in config:
             out[block_name]["enabled"] = False
+    return out
+
+
+def normalize_spatial_context_track_scope_config(
+    config: Optional[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Return normalized post-derivation track-scope configuration."""
+
+    out = copy.deepcopy(DEFAULT_SPATIAL_CONTEXT_TRACK_SCOPE_CONFIG)
+    if config is None:
+        return out
+    if not isinstance(config, Mapping):
+        raise ValueError("spatial-context track scope config must be an object or null")
+    unknown = sorted(set(config) - {"traversal_selection", "matching"})
+    if unknown:
+        raise ValueError(f"Unsupported spatial-context track scope fields: {', '.join(unknown)}")
+    if "traversal_selection" in config:
+        out["traversal_selection"] = str(config["traversal_selection"])
+    selection = str(out["traversal_selection"])
+    if selection not in {
+        "first_forward_traversal",
+        "last_forward_traversal",
+        "longest_forward_traversal",
+    }:
+        raise ValueError(
+            "spatial-context traversal_selection must be first_forward_traversal, "
+            "last_forward_traversal, or longest_forward_traversal"
+        )
+    matching = config.get("matching") if "matching" in config else out["matching"]
+    out["matching"] = normalize_track_traversal_match_config(matching)
     return out
 
 
@@ -220,18 +281,6 @@ def derive_spatial_context(
         centres,
         candidate.valid_pairs,
     )
-    x_grid = _interpolate_spatial_values(
-        candidate.distance_m,
-        candidate.x_m,
-        centres,
-        candidate.valid_pairs,
-    )
-    y_grid = _interpolate_spatial_values(
-        candidate.distance_m,
-        candidate.y_m,
-        centres,
-        candidate.valid_pairs,
-    )
     altitude_grid = _interpolate_spatial_values(
         candidate.distance_m,
         candidate.altitude_m,
@@ -277,13 +326,35 @@ def derive_spatial_context(
 
     twistiness_cfg = cfg.get("twistiness") if isinstance(cfg.get("twistiness"), Mapping) else {}
     if bool(twistiness_cfg.get("enabled", False)):
-        curvature_local = _local_polynomial_curvature(
-            x_grid,
-            y_grid,
+        geometry_window_m = float(twistiness_cfg["geometry_window_m"])
+        polynomial_order = int(twistiness_cfg.get("polynomial_order", 2))
+        geometry_window_points = _spatial_window_point_count(
+            window_m=geometry_window_m,
             spacing_m=grid_interval_m,
-            window_m=float(twistiness_cfg["geometry_window_m"]),
-            polynomial_order=int(twistiness_cfg.get("polynomial_order", 2)),
+            polynomial_order=polynomial_order,
+        )
+        minimum_source_observations = int(
+            twistiness_cfg.get("minimum_source_position_observations", 3)
+        )
+        curvature_local, source_observation_count = _source_local_polynomial_curvature(
+            candidate,
+            centres,
+            geometry_window_m=geometry_window_m,
+            polynomial_order=polynomial_order,
             eligible=distance_eligible,
+            require_full_window=bool(twistiness_cfg.get("require_full_window", True)),
+            minimum_source_observations=minimum_source_observations,
+            fit_weighting=str(twistiness_cfg.get("fit_weighting") or "tricube"),
+            horizontal_accuracy_weighting=bool(
+                twistiness_cfg.get("horizontal_accuracy_weighting", True)
+            ),
+            horizontal_accuracy_floor_m=float(
+                twistiness_cfg.get("horizontal_accuracy_floor_m", 0.5)
+            ),
+            robust_iterations=int(twistiness_cfg.get("robust_iterations", 2)),
+            robust_tuning_constant=float(
+                twistiness_cfg.get("robust_tuning_constant", 4.685)
+            ),
         )
         twistiness = _centred_exponential_smooth(
             curvature_local,
@@ -292,11 +363,20 @@ def derive_spatial_context(
         )
         stream["curvature_abs_rad_per_m_local"] = curvature_local
         stream["twistiness_rad_per_m"] = twistiness
+        stream["twistiness_source_observation_count"] = source_observation_count
         availability["twistiness"] = bool(np.isfinite(twistiness).any())
         metric_provenance["twistiness"] = {
             **copy.deepcopy(dict(twistiness_cfg)),
+            "fit_input": "independent_source_position_observations",
+            "effective_geometry_window_samples": geometry_window_points,
+            "edge_exclusion_distance_m": (
+                geometry_window_points // 2 * grid_interval_m
+                if bool(twistiness_cfg.get("require_full_window", True))
+                else 0.0
+            ),
             "coordinate_model": candidate.diagnostics.get("coordinate_model"),
             "source_id": candidate.source.source_id,
+            "horizontal_accuracy_column": candidate.source.horizontal_accuracy_column,
         }
         signals.update(_twistiness_signal_registry(metric_provenance["twistiness"]))
         if not availability["twistiness"]:
@@ -435,6 +515,178 @@ def derive_spatial_context(
     return SpatialContextResult(stream_df=stream, stream_meta=base_meta, qc=qc)
 
 
+def scope_spatial_context_to_track(
+    result: SpatialContextResult,
+    session: Mapping[str, Any],
+    track: Mapping[str, Any],
+    config: Optional[Mapping[str, Any]] = None,
+) -> SpatialContextResult:
+    """Return a session-derived spatial stream scoped to one track traversal.
+
+    Metrics are not recalculated from track geometry. The already-derived
+    whole-session rows are selected by representative time, retain their
+    original session distance in ``session_distance_m``, and are rebased onto a
+    traversal-local ``distance_m`` coordinate for exploration.
+    """
+
+    scope_cfg = normalize_spatial_context_track_scope_config(config)
+    metadata = copy.deepcopy(result.stream_meta)
+    track_ref = {
+        "track_id": str(track.get("track_id") or ""),
+        "revision": track.get("revision"),
+    }
+    scope_metadata: dict[str, Any] = {
+        "mode": "track_traversal",
+        "metric_source": "session",
+        "coordinate_source": "session_distance",
+        "track_ref": track_ref,
+        "traversal_selection": scope_cfg["traversal_selection"],
+        "effective_config": copy.deepcopy(scope_cfg),
+        "status": "unavailable",
+    }
+    metadata["track_scope"] = scope_metadata
+    if result.stream_df.empty:
+        return _empty_track_scope_result(
+            metadata,
+            warning="spatial_context_track_scope_source_empty",
+        )
+
+    primary = session.get("df")
+    if not isinstance(primary, pd.DataFrame) or "time_s" not in primary.columns:
+        return _empty_track_scope_result(
+            metadata,
+            warning="spatial_context_track_scope_primary_time_unavailable",
+        )
+    primary_time = _numeric(primary["time_s"])
+    finite_primary_time = primary_time[np.isfinite(primary_time)]
+    if finite_primary_time.size < 2:
+        return _empty_track_scope_result(
+            metadata,
+            warning="spatial_context_track_scope_primary_time_unavailable",
+        )
+
+    effective_config = metadata.get("effective_config")
+    effective_config = effective_config if isinstance(effective_config, Mapping) else {}
+    distance_cfg = effective_config.get("distance")
+    distance_cfg = distance_cfg if isinstance(distance_cfg, Mapping) else {}
+    candidate, evaluations = _select_distance_candidate(
+        _gps_sources(session),
+        session=session,
+        session_bounds=(float(np.min(finite_primary_time)), float(np.max(finite_primary_time))),
+        config=distance_cfg,
+    )
+    scope_metadata["distance_candidate_evaluations"] = evaluations
+    if candidate is None:
+        return _empty_track_scope_result(
+            metadata,
+            warning="spatial_context_track_scope_gps_unavailable",
+        )
+
+    match = match_track_traversals(
+        candidate.time_s,
+        candidate.latitude_deg,
+        candidate.longitude_deg,
+        track,
+        scope_cfg["matching"],
+    )
+    scope_metadata["matching"] = copy.deepcopy(match.diagnostics)
+    scope_metadata["traversals"] = copy.deepcopy(match.traversals)
+    if not match.traversals:
+        return _empty_track_scope_result(
+            metadata,
+            warning="spatial_context_forward_track_traversal_unavailable",
+        )
+
+    selection = str(scope_cfg["traversal_selection"])
+    if selection == "first_forward_traversal":
+        selected = match.traversals[0]
+    elif selection == "longest_forward_traversal":
+        selected = max(match.traversals, key=lambda item: float(item["duration_s"]))
+    else:
+        selected = match.traversals[-1]
+    scope_metadata["selected_traversal"] = copy.deepcopy(selected)
+
+    stream = result.stream_df.copy(deep=True)
+    representative_time = _numeric(stream["representative_time_s"])
+    start_time_s = float(selected["start_time_s"])
+    end_time_s = float(selected["end_time_s"])
+    selected_rows = (
+        np.isfinite(representative_time)
+        & (representative_time >= start_time_s)
+        & (representative_time <= end_time_s)
+    )
+    stream = stream.loc[selected_rows].copy()
+    if stream.empty:
+        return _empty_track_scope_result(
+            metadata,
+            warning="spatial_context_track_scope_has_no_spatial_rows",
+        )
+
+    session_distance = _numeric(stream["distance_m"])
+    traversal_bounds_distance = _interpolate_time_values(
+        candidate.time_s,
+        candidate.distance_m,
+        np.asarray([start_time_s, end_time_s], dtype=float),
+        candidate.valid_pairs,
+    )
+    distance_origin_m = float(traversal_bounds_distance[0])
+    if not np.isfinite(distance_origin_m):
+        distance_origin_m = float(session_distance[0])
+    stream.insert(0, "session_distance_m", session_distance)
+    stream["distance_m"] = session_distance - distance_origin_m
+
+    match_pairs = (
+        match.matched[:-1]
+        & match.matched[1:]
+        & (np.diff(match.time_s) > 0.0)
+        & (np.diff(match.time_s) <= float(scope_cfg["matching"]["maximum_match_gap_s"]))
+    )
+    track_station = _interpolate_time_values(
+        match.time_s,
+        match.station_m,
+        _numeric(stream["representative_time_s"]),
+        match_pairs,
+    )
+    stream.insert(1, "track_station_m", track_station)
+    stream.reset_index(drop=True, inplace=True)
+
+    scope_metadata.update(
+        {
+            "status": "matched",
+            "session_distance_origin_m": distance_origin_m,
+            "session_distance_end_m": (
+                float(traversal_bounds_distance[1])
+                if np.isfinite(traversal_bounds_distance[1])
+                else float(session_distance[-1])
+            ),
+            "spatial_row_count": int(len(stream.index)),
+        }
+    )
+    coordinate = metadata.get("coordinate")
+    coordinate = dict(coordinate) if isinstance(coordinate, Mapping) else {}
+    coordinate.update(
+        {
+            "column": "distance_m",
+            "domain": "selected_session_traversal_distance",
+            "origin": "selected_traversal_start",
+        }
+    )
+    metadata["coordinate"] = coordinate
+    time_mapping = metadata.get("time_mapping")
+    time_mapping = dict(time_mapping) if isinstance(time_mapping, Mapping) else {}
+    time_mapping["selected_time_bounds_s"] = [start_time_s, end_time_s]
+    metadata["time_mapping"] = time_mapping
+    quality = metadata.get("quality")
+    quality = dict(quality) if isinstance(quality, Mapping) else {}
+    quality["track_scoped_distance_grid_rows"] = int(len(stream.index))
+    metadata["quality"] = quality
+
+    qc = copy.deepcopy(result.qc)
+    qc["track_scope"] = copy.deepcopy(scope_metadata)
+    qc["status"] = metadata.get("status")
+    return SpatialContextResult(stream_df=stream, stream_meta=metadata, qc=qc)
+
+
 def materialize_spatial_context(
     session: dict[str, Any],
     config: Optional[Mapping[str, Any]],
@@ -464,6 +716,29 @@ def materialize_spatial_context(
         "notes": "Session-scoped distance-domain spatial context product",
     }
     return result
+
+
+def _empty_track_scope_result(
+    metadata: dict[str, Any],
+    *,
+    warning: str,
+) -> SpatialContextResult:
+    metadata["status"] = "unavailable"
+    warnings = [*metadata.get("warnings", []), warning]
+    metadata["warnings"] = list(dict.fromkeys(str(item) for item in warnings))
+    track_scope = metadata.get("track_scope")
+    if isinstance(track_scope, dict):
+        track_scope["status"] = "unavailable"
+    qc = {
+        "schema": "bodaqs.spatial_context_qc",
+        "version": 1,
+        "status": "unavailable",
+        "distance_source": copy.deepcopy(metadata.get("distance_source", {})),
+        "quality": copy.deepcopy(metadata.get("quality", {})),
+        "track_scope": copy.deepcopy(metadata.get("track_scope", {})),
+        "warnings": copy.deepcopy(metadata["warnings"]),
+    }
+    return SpatialContextResult(pd.DataFrame(), metadata, qc)
 
 
 def _base_stream_meta(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -572,6 +847,7 @@ def _gps_source_from_frame(
         valid_column=columns.valid,
         fresh_column=columns.fresh,
         sequence_column=columns.seq,
+        horizontal_accuracy_column=columns.horizontal_accuracy,
     )
 
 
@@ -682,6 +958,12 @@ def _evaluate_distance_candidate(
         if source.altitude_column and source.altitude_column in frame.columns
         else np.full(time_s.shape, np.nan, dtype=float)
     )
+    horizontal_accuracy = (
+        _numeric(frame[source.horizontal_accuracy_column])[order][keep_observation]
+        if source.horizontal_accuracy_column
+        and source.horizontal_accuracy_column in frame.columns
+        else np.full(time_s.shape, np.nan, dtype=float)
+    )
 
     repairs: list[str] = []
     if kind == "recorded_gps_or_fit_distance":
@@ -697,12 +979,39 @@ def _evaluate_distance_candidate(
             repairs.append("small_distance_reversals_monotonized")
     else:
         distance_model = str(config.get("distance_model") or "local_projection")
-        increments = (
+        raw_increments = (
             _geodesic_segment_lengths(latitude, longitude)
             if distance_model == "geodesic"
             else np.hypot(np.diff(x_m), np.diff(y_m))
         )
-        distance = np.r_[0.0, np.cumsum(increments)]
+        raw_distance = np.r_[0.0, np.cumsum(raw_increments)]
+        distance = raw_distance
+        denoising = config.get("geometry_denoising")
+        denoising = denoising if isinstance(denoising, Mapping) else {}
+        if bool(denoising.get("enabled", False)):
+            fitted_x, fitted_y = _denoise_route_positions(
+                raw_distance,
+                x_m,
+                y_m,
+                config=denoising,
+            )
+            if distance_model == "geodesic":
+                fitted_latitude, fitted_longitude = _local_latitude_longitude(
+                    fitted_x,
+                    fitted_y,
+                    source_latitude=latitude,
+                    source_longitude=longitude,
+                )
+                increments = _geodesic_segment_lengths(
+                    fitted_latitude,
+                    fitted_longitude,
+                )
+            else:
+                increments = np.hypot(np.diff(fitted_x), np.diff(fitted_y))
+            distance = np.r_[0.0, np.cumsum(increments)]
+            repairs.append("gps_geometry_denoised_before_stationing")
+            diagnostic["geometry_denoising"] = copy.deepcopy(dict(denoising))
+            diagnostic["raw_geometry_distance_m"] = float(raw_distance[-1])
 
     if not np.isfinite(distance).all() or distance[-1] <= 0:
         diagnostic["reason"] = "non_positive_distance"
@@ -725,15 +1034,16 @@ def _evaluate_distance_candidate(
     )
     maximum_speed = float(np.nanmax(implied_speed)) if np.isfinite(implied_speed).any() else None
     maximum_allowed_speed = float(config.get("maximum_implied_speed_mps", 50.0))
-    valid_pairs = (
+    continuous_pairs = (
         np.isfinite(dt)
         & np.isfinite(ds)
         & (dt > 0)
         & (dt <= max_gap_s)
-        & (ds > 1.0e-9)
+        & (ds >= 0.0)
         & np.isfinite(implied_speed)
         & (implied_speed <= maximum_allowed_speed)
     )
+    valid_pairs = continuous_pairs & (ds > 1.0e-9)
     if not valid_pairs.any():
         diagnostic["reason"] = "no_valid_distance_intervals"
         return None, diagnostic
@@ -772,8 +1082,12 @@ def _evaluate_distance_candidate(
             distance_m=distance,
             x_m=x_m,
             y_m=y_m,
+            latitude_deg=latitude,
+            longitude_deg=longitude,
             altitude_m=altitude,
+            horizontal_accuracy_m=horizontal_accuracy,
             valid_pairs=valid_pairs,
+            continuous_pairs=continuous_pairs,
             diagnostics=diagnostic,
         ),
         diagnostic,
@@ -929,46 +1243,303 @@ def _local_linear_gradient(distance: np.ndarray, altitude: np.ndarray, *, window
     return result
 
 
-def _local_polynomial_curvature(
+def _source_local_polynomial_curvature(
+    candidate: _DistanceCandidate,
+    target_distance: np.ndarray,
+    *,
+    geometry_window_m: float,
+    polynomial_order: int,
+    eligible: np.ndarray,
+    require_full_window: bool,
+    minimum_source_observations: int,
+    fit_weighting: str,
+    horizontal_accuracy_weighting: bool,
+    horizontal_accuracy_floor_m: float,
+    robust_iterations: int,
+    robust_tuning_constant: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fit source GPS positions locally and evaluate analytic curvature.
+
+    The interpolated spatial grid is deliberately not used as fitting evidence:
+    it would turn a handful of independent GPS fixes into many pseudo-samples
+    while retaining every short-scale zig-zag in the source polyline.
+    """
+
+    result = np.full(target_distance.shape, np.nan, dtype=float)
+    observation_count = np.zeros(target_distance.shape, dtype=np.int64)
+    radius_m = geometry_window_m * 0.5
+    required_observations = max(minimum_source_observations, polynomial_order + 1)
+    full_support = (
+        _full_window_support_mask(target_distance, eligible, radius_m=radius_m)
+        if require_full_window
+        else np.asarray(eligible, dtype=bool)
+    )
+
+    for pair_start, pair_stop in _contiguous_true_ranges(candidate.continuous_pairs):
+        source_slice = slice(pair_start, pair_stop + 1)
+        source_distance = candidate.distance_m[source_slice]
+        source_x = candidate.x_m[source_slice]
+        source_y = candidate.y_m[source_slice]
+        source_accuracy = candidate.horizontal_accuracy_m[source_slice]
+        finite = np.isfinite(source_distance) & np.isfinite(source_x) & np.isfinite(source_y)
+        source_distance = source_distance[finite]
+        source_x = source_x[finite]
+        source_y = source_y[finite]
+        source_accuracy = source_accuracy[finite]
+        if source_distance.size < required_observations:
+            continue
+
+        distinct = np.r_[True, np.diff(source_distance) > 1.0e-9]
+        source_distance = source_distance[distinct]
+        source_x = source_x[distinct]
+        source_y = source_y[distinct]
+        source_accuracy = source_accuracy[distinct]
+        if source_distance.size < required_observations:
+            continue
+
+        target_start = int(np.searchsorted(target_distance, source_distance[0], side="left"))
+        target_stop = int(np.searchsorted(target_distance, source_distance[-1], side="right"))
+        for target_index in range(target_start, target_stop):
+            centre = float(target_distance[target_index])
+            left = int(np.searchsorted(source_distance, centre - radius_m, side="left"))
+            right = int(np.searchsorted(source_distance, centre + radius_m, side="right"))
+            count = right - left
+            observation_count[target_index] = max(observation_count[target_index], count)
+            if count < required_observations or not full_support[target_index]:
+                continue
+            if require_full_window and (
+                centre - radius_m < source_distance[0]
+                or centre + radius_m > source_distance[-1]
+            ):
+                continue
+
+            curvature = _weighted_local_polynomial_curvature(
+                source_distance[left:right],
+                source_x[left:right],
+                source_y[left:right],
+                source_accuracy[left:right],
+                centre=centre,
+                radius_m=radius_m,
+                polynomial_order=polynomial_order,
+                fit_weighting=fit_weighting,
+                horizontal_accuracy_weighting=horizontal_accuracy_weighting,
+                horizontal_accuracy_floor_m=horizontal_accuracy_floor_m,
+                robust_iterations=robust_iterations,
+                robust_tuning_constant=robust_tuning_constant,
+            )
+            if curvature is not None:
+                result[target_index] = curvature
+    return result, observation_count
+
+
+def _full_window_support_mask(
+    distance: np.ndarray,
+    eligible: np.ndarray,
+    *,
+    radius_m: float,
+) -> np.ndarray:
+    result = np.zeros(distance.shape, dtype=bool)
+    valid = np.isfinite(distance) & np.asarray(eligible, dtype=bool)
+    for start, stop in _contiguous_true_ranges(valid):
+        first = int(np.searchsorted(distance, distance[start] + radius_m, side="left"))
+        last = int(np.searchsorted(distance, distance[stop - 1] - radius_m, side="right"))
+        first = max(first, start)
+        last = min(last, stop)
+        if last > first:
+            result[first:last] = True
+    return result
+
+
+def _weighted_local_polynomial_curvature(
+    distance: np.ndarray,
+    x_m: np.ndarray,
+    y_m: np.ndarray,
+    horizontal_accuracy_m: np.ndarray,
+    *,
+    centre: float,
+    radius_m: float,
+    polynomial_order: int,
+    fit_weighting: str,
+    horizontal_accuracy_weighting: bool,
+    horizontal_accuracy_floor_m: float,
+    robust_iterations: int,
+    robust_tuning_constant: float,
+) -> Optional[float]:
+    coefficients = _weighted_local_polynomial_coefficients(
+        distance,
+        x_m,
+        y_m,
+        horizontal_accuracy_m,
+        centre=centre,
+        radius_m=radius_m,
+        polynomial_order=polynomial_order,
+        fit_weighting=fit_weighting,
+        horizontal_accuracy_weighting=horizontal_accuracy_weighting,
+        horizontal_accuracy_floor_m=horizontal_accuracy_floor_m,
+        robust_iterations=robust_iterations,
+        robust_tuning_constant=robust_tuning_constant,
+    )
+    if coefficients is None:
+        return None
+    x_coefficients, y_coefficients = coefficients
+    dx = x_coefficients[1] / radius_m
+    dy = y_coefficients[1] / radius_m
+    ddx = 2.0 * x_coefficients[2] / (radius_m * radius_m)
+    ddy = 2.0 * y_coefficients[2] / (radius_m * radius_m)
+    denominator = float(np.power(dx * dx + dy * dy, 1.5))
+    if denominator <= 1.0e-12:
+        return None
+    return float(abs(dx * ddy - dy * ddx) / denominator)
+
+
+def _weighted_local_polynomial_coefficients(
+    distance: np.ndarray,
+    x_m: np.ndarray,
+    y_m: np.ndarray,
+    horizontal_accuracy_m: np.ndarray,
+    *,
+    centre: float,
+    radius_m: float,
+    polynomial_order: int,
+    fit_weighting: str,
+    horizontal_accuracy_weighting: bool,
+    horizontal_accuracy_floor_m: float,
+    robust_iterations: int,
+    robust_tuning_constant: float,
+) -> Optional[tuple[np.ndarray, np.ndarray]]:
+    normalized_distance = (distance - centre) / radius_m
+    design = np.vander(normalized_distance, N=polynomial_order + 1, increasing=True)
+    if fit_weighting == "tricube":
+        scaled = np.minimum(np.abs(normalized_distance), 1.0)
+        base_weight = np.power(1.0 - np.power(scaled, 3.0), 3.0)
+    else:
+        base_weight = np.ones(distance.shape, dtype=float)
+
+    if horizontal_accuracy_weighting:
+        accuracy = np.asarray(horizontal_accuracy_m, dtype=float)
+        valid_accuracy = np.isfinite(accuracy) & (accuracy > 0.0)
+        if valid_accuracy.any():
+            fallback = float(np.median(accuracy[valid_accuracy]))
+            accuracy = np.where(valid_accuracy, accuracy, fallback)
+            accuracy = np.maximum(accuracy, horizontal_accuracy_floor_m)
+            base_weight = base_weight / np.square(accuracy)
+
+    robust_weight = np.ones(distance.shape, dtype=float)
+    coefficients: Optional[tuple[np.ndarray, np.ndarray]] = None
+    for iteration in range(robust_iterations + 1):
+        weight = base_weight * robust_weight
+        usable = np.isfinite(weight) & (weight > 0.0)
+        if np.count_nonzero(usable) < polynomial_order + 1:
+            return None
+        weighted_design = design[usable] * np.sqrt(weight[usable])[:, None]
+        if np.linalg.matrix_rank(weighted_design) < polynomial_order + 1:
+            return None
+        x_coefficients = np.linalg.lstsq(
+            weighted_design,
+            x_m[usable] * np.sqrt(weight[usable]),
+            rcond=None,
+        )[0]
+        y_coefficients = np.linalg.lstsq(
+            weighted_design,
+            y_m[usable] * np.sqrt(weight[usable]),
+            rcond=None,
+        )[0]
+        coefficients = (x_coefficients, y_coefficients)
+        if iteration >= robust_iterations:
+            break
+
+        x_residual = x_m - design @ x_coefficients
+        y_residual = y_m - design @ y_coefficients
+        centred_x_residual = x_residual - np.median(x_residual)
+        centred_y_residual = y_residual - np.median(y_residual)
+        radial_residual = np.hypot(centred_x_residual, centred_y_residual)
+        scale = 1.4826 * float(np.median(radial_residual))
+        if not np.isfinite(scale) or scale <= 1.0e-9:
+            break
+        normalized_residual = radial_residual / (
+            robust_tuning_constant * scale
+        )
+        robust_weight = np.where(
+            normalized_residual < 1.0,
+            np.square(1.0 - np.square(normalized_residual)),
+            0.0,
+        )
+
+    return coefficients
+
+
+def _denoise_route_positions(
+    distance: np.ndarray,
     x_m: np.ndarray,
     y_m: np.ndarray,
     *,
-    spacing_m: float,
-    window_m: float,
-    polynomial_order: int,
-    eligible: np.ndarray,
-) -> np.ndarray:
-    try:
-        from scipy.signal import savgol_filter  # type: ignore
-    except ImportError as exc:  # pragma: no cover - scipy is a project dependency
-        raise ImportError("Spatial twistiness requires scipy.signal") from exc
+    config: Mapping[str, Any],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return a locally fitted route without treating repeated positions as evidence."""
 
-    result = np.full(x_m.shape, np.nan, dtype=float)
-    valid = np.isfinite(x_m) & np.isfinite(y_m) & eligible
-    for start, stop in _contiguous_true_ranges(valid):
-        count = stop - start
-        window_points = max(polynomial_order + 2, int(round(window_m / spacing_m)))
-        if window_points % 2 == 0:
-            window_points += 1
-        if window_points > count:
-            window_points = count if count % 2 == 1 else count - 1
-        if window_points <= polynomial_order or window_points < 3:
+    distinct = np.r_[True, np.diff(distance) > 1.0e-9]
+    source_distance = distance[distinct]
+    source_x = x_m[distinct]
+    source_y = y_m[distinct]
+    if source_distance.size < 3:
+        return x_m.copy(), y_m.copy()
+
+    window_m = float(config.get("window_m", 20.0))
+    radius_m = window_m * 0.5
+    polynomial_order = int(config.get("polynomial_order", 2))
+    required = polynomial_order + 1
+    fit_weighting = str(config.get("fit_weighting") or "tricube")
+    robust_iterations = int(config.get("robust_iterations", 2))
+    robust_tuning_constant = float(config.get("robust_tuning_constant", 4.685))
+    no_accuracy = np.full(source_distance.shape, np.nan, dtype=float)
+    fitted_x = source_x.copy()
+    fitted_y = source_y.copy()
+
+    left = 0
+    right = 0
+    for index, centre in enumerate(source_distance):
+        while left < len(source_distance) and source_distance[left] < centre - radius_m:
+            left += 1
+        right = max(right, left)
+        while right < len(source_distance) and source_distance[right] <= centre + radius_m:
+            right += 1
+        if right - left < required:
             continue
-        xs = x_m[start:stop]
-        ys = y_m[start:stop]
-        dx = savgol_filter(xs, window_points, polynomial_order, deriv=1, delta=spacing_m, mode="interp")
-        dy = savgol_filter(ys, window_points, polynomial_order, deriv=1, delta=spacing_m, mode="interp")
-        ddx = savgol_filter(xs, window_points, polynomial_order, deriv=2, delta=spacing_m, mode="interp")
-        ddy = savgol_filter(ys, window_points, polynomial_order, deriv=2, delta=spacing_m, mode="interp")
-        denominator = np.power(dx * dx + dy * dy, 1.5)
-        curvature = np.divide(
-            np.abs(dx * ddy - dy * ddx),
-            denominator,
-            out=np.full(denominator.shape, np.nan, dtype=float),
-            where=denominator > 1.0e-12,
+        coefficients = _weighted_local_polynomial_coefficients(
+            source_distance[left:right],
+            source_x[left:right],
+            source_y[left:right],
+            no_accuracy[left:right],
+            centre=float(centre),
+            radius_m=radius_m,
+            polynomial_order=polynomial_order,
+            fit_weighting=fit_weighting,
+            horizontal_accuracy_weighting=False,
+            horizontal_accuracy_floor_m=1.0,
+            robust_iterations=robust_iterations,
+            robust_tuning_constant=robust_tuning_constant,
         )
-        result[start:stop] = curvature
-    return result
+        if coefficients is not None:
+            fitted_x[index] = coefficients[0][0]
+            fitted_y[index] = coefficients[1][0]
+
+    return (
+        np.interp(distance, source_distance, fitted_x),
+        np.interp(distance, source_distance, fitted_y),
+    )
+
+
+def _spatial_window_point_count(
+    *,
+    window_m: float,
+    spacing_m: float,
+    polynomial_order: int,
+) -> int:
+    distance_window_points = int(math.ceil(window_m / spacing_m)) + 1
+    window_points = max(2 * polynomial_order + 1, distance_window_points)
+    if window_points % 2 == 0:
+        window_points += 1
+    return window_points
 
 
 def _centred_exponential_smooth(
@@ -1117,6 +1688,24 @@ def _local_xy(latitude_deg: np.ndarray, longitude_deg: np.ndarray) -> tuple[np.n
     return x_m, y_m
 
 
+def _local_latitude_longitude(
+    x_m: np.ndarray,
+    y_m: np.ndarray,
+    *,
+    source_latitude: np.ndarray,
+    source_longitude: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    source_latitude_rad = np.radians(source_latitude)
+    latitude_origin = float(np.nanmedian(source_latitude_rad))
+    longitude_origin = math.radians(float(source_longitude[0]))
+    latitude_start = math.radians(float(source_latitude[0]))
+    latitude = np.degrees(y_m / _EARTH_RADIUS_M + latitude_start)
+    longitude = np.degrees(
+        x_m / (_EARTH_RADIUS_M * math.cos(latitude_origin)) + longitude_origin
+    )
+    return latitude, longitude
+
+
 def _geodesic_segment_lengths(latitude_deg: np.ndarray, longitude_deg: np.ndarray) -> np.ndarray:
     latitude_rad = np.radians(latitude_deg)
     delta_latitude = np.diff(latitude_rad)
@@ -1179,6 +1768,16 @@ def _twistiness_signal_registry(provenance: Mapping[str, Any]) -> dict[str, dict
             processing_role="primary_analysis",
             provenance=provenance,
         ),
+        "twistiness_source_observation_count": {
+            "kind": "qc",
+            "domain": "spatial_context",
+            "quantity": "source_position_observation_count",
+            "unit": "count",
+            "processing_role": "qc_metric",
+            "semantic_selection_excluded": True,
+            "origin": "analysis",
+            "derivation": copy.deepcopy(dict(provenance)),
+        },
     }
 
 

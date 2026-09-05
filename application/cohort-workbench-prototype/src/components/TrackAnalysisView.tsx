@@ -21,6 +21,7 @@ import {
   RotateCcw,
   Route,
   Save,
+  Scissors,
   SlidersHorizontal,
   Timer,
   Trash2,
@@ -35,7 +36,15 @@ import maplibregl, {
 import { lineString, nearestPointOnLine, point } from '@turf/turf'
 import type { Feature, FeatureCollection, LineString, Point } from 'geojson'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
-import { pointAtStationM, routeLengthM, routeStationsM } from '../domain/trackGeometry'
+import {
+  DEFAULT_ROUTE_GEOMETRY_DENOISING,
+  denoiseRouteGeometry,
+  pointAtStationM,
+  replaceRouteSectorWithConnector,
+  routeLengthM,
+  routeStationsM,
+  stationAfterSectorReplacement,
+} from '../domain/trackGeometry'
 import { sessionByRef, sessionRefId, sessionToStudyRef, slugify, uniqueId } from '../domain/studySets'
 import type {
   GeoPosition,
@@ -72,6 +81,8 @@ type LoadedGpsState = {
   error: string
 }
 
+const TRACK_GEOMETRY_MAX_POINTS = 25_000
+
 type DraftTrackpoint = TrackpointRecord & {
   draft: true
 }
@@ -94,6 +105,7 @@ type WorkingTrack = {
   defaultPolicyId: string
   trackpoints: DraftTrackpoint[]
   segmentAliases: TrackSegmentAliasRecord[]
+  geometryEdits: NonNullable<TrackRecord['geometryEdits']>
   matchSummaries: TrackRecord['matchSummaries']
   source?: TrackRecord['source']
   sourceSessionId?: string
@@ -113,6 +125,7 @@ type SessionPath = {
   label: string
   path: GeoPosition[]
   session: SessionRecord
+  pointSet: SessionGpsPointSet
 }
 
 type ActiveGpsPointSet = {
@@ -672,7 +685,7 @@ export function TrackAnalysisView({
         [loadKey]: { status: 'loading', pointSet: null, error: '' },
       }))
       dataSource
-        .loadSessionGpsPoints?.(session, sourceId)
+        .loadSessionGpsPoints?.(session, sourceId, { maxPoints: TRACK_GEOMETRY_MAX_POINTS })
         .then((pointSet) => {
           if (cancelled) {
             return
@@ -840,8 +853,9 @@ export function TrackAnalysisView({
       activePointSets.map<SessionPath>((item) => ({
         id: sessionRecordId(item.session),
         label: item.session.name,
-        path: item.loaded.pointSet.path,
+        path: denoiseRouteGeometry(item.loaded.pointSet.path),
         session: item.session,
+        pointSet: item.loaded.pointSet,
       })),
     [activePointSets],
   )
@@ -911,8 +925,9 @@ export function TrackAnalysisView({
       const sessionPath: SessionPath = {
         id: sessionRecordId(referenceVideoSession),
         label: referenceVideoSession.name,
-        path: referenceVideoPointSet.path,
+        path: denoiseRouteGeometry(referenceVideoPointSet.path),
         session: referenceVideoSession,
+        pointSet: referenceVideoPointSet,
       }
       const scratchTrack = scratchTrackFromSessionPath(
         sessionPath,
@@ -1235,6 +1250,85 @@ export function TrackAnalysisView({
     }))
   }
 
+  function deleteSegmentGeometry(fromTrackpointId: string, toTrackpointId: string) {
+    if (!selectedTrack) {
+      return
+    }
+    const ordered = [...selectedTrack.trackpoints].sort((a, b) => a.stationM - b.stationM)
+    const fromIndex = ordered.findIndex((trackpoint) => trackpoint.id === fromTrackpointId)
+    const from = ordered[fromIndex]
+    const to = ordered[fromIndex + 1]
+    if (!from || !to || to.id !== toTrackpointId) {
+      setTrackStatus(selectedTrack.workingId, 'Geometry can only be deleted between adjacent ordered trackpoints.')
+      return
+    }
+    const replacement = replaceRouteSectorWithConnector(selectedTrack.points, from.stationM, to.stationM)
+    if (!replacement) {
+      setTrackStatus(selectedTrack.workingId, 'This sector is too short to replace.')
+      return
+    }
+    const confirmed = window.confirm(
+      `Delete ${formatDistance(replacement.removedLengthM)} of path from "${from.name || from.id}" to ` +
+      `"${to.name || to.id}" and replace it with a ${formatDistance(replacement.replacementLengthM)} direct connector? ` +
+      'The edit remains reversible until you save the track.',
+    )
+    if (!confirmed) {
+      return
+    }
+
+    const updatedTrackpoints = selectedTrack.trackpoints
+      .map((trackpoint) => {
+        const stationM = trackpoint.id === fromTrackpointId
+          ? replacement.replacementStartStationM
+          : trackpoint.id === toTrackpointId
+            ? replacement.replacementEndStationM
+            : Math.min(replacement.lengthM, stationAfterSectorReplacement(trackpoint.stationM, replacement))
+        return {
+          ...trackpoint,
+          stationM,
+          position: pointAtStationM(replacement.points, stationM),
+          cutlineOverride: trackpoint.cutlineOverride ? { ...trackpoint.cutlineOverride } : undefined,
+        }
+      })
+      .sort((left, right) => left.stationM - right.stationM)
+    updateWorkingTrack(
+      selectedTrack.workingId,
+      (track) => ({
+        ...track,
+        dirty: true,
+        status: `Deleted ${formatDistance(replacement.removedLengthM)} sector; save to persist.`,
+        points: replacement.points,
+        lengthM: replacement.lengthM,
+        pointCount: replacement.points.length,
+        distanceKm: replacement.lengthM / 1000,
+        trackpoints: updatedTrackpoints,
+        segmentAliases: track.segmentAliases.filter(
+          (alias) => alias.fromTrackpointId !== fromTrackpointId || alias.toTrackpointId !== toTrackpointId,
+        ),
+        geometryEdits: [
+          ...track.geometryEdits,
+          {
+            operation: 'replace_sector_with_connector',
+            fromTrackpointId,
+            toTrackpointId,
+            fromStationM: replacement.startStationM,
+            toStationM: replacement.endStationM,
+            removedLengthM: replacement.removedLengthM,
+            replacementLengthM: replacement.replacementLengthM,
+            appliedAtUtc: new Date().toISOString(),
+          },
+        ],
+        matchSummaries: [],
+      }),
+      { markDirty: false },
+    )
+    setTrackSessionMatchCache((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(([, entry]) => entry.trackWorkingId !== selectedTrack.workingId),
+      ),
+    )
+  }
+
   function renameWorkingTrack(workingId: string, name: string) {
     updateWorkingTrack(workingId, (track) => ({ ...track, name }))
   }
@@ -1313,6 +1407,11 @@ export function TrackAnalysisView({
           toTrackpointId: savedTrackpointIds.get(alias.toTrackpointId) ?? alias.toTrackpointId,
         })),
       })
+      const geometryEdits = preparedTrack.geometryEdits.map((edit) => ({
+        ...edit,
+        fromTrackpointId: savedTrackpointIds.get(edit.fromTrackpointId) ?? edit.fromTrackpointId,
+        toTrackpointId: savedTrackpointIds.get(edit.toTrackpointId) ?? edit.toTrackpointId,
+      }))
       const saved = await dataSource.saveTrack({
         id: trackToSave.persistedId ?? '',
         name: displayName,
@@ -1325,6 +1424,7 @@ export function TrackAnalysisView({
         defaultPolicyId: preparedTrack.defaultPolicyId || 'default-geospatial-policy',
         trackpoints: sortedTrackpoints,
         segmentAliases,
+        geometryEdits,
         matchSummaries: preparedTrack.matchSummaries,
         source: preparedTrack.source,
       })
@@ -1340,6 +1440,75 @@ export function TrackAnalysisView({
       onTrackSaved?.(saved)
     } catch (error) {
       setTrackStatus(workingId, error instanceof Error ? error.message : 'Could not save track edits.')
+    } finally {
+      setWorkingTrackFlags(workingId, { saving: false })
+    }
+  }
+
+  async function rebuildTrackFromSourceGps(workingId = selectedWorkingTrackId) {
+    const track = workingTracks.find((candidate) => candidate.workingId === workingId)
+    if (!track?.source || track.source.kind !== 'session_gps' || !dataSource.loadSessionGpsPoints) {
+      setTrackStatus(workingId, 'This track does not have a reloadable session-GPS source.')
+      return
+    }
+    const source = track.source
+    const sourceSession = sessions.find((session) => trackSourceMatchesSession(source, session))
+    if (!sourceSession) {
+      setTrackStatus(workingId, 'The source session is not available in the current catalog.')
+      return
+    }
+    setWorkingTrackFlags(workingId, { saving: true, status: 'Loading full source GPS...' })
+    try {
+      const pointSet = await dataSource.loadSessionGpsPoints(
+        sourceSession,
+        source.gpsSourceId ?? null,
+        { maxPoints: TRACK_GEOMETRY_MAX_POINTS },
+      )
+      const points = denoiseRouteGeometry(pointSet.path)
+      if (points.length < 2) {
+        setTrackStatus(workingId, 'The source session did not return enough GPS points.')
+        return
+      }
+      const lengthM = routeLengthM(points)
+      const trackpoints = track.trackpoints
+        .map((trackpoint) => {
+          const snapped = snapPositionToPath(lonLat(trackpoint.position), points, lengthM)
+          return {
+            ...trackpoint,
+            stationM: snapped.stationM,
+            position: copyPosition(snapped.position),
+            cutlineOverride: trackpoint.cutlineOverride ? { ...trackpoint.cutlineOverride } : undefined,
+          }
+        })
+        .sort((a, b) => a.stationM - b.stationM)
+      const samplingNote = pointSet.stride && pointSet.stride > 1 ? ` API safety-cap stride: ${pointSet.stride}.` : ''
+      updateWorkingTrack(
+        workingId,
+        (current) => ({
+          ...current,
+          dirty: true,
+          status: `Rebuilt ${lengthM.toFixed(1)} m geometry; save to persist.${samplingNote}`,
+          points,
+          lengthM,
+          pointCount: points.length,
+          distanceKm: lengthM / 1000,
+          trackpoints,
+          geometryEdits: [],
+          source: {
+            ...current.source,
+            kind: 'session_gps',
+            gpsSourceId: pointSet.sourceId,
+            gpsSourceKind: pointSet.sourceKind,
+            gpsStreamName: pointSet.streamName,
+            gpsSourceSelectionMethod: pointSet.sourceSelectionMethod,
+            gpsSampling: trackGpsSamplingProvenance(pointSet),
+            geometryDenoising: trackGeometryDenoisingProvenance(),
+          },
+        }),
+        { markDirty: false },
+      )
+    } catch (error) {
+      setTrackStatus(workingId, error instanceof Error ? error.message : 'Could not rebuild track geometry.')
     } finally {
       setWorkingTrackFlags(workingId, { saving: false })
     }
@@ -1707,6 +1876,17 @@ export function TrackAnalysisView({
               >
                 New scratch track on next map click
               </button>
+              {selectedTrack?.source?.kind === 'session_gps' && (
+                <button
+                  className="secondary-action compact"
+                  disabled={selectedTrack.saving || !dataSource.loadSessionGpsPoints}
+                  type="button"
+                  onClick={() => void rebuildTrackFromSourceGps(selectedTrack.workingId)}
+                  title="Replace this working path with full-resolution, denoised geometry and re-snap its trackpoints"
+                >
+                  Rebuild from source GPS
+                </button>
+              )}
             </section>
 
             <section className="track-analysis-control-card">
@@ -1807,6 +1987,15 @@ export function TrackAnalysisView({
                             />
                             <span>Untimed</span>
                           </label>
+                          <button
+                            aria-label={`Delete track geometry from ${trackpoint.name || trackpoint.id} to ${nextTrackpoint.name || nextTrackpoint.id}`}
+                            className="icon-only small danger-icon track-analysis-segment-delete"
+                            onClick={() => deleteSegmentGeometry(trackpoint.id, nextTrackpoint.id)}
+                            title="Delete this sector and connect its trackpoints directly"
+                            type="button"
+                          >
+                            <Scissors size={13} />
+                          </button>
                         </div>
                       ) : null,
                     ].filter(Boolean)
@@ -4035,6 +4224,7 @@ function workingTrackFromRecord(track: TrackRecord, previous?: WorkingTrack): Wo
     defaultPolicyId: track.defaultPolicyId,
     trackpoints: track.trackpoints.map(draftTrackpointFromRecord),
     segmentAliases: (track.segmentAliases ?? []).map((alias) => ({ ...alias })),
+    geometryEdits: (track.geometryEdits ?? []).map((edit) => ({ ...edit })),
     matchSummaries: track.matchSummaries.map(copyTrackMatchSummary),
     source: track.source ? { ...track.source } : undefined,
     sourceSessionId: previous?.sourceSessionId,
@@ -4224,6 +4414,7 @@ function scratchTrackFromNearestPath(
     defaultPolicyId: 'default-geospatial-policy',
     trackpoints: initialScratchTrackpoints(path, nearest.snapped, includeEndpoints),
     segmentAliases: [],
+    geometryEdits: [],
     matchSummaries: [],
     source: {
       kind: 'session_gps',
@@ -4232,10 +4423,12 @@ function scratchTrackFromNearestPath(
       sessionKey: nearest.sessionPath.session.sessionKey,
       runId: nearest.sessionPath.session.runId,
       sessionId: nearest.sessionPath.session.sessionId,
-      gpsSourceId: nearest.sessionPath.session.gpsSummary.preferredSourceId ?? undefined,
-      gpsSourceKind: nearest.sessionPath.session.gpsSummary.preferredSourceKind ?? undefined,
-      gpsStreamName: nearest.sessionPath.session.gpsSummary.sources[0]?.streamName,
-      gpsSourceSelectionMethod: nearest.sessionPath.session.gpsSummary.sourceSelectionMethod,
+      gpsSourceId: nearest.sessionPath.pointSet.sourceId,
+      gpsSourceKind: nearest.sessionPath.pointSet.sourceKind,
+      gpsStreamName: nearest.sessionPath.pointSet.streamName,
+      gpsSourceSelectionMethod: nearest.sessionPath.pointSet.sourceSelectionMethod,
+      gpsSampling: trackGpsSamplingProvenance(nearest.sessionPath.pointSet),
+      geometryDenoising: trackGeometryDenoisingProvenance(),
     },
     sourceSessionId: nearest.sessionPath.id,
   }
@@ -4252,6 +4445,7 @@ function scratchTrackFromSessionPath(
   const workingId = uniqueId(`scratch-${Date.now().toString(36)}`, existingIds)
   const path = sessionPath.path.map(copyPosition)
   const lengthM = routeLengthM(path)
+  const denoisedSnap = snapPositionToPath(lonLat(snapped.position), path, lengthM)
   const nextIndex = existingTracks.filter((track) => track.origin === 'scratch' && !track.persistedId).length + 1
   const name = `${studySet.displayName.trim() || sessionPath.label} scratch ${nextIndex}`
   return {
@@ -4270,8 +4464,9 @@ function scratchTrackFromSessionPath(
     pointCount: path.length,
     distanceKm: lengthM / 1000,
     defaultPolicyId: 'default-geospatial-policy',
-    trackpoints: initialScratchTrackpoints(path, snapped, includeEndpoints),
+    trackpoints: initialScratchTrackpoints(path, denoisedSnap, includeEndpoints),
     segmentAliases: [],
+    geometryEdits: [],
     matchSummaries: [],
     source: {
       kind: 'session_gps',
@@ -4280,10 +4475,12 @@ function scratchTrackFromSessionPath(
       sessionKey: sessionPath.session.sessionKey,
       runId: sessionPath.session.runId,
       sessionId: sessionPath.session.sessionId,
-      gpsSourceId: sessionPath.session.gpsSummary.preferredSourceId ?? undefined,
-      gpsSourceKind: sessionPath.session.gpsSummary.preferredSourceKind ?? undefined,
-      gpsStreamName: sessionPath.session.gpsSummary.sources[0]?.streamName,
-      gpsSourceSelectionMethod: sessionPath.session.gpsSummary.sourceSelectionMethod,
+      gpsSourceId: sessionPath.pointSet.sourceId,
+      gpsSourceKind: sessionPath.pointSet.sourceKind,
+      gpsStreamName: sessionPath.pointSet.streamName,
+      gpsSourceSelectionMethod: sessionPath.pointSet.sourceSelectionMethod,
+      gpsSampling: trackGpsSamplingProvenance(sessionPath.pointSet),
+      geometryDenoising: trackGeometryDenoisingProvenance(),
     },
     sourceSessionId: sessionPath.id,
   }
@@ -4763,6 +4960,27 @@ function copyPosition(position: GeoPosition): GeoPosition {
   return Number.isFinite(position[2]) ? [position[0], position[1], position[2] as number] : [position[0], position[1]]
 }
 
+function trackGeometryDenoisingProvenance() {
+  return {
+    estimator: DEFAULT_ROUTE_GEOMETRY_DENOISING.estimator,
+    windowM: DEFAULT_ROUTE_GEOMETRY_DENOISING.windowM,
+    polynomialOrder: DEFAULT_ROUTE_GEOMETRY_DENOISING.polynomialOrder,
+    fitWeighting: DEFAULT_ROUTE_GEOMETRY_DENOISING.fitWeighting,
+    robustIterations: DEFAULT_ROUTE_GEOMETRY_DENOISING.robustIterations,
+    robustTuningConstant: DEFAULT_ROUTE_GEOMETRY_DENOISING.robustTuningConstant,
+  }
+}
+
+function trackGpsSamplingProvenance(pointSet: SessionGpsPointSet) {
+  return {
+    mode: pointSet.samplingMode,
+    sourcePoints: pointSet.sourcePoints,
+    returnedPoints: pointSet.returnedPoints,
+    maxPoints: pointSet.maxPoints,
+    stride: pointSet.stride,
+  }
+}
+
 function lonLat(position: GeoPosition): [number, number] {
   return [position[0], position[1]]
 }
@@ -4887,6 +5105,19 @@ function isReadyGpsPointSet(value: { session: SessionRecord; loaded: LoadedGpsSt
 
 function sessionRecordId(session: SessionRecord) {
   return sessionRefId(sessionToStudyRef(session))
+}
+
+function trackSourceMatchesSession(source: NonNullable<TrackRecord['source']>, session: SessionRecord) {
+  if (source.libraryId && source.libraryId !== session.libraryId) {
+    return false
+  }
+  if (source.sessionRefId && source.sessionRefId === sessionRecordId(session)) {
+    return true
+  }
+  if (source.sessionKey && source.sessionKey === session.sessionKey) {
+    return true
+  }
+  return Boolean(source.runId && source.sessionId && source.runId === session.runId && source.sessionId === session.sessionId)
 }
 
 function gpsLoadKey(sessionId: string, sourceId: string | null) {
