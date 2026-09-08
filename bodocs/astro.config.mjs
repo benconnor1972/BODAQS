@@ -43,6 +43,7 @@ export default defineConfig({
       ],
       sidebar: [
         { slug: 'what-is-bodaqs' },
+        { slug: 'introducing-the-bodaqs-a8-logger' },
         { slug: 'buy-pcb-or-kit' },
         {
           label: 'Logger build guide',

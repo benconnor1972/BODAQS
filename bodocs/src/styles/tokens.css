@@ -18,6 +18,12 @@
   border-radius: 0.5rem;
 }
 
+.hero .actions > .sl-link-button {
+  box-sizing: border-box;
+  justify-content: center;
+  width: min(18rem, 100%);
+}
+
 .header .social-icons svg {
   width: 1.5rem;
   height: 1.5rem;
