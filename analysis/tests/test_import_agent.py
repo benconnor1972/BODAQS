@@ -3926,6 +3926,18 @@ def test_tray_supported_is_false_for_linux():
     assert import_agent_tray_module.tray_supported(platform="linux") is False
 
 
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_context_menu_bindings_use_button_three_off_macos(platform):
+    assert import_agent_setup_module._context_menu_bindings(platform) == ("<Button-3>",)
+
+
+def test_context_menu_bindings_support_secondary_and_control_click_on_macos():
+    assert import_agent_setup_module._context_menu_bindings("darwin") == (
+        "<Button-2>",
+        "<Control-Button-1>",
+    )
+
+
 def test_import_manager_import_now_guard_allows_watch_start_when_idle():
     window = object.__new__(import_agent_setup_module.ImportAgentManagerWindow)
     window.import_now_thread = None

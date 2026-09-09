@@ -25,7 +25,7 @@ on:
         type: string
       import_manager_version:
         description: Import Manager component version.
-        default: "0.1.9-beta"
+        default: "0.1.10-beta"
         required: false
         type: string
       library_service_version:
@@ -46,7 +46,7 @@ env:
   PYTHON_VERSION: "3.12"
   NODE_VERSION: "24"
   BUILD_VERSION: ${{ inputs.version || format('0.0.0-ci.{0}', github.run_number) }}
-  IMPORT_MANAGER_VERSION: ${{ inputs.import_manager_version || '0.1.9-beta' }}
+  IMPORT_MANAGER_VERSION: ${{ inputs.import_manager_version || '0.1.10-beta' }}
   LIBRARY_SERVICE_VERSION: ${{ inputs.library_service_version || '0.2.0-beta' }}
   WORKBENCH_VERSION: ${{ inputs.workbench_version || '0.2.0-beta' }}
 

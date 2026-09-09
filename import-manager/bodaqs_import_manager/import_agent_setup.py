@@ -966,6 +966,14 @@ def _subprocess_creationflags() -> int:
     return int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
+def _context_menu_bindings(platform: str | None = None) -> tuple[str, ...]:
+    """Return native secondary-click bindings for the current platform."""
+    resolved_platform = platform or sys.platform
+    if resolved_platform == "darwin":
+        return ("<Button-2>", "<Control-Button-1>")
+    return ("<Button-3>",)
+
+
 def _packaged_library_service_exe() -> Path | None:
     if not getattr(sys, "frozen", False):
         return None
@@ -1301,7 +1309,8 @@ class ImportAgentManagerWindow:
         )
         libraries_tree.grid(row=0, column=0, sticky="nsew")
         libraries_tree.bind("<Button-1>", self._on_libraries_tree_click)
-        libraries_tree.bind("<Button-3>", self._on_libraries_tree_context)
+        for binding in _context_menu_bindings():
+            libraries_tree.bind(binding, self._on_libraries_tree_context)
         libraries_tree.bind("<Motion>", self._on_manager_tree_motion, add="+")
         libraries_tree.bind("<Leave>", self._hide_manager_tooltip, add="+")
         libraries_tree.bind("<ButtonPress>", self._hide_manager_tooltip, add="+")
@@ -1362,7 +1371,8 @@ class ImportAgentManagerWindow:
         sources_tree.column("bike_name", width=145, minwidth=145, anchor="w", stretch=False)
         sources_tree.grid(row=0, column=0, sticky="nsew")
         sources_tree.bind("<Button-1>", self._on_sources_tree_click)
-        sources_tree.bind("<Button-3>", self._on_sources_tree_context)
+        for binding in _context_menu_bindings():
+            sources_tree.bind(binding, self._on_sources_tree_context)
         sources_tree.bind("<Motion>", self._on_manager_tree_motion, add="+")
         sources_tree.bind("<Leave>", self._hide_manager_tooltip, add="+")
         sources_tree.bind("<ButtonPress>", self._hide_manager_tooltip, add="+")
