@@ -1,6 +1,6 @@
 import copy
-import copy
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -9,10 +9,12 @@ import pytest
 from bodaqs_analysis.artifacts import ArtifactStore, save_session_artifacts
 from bodaqs_analysis.dashboards.spatial_context import (
     make_spatial_context_figure,
+    make_spatial_context_histogram_figure,
     spatial_selection_to_time_ranges,
 )
 from bodaqs_analysis.pipeline import preprocess_resolved
 from bodaqs_analysis.preprocess_profile import default_preprocess_config, validate_preprocess_config
+from bodaqs_analysis.route_geometry import denoise_route_coordinates
 from bodaqs_analysis.spatial_context import (
     DEFAULT_SPATIAL_CONTEXT_CONFIG,
     DEFAULT_SPATIAL_CONTEXT_TRACK_SCOPE_CONFIG,
@@ -159,7 +161,14 @@ def _straight_session(
 
 
 def test_spatial_context_derives_recorded_distance_gradient_and_native_rate_activity() -> None:
-    result = derive_spatial_context(_straight_session(), _spatial_config())
+    result = derive_spatial_context(
+        _straight_session(),
+        _spatial_config(
+            distance={
+                "source_priority": ["recorded_gps_or_fit_distance", "gps_geometry"]
+            }
+        ),
+    )
 
     assert result.stream_meta["status"] == "succeeded"
     assert result.stream_meta["distance_source"]["selected"]["candidate_kind"] == "recorded_gps_or_fit_distance"
@@ -215,7 +224,11 @@ def test_activity_uses_native_rate_motion_before_spatial_grid_coarsening() -> No
 def test_gps_geometry_fallback_is_used_without_recorded_distance() -> None:
     result = derive_spatial_context(
         _straight_session(include_recorded_distance=False),
-        _spatial_config(),
+        _spatial_config(
+            distance={
+                "source_priority": ["recorded_gps_or_fit_distance", "gps_geometry"]
+            }
+        ),
     )
 
     assert result.stream_meta["distance_source"]["selected"]["candidate_kind"] == "gps_geometry"
@@ -237,10 +250,21 @@ def test_gps_geometry_distance_is_measured_along_denoised_positions() -> None:
 
     selected = result.stream_meta["distance_source"]["selected"]
     diagnostics = selected["diagnostics"]
+    canonical_route = denoise_route_coordinates(
+        [
+            {
+                "longitude": row["longitude_deg"],
+                "latitude": row["latitude_deg"],
+                "elevation_m": row["altitude_m"],
+            }
+            for _, row in gps.iterrows()
+        ]
+    )
     assert diagnostics["repairs"] == ["gps_geometry_denoised_before_stationing"]
     assert diagnostics["geometry_denoising"]["window_m"] == 20.0
     assert diagnostics["raw_geometry_distance_m"] > diagnostics["distance_m"] * 1.3
     assert diagnostics["distance_m"] == pytest.approx(100.0, abs=3.0)
+    assert diagnostics["distance_m"] == pytest.approx(canonical_route["length_m"], abs=1.0e-6)
 
 
 def test_track_scope_defaults_to_last_forward_traversal_and_keeps_session_metrics() -> None:
@@ -275,7 +299,11 @@ def test_track_scope_defaults_to_last_forward_traversal_and_keeps_session_metric
     }
     whole_session = derive_spatial_context(
         session,
-        _spatial_config(twistiness={"enabled": False}, suspension_activity={"enabled": False}),
+        _spatial_config(
+            distance={"source_priority": ["recorded_gps_or_fit_distance"]},
+            twistiness={"enabled": False},
+            suspension_activity={"enabled": False},
+        ),
     )
 
     scoped = scope_spatial_context_to_track(whole_session, session, track)
@@ -290,6 +318,88 @@ def test_track_scope_defaults_to_last_forward_traversal_and_keeps_session_metric
     assert scoped.stream_df["track_station_m"].notna().all()
     assert np.nanmedian(scoped.stream_df["gradient_fraction"]) == pytest.approx(0.1, abs=1.0e-6)
     assert scoped.stream_meta["track_scope"]["metric_source"] == "session"
+
+
+def test_last_forward_traversal_keeps_last_station_passage_and_removes_partial_return() -> None:
+    session = _straight_session(duration_s=58.0)
+    gps = session["stream_dfs"]["gps_fit"]
+    time_s = gps["time_s"].to_numpy(float)
+    track_station_m = np.where(
+        time_s <= 20.0,
+        time_s * 5.0,
+        np.where(
+            time_s <= 30.0,
+            100.0 - (time_s - 20.0) * 4.0,
+            60.0 + (time_s - 30.0) * 5.0,
+        ),
+    )
+    session_distance_m = np.where(
+        time_s <= 20.0,
+        time_s * 5.0,
+        np.where(
+            time_s <= 30.0,
+            100.0 + (time_s - 20.0) * 4.0,
+            140.0 + (time_s - 30.0) * 5.0,
+        ),
+    )
+    gps["distance_m"] = session_distance_m
+    gps["longitude_deg"] = 115.85 + np.degrees(
+        track_station_m / (6_371_000.0 * np.cos(np.radians(-31.95)))
+    )
+    gps["altitude_m"] = 200.0 + 0.1 * session_distance_m
+    track = {
+        "track_id": "partial-return-track",
+        "revision": 1,
+        "path": {
+            "type": "LineString",
+            "length_m": 200.0,
+            "coordinates": [
+                [115.85, -31.95],
+                [
+                    115.85
+                    + np.degrees(200.0 / (6_371_000.0 * np.cos(np.radians(-31.95)))),
+                    -31.95,
+                ],
+            ],
+        },
+    }
+    whole_session = derive_spatial_context(
+        session,
+        _spatial_config(
+            distance={"source_priority": ["recorded_gps_or_fit_distance"]},
+            twistiness={"enabled": False},
+            suspension_activity={"enabled": False},
+        ),
+    )
+
+    scoped = scope_spatial_context_to_track(
+        whole_session,
+        session,
+        track,
+        {"station_regression_tolerance_m": 1.0},
+    )
+
+    scope = scoped.stream_meta["track_scope"]
+    assert scope["continuity_segment_count"] == 2
+    assert scope["removed_session_distance_m"] == pytest.approx(80.0, abs=2.0)
+    assert scope["retained_session_distance_m"] == pytest.approx(200.0, abs=2.0)
+    assert scoped.stream_df["distance_m"].max() == pytest.approx(200.0, abs=2.0)
+    assert np.min(np.diff(scoped.stream_df["track_station_m"].dropna())) > -1.0
+    retained = scope["retained_time_intervals"]
+    assert retained[0]["end_station_m"] == pytest.approx(60.0, abs=1.0)
+    assert retained[1]["start_station_m"] == pytest.approx(60.0, abs=1.0)
+    assert retained[0]["end_time_s"] == pytest.approx(12.0, abs=0.5)
+    assert retained[1]["start_time_s"] == pytest.approx(30.0, abs=0.5)
+
+    # Whole-session local gradient is discarded where its window could see
+    # across either side of the internal cut, then smoothing is segment-local.
+    for segment in scoped.stream_df["continuity_segment"].unique():
+        rows = scoped.stream_df["continuity_segment"] == segment
+        segment_frame = scoped.stream_df.loc[rows]
+        lower = segment_frame["session_distance_m"].min() + 10.0
+        upper = segment_frame["session_distance_m"].max() - 10.0
+        boundary = rows & ~scoped.stream_df["session_distance_m"].between(lower, upper)
+        assert scoped.stream_df.loc[boundary, "gradient_fraction_local"].isna().all()
 
 
 def test_sequence_aware_track_projection_resolves_overlapping_return_leg() -> None:
@@ -380,18 +490,46 @@ def test_deliberately_omitted_rear_selector_does_not_make_front_only_result_part
     assert "spatial_context_rear_wheel_displacement_unavailable" not in result.stream_meta["warnings"]
 
 
-def test_activity_is_omitted_when_required_preprocess_mask_is_missing() -> None:
+def test_all_metrics_are_unavailable_when_required_preprocess_mask_is_missing() -> None:
     session = _straight_session()
     session["df"] = session["df"].drop(columns=["active_mask_qc"])
-    result = derive_spatial_context(
-        session,
-        _spatial_config(gradient={"enabled": False}, twistiness={"enabled": False}),
-    )
+    result = derive_spatial_context(session, _spatial_config())
 
     assert result.stream_meta["status"] == "unavailable"
+    assert result.stream_df["gradient_fraction"].isna().all()
+    assert result.stream_df["twistiness_rad_per_m"].isna().all()
     assert "front_suspension_activity" not in result.stream_df.columns
     assert "rear_suspension_activity" not in result.stream_df.columns
     assert "spatial_context_activity_mask_unavailable" in result.stream_meta["warnings"]
+
+
+def test_all_metrics_treat_inactivity_as_a_hard_boundary() -> None:
+    session = _straight_session(duration_s=24.0)
+    primary = session["df"]
+    primary.loc[primary["time_s"].between(8.0, 12.0), "active_mask_qc"] = False
+
+    result = derive_spatial_context(session, _spatial_config())
+    inactive = result.stream_df["distance_m"].between(40.0, 60.0)
+
+    assert not result.stream_df.loc[inactive, "active_mask_qc"].any()
+    for column in (
+        "gradient_fraction_local",
+        "gradient_fraction",
+        "curvature_abs_rad_per_m_local",
+        "twistiness_rad_per_m",
+        "front_suspension_activity_local",
+        "front_suspension_activity",
+        "rear_suspension_activity_local",
+        "rear_suspension_activity",
+    ):
+        assert result.stream_df.loc[inactive, column].isna().all(), column
+
+    # Twistiness's complete 20 m geometry window adds its own 10 m exclusion
+    # on each active side of the shared inactivity boundary.
+    twist_boundary = result.stream_df["distance_m"].between(30.0, 70.0)
+    assert result.stream_df.loc[
+        twist_boundary, "curvature_abs_rad_per_m_local"
+    ].isna().all()
 
 
 def test_twistiness_matches_circle_curvature() -> None:
@@ -473,7 +611,7 @@ def test_source_position_fit_rejects_short_wavelength_gps_zigzag() -> None:
     interior = result.stream_df["distance_m"].between(30.0, 120.0)
     local = result.stream_df.loc[interior, "curvature_abs_rad_per_m_local"]
     assert local.notna().all()
-    assert float(local.median()) < 1.0e-5
+    assert float(local.median()) < 2.0e-4
 
 
 def test_short_geometry_run_is_not_used_for_twistiness() -> None:
@@ -595,10 +733,17 @@ def test_materialized_stream_round_trips_through_artifact_writer(tmp_path) -> No
     )
 
 
-def test_spatial_context_profile_validation_and_disabled_compatibility() -> None:
+def test_spatial_context_profile_uses_canonical_defaults_and_allows_explicit_disable() -> None:
     config = default_preprocess_config()
-    assert config["spatial_context"]["enabled"] is False
+    assert config["spatial_context"] == DEFAULT_SPATIAL_CONTEXT_CONFIG
+    assert config["spatial_context"]["enabled"] is True
+    assert config["spatial_context"]["distance"]["source_priority"] == ["gps_geometry"]
+    assert config["spatial_context"]["distance"]["distance_model"] == "geodesic"
     validate_preprocess_config(config)
+
+    disabled = copy.deepcopy(config)
+    disabled["spatial_context"] = {"enabled": False}
+    validate_preprocess_config(disabled)
 
     invalid = copy.deepcopy(config)
     invalid["spatial_context"] = _spatial_config(
@@ -621,6 +766,62 @@ def test_spatial_context_profile_validation_and_disabled_compatibility() -> None
     with pytest.raises(ValueError, match="minimum_source_position_observations.*at least 3"):
         validate_preprocess_config(insufficient_observations)
 
+    inactive_opt_out = copy.deepcopy(config)
+    inactive_opt_out["spatial_context"] = _spatial_config(
+        suspension_activity={"use_preprocess_active_mask": False}
+    )
+    with pytest.raises(ValueError, match="use_preprocess_active_mask.*must be true"):
+        validate_preprocess_config(inactive_opt_out)
+
+
+@pytest.mark.parametrize(
+    "profile_name",
+    ["suspension_default_v1.json", "suspension_default_v11_dev.json"],
+)
+def test_repository_preprocess_profiles_use_canonical_spatial_context(profile_name: str) -> None:
+    profile_path = Path(__file__).parents[1] / "config" / "preprocess_profiles" / profile_name
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+
+    validate_preprocess_config(profile["config"])
+    assert profile["config"]["spatial_context"] == DEFAULT_SPATIAL_CONTEXT_CONFIG
+
+
+def test_unavailable_materialized_stream_round_trips_for_persistence(tmp_path) -> None:
+    session = _straight_session()
+    session["stream_dfs"].clear()
+    session["meta"]["secondary_streams"].clear()
+
+    result = materialize_spatial_context(session, DEFAULT_SPATIAL_CONTEXT_CONFIG)
+
+    assert result.stream_meta["status"] == "unavailable"
+    assert session["stream_dfs"][SPATIAL_CONTEXT_STREAM_NAME].empty
+    persisted_meta = session["meta"]["secondary_streams"][SPATIAL_CONTEXT_STREAM_NAME]
+    assert persisted_meta["status"] == "unavailable"
+    assert persisted_meta["effective_config"] == DEFAULT_SPATIAL_CONTEXT_CONFIG
+    assert session["meta"]["spatial_context"]["algorithm_version"] == 3
+    assert session["meta"]["streams"][SPATIAL_CONTEXT_STREAM_NAME]["spacing_m"] == 0.5
+
+    store = ArtifactStore(tmp_path / "artifacts")
+    save_session_artifacts(
+        store,
+        run_id="run-test",
+        session_id="session-test",
+        session_df=session["df"],
+        session_meta=session["meta"],
+        secondary_stream_dfs=session["stream_dfs"],
+        secondary_stream_meta=session["meta"]["secondary_streams"],
+    )
+    persisted = pd.read_parquet(
+        store.path_session_stream_df("run-test", "session-test", SPATIAL_CONTEXT_STREAM_NAME)
+    )
+    persisted_meta = json.loads(
+        store.path_session_stream_meta(
+            "run-test", "session-test", SPATIAL_CONTEXT_STREAM_NAME
+        ).read_text(encoding="utf-8")
+    )
+    assert persisted.empty
+    assert persisted_meta["status"] == "unavailable"
+
 
 def test_pipeline_materializes_enabled_spatial_context_stream() -> None:
     session = _straight_session(primary_rate_hz=100.0)
@@ -639,10 +840,13 @@ def test_pipeline_materializes_enabled_spatial_context_stream() -> None:
 
     processed = result["session"]
     assert SPATIAL_CONTEXT_STREAM_NAME in processed["stream_dfs"]
-    assert processed["meta"]["secondary_streams"][SPATIAL_CONTEXT_STREAM_NAME]["status"] in {
-        "succeeded",
-        "partial",
-    }
+    # This synthetic session has no speed evidence, so preprocessing correctly
+    # marks every row inactive and all spatial metrics are unavailable.
+    assert (
+        processed["meta"]["secondary_streams"][SPATIAL_CONTEXT_STREAM_NAME]["status"]
+        == "unavailable"
+    )
+    assert not processed["stream_dfs"][SPATIAL_CONTEXT_STREAM_NAME]["active_mask_qc"].any()
     assert processed["meta"]["streams"][SPATIAL_CONTEXT_STREAM_NAME]["kind"] == "spatial_uniform"
     assert "spatial_context" in result["timings"]["stages_s"]
 
@@ -679,6 +883,78 @@ def test_spatial_context_figure_fixes_twistiness_scale_to_zero_point_five() -> N
     assert tuple(figure.layout.yaxis2.range) == (0.0, 0.5)
 
 
+def test_spatial_context_histograms_follow_metrics_range_and_bin_count() -> None:
+    result = derive_spatial_context(_straight_session(), _spatial_config())
+
+    figure = make_spatial_context_histogram_figure(
+        result.stream_df,
+        metrics=["gradient_fraction", "front_suspension_activity"],
+        bin_count=10,
+        selected_distance_range_m=(20.0, 40.0),
+    )
+
+    assert len(figure.data) == 2
+    assert [trace.type for trace in figure.data] == ["bar", "bar"]
+    assert [len(trace.x) for trace in figure.data] == [10, 10]
+    assert {trace.name for trace in figure.data} == {"Gradient", "Front activity"}
+    expected_rows = result.stream_df["distance_m"].between(20.0, 40.0)
+    for trace, column in zip(
+        figure.data,
+        ("gradient_fraction", "front_suspension_activity"),
+    ):
+        expected_count = int(result.stream_df.loc[expected_rows, column].notna().sum())
+        assert int(np.sum(trace.y)) == expected_count
+
+
+def test_spatial_context_histograms_add_forced_range_overflow_bins() -> None:
+    stream = pd.DataFrame(
+        {
+            "distance_m": np.arange(6, dtype=float),
+            "gradient_fraction": [-2.0, -1.0, 0.0, 1.0, 2.0, np.nan],
+            "twistiness_rad_per_m": [0.0, 0.1, 0.2, 0.5, 0.6, np.nan],
+            "front_suspension_activity": [0.0, 0.02, 0.05, 0.1, 0.2, np.nan],
+            "rear_suspension_activity": [0.0, 0.03, 0.06, 0.1, 0.3, np.nan],
+            "combined_suspension_activity": [0.0, 0.025, 0.055, 0.1, 0.25, np.nan],
+        }
+    )
+
+    figure = make_spatial_context_histogram_figure(
+        stream,
+        metrics=[
+            "gradient_fraction",
+            "twistiness_rad_per_m",
+            "front_suspension_activity",
+            "rear_suspension_activity",
+            "combined_suspension_activity",
+        ],
+        bin_count=4,
+        gradient_range=(-1.0, 1.0),
+        twistiness_maximum=0.5,
+        suspension_activity_maximum=0.1,
+    )
+
+    gradient, twistiness, front, rear, combined = figure.data
+    assert len(gradient.x) == 6
+    assert list(gradient.customdata) == [
+        "underflow",
+        "in_range",
+        "in_range",
+        "in_range",
+        "in_range",
+        "overflow",
+    ]
+    assert gradient.y[0] == 1
+    assert gradient.y[-1] == 1
+    assert len(twistiness.x) == 5
+    assert twistiness.customdata[-1] == "overflow"
+    assert twistiness.y[-1] == 1
+    for activity in (front, rear, combined):
+        assert list(activity.x) == list(front.x)
+        assert len(activity.x) == 5
+        assert activity.customdata[-1] == "overflow"
+        assert activity.y[-1] == 1
+
+
 def test_distance_selection_maps_to_separate_time_ranges_across_gap() -> None:
     stream = pd.DataFrame(
         {
@@ -706,3 +982,20 @@ def test_distance_selection_maps_to_separate_time_ranges_across_gap() -> None:
             "representative_sample_count": 2,
         },
     ]
+
+
+def test_distance_selection_respects_explicit_track_continuity_segments() -> None:
+    stream = pd.DataFrame(
+        {
+            "distance_m": [0.25, 0.75, 1.25, 1.75],
+            "representative_time_s": [0.1, 0.2, 0.3, 0.4],
+            "distance_support_fraction": [1.0, 1.0, 1.0, 1.0],
+            "continuity_segment": [0, 0, 1, 1],
+        }
+    )
+
+    ranges = spatial_selection_to_time_ranges(stream, 0.0, 2.0, max_time_gap_s=1.0)
+
+    assert [item["representative_sample_count"] for item in ranges] == [2, 2]
+    assert ranges[0]["end_time_s"] == 0.2
+    assert ranges[1]["start_time_s"] == 0.3

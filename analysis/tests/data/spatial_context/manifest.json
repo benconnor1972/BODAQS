@@ -1,0 +1,354 @@
+{
+  "cases": [
+    {
+      "case_id": "pipenhot_full",
+      "expect": {
+        "distance_m": 1414.25,
+        "distance_source": "gps_geometry",
+        "metrics": {
+          "combined_suspension_activity": {
+            "median": 0.031485519949264316,
+            "p95": 0.05496433395706144,
+            "valid_rows": 2818
+          },
+          "front_suspension_activity": {
+            "median": 0.02882119932502452,
+            "p95": 0.05415029866565184,
+            "valid_rows": 2818
+          },
+          "gradient_fraction": {
+            "median": -0.07251616193131961,
+            "p95": 0.014692120281160868,
+            "valid_rows": 2818
+          },
+          "rear_suspension_activity": {
+            "median": 0.034598935977052166,
+            "p95": 0.055885014622017726,
+            "valid_rows": 2818
+          },
+          "twistiness_rad_per_m": {
+            "median": 0.051038472628155085,
+            "p95": 0.25244051784071064,
+            "valid_rows": 2698
+          }
+        },
+        "spatial_rows": 2829,
+        "status": "succeeded",
+        "warnings": []
+      },
+      "gps_rows": 2038,
+      "input_sha256": "3000e429cd0961b7f86cecc8e4e0f631f02b52fefe032f601ab120e4177bef94",
+      "kind": "real_extract",
+      "primary_rows": 203578,
+      "session_id": "260830_112024_282b52292710",
+      "tags": [
+        "full_session",
+        "gps_zigzag",
+        "inactivity",
+        "known_track_alignment_case"
+      ]
+    },
+    {
+      "case_id": "sendit2_full",
+      "expect": {
+        "distance_m": 2647.75,
+        "distance_source": "gps_geometry",
+        "metrics": {
+          "combined_suspension_activity": {
+            "median": 0.03163638992009041,
+            "p95": 0.06414634940518642,
+            "valid_rows": 5030
+          },
+          "front_suspension_activity": {
+            "median": 0.02803364165872666,
+            "p95": 0.06194039794592081,
+            "valid_rows": 5030
+          },
+          "gradient_fraction": {
+            "median": -0.09491162288001863,
+            "p95": 0.0028740353567054846,
+            "valid_rows": 5030
+          },
+          "rear_suspension_activity": {
+            "median": 0.035025810056118184,
+            "p95": 0.06532437356358131,
+            "valid_rows": 5030
+          },
+          "twistiness_rad_per_m": {
+            "median": 0.04294967953957837,
+            "p95": 0.13551187839549006,
+            "valid_rows": 4870
+          }
+        },
+        "spatial_rows": 5296,
+        "status": "succeeded",
+        "warnings": []
+      },
+      "gps_rows": 2866,
+      "input_sha256": "cdc89231476bf9143b67c895646703bdb0d3450e0c7bb8a4b28534ca03c1c16f",
+      "kind": "real_extract",
+      "primary_rows": 286398,
+      "session_id": "260830_141913_e482381b666b",
+      "tags": [
+        "full_session",
+        "return_excursion",
+        "inactivity",
+        "continuity_boundary"
+      ]
+    },
+    {
+      "case_id": "rapid_activity_boundaries",
+      "expect": {
+        "distance_m": 130.75,
+        "distance_source": "gps_geometry",
+        "metrics": {
+          "combined_suspension_activity": {
+            "median": 0.02663418854149327,
+            "p95": 0.06985585374705884,
+            "valid_rows": 233
+          },
+          "front_suspension_activity": {
+            "median": 0.021744669475606805,
+            "p95": 0.07028939402287394,
+            "valid_rows": 233
+          },
+          "gradient_fraction": {
+            "median": -0.07957742814206813,
+            "p95": -0.054384789308362644,
+            "valid_rows": 233
+          },
+          "rear_suspension_activity": {
+            "median": 0.03083837444545782,
+            "p95": 0.06483517240767159,
+            "valid_rows": 233
+          },
+          "twistiness_rad_per_m": {
+            "median": 0.03202401031104877,
+            "p95": 0.04008294059892647,
+            "valid_rows": 180
+          }
+        },
+        "spatial_rows": 262,
+        "status": "succeeded",
+        "warnings": []
+      },
+      "gps_rows": 260,
+      "input_sha256": "ee1b0e3d3d9219e21a9f5607bcfe6647479fbffa9e2bdd873ad7c23b5c84d7b4",
+      "kind": "real_extract",
+      "primary_rows": 26001,
+      "session_id": "260830_132810_c6d6d57b9470",
+      "tags": [
+        "short_extract",
+        "rapid_activity_boundaries",
+        "full_rate_suspension"
+      ],
+      "time_range_s": [
+        1038.0,
+        1090.0
+      ]
+    },
+    {
+      "base_case_id": "rapid_activity_boundaries",
+      "case_id": "rapid_activity_boundaries_gps_1hz",
+      "expect": {
+        "distance_m": 128.75,
+        "distance_source": "gps_geometry",
+        "metrics": {
+          "combined_suspension_activity": {
+            "median": 0.0267253778829316,
+            "p95": 0.06636590799821923,
+            "valid_rows": 230
+          },
+          "front_suspension_activity": {
+            "median": 0.022868891116389463,
+            "p95": 0.0662445507669212,
+            "valid_rows": 230
+          },
+          "gradient_fraction": {
+            "median": -0.07498303379457849,
+            "p95": -0.05329299417556319,
+            "valid_rows": 230
+          },
+          "rear_suspension_activity": {
+            "median": 0.030883787023758366,
+            "p95": 0.06820514814809459,
+            "valid_rows": 230
+          },
+          "twistiness_rad_per_m": {
+            "median": 0.023438483929992503,
+            "p95": 0.07993407903652895,
+            "valid_rows": 73
+          }
+        },
+        "spatial_rows": 258,
+        "status": "partial",
+        "warnings": [
+          "spatial_context_gps_coverage_below_threshold"
+        ]
+      },
+      "kind": "deterministic_variant",
+      "mutations": [
+        {
+          "factor": 5,
+          "kind": "gps_decimate"
+        }
+      ],
+      "tags": [
+        "synthetic_fault",
+        "minimum_nominal_gps_rate"
+      ]
+    },
+    {
+      "base_case_id": "rapid_activity_boundaries",
+      "case_id": "rapid_activity_boundaries_gps_outage",
+      "expect": {
+        "distance_m": 130.25,
+        "distance_source": "gps_geometry",
+        "metrics": {
+          "combined_suspension_activity": {
+            "median": 0.026596455800739247,
+            "p95": 0.06985585374705884,
+            "valid_rows": 233
+          },
+          "front_suspension_activity": {
+            "median": 0.021744669475606805,
+            "p95": 0.07028939402287394,
+            "valid_rows": 233
+          },
+          "gradient_fraction": {
+            "median": -0.07956994852691338,
+            "p95": -0.05422184208762023,
+            "valid_rows": 233
+          },
+          "rear_suspension_activity": {
+            "median": 0.03083837444545782,
+            "p95": 0.06483517240767159,
+            "valid_rows": 233
+          },
+          "twistiness_rad_per_m": {
+            "median": 0.03202401031104877,
+            "p95": 0.040083246463530446,
+            "valid_rows": 180
+          }
+        },
+        "spatial_rows": 261,
+        "status": "partial",
+        "warnings": [
+          "spatial_context_gps_coverage_below_threshold"
+        ]
+      },
+      "kind": "deterministic_variant",
+      "mutations": [
+        {
+          "end_s": 35.0,
+          "kind": "gps_remove_time_range",
+          "start_s": 20.0
+        }
+      ],
+      "tags": [
+        "synthetic_fault",
+        "gps_outage",
+        "continuity_boundary"
+      ]
+    },
+    {
+      "base_case_id": "rapid_activity_boundaries",
+      "case_id": "rapid_activity_boundaries_no_rear_wheel",
+      "expect": {
+        "distance_m": 130.75,
+        "distance_source": "gps_geometry",
+        "metrics": {
+          "front_suspension_activity": {
+            "median": 0.021744669475606805,
+            "p95": 0.07028939402287394,
+            "valid_rows": 233
+          },
+          "gradient_fraction": {
+            "median": -0.07957742814206813,
+            "p95": -0.054384789308362644,
+            "valid_rows": 233
+          },
+          "twistiness_rad_per_m": {
+            "median": 0.03202401031104877,
+            "p95": 0.04008294059892647,
+            "valid_rows": 180
+          }
+        },
+        "spatial_rows": 262,
+        "status": "partial",
+        "warnings": [
+          "spatial_context_rear_wheel_displacement_unavailable"
+        ]
+      },
+      "kind": "deterministic_variant",
+      "mutations": [
+        {
+          "kind": "omit_rear_wheel"
+        }
+      ],
+      "tags": [
+        "synthetic_fault",
+        "missing_rear_wheel"
+      ]
+    },
+    {
+      "base_case_id": "rapid_activity_boundaries",
+      "case_id": "rapid_activity_boundaries_no_active_mask",
+      "expect": {
+        "distance_m": 130.75,
+        "distance_source": "gps_geometry",
+        "metrics": {
+          "gradient_fraction": {
+            "median": null,
+            "p95": null,
+            "valid_rows": 0
+          },
+          "twistiness_rad_per_m": {
+            "median": null,
+            "p95": null,
+            "valid_rows": 0
+          }
+        },
+        "spatial_rows": 262,
+        "status": "unavailable",
+        "warnings": [
+          "spatial_context_activity_mask_unavailable",
+          "spatial_context_gradient_unavailable",
+          "spatial_context_twistiness_unavailable"
+        ]
+      },
+      "kind": "deterministic_variant",
+      "mutations": [
+        {
+          "kind": "omit_active_mask"
+        }
+      ],
+      "tags": [
+        "synthetic_fault",
+        "missing_active_mask"
+      ]
+    }
+  ],
+  "config_overrides": {},
+  "numeric_tolerances": {
+    "distance_absolute_m": 0.5,
+    "metric_absolute": 1e-06,
+    "metric_relative": 0.02
+  },
+  "privacy": {
+    "altitude_rebased": true,
+    "coordinates_relocated": true,
+    "route_shape_retained": true,
+    "time_rebased": true
+  },
+  "schema": "bodaqs.spatial_context_regression_corpus",
+  "source": {
+    "declared_import_session_count": 7,
+    "description": "Sunday Collie intel gathering",
+    "materialization_note": "One spurious session was intentionally deleted after the run completed.",
+    "materialized_session_count_observed": 6,
+    "run_id": "ben-stevo-rc3001_260830_171848",
+    "session_count_note": "One spurious, non-useful session was manually deleted after the run completed."
+  },
+  "version": 1
+}

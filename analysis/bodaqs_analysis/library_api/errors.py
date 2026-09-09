@@ -71,6 +71,12 @@ class SessionFilterNotFoundError(LibraryApiError):
     default_message = "Session filter was not found."
 
 
+class ScenarioNotFoundError(LibraryApiError):
+    code = "scenario_not_found"
+    status_code = 404
+    default_message = "Scenario was not found."
+
+
 class BookmarkNotFoundError(LibraryApiError):
     code = "bookmark_not_found"
     status_code = 404
@@ -123,6 +129,12 @@ class InvalidSessionFilterError(LibraryApiError):
     code = "invalid_session_filter"
     status_code = 400
     default_message = "Session filter is invalid."
+
+
+class InvalidScenarioError(LibraryApiError):
+    code = "invalid_scenario"
+    status_code = 400
+    default_message = "Scenario is invalid."
 
 
 class InvalidBookmarkError(LibraryApiError):

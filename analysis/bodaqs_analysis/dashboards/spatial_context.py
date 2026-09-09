@@ -66,10 +66,11 @@ def make_spatial_context_figure(
         label, unit = supported[column]
         local_column = _local_column_for(column)
         if show_local and local_column in stream_df.columns:
+            local_values = _values_with_continuity_breaks(stream_df, local_column)
             figure.add_trace(
                 go.Scattergl(
                     x=distance,
-                    y=pd.to_numeric(stream_df[local_column], errors="coerce"),
+                    y=local_values,
                     mode="lines",
                     name=f"{label} (local)",
                     legendgroup=column,
@@ -82,7 +83,7 @@ def make_spatial_context_figure(
         figure.add_trace(
             go.Scattergl(
                 x=distance,
-                y=pd.to_numeric(stream_df[column], errors="coerce"),
+                y=_values_with_continuity_breaks(stream_df, column),
                 mode="lines",
                 name=f"{label} (smoothed)",
                 legendgroup=column,
@@ -120,6 +121,192 @@ def make_spatial_context_figure(
         margin={"t": 110},
     )
     return figure
+
+
+def make_spatial_context_histogram_figure(
+    stream_df: pd.DataFrame,
+    *,
+    metrics: Optional[Iterable[str]] = None,
+    bin_count: int = 10,
+    selected_distance_range_m: Optional[Sequence[float]] = None,
+    gradient_range: Optional[Sequence[float]] = None,
+    twistiness_maximum: Optional[float] = None,
+    suspension_activity_maximum: Optional[float] = None,
+) -> go.Figure:
+    """Build one exact-bin histogram for each selected smoothed metric."""
+
+    if not isinstance(stream_df, pd.DataFrame) or stream_df.empty:
+        raise ValueError("stream_df must be a non-empty DataFrame")
+    if "distance_m" not in stream_df.columns:
+        raise ValueError("stream_df must contain distance_m")
+    if isinstance(bin_count, bool) or not isinstance(bin_count, (int, np.integer)):
+        raise ValueError("bin_count must be an integer")
+    if int(bin_count) < 1:
+        raise ValueError("bin_count must be at least 1")
+    gradient_bounds = _optional_histogram_range(
+        gradient_range,
+        name="gradient_range",
+    )
+    twistiness_bounds = _optional_zero_based_histogram_range(
+        twistiness_maximum,
+        name="twistiness_maximum",
+    )
+    activity_bounds = _optional_zero_based_histogram_range(
+        suspension_activity_maximum,
+        name="suspension_activity_maximum",
+    )
+
+    supported = {name: (label, unit) for name, label, unit in _METRIC_ROWS}
+    requested = list(metrics) if metrics is not None else available_spatial_context_metrics(stream_df)
+    selected = [name for name in requested if name in supported and name in stream_df.columns]
+    if not selected:
+        raise ValueError("No supported spatial-context metrics are available to plot")
+
+    view = stream_df
+    if selected_distance_range_m is not None:
+        if len(selected_distance_range_m) != 2:
+            raise ValueError("selected_distance_range_m must contain start and end")
+        start_m, end_m = sorted(float(value) for value in selected_distance_range_m)
+        distance = pd.to_numeric(stream_df["distance_m"], errors="coerce")
+        view = stream_df.loc[distance.between(start_m, end_m, inclusive="both")]
+
+    figure = make_subplots(
+        rows=len(selected),
+        cols=1,
+        vertical_spacing=min(0.10, 0.24 / max(1, len(selected))),
+        subplot_titles=[supported[name][0] for name in selected],
+    )
+    for row, column in enumerate(selected, start=1):
+        label, unit = supported[column]
+        values = pd.to_numeric(view[column], errors="coerce")
+        values = values[np.isfinite(values)]
+        forced_range: Optional[tuple[float, float]] = None
+        include_underflow = False
+        include_overflow = False
+        if column == "gradient_fraction":
+            forced_range = gradient_bounds
+            include_underflow = forced_range is not None
+            include_overflow = forced_range is not None
+        elif column == "twistiness_rad_per_m":
+            forced_range = twistiness_bounds
+            include_overflow = forced_range is not None
+        elif column.endswith("_suspension_activity"):
+            forced_range = activity_bounds
+            include_overflow = forced_range is not None
+        labels, counts, categories = _exact_histogram_counts(
+            values.to_numpy(float),
+            int(bin_count),
+            forced_range=forced_range,
+            include_underflow=include_underflow,
+            include_overflow=include_overflow,
+        )
+        figure.add_trace(
+            go.Bar(
+                x=labels,
+                y=counts,
+                name=label,
+                showlegend=False,
+                marker_color=[
+                    "darkorange" if category != "in_range" else "#636efa"
+                    for category in categories
+                ],
+                customdata=np.asarray(categories, dtype=object),
+                hovertemplate="%{x}<br>Samples: %{y}<extra></extra>",
+            ),
+            row=row,
+            col=1,
+        )
+        figure.update_xaxes(title_text=unit, row=row, col=1)
+        figure.update_yaxes(title_text="Samples", row=row, col=1)
+
+    figure.update_layout(
+        height=max(330, 230 * len(selected)),
+        title=f"Selected spatial-context distributions ({int(bin_count)} in-range bins)",
+        bargap=0.05,
+        margin={"t": 90},
+    )
+    return figure
+
+
+def _exact_histogram_counts(
+    values: np.ndarray,
+    bin_count: int,
+    *,
+    forced_range: Optional[tuple[float, float]],
+    include_underflow: bool,
+    include_overflow: bool,
+) -> tuple[list[str], np.ndarray, list[str]]:
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if forced_range is not None:
+        start, end = forced_range
+    elif finite.size == 0:
+        start = 0.0
+        end = 1.0
+    else:
+        start = float(np.min(finite))
+        maximum = float(np.max(finite))
+        if maximum > start:
+            span = maximum - start
+            end = maximum + max(span * 1.0e-9, np.finfo(float).eps * max(1.0, abs(maximum)))
+        else:
+            half_span = max(abs(start) * 0.005, 0.5)
+            start -= half_span
+            end = maximum + half_span
+    in_range = finite[(finite >= start) & (finite <= end)]
+    counts, edges = np.histogram(in_range, bins=bin_count, range=(start, end))
+    labels = [
+        _histogram_interval_label(edges[index], edges[index + 1], index == bin_count - 1)
+        for index in range(bin_count)
+    ]
+    categories = ["in_range"] * bin_count
+    output_counts = counts.astype(np.int64)
+    if include_underflow:
+        labels.insert(0, f"< {_format_histogram_edge(start)}")
+        output_counts = np.r_[int(np.count_nonzero(finite < start)), output_counts]
+        categories.insert(0, "underflow")
+    if include_overflow:
+        labels.append(f"> {_format_histogram_edge(end)}")
+        output_counts = np.r_[output_counts, int(np.count_nonzero(finite > end))]
+        categories.append("overflow")
+    return labels, output_counts, categories
+
+
+def _optional_histogram_range(
+    value: Optional[Sequence[float]],
+    *,
+    name: str,
+) -> Optional[tuple[float, float]]:
+    if value is None:
+        return None
+    if len(value) != 2:
+        raise ValueError(f"{name} must contain a lower and upper limit")
+    lower, upper = (float(item) for item in value)
+    if not np.isfinite(lower) or not np.isfinite(upper) or upper <= lower:
+        raise ValueError(f"{name} limits must be finite and strictly increasing")
+    return lower, upper
+
+
+def _optional_zero_based_histogram_range(
+    maximum: Optional[float],
+    *,
+    name: str,
+) -> Optional[tuple[float, float]]:
+    if maximum is None:
+        return None
+    upper = float(maximum)
+    if not np.isfinite(upper) or upper <= 0.0:
+        raise ValueError(f"{name} must be finite and greater than zero")
+    return 0.0, upper
+
+
+def _histogram_interval_label(start: float, end: float, final: bool) -> str:
+    closing = "]" if final else ")"
+    return f"[{_format_histogram_edge(start)}, {_format_histogram_edge(end)}{closing}"
+
+
+def _format_histogram_edge(value: float) -> str:
+    return f"{value:.4g}"
 
 
 def spatial_selection_to_time_ranges(
@@ -162,10 +349,18 @@ def spatial_selection_to_time_ranges(
 
     times = view["time_s"].to_numpy(float)
     source_rows = view["source_row"].to_numpy(int)
+    continuity_break = np.zeros(max(0, len(view.index) - 1), dtype=bool)
+    if "continuity_segment" in stream_df.columns:
+        source_segments = pd.to_numeric(
+            stream_df["continuity_segment"], errors="coerce"
+        ).to_numpy(float)
+        selected_segments = source_segments[source_rows]
+        continuity_break = np.diff(selected_segments) != 0.0
     split_indices = np.flatnonzero(
         (np.diff(times) <= 0.0)
         | (np.diff(times) > max_time_gap_s)
         | (np.diff(source_rows) > 1)
+        | continuity_break
     ) + 1
     groups = np.split(np.arange(len(view)), split_indices)
     ranges: list[dict[str, float | int]] = []
@@ -193,3 +388,13 @@ def _local_column_for(column: str) -> str:
     if column.endswith("_suspension_activity"):
         return f"{column}_local"
     return ""
+
+
+def _values_with_continuity_breaks(stream_df: pd.DataFrame, column: str) -> pd.Series:
+    values = pd.to_numeric(stream_df[column], errors="coerce").copy()
+    if "continuity_segment" not in stream_df.columns or len(values.index) < 2:
+        return values
+    segments = pd.to_numeric(stream_df["continuity_segment"], errors="coerce").to_numpy(float)
+    break_rows = np.flatnonzero(np.diff(segments) != 0.0) + 1
+    values.iloc[break_rows] = np.nan
+    return values

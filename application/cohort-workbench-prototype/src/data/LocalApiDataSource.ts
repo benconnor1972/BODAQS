@@ -26,6 +26,11 @@ import type {
   SessionNoteRecord,
   SessionNoteValue,
   SessionRecord,
+  ScenarioEvaluationRequest,
+  ScenarioEvaluationResponse,
+  ScenarioCriterion,
+  ScenarioPredicate,
+  ScenarioRecord,
   SessionSignalSummary,
   SessionVideoAttachmentRecord,
   SessionVideoAttachmentsRecord,
@@ -34,6 +39,8 @@ import type {
   SignalQueryResponse,
   SignalQuerySession,
   SignalQuerySignal,
+  SpatialContextWindowRequest,
+  SpatialContextWindowResponse,
   StudyGrouping,
   StudySessionRef,
   StudySet,
@@ -244,6 +251,39 @@ export class LocalApiDataSource implements LibraryDataSource {
     return filters.map(mapSavedSessionFilter)
   }
 
+  async listScenarios(): Promise<ScenarioRecord[]> {
+    const scenarios = await requestJson<ApiObject[]>(`${this.baseUrl}/api/v1/scenarios`)
+    return scenarios.map(mapScenario)
+  }
+
+  async saveScenario(scenario: ScenarioRecord): Promise<ScenarioRecord> {
+    const payload = toApiScenario(scenario)
+    const saved = scenario.id && (scenario.revision ?? 0) > 0
+      ? await requestJson<ApiObject>(`${this.baseUrl}/api/v1/scenarios/${encodeURIComponent(scenario.id)}`, {
+          method: 'PUT',
+          body: JSON.stringify({ expected_revision: scenario.revision, scenario: payload }),
+        })
+      : await requestJson<ApiObject>(`${this.baseUrl}/api/v1/scenarios`, {
+          method: 'POST',
+          body: JSON.stringify({ scenario: payload }),
+        })
+    return mapScenario(saved)
+  }
+
+  async deleteScenario(scenarioId: string): Promise<void> {
+    await requestJson<ApiObject>(`${this.baseUrl}/api/v1/scenarios/${encodeURIComponent(scenarioId)}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async evaluateScenario(request: ScenarioEvaluationRequest): Promise<ScenarioEvaluationResponse> {
+    const response = await requestJson<ApiObject>(`${this.baseUrl}/api/v1/scenario-evaluations`, {
+      method: 'POST',
+      body: JSON.stringify(toApiScenarioEvaluationRequest(request)),
+    })
+    return mapScenarioEvaluation(response)
+  }
+
   async saveStudySet(studySet: StudySet) {
     const payload = toApiStudySet(studySet)
     const saved = studySet.id
@@ -415,6 +455,7 @@ export class LocalApiDataSource implements LibraryDataSource {
         body: JSON.stringify({
           session_ref: toApiSessionRef(session),
           max_points: options?.maxPoints ?? 1800,
+          ...(options?.includeRouteGeometry ? { include_route_geometry: true } : {}),
           ...(sourceId ? { source_id: sourceId } : {}),
         }),
       },
@@ -615,6 +656,17 @@ export class LocalApiDataSource implements LibraryDataSource {
       },
     )
     return mapTimeseriesWindowResponse(response)
+  }
+
+  async loadSpatialContextWindow(
+    libraryId: string,
+    request: SpatialContextWindowRequest,
+  ): Promise<SpatialContextWindowResponse> {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryId)}/sessions/spatial-context/window`,
+      { method: 'POST', body: JSON.stringify(toApiSpatialContextWindowRequest(request)) },
+    )
+    return mapSpatialContextWindow(response)
   }
 
   async querySignals(libraryId: string, request: SignalQueryRequest): Promise<SignalQueryResponse> {
@@ -1044,6 +1096,15 @@ function mapSessionGpsPoints(value: ApiObject): SessionGpsPointSet {
       elevationM: nullableNumberValue(point.elevation_m),
     }))
     .filter((point) => Number.isFinite(point.longitude) && Number.isFinite(point.latitude))
+  const routeGeometry = objectValue(value.route_geometry)
+  const routeGeometryDenoising = objectValue(routeGeometry.geometry_denoising)
+  const routePath = arrayValue(routeGeometry.coordinates)
+    .filter(Array.isArray)
+    .map((coordinate) => coordinate.map((item) => numberValue(item)))
+    .filter((coordinate) => coordinate.length >= 2 && coordinate.every(Number.isFinite))
+    .map((coordinate) => coordinate as GeoPosition)
+  const routeEstimator = textValue(routeGeometryDenoising.estimator)
+  const routeFitWeighting = textValue(routeGeometryDenoising.fit_weighting)
   return {
     present: Boolean(value.present),
     sourceId: textValue(source.source_id),
@@ -1063,6 +1124,28 @@ function mapSessionGpsPoints(value: ApiObject): SessionGpsPointSet {
         ? ([point.longitude, point.latitude, point.elevationM] as GeoPosition)
         : ([point.longitude, point.latitude] as GeoPosition),
     ),
+    routeGeometry: {
+      status:
+        routeGeometry.status === 'succeeded' ||
+        routeGeometry.status === 'insufficient_points'
+          ? routeGeometry.status
+          : 'unavailable',
+      pointCount: numberValue(routeGeometry.point_count),
+      lengthM: numberValue(routeGeometry.length_m),
+      path: routePath,
+      geometryDenoising:
+        routeEstimator === 'local_polynomial' &&
+        (routeFitWeighting === 'uniform' || routeFitWeighting === 'tricube')
+          ? {
+              estimator: routeEstimator,
+              windowM: numberValue(routeGeometryDenoising.window_m),
+              polynomialOrder: numberValue(routeGeometryDenoising.polynomial_order),
+              fitWeighting: routeFitWeighting,
+              robustIterations: numberValue(routeGeometryDenoising.robust_iterations),
+              robustTuningConstant: numberValue(routeGeometryDenoising.robust_tuning_constant),
+            }
+          : null,
+    },
     warnings: arrayValue(value.warnings).map((item) => textValue(item)).filter(Boolean),
   }
 }
@@ -1390,6 +1473,150 @@ function mapTableQueryRow(value: ApiObject): TableQueryRow {
     eventType: textValue(value.event_type),
     signalRole: signalRoleValue(value.signal_role),
     fields: objectRecordValue(value.fields),
+  }
+}
+
+function mapScenarioPredicate(value: ApiObject): ScenarioPredicate {
+  const op = textValue(value.op)
+  if (op === 'and' || op === 'or') {
+    return { op, children: arrayValue(value.children).filter(isObject).map(mapScenarioPredicate) }
+  }
+  const series = objectValue(value.series)
+  const range = objectValue(value.range)
+  return {
+    criterionId: textValue(value.criterion_id),
+    series: {
+      streamName: textValue(series.stream_name),
+      ...(textValue(series.column) ? { column: textValue(series.column) } : {}),
+      ...(isObject(series.selector) ? { selector: { ...series.selector } } : {}),
+    },
+    op: op as ScenarioCriterion['op'],
+    ...('value' in value ? { value: value.value } : {}),
+    ...(Object.keys(range).length
+      ? {
+          range: {
+            lower: numberValue(range.lower),
+            upper: numberValue(range.upper),
+            includeLower: range.include_lower !== false,
+            includeUpper: range.include_upper !== false,
+          },
+        }
+      : {}),
+  }
+}
+
+function mapScenario(value: ApiObject): ScenarioRecord {
+  const episode = objectValue(value.episode_policy)
+  const eligibility = objectValue(value.eligibility_policy)
+  return {
+    id: textValue(value.scenario_id) || undefined,
+    revision: nullableNumberValue(value.revision) ?? undefined,
+    displayName: textValue(value.display_name),
+    description: textValue(value.description),
+    category: textValue(value.category),
+    predicate: mapScenarioPredicate(objectValue(value.predicate)),
+    episodePolicy: {
+      minimumDurationS: numberValue(episode.minimum_duration_s),
+      minimumDistanceM: nullableNumberValue(episode.minimum_distance_m),
+      bridgeGapS: numberValue(episode.bridge_gap_s),
+      bridgeGapM: nullableNumberValue(episode.bridge_gap_m),
+    },
+    eligibilityPolicy: {
+      activity: textValue(eligibility.activity, 'require_active') === 'ignore' ? 'ignore' : 'require_active',
+    },
+    provenance: objectRecordValue(value.provenance),
+    displayState: objectRecordValue(value.display_state),
+  }
+}
+
+function mapSpatialContextWindow(value: ApiObject): SpatialContextWindowResponse {
+  const window = objectValue(value.window)
+  const sampling = objectValue(value.sampling)
+  const distance = objectValue(value.distance)
+  const time = objectValue(value.time_mapping)
+  return {
+    sessionRef: mapStudySessionRef(objectValue(value.session)),
+    status: textValue(value.status),
+    window: {
+      requestedStartM: nullableNumberValue(window.requested_start_m),
+      requestedEndM: nullableNumberValue(window.requested_end_m),
+      returnedStartM: nullableNumberValue(window.returned_start_m),
+      returnedEndM: nullableNumberValue(window.returned_end_m),
+    },
+    sampling: {
+      mode: textValue(sampling.mode),
+      sourcePoints: numberValue(sampling.source_points),
+      returnedPoints: numberValue(sampling.returned_points),
+      targetPoints: numberValue(sampling.target_points),
+    },
+    distance: {
+      column: textValue(distance.column),
+      unit: textValue(distance.unit, 'm'),
+      values: arrayValue(distance.values).map(nullableNumberValue),
+    },
+    timeMapping: {
+      column: textValue(time.column) || null,
+      unit: textValue(time.unit, 's'),
+      values: arrayValue(time.values).map(nullableNumberValue),
+    },
+    metrics: arrayValue(value.metrics).filter(isObject).map(mapTimeseriesWindowSignal),
+    diagnostics: arrayValue(value.diagnostics)
+      .filter(isObject)
+      .map((item) => ({ column: textValue(item.column), values: arrayValue(item.values).map(nullableNumberValue) })),
+    provenance: isObject(value.provenance) ? { ...value.provenance } : undefined,
+    warnings: arrayValue(value.warnings).map((item) => textValue(item)).filter(Boolean),
+  }
+}
+
+function mapScenarioEvaluation(value: ApiObject): ScenarioEvaluationResponse {
+  const scenario = objectValue(value.scenario)
+  const summary = objectValue(value.summary)
+  return {
+    evaluationId: textValue(value.evaluation_id),
+    status: textValue(value.status),
+    scenario: {
+      scenarioId: textValue(scenario.scenario_id) || null,
+      revision: nullableNumberValue(scenario.revision),
+      displayName: textValue(scenario.display_name),
+    },
+    algorithmVersion: numberValue(value.algorithm_version),
+    sessions: arrayValue(value.sessions).filter(isObject).map((session) => ({
+      sessionRef: mapStudySessionRef(objectValue(session.session_ref)),
+      status: textValue(session.status),
+      episodeCount: numberValue(session.episode_count),
+      matchedDurationS: numberValue(session.matched_duration_s),
+      matchedDistanceM: nullableNumberValue(session.matched_distance_m),
+      episodes: arrayValue(session.episodes).filter(isObject).map((episode) => ({
+        episodeId: textValue(episode.episode_id),
+        ordinal: numberValue(episode.ordinal),
+        startTimeS: numberValue(episode.start_time_s),
+        endTimeS: numberValue(episode.end_time_s),
+        durationS: numberValue(episode.duration_s),
+        startDistanceM: nullableNumberValue(episode.start_distance_m),
+        endDistanceM: nullableNumberValue(episode.end_distance_m),
+        distanceM: nullableNumberValue(episode.distance_m),
+        continuity: objectRecordValue(episode.continuity),
+      })),
+      criteria: arrayValue(session.criteria).filter(isObject).map((criterion) => ({
+        criterionId: textValue(criterion.criterion_id),
+        status: textValue(criterion.status),
+        resolvedSeries: isObject(criterion.resolved_series) ? { ...criterion.resolved_series } : null,
+        trueDurationS: numberValue(criterion.true_duration_s),
+        unknownDurationS: nullableNumberValue(criterion.unknown_duration_s),
+        warnings: arrayValue(criterion.warnings).filter(isObject).map((warning) => ({ ...warning })),
+      })),
+      warnings: arrayValue(session.warnings).filter(isObject).map((warning) => ({ ...warning })),
+    })),
+    summary: {
+      requestedSessionCount: numberValue(summary.requested_session_count),
+      evaluatedSessionCount: numberValue(summary.evaluated_session_count),
+      matchedSessionCount: numberValue(summary.matched_session_count),
+      episodeCount: numberValue(summary.episode_count),
+      matchedDurationS: numberValue(summary.matched_duration_s),
+      matchedDistanceM: nullableNumberValue(summary.matched_distance_m),
+    },
+    provenance: objectRecordValue(value.provenance),
+    warnings: arrayValue(value.warnings).filter(isObject).map((warning) => ({ ...warning })),
   }
 }
 
@@ -1726,6 +1953,75 @@ function toApiStudySessionRef(sessionRef: StudySessionRef) {
     run_id: sessionRef.runId,
     session_id: sessionRef.sessionId,
     label: sessionRef.label,
+  }
+}
+
+function toApiScenarioPredicate(predicate: ScenarioPredicate): ApiObject {
+  if ('children' in predicate) {
+    return { op: predicate.op, children: predicate.children.map(toApiScenarioPredicate) }
+  }
+  return {
+    criterion_id: predicate.criterionId,
+    series: {
+      stream_name: predicate.series.streamName,
+      ...(predicate.series.column ? { column: predicate.series.column } : {}),
+      ...(predicate.series.selector ? { selector: predicate.series.selector } : {}),
+    },
+    op: predicate.op,
+    ...(predicate.value !== undefined ? { value: predicate.value } : {}),
+    ...(predicate.range
+      ? {
+          range: {
+            lower: predicate.range.lower,
+            upper: predicate.range.upper,
+            include_lower: predicate.range.includeLower,
+            include_upper: predicate.range.includeUpper,
+          },
+        }
+      : {}),
+  }
+}
+
+function toApiScenario(scenario: ScenarioRecord) {
+  return {
+    ...(scenario.id ? { scenario_id: scenario.id } : {}),
+    ...(scenario.revision !== undefined ? { revision: scenario.revision } : {}),
+    display_name: scenario.displayName,
+    description: scenario.description,
+    category: scenario.category,
+    predicate: toApiScenarioPredicate(scenario.predicate),
+    episode_policy: {
+      minimum_duration_s: scenario.episodePolicy.minimumDurationS,
+      minimum_distance_m: scenario.episodePolicy.minimumDistanceM,
+      bridge_gap_s: scenario.episodePolicy.bridgeGapS,
+      bridge_gap_m: scenario.episodePolicy.bridgeGapM,
+    },
+    eligibility_policy: { activity: scenario.eligibilityPolicy.activity },
+    ...(scenario.provenance ? { provenance: scenario.provenance } : {}),
+    ...(scenario.displayState ? { display_state: scenario.displayState } : {}),
+  }
+}
+
+function toApiSpatialContextWindowRequest(request: SpatialContextWindowRequest) {
+  return {
+    session: toApiStudySessionRef(request.session),
+    ...(request.metrics
+      ? { metrics: request.metrics.map((metric) => typeof metric === 'string' ? metric : { ...(metric.column ? { column: metric.column } : {}), ...(metric.selector ? { selector: metric.selector } : {}) }) }
+      : {}),
+    ...(request.window ? { window: { start_m: request.window.startM ?? null, end_m: request.window.endM ?? null } } : {}),
+    ...(request.resolution?.targetPoints ? { resolution: { target_points: request.resolution.targetPoints } } : {}),
+    ...(request.includeProvenance ? { include_provenance: true } : {}),
+  }
+}
+
+function toApiScenarioEvaluationRequest(request: ScenarioEvaluationRequest) {
+  return {
+    schema: 'bodaqs.scenario_evaluation_request',
+    version: 1,
+    ...(request.scenarioRef ? { scenario_ref: { scenario_id: request.scenarioRef.scenarioId, revision: request.scenarioRef.revision } } : {}),
+    ...(request.scenario ? { scenario: toApiScenario(request.scenario) } : {}),
+    sessions: request.sessions.map(toApiStudySessionRef),
+    ...(request.options ? { options: { include_criterion_diagnostics: request.options.includeCriterionDiagnostics } } : {}),
   }
 }
 

@@ -577,9 +577,210 @@
 
 .track-analysis-main {
   display: grid;
-  grid-template-rows: minmax(430px, 2fr) minmax(220px, 1fr);
+  grid-template-rows: minmax(430px, 2fr) minmax(220px, 1fr) auto;
   gap: var(--space-3);
   min-width: 0;
+}
+
+.track-analysis-spatial-card {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  border: var(--border-subtle);
+  background: var(--surface);
+}
+
+.track-analysis-spatial-body {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-3);
+}
+
+.track-analysis-spatial-controls {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.track-analysis-spatial-controls fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.track-analysis-spatial-controls legend {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: var(--text-label);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.track-analysis-spatial-controls select {
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 7px;
+  border: var(--border-subtle);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+
+.track-analysis-spatial-controls .unavailable {
+  opacity: 0.48;
+}
+
+.track-analysis-spatial-range-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(100px, 1fr));
+  gap: var(--space-2);
+}
+
+.track-analysis-spatial-range-note {
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.track-analysis-spatial-content,
+.track-analysis-spatial-plots {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.track-analysis-spatial-chart-wrap,
+.track-analysis-spatial-histogram,
+.track-analysis-spatial-chart-empty {
+  min-width: 0;
+  padding: var(--space-2);
+  border: var(--border-subtle);
+  background: var(--surface-muted);
+}
+
+.track-analysis-spatial-chart-wrap {
+  position: relative;
+}
+
+.track-analysis-spatial-chart-wrap strong,
+.track-analysis-spatial-histogram strong {
+  margin-right: var(--space-2);
+  color: var(--ink);
+  font-size: var(--text-body);
+}
+
+.track-analysis-spatial-chart-wrap small {
+  color: var(--muted);
+}
+
+.track-analysis-spatial-chart-wrap svg,
+.track-analysis-spatial-histogram svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.track-analysis-spatial-chart-wrap text,
+.track-analysis-spatial-histogram text {
+  fill: var(--muted);
+  font-size: 11px;
+}
+
+.track-analysis-spatial-axis {
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+
+.track-analysis-spatial-tick {
+  stroke: var(--line-strong);
+  stroke-width: 0.8;
+}
+
+.track-analysis-spatial-grid {
+  stroke: rgba(79, 116, 119, 0.15);
+  stroke-width: 0.65;
+}
+
+.track-analysis-spatial-zero {
+  stroke: var(--line-strong);
+  stroke-dasharray: 3 3;
+  stroke-width: 1;
+}
+
+.track-analysis-spatial-playback {
+  stroke: #f59e0b;
+  stroke-dasharray: 4 4;
+  stroke-width: 1.4;
+}
+
+.track-analysis-spatial-hover line {
+  stroke: rgba(0, 140, 149, 0.5);
+  stroke-width: 1;
+}
+
+.track-analysis-spatial-hover circle {
+  stroke: white;
+  stroke-width: 1;
+}
+
+.track-analysis-spatial-readout {
+  position: absolute;
+  top: 36px;
+  z-index: 3;
+  display: grid;
+  gap: 3px;
+  min-width: 150px;
+  padding: 6px 8px;
+  border: var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: var(--shadow-control);
+  color: var(--ink);
+  font-size: var(--text-caption);
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.track-analysis-spatial-readout strong {
+  margin: 0;
+  font-size: var(--text-caption);
+}
+
+.track-analysis-spatial-readout span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.track-analysis-spatial-readout i {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+}
+
+.track-analysis-spatial-histograms {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.track-analysis-spatial-histogram-bar {
+  stroke-width: 1;
+}
+
+.track-analysis-spatial-histogram-bar:hover {
+  stroke-width: 2;
+  filter: drop-shadow(0 0 3px rgba(0, 140, 149, 0.32));
+}
+
+@media (max-width: 1050px) {
+  .track-analysis-spatial-range-controls {
+    grid-template-columns: repeat(2, minmax(100px, 1fr));
+  }
 }
 
 .track-analysis-map-band {

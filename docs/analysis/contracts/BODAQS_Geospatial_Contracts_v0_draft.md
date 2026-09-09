@@ -353,9 +353,12 @@ Validation notes:
 - `length_m`, if present, must be calculated using `distance_model`.
 - A track created from session GPS should be stored as denoised geometry, not
   as a strided map-preview path or a raw fix-to-fix polyline. Track creation
-  should request the full available source (up to the service safety limit),
-  remove repeated positions, and record the effective `geometry_denoising`
-  policy in `source`.
+  should request the full available source (up to the service safety limit)
+  with `include_route_geometry: true`, store the service-returned geometry,
+  and record the effective `geometry_denoising` policy in `source`.
+- Route denoising is authoritative in the Python analysis package and is shared
+  by spatial preprocessing and the Library API. Workbench must not independently
+  refit GPS geometry before calculating track stations.
 - Track source provenance should also record `gps_sampling`, including source
   and returned point counts and stride. A stride greater than one means the API
   safety cap was reached and must remain visible to consumers.

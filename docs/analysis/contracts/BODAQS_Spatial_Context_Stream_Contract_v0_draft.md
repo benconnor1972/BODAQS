@@ -1,8 +1,9 @@
-# BODAQS Spatial Context Stream Contract v0 Draft
+# BODAQS Spatial Context Stream Contract v0
 
-**Status:** Draft  
+**Status:** Canonical
+**Canonicalized:** 2026-09-09
 **Scope:** Session-derived distance-domain metrics, with optional post-derivation track traversal scoping
-**Initial consumer:** JupyterLab exploratory analysis  
+**Initial consumers:** preprocessing persistence and JupyterLab exploratory analysis
 **Future consumers:** BODAQS Library API and Workbench
 
 ---
@@ -22,14 +23,17 @@ distance grid:
 The authoritative representation is a set of continuous fields over session
 cumulative distance. Thresholds, named terrain classes, breakpoints, and
 variable-length regions are downstream queries or analysis products. They are
-not canonical fields in this stream.
+not canonical fields in this stream. `BODAQS_Scenario_Contract_v0_draft.md`
+defines the downstream Scenario and Episode model for condition-based
+occurrences.
 
 The first implementation is intended for parameterized preprocessing and
 visualization in JupyterLab. The canonical metrics are derived for the whole
-session. A later post-processing step may select one traversal of a reusable
-track without changing the evidence or estimator used for those metrics. The
-stored shape deliberately avoids notebook-only objects so that the Library API
-and Workbench can consume it later.
+session and all use the preprocessing `active_mask_qc` as a shared eligibility
+boundary. A later post-processing step may select one traversal of a reusable
+track without substituting track geometry for session evidence. The stored
+shape deliberately avoids notebook-only objects so that the Library API and
+Workbench can consume it later.
 
 ---
 
@@ -49,9 +53,10 @@ Version 0 does not define:
   geometry.
 
 The canonical preprocessed stream coordinate is cumulative distance travelled
-within one session. A track-scoped exploratory result may rebase that session
-distance at the selected traversal start and expose track station as a separate
-diagnostic coordinate. Session distance and track station must not be conflated.
+within one session. A track-scoped exploratory result compacts the retained
+pieces of that session distance after removing reverse excursions and exposes
+track station as a separate diagnostic coordinate. Session distance and track
+station must not be conflated.
 
 ---
 
@@ -63,8 +68,9 @@ This contract should be read alongside:
 - `BODAQS_Stream_Materialisation_Policy_v0_draft.md`;
 - `BODAQS_Preprocess_Profile_Contract_v0_draft.md`;
 - `BODAQS_Geospatial_Contracts_v0_draft.md`;
-- `BODAQS_Minimum_Signal_Registry_Semantics_v0_1_1.md`; and
-- `BODAQS_Bike_Profile_Contract_v0_draft.md`.
+- `BODAQS_Minimum_Signal_Registry_Semantics_v0_1_1.md`;
+- `BODAQS_Bike_Profile_Contract_v0_draft.md`; and
+- `BODAQS_Scenario_Contract_v0_draft.md`.
 
 The spatial-context stream is a session-derived analysis product. It is not an
 event metrics table: the metrics table remains one row per detected event. It
@@ -81,17 +87,21 @@ session, rider, speed, line, bike, and setup.
 session. It is measured in metres from the selected distance origin.
 
 The source of distance is chosen by an ordered source-priority policy. The
-initial priority is:
+canonical version 0 priority is:
 
-1. a recorded cumulative-distance signal from a selected GPS or FIT source;
-2. cumulative distance derived from selected, denoised GPS geometry.
+1. cumulative distance derived from selected, denoised GPS geometry.
+
+Recorded cumulative GPS/FIT distance remains a supported explicit policy
+variant, but it is not in the canonical default priority. This keeps the
+session coordinate aligned with track geometry created using the same
+denoising policy.
 
 The vocabulary must remain extensible to later candidates such as wheel
 odometry. Adding a candidate does not change the meaning of `distance_m`, but
 the selected candidate and its provenance must always be recorded.
 
 For GPS-geometry distance, version 0 denoises the source positions before
-stationing. The exploratory policy is a 20 m local quadratic fit with tricube
+stationing. The canonical policy is a 20 m local quadratic fit with tricube
 distance weighting and two Tukey robust-weight iterations. This prevents
 metre-scale GPS zig-zags from accumulating as false travelled distance while
 retaining bends at the configured spatial scale. The raw geometry length,
@@ -99,8 +109,11 @@ denoised length, and effective fit parameters must be recorded.
 
 When a reusable Workbench track is created from the same session and GPS
 source, its stored path and `station_m` coordinate should use the same denoised
-geometry policy. This makes session distance and track station closely
-comparable without redefining either coordinate. Endpoint trimming, a
+geometry implementation and policy. Spatial preprocessing and the Library API
+both use the canonical Python route-geometry module; Workbench consumes the
+API-produced path rather than refitting it in the browser. This makes session
+distance and track station closely comparable without redefining either
+coordinate. Endpoint trimming, a
 different source, recorded-distance priority, or later track editing can still
 make the two ranges differ.
 
@@ -137,9 +150,9 @@ intervals.
 
 Track scoping is a post-derivation selection operation. The implementation must
 first calculate the whole-session spatial-context stream, including native-rate
-suspension accumulation and all spatial filtering/smoothing. It may then use a
-root-scoped `Track` to retain the rows belonging to one qualifying traversal.
-Track geometry must not replace session GPS altitude, session GPS geometry, or
+suspension accumulation and all local estimates. It may then use a root-scoped
+`Track` to retain the rows belonging to one qualifying traversal. Track
+geometry must not replace session GPS altitude, session GPS geometry, or
 session suspension signals as metric evidence.
 
 The default traversal policy is:
@@ -159,6 +172,7 @@ Initial exploratory configuration shape:
 ```json
 {
   "traversal_selection": "last_forward_traversal",
+  "station_regression_tolerance_m": 3.0,
   "matching": {
     "maximum_lateral_distance_m": 8.0,
     "maximum_match_gap_s": 5.0,
@@ -185,10 +199,19 @@ alternative plausible projections and resolve them as an ordered sequence.
 The initial matcher uses GPS movement distance, heading agreement, and track
 station continuity. Its algorithm version and diagnostics must be recorded.
 
-The selected output retains `session_distance_m`, rebases `distance_m` to the
-selected traversal start for convenient comparison, and may expose
-`track_station_m` as diagnostic alignment evidence. Metric values are copied
-from the whole-session result rather than recalculated after the cut.
+Within a qualifying outer traversal, `last_forward_traversal` means the last
+chronological forward passage at each track station. A significant station
+regression therefore removes both the earlier forward coverage above the
+regression trough and the subsequent return to that trough. The analogous
+`first_forward_traversal` policy retains the first passage. Regressions no
+larger than `station_regression_tolerance_m` do not create a cut.
+
+The selected output retains `session_distance_m`, compacts the retained pieces
+into `distance_m`, records a `continuity_segment` for each piece, and may expose
+`track_station_m` as diagnostic alignment evidence. Local estimates remain
+session-derived. Estimates whose source windows could cross a track cut are
+invalidated, and smoothed fields are regenerated independently within each
+retained continuity segment. Track geometry is used only to select boundaries.
 
 ---
 
@@ -244,17 +267,23 @@ Rear-shock displacement is not an acceptable substitute for rear-wheel
 displacement. If a bike-profile transform or other valid wheel-motion signal is
 not available, rear activity must be omitted.
 
-### 5.3 Activity-mask evidence
+### 5.3 Shared activity-mask evidence
 
-When configured, suspension activity uses the existing preprocessing
-`active_mask_qc` as an eligibility mask. The mask determines which native-rate
-sample intervals are eligible; it does not define the activity magnitude.
+Every spatial-context metric uses the existing preprocessing `active_mask_qc`
+as a mandatory eligibility mask. Gradient and twistiness are null at inactive
+locations. Suspension activity admits only native-rate intervals whose two end
+samples are active. The mask determines eligibility and continuity; it does
+not define any metric magnitude.
 
-If the configured mask is unavailable, suspension activity must be omitted
-rather than treating all samples as active.
+Each transition into or out of inactivity is a hard metric boundary. Local
+estimators must not consume evidence from the other side of that boundary, and
+spatial smoothing must not bridge it. A metric may impose additional evidence,
+support, complete-window, or source-quality requirements.
 
-The spatial-context metadata must record the active-mask policy and QC that
-were effective for the session.
+If `active_mask_qc` is unavailable, enabled spatial-context metrics must be
+unavailable rather than treating all samples as active. The spatial-context
+metadata must record the active-mask policy and QC that were effective for the
+session.
 
 ### 5.4 Optional track evidence
 
@@ -285,7 +314,7 @@ The GPS source policy and distance source policy are related but distinct. The
 GPS source policy chooses coherent GPS evidence. The distance policy chooses
 how cumulative distance is obtained from that evidence.
 
-### 6.2 Initial exploratory quality guidance
+### 6.2 Canonical quality defaults
 
 Initial diagnostic thresholds are:
 
@@ -295,13 +324,13 @@ minimum GPS time coverage:      0.99
 ```
 
 The initial implementation also exposes an implausible-speed ceiling and
-minimum per-bin distance support. Their values are exploratory parameters and
-must be recorded rather than treated as stable contract constants.
+minimum per-bin distance support. Their canonical values are part of the
+effective configuration and must be recorded.
 
-These thresholds are provisional. During exploratory work, failing them should
-default to a warning rather than a hard preprocessing failure. The result may
-still be generated when minimally viable, but its status and unsupported
-regions must be explicit.
+Failing these thresholds defaults to a warning rather than a hard preprocessing
+failure. The result may still be generated when minimally viable, but its
+status and unsupported regions must be explicit. Revising a canonical default
+requires an intentional configuration and algorithm-version review.
 
 `minimum_gps_coverage_ratio` refers to session time coverage under the active
 GPS gap policy, not to an assumption that GPS samples are uniformly spaced.
@@ -399,7 +428,7 @@ at each discontinuity boundary.
 
 Each eligible geometry window must also contain a configured minimum number of
 distinct supported source-position observations. The minimum must be at least
-3; the initial exploratory hard minimum is 3. The recommended 20 m geometry
+3; the canonical version 0 hard minimum is 3. The 20 m geometry
 window should normally contain substantially more than that minimum.
 
 The complete-window rule is evaluated against genuine geometry continuity
@@ -410,7 +439,7 @@ geometry run or cause the half-window boundary exclusion to be applied again.
 These exclusions apply before smoothing. Excluded values remain null rather
 than zero, and smoothing must neither fill nor bridge the resulting gaps.
 
-The exploratory fit uses tricube distance weighting, optional inverse-variance
+The canonical fit uses tricube distance weighting, optional inverse-variance
 weighting from receiver horizontal accuracy with a configurable accuracy floor,
 and iterative robust residual weighting. Missing receiver accuracy must not
 make the estimator unavailable; it falls back to distance and robust weighting.
@@ -503,13 +532,14 @@ Version:
 | `distance_m` | float | m | Monotonic regular spatial coordinate |
 | `representative_time_s` | float/null | s | Representative session-relative time for valid mapping |
 | `distance_support_fraction` | float | 1 | Fraction of the grid cell supported by valid distance evidence |
+| `active_mask_qc` | boolean | 1 | Preprocessing activity state sampled at the representative time |
 
 `distance_m` must be unique and strictly increasing within the materialized
 stream. `distance_support_fraction` must lie within `[0, 1]`.
 
 For the canonical whole-session stream, `distance_m` is session cumulative
-distance. In a track-scoped result, it is the same session-derived coordinate
-rebased at the selected traversal start.
+distance. In a track-scoped result, it is compacted session-derived distance
+over the retained continuity segments.
 
 ### 8.3 Optional metric columns
 
@@ -536,7 +566,8 @@ null regions.
 
 | column | type | unit | meaning |
 |---|---|---|---|
-| `session_distance_m` | float | m | Original whole-session distance before track-scope rebasing |
+| `session_distance_m` | float | m | Original whole-session distance before track-scope compaction |
+| `continuity_segment` | integer | count | Retained passage segment; changes identify hard track-cut boundaries |
 | `track_station_m` | float/null | m | Sequence-matched directed track station used as alignment evidence |
 
 These columns are present only in a track-scoped result. They are coordinate
@@ -568,6 +599,7 @@ A persisted stream metadata document should have this overall shape:
 {
   "schema": "bodaqs.spatial_context_stream",
   "version": 1,
+  "algorithm_version": 3,
   "stream_name": "spatial_context",
   "kind": "derived",
   "coordinate": {
@@ -583,14 +615,19 @@ A persisted stream metadata document should have this overall shape:
   "track_scope": {
     "mode": "track_traversal",
     "metric_source": "session",
-    "coordinate_source": "session_distance",
+    "coordinate_source": "compacted_session_distance",
     "track_ref": {"track_id": "pipenhot", "revision": 3},
     "traversal_selection": "last_forward_traversal",
     "status": "matched",
     "effective_config": {},
     "matching": {},
     "traversals": [],
-    "selected_traversal": {}
+    "selected_traversal": {},
+    "retained_time_intervals": [],
+    "removed_time_intervals": [],
+    "continuity_segment_count": 1,
+    "retained_session_distance_m": 0.0,
+    "removed_session_distance_m": 0.0
   },
   "metric_provenance": {},
   "quality": {},
@@ -614,11 +651,13 @@ Required metadata behavior:
   and mapping coverage.
 - `track_scope`, when present, records track identity and revision, selection
   policy, effective matching thresholds, sequence-matcher diagnostics, all
-  qualifying forward traversals, and the selected traversal.
+  qualifying forward traversals, the selected traversal, retained and removed
+  time intervals, continuity-segment count, and retained/removed session
+  distance.
 - `metric_provenance` records estimator and smoothing details per metric.
-- suspension provenance includes the concrete filtered displacement signal,
-  its motion-derivation/filter metadata, wheel-domain transform provenance, and
-  active-mask provenance.
+- every metric records shared active-mask provenance; suspension provenance
+  additionally includes the concrete filtered displacement signal, its
+  motion-derivation/filter metadata, and wheel-domain transform provenance.
 - `quality` records observed GPS cadence, coverage, support, repairs, and metric
   availability.
 - `warnings` uses stable machine-readable warning codes where practical.
@@ -637,38 +676,47 @@ Version 0 supports a centred spatial exponential kernel:
 weight(delta_s) = exp(-abs(delta_s) / smoothing_distance_m)
 ```
 
-Each metric owns its smoothing distance. Initial exploratory hypotheses are:
+Each metric owns its smoothing distance. Canonical version 0 values are:
 
 | metric | initial smoothing distance |
 |---|---:|
-| gradient | 10-20 m |
-| twistiness | 10-20 m |
-| suspension activity | 3-5 m |
-
-These are notebook defaults, not contract constants.
+| gradient | 15 m |
+| twistiness | 7.5 m |
+| suspension activity | 4 m |
 
 Smoothing must be support-aware. Invalid or unsupported samples must not be
 treated as zero. Implementations should expose or record minimum support rules
-and must not smooth across gaps that exceed the configured gap policy.
+and must not smooth across GPS gaps, inactive-mask runs, or track-scope cuts.
+For track-scoped output, smoothing may be regenerated from retained
+session-derived local values, but it must operate independently inside each
+`continuity_segment`.
 
 ---
 
 ## 11. Persistence And Exploratory Variants
 
 The notebook may calculate many in-memory variants during parameter
-exploration. A persisted canonical `spatial_context` stream represents one
-exact whole-session effective configuration. Track-scoped views are initially
-post-processing results and must not overwrite that canonical stream.
+exploration. They are not persisted spatial-context products. A session has at
+most one persisted canonical `spatial_context` stream, representing one exact
+whole-session effective configuration. Track-scoped views are post-processing
+results and must not overwrite that canonical stream.
 
 Implementations must not silently overwrite an existing persisted stream with
-different semantics. Until a multi-variant naming contract is introduced, the
-safe options are:
+different semantics. The supported options are:
 
-- explicitly replace the stream as part of reprocessing the session; or
-- retain alternative variants as notebook-local/in-memory results.
+- explicitly replace the canonical stream as part of reprocessing the session;
+  or
+- retain alternative variants as notebook-local/in-memory results only.
 
 The source session data remains authoritative and must permit historical
 sessions to be reprocessed when algorithms or defaults change.
+
+When canonical derivation is enabled, preprocessing persists the stream
+metadata even when distance or all metrics are unavailable. In that case the
+stream dataframe may be empty and `status` plus machine-readable `warnings`
+describe the result. Stream absence is reserved for legacy sessions or an
+explicitly disabled derivation. Reprocessing replaces the dataframe and
+metadata for the single canonical stream together.
 
 ---
 
@@ -687,8 +735,9 @@ sessions to be reprocessed when algorithms or defaults change.
 - A distance selection may map to one or more valid time ranges when source
   gaps exist. Consumers must not fabricate a continuous time selection through
   unsupported intervals.
-- Consumers must treat track scope as row selection and coordinate rebasing,
-  not as permission to substitute track-derived metric values.
+- Consumers must treat track scope as passage selection, coordinate compaction,
+  boundary invalidation, and segment-local re-smoothing, not as permission to
+  substitute track-derived metric values.
 - Failure to find a qualifying traversal produces an explicit unavailable
   scoped result; it must not silently fall back to a different traversal or the
   whole session.
@@ -718,11 +767,24 @@ A conforming implementation should test at least these invariants:
    algorithm version changes recorded provenance.
 11. Disabling spatial-context derivation leaves existing preprocessing outputs
    unchanged.
-12. `last_forward_traversal` selects the chronologically last qualifying
-    forward pass when a session contains repeated passes.
-13. Track scoping does not change metric values for retained whole-session rows.
-14. Sequence-aware projection does not jump between distant track stations at
+12. Every metric is null during `active_mask_qc == false`, and neither local
+    estimation nor smoothing crosses an activity transition.
+13. `last_forward_traversal` retains the last forward passage at each station,
+    removing significant partial returns as well as earlier complete passes.
+14. Track cuts create explicit continuity segments; local estimates that could
+    cross a cut are null and smoothing is regenerated per segment.
+15. Sequence-aware projection does not jump between distant track stations at
     an overlapping or self-near section merely because the local distances tie.
+
+The implementation maintains a compact real-data regression corpus under
+`analysis/tests/data/spatial_context`. Its physical cases retain native-rate
+wheel-motion evidence and GPS observations from selected sessions in the
+`Sunday Collie intel gathering` run. Coordinates, time, and altitude are
+rebased, while geometry and signal behaviour are retained. Deterministic
+variants cover minimum-rate GPS, an extended GPS outage, missing rear-wheel
+evidence, and a missing activity mask without duplicating the physical inputs.
+The corpus asserts structural behaviour exactly and numeric summaries within
+recorded tolerances; it is not an exact floating-point snapshot of every row.
 
 ---
 
@@ -736,7 +798,6 @@ The following remain deliberately open during the Jupyter prototype:
 - whether a second canonical smoothing scale is justified;
 - use of IMU pitch as gradient support or validation;
 - wheel-odometry source priority and fusion;
-- persistence of multiple parameter variants;
 - API request/response shapes for spatial windows;
 - saved distance-range queries and bookmarks; and
 - combining several traversals into one spatial coordinate;

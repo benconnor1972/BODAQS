@@ -50,6 +50,23 @@ export type SessionGpsPoint = {
   elevationM: number | null
 }
 
+export type RouteGeometryDenoisingProvenance = {
+  estimator: 'local_polynomial'
+  windowM: number
+  polynomialOrder: number
+  fitWeighting: 'uniform' | 'tricube'
+  robustIterations: number
+  robustTuningConstant: number
+}
+
+export type SessionRouteGeometry = {
+  status: 'succeeded' | 'insufficient_points' | 'unavailable'
+  pointCount: number
+  lengthM: number
+  path: GeoPosition[]
+  geometryDenoising: RouteGeometryDenoisingProvenance | null
+}
+
 export type SessionGpsPointSet = {
   present: boolean
   sourceId: string
@@ -65,6 +82,7 @@ export type SessionGpsPointSet = {
   routeReconstruction?: Record<string, unknown>
   points: SessionGpsPoint[]
   path: GeoPosition[]
+  routeGeometry: SessionRouteGeometry
   warnings: string[]
 }
 
@@ -309,14 +327,7 @@ export type TrackRecord = {
       maxPoints: number
       stride: number | null
     }
-    geometryDenoising?: {
-      estimator: 'local_polynomial'
-      windowM: number
-      polynomialOrder: number
-      fitWeighting: 'uniform' | 'tricube'
-      robustIterations: number
-      robustTuningConstant: number
-    }
+    geometryDenoising?: RouteGeometryDenoisingProvenance
   }
 }
 
@@ -558,6 +569,121 @@ export type TimeseriesWindowResponse = {
   events: TimeseriesWindowEvent[]
   marks: TimeseriesWindowMark[]
   warnings: string[]
+}
+
+export type ScenarioSeriesRef = {
+  streamName: 'primary' | 'spatial_context' | string
+  column?: string
+  selector?: Record<string, unknown>
+}
+
+export type ScenarioCriterion = {
+  criterionId: string
+  series: ScenarioSeriesRef
+  op: 'lt' | 'lte' | 'gt' | 'gte' | 'between' | 'outside' | 'eq' | 'in' | 'present'
+  value?: unknown
+  range?: { lower: number; upper: number; includeLower: boolean; includeUpper: boolean }
+}
+
+export type ScenarioPredicate = ScenarioCriterion | {
+  op: 'and' | 'or'
+  children: ScenarioPredicate[]
+}
+
+export type ScenarioRecord = {
+  id?: string
+  revision?: number
+  displayName: string
+  description: string
+  category: string
+  predicate: ScenarioPredicate
+  episodePolicy: {
+    minimumDurationS: number
+    minimumDistanceM: number | null
+    bridgeGapS: number
+    bridgeGapM: number | null
+  }
+  eligibilityPolicy: { activity: 'require_active' | 'ignore' }
+  provenance?: Record<string, unknown>
+  displayState?: Record<string, unknown>
+}
+
+export type SpatialContextWindowRequest = {
+  session: StudySessionRef
+  metrics?: Array<string | { column?: string; selector?: Record<string, unknown> }>
+  window?: { startM?: number | null; endM?: number | null }
+  resolution?: { targetPoints?: number }
+  includeProvenance?: boolean
+}
+
+export type SpatialContextWindowResponse = {
+  sessionRef: StudySessionRef
+  status: string
+  window: { requestedStartM: number | null; requestedEndM: number | null; returnedStartM: number | null; returnedEndM: number | null }
+  sampling: { mode: string; sourcePoints: number; returnedPoints: number; targetPoints: number }
+  distance: { column: string; unit: string; values: Array<number | null> }
+  timeMapping: { column: string | null; unit: string; values: Array<number | null> }
+  metrics: TimeseriesWindowSignal[]
+  diagnostics: Array<{ column: string; values: Array<number | null> }>
+  provenance?: Record<string, unknown>
+  warnings: string[]
+}
+
+export type ScenarioEpisode = {
+  episodeId: string
+  ordinal: number
+  startTimeS: number
+  endTimeS: number
+  durationS: number
+  startDistanceM: number | null
+  endDistanceM: number | null
+  distanceM: number | null
+  continuity: Record<string, unknown>
+}
+
+export type ScenarioEvaluationRequest = {
+  scenarioRef?: { scenarioId: string; revision: number }
+  scenario?: ScenarioRecord
+  sessions: StudySessionRef[]
+  options?: { includeCriterionDiagnostics?: boolean }
+}
+
+export type ScenarioCriterionDiagnostic = {
+  criterionId: string
+  status: string
+  resolvedSeries: Record<string, unknown> | null
+  trueDurationS: number
+  unknownDurationS: number | null
+  warnings: Array<Record<string, unknown>>
+}
+
+export type ScenarioEvaluationSession = {
+  sessionRef: StudySessionRef
+  status: string
+  episodeCount: number
+  matchedDurationS: number
+  matchedDistanceM: number | null
+  episodes: ScenarioEpisode[]
+  criteria: ScenarioCriterionDiagnostic[]
+  warnings: Array<Record<string, unknown>>
+}
+
+export type ScenarioEvaluationResponse = {
+  evaluationId: string
+  status: string
+  scenario: { scenarioId: string | null; revision: number | null; displayName: string }
+  algorithmVersion: number
+  sessions: ScenarioEvaluationSession[]
+  summary: {
+    requestedSessionCount: number
+    evaluatedSessionCount: number
+    matchedSessionCount: number
+    episodeCount: number
+    matchedDurationS: number
+    matchedDistanceM: number | null
+  }
+  provenance: Record<string, unknown>
+  warnings: Array<Record<string, unknown>>
 }
 
 export type SessionBookmarkRecord = {

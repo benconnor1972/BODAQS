@@ -89,6 +89,77 @@
       },
       "secondary": []
     },
+    "spatial_context": {
+      "enabled": true,
+      "algorithm_version": 3,
+      "distance": {
+        "source_priority": [
+          "gps_geometry"
+        ],
+        "grid_interval_m": 0.5,
+        "distance_model": "geodesic",
+        "max_interpolation_gap_s": 5.0,
+        "minimum_nominal_gps_rate_hz": 1.0,
+        "minimum_gps_coverage_ratio": 0.99,
+        "minimum_distance_support_fraction": 0.5,
+        "maximum_implied_speed_mps": 50.0,
+        "quality_action": "warn",
+        "geometry_denoising": {
+          "enabled": true,
+          "estimator": "local_polynomial",
+          "window_m": 20.0,
+          "polynomial_order": 2,
+          "fit_weighting": "tricube",
+          "robust_iterations": 2,
+          "robust_tuning_constant": 4.685
+        }
+      },
+      "gradient": {
+        "enabled": true,
+        "altitude_source": "gps",
+        "estimator": "local_linear_regression",
+        "regression_window_m": 20.0,
+        "smoothing_kernel": "centred_exponential",
+        "smoothing_distance_m": 15.0
+      },
+      "twistiness": {
+        "enabled": true,
+        "estimator": "local_polynomial",
+        "geometry_window_m": 20.0,
+        "polynomial_order": 2,
+        "require_full_window": true,
+        "minimum_source_position_observations": 3,
+        "fit_weighting": "tricube",
+        "horizontal_accuracy_weighting": true,
+        "horizontal_accuracy_floor_m": 0.5,
+        "robust_iterations": 2,
+        "robust_tuning_constant": 4.685,
+        "smoothing_kernel": "centred_exponential",
+        "smoothing_distance_m": 7.5
+      },
+      "suspension_activity": {
+        "enabled": true,
+        "use_preprocess_active_mask": true,
+        "front_selector": {
+          "end": "front",
+          "quantity": "disp",
+          "domain": "wheel",
+          "unit": "mm",
+          "processing_role": "primary_analysis"
+        },
+        "rear_selector": {
+          "end": "rear",
+          "quantity": "disp",
+          "domain": "wheel",
+          "unit": "mm",
+          "processing_role": "primary_analysis"
+        },
+        "minimum_support_fraction": 0.25,
+        "smoothing_kernel": "centred_exponential",
+        "smoothing_distance_m": 4.0,
+        "combined_method": "mean_both_required"
+      }
+    },
     "butterworth_smoothing": [],
     "butterworth_generate_residuals": false,
     "activity_detection": {

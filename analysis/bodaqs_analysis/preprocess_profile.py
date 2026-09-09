@@ -911,9 +911,14 @@ def _validate_spatial_activity(value: Mapping[str, Any], *, label: str) -> None:
     }
     _reject_unknown_fields(value, allowed, key=key, label=label)
     _require_bool(value, "enabled", key=key, label=label)
+    _require_bool(value, "use_preprocess_active_mask", key=key, label=label)
+    if not bool(value.get("use_preprocess_active_mask")):
+        raise ValueError(
+            "Preprocess config 'spatial_context.suspension_activity."
+            f"use_preprocess_active_mask' must be true{label}"
+        )
     if not bool(value.get("enabled", False)):
         return
-    _require_bool(value, "use_preprocess_active_mask", key=key, label=label)
     selector_count = 0
     for end in ("front", "rear"):
         selector_key = f"{key}.{end}_selector"

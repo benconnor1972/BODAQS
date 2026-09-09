@@ -53,6 +53,8 @@ from .queries import (
     query_signals,
 )
 from .selection import study_set_to_selection_snapshot
+from .scenario_evaluation import evaluate_scenario, scenario_evaluation_cache_key
+from .scenarios import create_scenario, delete_scenario, list_scenarios, load_scenario, normalize_scenario, update_scenario
 from .signal_sets import load_signal_sets
 from .session_filters import (
     create_session_filter,
@@ -77,6 +79,7 @@ from .study_sets import (
     update_study_set,
 )
 from .timeseries import get_multistream_timeseries_window, get_timeseries_window as build_timeseries_window
+from .spatial_context_window import get_spatial_context_window as build_spatial_context_window
 from .trackpoint_queries import (
     cancel_trackpoint_match_query,
     complete_trackpoint_match_query,
@@ -96,6 +99,7 @@ class LibraryAdapter:
     _ANALYSIS_INPUT_CACHE_NAMESPACE = "analysis_input"
     _GPS_POINTS_CACHE_NAMESPACE = "gps_points"
     _TIMESERIES_PREVIEW_CACHE_NAMESPACE = "timeseries_preview"
+    _SCENARIO_EVALUATION_CACHE_NAMESPACE = "scenario_evaluation"
     _SESSION_CATALOG_CACHE_NAMESPACE = "session_catalog"
     _SESSION_CATALOG_LATEST_CACHE_NAMESPACE = "session_catalog_latest"
     _ANALYSIS_ADEQUACY_CACHE_TTL_S = 900.0
@@ -105,6 +109,7 @@ class LibraryAdapter:
     _ANALYSIS_ADEQUACY_PERSISTENT_CACHE_MAX_ENTRIES = 512
     _SESSION_CATALOG_PERSISTENT_CACHE_MAX_ENTRIES = 128
     _TIMESERIES_PREVIEW_PERSISTENT_CACHE_MAX_ENTRIES = 256
+    _SCENARIO_EVALUATION_PERSISTENT_CACHE_MAX_ENTRIES = 256
     _SERVICE_CACHE_DIR_NAME = ".bodaqs_library_api_cache"
 
     def __init__(self, libraries_root: str | Path, *, write_catalog_revision: bool = True) -> None:
@@ -413,6 +418,52 @@ class LibraryAdapter:
     def get_multistream_timeseries_window(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
         return get_multistream_timeseries_window(self._library_root(library_id), request, library_id=library_id)
 
+    def get_spatial_context_window(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        return build_spatial_context_window(self._library_root(library_id), request, library_id=library_id)
+
+    def evaluate_scenario(self, request: dict[str, Any]) -> dict[str, Any]:
+        has_ref = isinstance(request.get("scenario_ref"), Mapping)
+        has_embedded = isinstance(request.get("scenario"), Mapping)
+        if has_ref == has_embedded:
+            raise InvalidRequestError("Exactly one of scenario_ref or scenario is required.")
+        if has_ref:
+            scenario_ref = request["scenario_ref"]
+            scenario_id = str(scenario_ref.get("scenario_id") or "").strip()
+            scenario = load_scenario(self.libraries_root, scenario_id)
+            requested_revision = scenario_ref.get("revision")
+            if not isinstance(requested_revision, int) or isinstance(requested_revision, bool):
+                raise InvalidRequestError("scenario_ref.revision is required and must be an integer.")
+            if requested_revision != int(scenario["revision"]):
+                raise InvalidRequestError(
+                    "Saved Scenario revision does not match the requested revision.",
+                    details={"scenario_id": scenario_id, "requested_revision": requested_revision, "current_revision": scenario["revision"]},
+                )
+        else:
+            scenario = normalize_scenario(request["scenario"])
+        cache_key = scenario_evaluation_cache_key(request, scenario=scenario, library_root=self._library_root)
+        cached = self._cache.get(self._SCENARIO_EVALUATION_CACHE_NAMESPACE, cache_key)
+        if isinstance(cached, dict):
+            return cached
+        persisted = self._persistent_cache.get(self._SCENARIO_EVALUATION_CACHE_NAMESPACE, cache_key)
+        if persisted is not None and isinstance(persisted.value, dict):
+            self._cache.set(self._SCENARIO_EVALUATION_CACHE_NAMESPACE, cache_key, persisted.value, ttl_s=None)
+            return persisted.value
+        response = evaluate_scenario(request, scenario=scenario, library_root=self._library_root)
+        self._cache.set(self._SCENARIO_EVALUATION_CACHE_NAMESPACE, cache_key, response, ttl_s=None)
+        if self.write_catalog_revision:
+            self._persistent_cache.set(
+                self._SCENARIO_EVALUATION_CACHE_NAMESPACE,
+                cache_key,
+                response,
+                ttl_s=None,
+                metadata={"cache_schema": "bodaqs.scenario_evaluation_cache_key", "cache_version": 1},
+            )
+            self._persistent_cache.prune_namespace(
+                self._SCENARIO_EVALUATION_CACHE_NAMESPACE,
+                max_entries=self._SCENARIO_EVALUATION_PERSISTENT_CACHE_MAX_ENTRIES,
+            )
+        return response
+
     def query_signals(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
         session_refs = self._query_session_refs(library_id, request)
         if session_refs is None:
@@ -487,12 +538,14 @@ class LibraryAdapter:
         raw_window = request.get("window") if isinstance(request, Mapping) else None
         window = raw_window if isinstance(raw_window, Mapping) else None
         source_id = str(request.get("source_id") or request.get("gps_source_id") or "").strip() or None
+        include_route_geometry = bool(request.get("include_route_geometry", False))
         return self._cached_session_gps_points(
             library_id,
             session_ref,
             max_points=max_points,
             window=window,
             source_id=source_id,
+            include_route_geometry=include_route_geometry,
         )
 
     def load_session_note(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
@@ -897,6 +950,21 @@ class LibraryAdapter:
     def delete_session_filter(self, filter_id: str) -> dict[str, Any]:
         return delete_session_filter(self.libraries_root, filter_id)
 
+    def list_scenarios(self) -> list[dict[str, Any]]:
+        return list_scenarios(self.libraries_root)
+
+    def load_scenario(self, scenario_id: str) -> dict[str, Any]:
+        return load_scenario(self.libraries_root, scenario_id)
+
+    def create_scenario(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return create_scenario(self.libraries_root, payload)
+
+    def update_scenario(self, scenario_id: str, *, expected_revision: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return update_scenario(self.libraries_root, scenario_id, expected_revision=expected_revision, payload=payload)
+
+    def delete_scenario(self, scenario_id: str) -> dict[str, Any]:
+        return delete_scenario(self.libraries_root, scenario_id)
+
     def list_bookmarks(
         self,
         *,
@@ -1286,6 +1354,7 @@ class LibraryAdapter:
         max_points: int | None,
         window: Mapping[str, Any] | None = None,
         source_id: str | None = None,
+        include_route_geometry: bool = False,
     ) -> dict[str, Any]:
         cache_key = self._gps_points_cache_key(
             library_id,
@@ -1293,6 +1362,7 @@ class LibraryAdapter:
             max_points=max_points,
             window=window,
             source_id=source_id,
+            include_route_geometry=include_route_geometry,
         )
         cached = self._cache.get(self._GPS_POINTS_CACHE_NAMESPACE, cache_key)
         if isinstance(cached, dict):
@@ -1304,6 +1374,7 @@ class LibraryAdapter:
             max_points=max_points,
             window=window,
             source_id=source_id,
+            include_route_geometry=include_route_geometry,
         )
         self._cache.set(
             self._GPS_POINTS_CACHE_NAMESPACE,
@@ -1359,6 +1430,7 @@ class LibraryAdapter:
         max_points: int | None,
         window: Mapping[str, Any] | None,
         source_id: str | None,
+        include_route_geometry: bool,
     ) -> str:
         return stable_cache_digest(
             {
@@ -1370,6 +1442,7 @@ class LibraryAdapter:
                     "max_points": max_points,
                     "window": self._gps_points_window_dependency(window),
                     "source_id": source_id,
+                    "include_route_geometry": include_route_geometry,
                 },
                 "artifacts": self._gps_points_artifact_dependency(library_id, session_ref),
             }

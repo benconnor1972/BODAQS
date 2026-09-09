@@ -346,12 +346,17 @@ class PreprocessRunConfigV1(TypedDict, total=False):
 - If `prefer_postprocessing_transformations` is true, logger-originated displacement signals that have the same semantics as a bike-profile transform are retained in the dataframe but excluded from semantic selection, and the post-processing signal is preferred.
 - `motion_derivation` is optional in v1 so older profiles can still be read. New profiles SHOULD include it, even when `enabled` is `false`.
 - When `motion_derivation.enabled` is `true`, the preprocessing pipeline generates the configured motion-analysis channels after zeroing and bike-profile transforms, and before normalization, activity-mask resolution, event detection, and metrics.
-- `spatial_context` is optional in v1 so existing profiles remain valid. New
-  profiles may omit it or include it with `enabled: false`.
+- `spatial_context` is optional in v1 so existing profiles remain valid. The
+  canonical default and repository default profiles include it enabled.
+  Omitting the block or specifying `enabled: false` is an explicit opt-out.
 - When `spatial_context.enabled` is true, spatial-context derivation occurs
   after bike-profile wheel transforms, motion derivation, and activity-mask
   generation. The effective configuration and all source/filter provenance
   must be stored with the derived stream.
+- Enabled derivation persists one canonical `spatial_context` secondary stream
+  per session. An unavailable result is persisted as an empty stream with
+  status and warnings, so it cannot be confused with a legacy or explicitly
+  disabled session. Reprocessing replaces that canonical stream as a unit.
 - The preprocess-profile block does not contain a track reference or traversal
   selection. Canonical metrics are derived for the whole session; optional
   track traversal scoping is a later post-processing operation.
@@ -569,19 +574,18 @@ belong to the optional post-derivation `track_scope` operation defined by the
 spatial-context stream contract. Track geometry must not become preprocessing
 evidence for gradient, twistiness, or suspension activity.
 
-### 8.1 Canonical exploratory shape
+### 8.1 Canonical shape
 
 ```json
 {
   "enabled": true,
-  "algorithm_version": 2,
+  "algorithm_version": 3,
   "distance": {
     "source_priority": [
-      "recorded_gps_or_fit_distance",
       "gps_geometry"
     ],
     "grid_interval_m": 0.5,
-    "distance_model": "local_projection",
+    "distance_model": "geodesic",
     "max_interpolation_gap_s": 5.0,
     "minimum_nominal_gps_rate_hz": 1.0,
     "minimum_gps_coverage_ratio": 0.99,
@@ -646,7 +650,8 @@ evidence for gradient, twistiness, or suspension activity.
 }
 ```
 
-These values are provisional notebook defaults, not contract constants.
+These are the initial canonical preprocessing defaults. The notebook starts
+from this same configuration and may modify an in-memory copy for exploration.
 
 ### 8.2 Top-level rules
 
@@ -693,9 +698,9 @@ These values are provisional notebook defaults, not contract constants.
   this valid-distance support fraction are ineligible for spatial metrics.
 - `maximum_implied_speed_mps` must be finite and greater than zero. Distance
   intervals above it are excluded and reported as implausible evidence.
-- `quality_action` recognizes `warn`, `omit`, and `error`. The exploratory
-  default is `warn`; therefore the provisional 1 Hz and 0.99 thresholds are
-  diagnostic rather than hard usability boundaries.
+- `quality_action` recognizes `warn`, `omit`, and `error`. The canonical
+  default is `warn`; therefore the 1 Hz and 0.99 thresholds are diagnostic
+  rather than hard usability boundaries.
 - The selected candidate, rejected candidates, repairs, gaps, observed cadence,
   and observed coverage belong in stream metadata.
 
@@ -725,14 +730,14 @@ These values are provisional notebook defaults, not contract constants.
   defines support and edge reporting, not the number of fitting observations.
 - `minimum_source_position_observations` must be an integer of at least 3.
   It counts distinct supported source-position observations in the centred
-  geometry window, not interpolated spatial-grid rows. The exploratory hard
+  geometry window, not interpolated spatial-grid rows. The canonical hard
   minimum is 3; 5 is a preferred-quality target when the configured geometry
   window and observed GPS spacing can support it.
 - Full-window continuity is evaluated from valid distance/geometry support
   before the per-centre source-observation threshold is applied. A neighbouring
   row falling below the observation threshold does not create a geometry
   discontinuity and must not trigger another half-window exclusion.
-- `fit_weighting` recognizes `uniform` and `tricube`; the exploratory default is
+- `fit_weighting` recognizes `uniform` and `tricube`; the canonical default is
   `tricube`, which gives nearby source observations greater influence.
 - When `horizontal_accuracy_weighting` is true and the selected GPS source
   exposes horizontal accuracy, inverse-variance weighting is applied with
@@ -763,10 +768,11 @@ These values are provisional notebook defaults, not contract constants.
 - Activity is accumulated from absolute displacement increments at the native
   filtered time-series resolution, mapped to distance, and only then aggregated
   and smoothed spatially.
-- When `use_preprocess_active_mask` is true, the current preprocessing
-  `active_mask_qc` defines eligible native-rate intervals. Its policy and QC
-  must be copied into spatial-context provenance.
-- If that mask is required but unavailable, suspension activity is omitted;
+- `use_preprocess_active_mask` must be `true`. The current preprocessing
+  `active_mask_qc` is a mandatory shared eligibility and continuity boundary
+  for gradient, twistiness, and suspension activity. Its policy and QC must be
+  copied into spatial-context provenance.
+- If that mask is unavailable, enabled spatial-context metrics are unavailable;
   the implementation must not silently treat the whole session as active.
 - Inactive, invalid, stationary, or unsupported evidence is omitted from both
   movement and valid-distance support. A spatial bin without sufficient support
@@ -1038,10 +1044,10 @@ Consumers should fail fast on:
 1. There is no explicit `active_enabled` flag in v1. The current profile shape assumes an activity-mask configuration is always present. A cleaner enable/disable contract may be added in a later version.
 2. The profile assumes the target log set is homogeneous enough that one activity-mask signal selection is valid for every file being processed.
 3. This contract does not yet define profile discovery, cataloging, inheritance, or profile-composition behavior.
-4. Spatial-context GPS quality thresholds are provisional and are not yet an
-   empirical definition of usable GPS.
-5. The contract does not yet define persistence or naming for multiple
-   spatial-context parameter variants from one session.
+4. Spatial-context GPS quality thresholds are initial canonical defaults but
+   are not yet an empirical definition of unusable GPS.
+5. Multiple spatial-context parameter variants are notebook-local and
+   in-memory. A session persists at most one canonical spatial-context stream.
 
 ---
 

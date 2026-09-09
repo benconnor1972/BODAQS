@@ -19,6 +19,7 @@ from bodaqs_analysis.artifacts import (
     list_sessions,
 )
 from bodaqs_analysis.gps_semantics import resolve_gps_columns
+from bodaqs_analysis.route_geometry import denoise_route_coordinates
 
 from .errors import InvalidRequestError
 from .ids import derive_object_id, make_session_key, make_session_ref_id
@@ -343,6 +344,7 @@ def get_session_gps_points(
     max_points: int | None = None,
     window: Mapping[str, Any] | None = None,
     source_id: str | None = None,
+    include_route_geometry: bool = False,
 ) -> dict[str, Any]:
     """Return an on-demand GPS point set for one processed session."""
 
@@ -390,7 +392,7 @@ def get_session_gps_points(
         warnings = ["gps_points_unavailable"]
         if requested_source_id:
             warnings.append("gps_requested_source_unavailable")
-        return {
+        response = {
             "schema": SESSION_GPS_POINTS_SCHEMA,
             "version": SESSION_GPS_POINTS_VERSION,
             "library_id": library_id,
@@ -408,12 +410,15 @@ def get_session_gps_points(
             "points": [],
             "warnings": warnings,
         }
+        if include_route_geometry:
+            response["route_geometry"] = denoise_route_coordinates([])
+        return response
 
     best = _preferred_gps_point_candidate(candidates, source_selection, requested_source_id=requested_source_id)
     if isinstance(best.get("source"), dict):
         best["source"]["source_selection_method"] = source_selection["method"]
         best["source"]["gps_source_policy"] = source_selection.get("policy")
-    return {
+    response = {
         "schema": SESSION_GPS_POINTS_SCHEMA,
         "version": SESSION_GPS_POINTS_VERSION,
         "library_id": library_id,
@@ -424,6 +429,9 @@ def get_session_gps_points(
         "points": best["points"],
         "warnings": best["warnings"],
     }
+    if include_route_geometry:
+        response["route_geometry"] = denoise_route_coordinates(best["points"])
+    return response
 
 
 def _gps_source_summary(

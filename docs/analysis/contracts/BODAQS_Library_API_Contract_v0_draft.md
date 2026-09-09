@@ -620,10 +620,13 @@ Track `source` is optional. A track may be authored from a session GPS path,
 imported from GPX/GeoJSON in the future, or created manually.
 
 When the Workbench creates a track from session GPS, it requests the full
-available point set up to the API safety limit and stores the denoised path.
-Version 0 uses the `geometry_denoising` policy shown above. `station_m` and
-`path.length_m` are then measured along that stored geometry; a map-preview
-stride must not become canonical track geometry.
+available point set up to the API safety limit with
+`include_route_geometry: true`, and stores the returned canonical
+`route_geometry`. The Library API derives that geometry with the same Python
+route-geometry implementation used by spatial preprocessing; the browser does
+not reimplement the fit. Version 0 uses the `geometry_denoising` policy shown
+above. `station_m` and `path.length_m` are then measured along that stored
+geometry; a map-preview stride must not become canonical track geometry.
 The source also records the GPS sampling response so a safety-cap stride is
 detectable rather than silently treated as full-resolution evidence.
 
@@ -1499,12 +1502,42 @@ returns the `SessionGpsSummary` defined in
 `BODAQS_Geospatial_Contracts_v0_draft.md`.
 
 The GPS points endpoint accepts a session reference plus optional `source_id`,
-`max_points`, and `window` fields, and returns downsampled longitude/latitude
-points for offline browser preview. If `source_id` is omitted, the service uses
+`max_points`, `window`, and `include_route_geometry` fields, and returns sampled
+longitude/latitude points for offline browser preview. If `source_id` is omitted, the service uses
 the `SessionGpsSummary.preferred_source_id`. The session catalog remains
 summary-only; full GPS geometry is loaded on demand. If `window` is omitted, the
 service must default to the processed session's own primary `time_s` bounds
 rather than returning an entire auxiliary GPS/FIT stream.
+
+When `include_route_geometry` is true, the response additionally contains:
+
+```json
+{
+  "route_geometry": {
+    "status": "succeeded",
+    "coordinates": [[115.8571, -31.9523, 210.2]],
+    "point_count": 2038,
+    "length_m": 1420.5,
+    "geometry_denoising": {
+      "enabled": true,
+      "estimator": "local_polynomial",
+      "window_m": 20.0,
+      "polynomial_order": 2,
+      "fit_weighting": "tricube",
+      "robust_iterations": 2,
+      "robust_tuning_constant": 4.685
+    }
+  }
+}
+```
+
+The ordinary `points` remain the raw, timed source samples after request
+sampling, because timing and video consumers need their timestamps.
+`route_geometry.coordinates` is a separate denoised path intended for route
+stationing and track persistence. Its policy is service-owned and canonical;
+clients request it but do not supply fit parameters. If the selected point set
+is unavailable or insufficient, `route_geometry.status` reports that state and
+the coordinates may be empty.
 
 Track and policy endpoints are scoped to the configured libraries root, not to
 one processed library. Track match endpoints may return cached derived matches
@@ -1609,12 +1642,38 @@ POST /api/v1/libraries/{library_id}/events/query
 POST /api/v1/libraries/{library_id}/metrics/query
 POST /api/v1/libraries/{library_id}/timeseries/window
 POST /api/v1/libraries/{library_id}/timeseries/multistream-window
+POST /api/v1/libraries/{library_id}/sessions/spatial-context/window
 ```
 
-The first implementation only needs `timeseries/window` plus whatever minimal
-signal/catalog support the frontend needs to choose valid signals. `events/query`
-and `metrics/query` may start as table-oriented endpoints after the catalog and
-window endpoint are working.
+Time-domain and distance-domain windows remain distinct even when a consumer
+displays them in the same view. Event and Metrics queries remain compact
+table-oriented endpoints.
+
+The spatial-context endpoint returns selected canonical metrics on their
+native `distance_m` coordinate together with `representative_time_s`, validity
+diagnostics, and optional preprocessing provenance. It is separate from the
+time-series endpoint so clients do not mistake the coarser spatial grid for
+the full-resolution signal timebase.
+
+### 12.9 Scenarios And Episodes
+
+Root-scoped Scenario persistence and read-only synchronous evaluation use:
+
+```text
+GET    /api/v1/scenarios
+POST   /api/v1/scenarios
+GET    /api/v1/scenarios/{scenario_id}
+PUT    /api/v1/scenarios/{scenario_id}
+DELETE /api/v1/scenarios/{scenario_id}
+POST   /api/v1/scenario-evaluations
+```
+
+Scenario writes use revision checks. Evaluation accepts exactly one saved
+`scenario_ref` or embedded `scenario`, plus no more than 32 explicit session
+references. The initial evaluator supports up to four leaf criteria over the
+`primary` and `spatial_context` streams and caps a synchronous result at 10,000
+Episodes. Evaluation is read-only and continues to work when the service is in
+read-only mode; Scenario persistence does not.
 
 ---
 
@@ -1644,10 +1703,12 @@ library_not_found
 session_not_found
 study_set_not_found
 session_filter_not_found
+scenario_not_found
 track_not_found
 geospatial_policy_not_found
 track_match_not_found
 invalid_request
+invalid_scenario
 invalid_study_set
 invalid_session_filter
 invalid_track

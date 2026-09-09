@@ -1635,6 +1635,7 @@ def test_library_adapter_catalog_reports_gps_summary_quality(tmp_path: Path) -> 
         {
             **session_ref,
             "max_points": 2,
+            "include_route_geometry": True,
         },
     )
     assert points["schema"] == "bodaqs.session_gps_points"
@@ -1644,6 +1645,10 @@ def test_library_adapter_catalog_reports_gps_summary_quality(tmp_path: Path) -> 
     assert points["sampling"]["returned_points"] == 2
     assert [point["time_s"] for point in points["points"]] == [0.0, 2.0]
     assert points["sampling"]["window"] == {"start_s": 0.0, "end_s": 2.0}
+    assert points["route_geometry"]["status"] == "succeeded"
+    assert points["route_geometry"]["point_count"] == 2
+    assert points["route_geometry"]["length_m"] > 0.0
+    assert points["route_geometry"]["geometry_denoising"]["window_m"] == 20.0
 
 
 def test_library_adapter_caches_session_gps_points_and_invalidates_by_artifact_fingerprint(
@@ -1686,6 +1691,13 @@ def test_library_adapter_caches_session_gps_points_and_invalidates_by_artifact_f
     assert first == second
     assert call_count == 1
 
+    with_route_geometry = adapter.get_session_gps_points(
+        "default-library",
+        {**request, "include_route_geometry": True},
+    )
+    assert with_route_geometry["route_geometry"]["status"] == "succeeded"
+    assert call_count == 2
+
     stream_path = (
         library_root
         / "runs"
@@ -1709,7 +1721,7 @@ def test_library_adapter_caches_session_gps_points_and_invalidates_by_artifact_f
 
     changed = adapter.get_session_gps_points("default-library", request)
 
-    assert call_count == 2
+    assert call_count == 3
     assert changed["sampling"]["source_points"] == 4
 
 
@@ -2219,7 +2231,7 @@ def test_library_api_geospatial_endpoints_create_tracks_and_compute_matches(
 
     points_response = client.post(
         "/api/v1/libraries/default-library/sessions/gps/points",
-        json={**session_ref, "max_points": 2},
+        json={**session_ref, "max_points": 2, "include_route_geometry": True},
     )
     assert points_response.status_code == 200
     points = points_response.json()
@@ -2228,6 +2240,8 @@ def test_library_api_geospatial_endpoints_create_tracks_and_compute_matches(
     assert points["sampling"]["returned_points"] == 2
     assert points["points"][0]["time_s"] == 0.0
     assert points["points"][-1]["time_s"] == 2.0
+    assert points["route_geometry"]["status"] == "succeeded"
+    assert points["route_geometry"]["point_count"] == 2
 
     match_response = client.post(
         "/api/v1/track-matches/compute",

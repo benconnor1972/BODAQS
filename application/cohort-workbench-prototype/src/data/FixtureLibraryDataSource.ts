@@ -1,4 +1,5 @@
 import { cloneStudySet, sessionRefId, sessionToStudyRef, slugify, uniqueId } from '../domain/studySets'
+import { routeLengthM } from '../domain/trackGeometry'
 import {
   prototypeSavedSessionFilters,
   type SavedSessionFilterRecord,
@@ -324,6 +325,7 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
       session.gpsSummary.sources.find((candidate) => candidate.sourceId === sourceId) ??
       session.gpsSummary.sources.find((candidate) => candidate.sourceId === session.gpsSummary.preferredSourceId) ??
       session.gpsSummary.sources[0]
+    const path = session.gps.map(([longitude, latitude]) => [longitude, latitude] as GeoPosition)
     return {
       present: session.gps.length > 0,
       sourceId: source?.sourceId ?? '',
@@ -341,7 +343,21 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
         latitude,
         elevationM: null,
       })),
-      path: session.gps.map(([longitude, latitude]) => [longitude, latitude] as GeoPosition),
+      path,
+      routeGeometry: {
+        status: session.gps.length >= 2 ? 'succeeded' : 'insufficient_points',
+        pointCount: session.gps.length,
+        lengthM: routeLengthM(path),
+        path: path.map((position) => [...position] as GeoPosition),
+        geometryDenoising: {
+          estimator: 'local_polynomial',
+          windowM: 20,
+          polynomialOrder: 2,
+          fitWeighting: 'tricube',
+          robustIterations: 2,
+          robustTuningConstant: 4.685,
+        },
+      },
       warnings: [...session.gpsSummary.warnings],
     }
   }

@@ -37,8 +37,6 @@ import { lineString, nearestPointOnLine, point } from '@turf/turf'
 import type { Feature, FeatureCollection, LineString, Point } from 'geojson'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
 import {
-  DEFAULT_ROUTE_GEOMETRY_DENOISING,
-  denoiseRouteGeometry,
   pointAtStationM,
   replaceRouteSectorWithConnector,
   routeLengthM,
@@ -64,6 +62,11 @@ import type {
   TrackSegmentAliasRecord,
 } from '../domain/types'
 import { InfoTip, PanelTitle } from './Common'
+import {
+  type SpatialContextSettings,
+  SpatialContextControls,
+  SpatialContextPanel,
+} from './SpatialContextPanel'
 
 type TrackAnalysisViewProps = {
   studySet: StudySet
@@ -329,6 +332,22 @@ export function TrackAnalysisView({
     scopedTracks.map((track) => workingTrackFromRecord(track)),
   )
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [spatialContextSettings, setSpatialContextSettings] = useState<SpatialContextSettings>(() => ({
+    sessionId: scopedSessions[0]
+      ? `${scopedSessions[0].libraryId}:${scopedSessions[0].runId}:${scopedSessions[0].sessionId}`
+      : '',
+    selected: new Set([
+      'gradient_fraction',
+      'twistiness_rad_per_m',
+      'combined_suspension_activity',
+    ]),
+    binCount: 10,
+    gradientMinimum: -0.5,
+    gradientMaximum: 0.1,
+    twistinessMaximum: 0.25,
+    activityMaximum: 0.1,
+    showGridlines: false,
+  }))
   const [activeSessionIds, setActiveSessionIds] = useState<Set<string>>(
     () => new Set(scopedSessionIds),
   )
@@ -685,7 +704,10 @@ export function TrackAnalysisView({
         [loadKey]: { status: 'loading', pointSet: null, error: '' },
       }))
       dataSource
-        .loadSessionGpsPoints?.(session, sourceId, { maxPoints: TRACK_GEOMETRY_MAX_POINTS })
+        .loadSessionGpsPoints?.(session, sourceId, {
+          maxPoints: TRACK_GEOMETRY_MAX_POINTS,
+          includeRouteGeometry: true,
+        })
         .then((pointSet) => {
           if (cancelled) {
             return
@@ -853,7 +875,7 @@ export function TrackAnalysisView({
       activePointSets.map<SessionPath>((item) => ({
         id: sessionRecordId(item.session),
         label: item.session.name,
-        path: denoiseRouteGeometry(item.loaded.pointSet.path),
+        path: item.loaded.pointSet.routeGeometry.path,
         session: item.session,
         pointSet: item.loaded.pointSet,
       })),
@@ -925,7 +947,7 @@ export function TrackAnalysisView({
       const sessionPath: SessionPath = {
         id: sessionRecordId(referenceVideoSession),
         label: referenceVideoSession.name,
-        path: denoiseRouteGeometry(referenceVideoPointSet.path),
+        path: referenceVideoPointSet.routeGeometry.path,
         session: referenceVideoSession,
         pointSet: referenceVideoPointSet,
       }
@@ -1462,9 +1484,9 @@ export function TrackAnalysisView({
       const pointSet = await dataSource.loadSessionGpsPoints(
         sourceSession,
         source.gpsSourceId ?? null,
-        { maxPoints: TRACK_GEOMETRY_MAX_POINTS },
+        { maxPoints: TRACK_GEOMETRY_MAX_POINTS, includeRouteGeometry: true },
       )
-      const points = denoiseRouteGeometry(pointSet.path)
+      const points = pointSet.routeGeometry.path
       if (points.length < 2) {
         setTrackStatus(workingId, 'The source session did not return enough GPS points.')
         return
@@ -1502,7 +1524,7 @@ export function TrackAnalysisView({
             gpsStreamName: pointSet.streamName,
             gpsSourceSelectionMethod: pointSet.sourceSelectionMethod,
             gpsSampling: trackGpsSamplingProvenance(pointSet),
-            geometryDenoising: trackGeometryDenoisingProvenance(),
+            geometryDenoising: trackGeometryDenoisingProvenance(pointSet),
           },
         }),
         { markDirty: false },
@@ -2007,6 +2029,19 @@ export function TrackAnalysisView({
                 )}
               </div>
             </section>
+
+            <section className="track-analysis-control-card">
+              <TrackPanelTitle
+                icon={<Activity size={15} />}
+                title="Spatial context"
+                info="Choose the evidence session and visible metrics. Histogram ranges are exact; the bin count excludes the additional underflow and overflow bins."
+              />
+              <SpatialContextControls
+                sessions={activeSessions}
+                settings={spatialContextSettings}
+                onChange={setSpatialContextSettings}
+              />
+            </section>
           </div>
         )}
       </aside>
@@ -2157,6 +2192,13 @@ export function TrackAnalysisView({
             />
           </div>
         </section>
+        <SpatialContextPanel
+          sessions={activeSessions}
+          dataSource={dataSource}
+          videoSession={referenceVideoSession}
+          videoSessionTimeS={videoSessionTimeS}
+          settings={spatialContextSettings}
+        />
       </section>
       {findSessionsOpen && (
         <TrackAnalysisFindSessionsModal
@@ -4428,7 +4470,7 @@ function scratchTrackFromNearestPath(
       gpsStreamName: nearest.sessionPath.pointSet.streamName,
       gpsSourceSelectionMethod: nearest.sessionPath.pointSet.sourceSelectionMethod,
       gpsSampling: trackGpsSamplingProvenance(nearest.sessionPath.pointSet),
-      geometryDenoising: trackGeometryDenoisingProvenance(),
+      geometryDenoising: trackGeometryDenoisingProvenance(nearest.sessionPath.pointSet),
     },
     sourceSessionId: nearest.sessionPath.id,
   }
@@ -4480,7 +4522,7 @@ function scratchTrackFromSessionPath(
       gpsStreamName: sessionPath.pointSet.streamName,
       gpsSourceSelectionMethod: sessionPath.pointSet.sourceSelectionMethod,
       gpsSampling: trackGpsSamplingProvenance(sessionPath.pointSet),
-      geometryDenoising: trackGeometryDenoisingProvenance(),
+      geometryDenoising: trackGeometryDenoisingProvenance(sessionPath.pointSet),
     },
     sourceSessionId: sessionPath.id,
   }
@@ -4960,15 +5002,8 @@ function copyPosition(position: GeoPosition): GeoPosition {
   return Number.isFinite(position[2]) ? [position[0], position[1], position[2] as number] : [position[0], position[1]]
 }
 
-function trackGeometryDenoisingProvenance() {
-  return {
-    estimator: DEFAULT_ROUTE_GEOMETRY_DENOISING.estimator,
-    windowM: DEFAULT_ROUTE_GEOMETRY_DENOISING.windowM,
-    polynomialOrder: DEFAULT_ROUTE_GEOMETRY_DENOISING.polynomialOrder,
-    fitWeighting: DEFAULT_ROUTE_GEOMETRY_DENOISING.fitWeighting,
-    robustIterations: DEFAULT_ROUTE_GEOMETRY_DENOISING.robustIterations,
-    robustTuningConstant: DEFAULT_ROUTE_GEOMETRY_DENOISING.robustTuningConstant,
-  }
+function trackGeometryDenoisingProvenance(pointSet: SessionGpsPointSet) {
+  return pointSet.routeGeometry.geometryDenoising ?? undefined
 }
 
 function trackGpsSamplingProvenance(pointSet: SessionGpsPointSet) {

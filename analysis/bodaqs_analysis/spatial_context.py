@@ -17,6 +17,14 @@ import numpy as np
 import pandas as pd
 
 from .gps_semantics import gps_source_kind, resolve_gps_columns
+from .route_geometry import (
+    DEFAULT_ROUTE_GEOMETRY_DENOISING_CONFIG,
+    denoise_route_positions,
+    geodesic_segment_lengths,
+    local_latitude_longitude,
+    local_xy,
+    weighted_local_polynomial_coefficients,
+)
 from .signal_selectors import resolve_signal_selector
 from .track_traversal import (
     DEFAULT_TRACK_TRAVERSAL_MATCH_CONFIG,
@@ -28,40 +36,32 @@ from .track_traversal import (
 SPATIAL_CONTEXT_STREAM_NAME = "spatial_context"
 SPATIAL_CONTEXT_STREAM_SCHEMA = "bodaqs.spatial_context_stream"
 SPATIAL_CONTEXT_STREAM_VERSION = 1
-SPATIAL_CONTEXT_ALGORITHM_VERSION = 2
+SPATIAL_CONTEXT_ALGORITHM_VERSION = 3
 ACTIVE_MASK_COLUMN = "active_mask_qc"
 
 DEFAULT_SPATIAL_CONTEXT_TRACK_SCOPE_CONFIG: dict[str, Any] = {
     "traversal_selection": "last_forward_traversal",
+    "station_regression_tolerance_m": 3.0,
     "matching": copy.deepcopy(DEFAULT_TRACK_TRAVERSAL_MATCH_CONFIG),
 }
 
-_EARTH_RADIUS_M = 6_371_000.0
 _RECORDED_DISTANCE_REVERSAL_TOLERANCE_M = 0.5
 
 
 DEFAULT_SPATIAL_CONTEXT_CONFIG: dict[str, Any] = {
-    "enabled": False,
+    "enabled": True,
     "algorithm_version": SPATIAL_CONTEXT_ALGORITHM_VERSION,
     "distance": {
-        "source_priority": ["recorded_gps_or_fit_distance", "gps_geometry"],
+        "source_priority": ["gps_geometry"],
         "grid_interval_m": 0.5,
-        "distance_model": "local_projection",
+        "distance_model": "geodesic",
         "max_interpolation_gap_s": 5.0,
         "minimum_nominal_gps_rate_hz": 1.0,
         "minimum_gps_coverage_ratio": 0.99,
         "minimum_distance_support_fraction": 0.5,
         "maximum_implied_speed_mps": 50.0,
         "quality_action": "warn",
-        "geometry_denoising": {
-            "enabled": True,
-            "estimator": "local_polynomial",
-            "window_m": 20.0,
-            "polynomial_order": 2,
-            "fit_weighting": "tricube",
-            "robust_iterations": 2,
-            "robust_tuning_constant": 4.685,
-        },
+        "geometry_denoising": copy.deepcopy(DEFAULT_ROUTE_GEOMETRY_DENOISING_CONFIG),
     },
     "gradient": {
         "enabled": True,
@@ -165,6 +165,11 @@ def normalize_spatial_context_config(config: Optional[Mapping[str, Any]]) -> dic
     for block_name in ("gradient", "twistiness", "suspension_activity"):
         if block_name not in config:
             out[block_name]["enabled"] = False
+    if not bool(out["suspension_activity"].get("use_preprocess_active_mask", True)):
+        raise ValueError(
+            "spatial_context suspension_activity.use_preprocess_active_mask must be true; "
+            "active_mask_qc is mandatory for all spatial metrics"
+        )
     return out
 
 
@@ -178,7 +183,10 @@ def normalize_spatial_context_track_scope_config(
         return out
     if not isinstance(config, Mapping):
         raise ValueError("spatial-context track scope config must be an object or null")
-    unknown = sorted(set(config) - {"traversal_selection", "matching"})
+    unknown = sorted(
+        set(config)
+        - {"traversal_selection", "station_regression_tolerance_m", "matching"}
+    )
     if unknown:
         raise ValueError(f"Unsupported spatial-context track scope fields: {', '.join(unknown)}")
     if "traversal_selection" in config:
@@ -193,6 +201,17 @@ def normalize_spatial_context_track_scope_config(
             "spatial-context traversal_selection must be first_forward_traversal, "
             "last_forward_traversal, or longest_forward_traversal"
         )
+    regression_tolerance = out.get("station_regression_tolerance_m")
+    if (
+        isinstance(regression_tolerance, bool)
+        or not isinstance(regression_tolerance, (int, float, np.integer, np.floating))
+        or not np.isfinite(regression_tolerance)
+        or float(regression_tolerance) < 0.0
+    ):
+        raise ValueError(
+            "spatial-context station_regression_tolerance_m must be finite and non-negative"
+        )
+    out["station_regression_tolerance_m"] = float(regression_tolerance)
     matching = config.get("matching") if "matching" in config else out["matching"]
     out["matching"] = normalize_track_traversal_match_config(matching)
     return out
@@ -281,6 +300,19 @@ def derive_spatial_context(
         centres,
         candidate.valid_pairs,
     )
+    active_mask_available = ACTIVE_MASK_COLUMN in primary.columns
+    spatial_active = (
+        _step_boolean_values_at_times(
+            primary_time,
+            primary[ACTIVE_MASK_COLUMN].fillna(False).astype(bool).to_numpy(),
+            representative_time,
+        )
+        if active_mask_available
+        else np.zeros(centres.shape, dtype=bool)
+    )
+    metric_eligible = distance_eligible & spatial_active
+    if not active_mask_available:
+        warnings.append("spatial_context_activity_mask_unavailable")
     altitude_grid = _interpolate_spatial_values(
         candidate.distance_m,
         candidate.altitude_m,
@@ -293,6 +325,7 @@ def derive_spatial_context(
             "distance_m": centres,
             "representative_time_s": representative_time,
             "distance_support_fraction": distance_support_fraction,
+            ACTIVE_MASK_COLUMN: spatial_active,
         }
     )
     signals: dict[str, dict[str, Any]] = {}
@@ -305,8 +338,8 @@ def derive_spatial_context(
             centres,
             altitude_grid,
             window_m=float(gradient_cfg["regression_window_m"]),
+            eligible=metric_eligible,
         )
-        gradient_local[~distance_eligible] = np.nan
         gradient = _centred_exponential_smooth(
             gradient_local,
             spacing_m=grid_interval_m,
@@ -319,6 +352,8 @@ def derive_spatial_context(
             **copy.deepcopy(dict(gradient_cfg)),
             "source_column": candidate.source.altitude_column,
             "source_id": candidate.source.source_id,
+            "active_mask_column": ACTIVE_MASK_COLUMN,
+            "active_mask": copy.deepcopy((session.get("qc") or {}).get("activity_mask")),
         }
         signals.update(_gradient_signal_registry(metric_provenance["gradient"]))
         if not availability["gradient"]:
@@ -341,7 +376,7 @@ def derive_spatial_context(
             centres,
             geometry_window_m=geometry_window_m,
             polynomial_order=polynomial_order,
-            eligible=distance_eligible,
+            eligible=metric_eligible,
             require_full_window=bool(twistiness_cfg.get("require_full_window", True)),
             minimum_source_observations=minimum_source_observations,
             fit_weighting=str(twistiness_cfg.get("fit_weighting") or "tricube"),
@@ -377,6 +412,8 @@ def derive_spatial_context(
             "coordinate_model": candidate.diagnostics.get("coordinate_model"),
             "source_id": candidate.source.source_id,
             "horizontal_accuracy_column": candidate.source.horizontal_accuracy_column,
+            "active_mask_column": ACTIVE_MASK_COLUMN,
+            "active_mask": copy.deepcopy((session.get("qc") or {}).get("activity_mask")),
         }
         signals.update(_twistiness_signal_registry(metric_provenance["twistiness"]))
         if not availability["twistiness"]:
@@ -390,12 +427,7 @@ def derive_spatial_context(
     activity_results: dict[str, dict[str, Any]] = {}
     if bool(activity_cfg.get("enabled", False)):
         activity_primary = session.get("df")
-        activity_mask_unavailable = bool(activity_cfg.get("use_preprocess_active_mask", True)) and (
-            not isinstance(activity_primary, pd.DataFrame)
-            or ACTIVE_MASK_COLUMN not in activity_primary.columns
-        )
-        if activity_mask_unavailable:
-            warnings.append("spatial_context_activity_mask_unavailable")
+        activity_mask_unavailable = not active_mask_available
         for end in ("front", "rear"):
             selector = activity_cfg.get(f"{end}_selector")
             if not isinstance(selector, Mapping):
@@ -409,6 +441,7 @@ def derive_spatial_context(
                 end=end,
                 candidate=candidate,
                 edges=edges,
+                eligible=metric_eligible,
                 config=activity_cfg,
             )
             if activity is None:
@@ -497,6 +530,8 @@ def derive_spatial_context(
                 **copy.deepcopy(candidate.diagnostics),
                 "distance_grid_rows": int(len(stream.index)),
                 "distance_supported_rows": int(np.count_nonzero(distance_eligible)),
+                "active_mask_available": active_mask_available,
+                "active_spatial_rows": int(np.count_nonzero(spatial_active)),
                 "metric_availability": availability,
             },
             "signals": signals,
@@ -523,10 +558,10 @@ def scope_spatial_context_to_track(
 ) -> SpatialContextResult:
     """Return a session-derived spatial stream scoped to one track traversal.
 
-    Metrics are not recalculated from track geometry. The already-derived
-    whole-session rows are selected by representative time, retain their
-    original session distance in ``session_distance_m``, and are rebased onto a
-    traversal-local ``distance_m`` coordinate for exploration.
+    Metrics remain session-derived. The selected forward passage may comprise
+    several retained time intervals when reverse excursions are removed. Local
+    estimates that could cross a cut are invalidated, and smoothed fields are
+    regenerated independently inside each retained continuity segment.
     """
 
     scope_cfg = normalize_spatial_context_track_scope_config(config)
@@ -538,7 +573,7 @@ def scope_spatial_context_to_track(
     scope_metadata: dict[str, Any] = {
         "mode": "track_traversal",
         "metric_source": "session",
-        "coordinate_source": "session_distance",
+        "coordinate_source": "compacted_session_distance",
         "track_ref": track_ref,
         "traversal_selection": scope_cfg["traversal_selection"],
         "effective_config": copy.deepcopy(scope_cfg),
@@ -604,18 +639,49 @@ def scope_spatial_context_to_track(
         selected = max(match.traversals, key=lambda item: float(item["duration_s"]))
     else:
         selected = match.traversals[-1]
-    scope_metadata["selected_traversal"] = copy.deepcopy(selected)
+
+    retained_intervals = _retained_forward_time_intervals(
+        match,
+        selected,
+        selection=selection,
+        station_regression_tolerance_m=float(
+            scope_cfg["station_regression_tolerance_m"]
+        ),
+        maximum_match_gap_s=float(scope_cfg["matching"]["maximum_match_gap_s"]),
+    )
+    if not retained_intervals:
+        return _empty_track_scope_result(
+            metadata,
+            warning="spatial_context_forward_track_passage_unavailable",
+        )
+
+    selected_with_passage = copy.deepcopy(selected)
+    selected_with_passage["retained_time_intervals"] = copy.deepcopy(retained_intervals)
+    selected_with_passage["removed_time_intervals"] = [
+        {
+            "start_time_s": float(left["end_time_s"]),
+            "end_time_s": float(right["start_time_s"]),
+        }
+        for left, right in zip(retained_intervals[:-1], retained_intervals[1:])
+        if float(right["start_time_s"]) > float(left["end_time_s"])
+    ]
+    scope_metadata["selected_traversal"] = selected_with_passage
 
     stream = result.stream_df.copy(deep=True)
     representative_time = _numeric(stream["representative_time_s"])
     start_time_s = float(selected["start_time_s"])
     end_time_s = float(selected["end_time_s"])
-    selected_rows = (
-        np.isfinite(representative_time)
-        & (representative_time >= start_time_s)
-        & (representative_time <= end_time_s)
-    )
+    continuity_segment = np.full(representative_time.shape, -1, dtype=int)
+    for segment, interval in enumerate(retained_intervals):
+        in_interval = (
+            np.isfinite(representative_time)
+            & (representative_time >= float(interval["start_time_s"]))
+            & (representative_time <= float(interval["end_time_s"]))
+        )
+        continuity_segment[in_interval] = segment
+    selected_rows = continuity_segment >= 0
     stream = stream.loc[selected_rows].copy()
+    continuity_segment = continuity_segment[selected_rows]
     if stream.empty:
         return _empty_track_scope_result(
             metadata,
@@ -623,17 +689,43 @@ def scope_spatial_context_to_track(
         )
 
     session_distance = _numeric(stream["distance_m"])
-    traversal_bounds_distance = _interpolate_time_values(
+    interval_times = np.asarray(
+        [
+            value
+            for interval in retained_intervals
+            for value in (float(interval["start_time_s"]), float(interval["end_time_s"]))
+        ],
+        dtype=float,
+    )
+    interval_distances = np.interp(
+        interval_times,
         candidate.time_s,
         candidate.distance_m,
-        np.asarray([start_time_s, end_time_s], dtype=float),
-        candidate.valid_pairs,
-    )
-    distance_origin_m = float(traversal_bounds_distance[0])
-    if not np.isfinite(distance_origin_m):
-        distance_origin_m = float(session_distance[0])
+    ).reshape((-1, 2))
+    retained_lengths = np.maximum(0.0, interval_distances[:, 1] - interval_distances[:, 0])
+    retained_offsets = np.r_[0.0, np.cumsum(retained_lengths[:-1])]
+    compacted_distance = np.full(session_distance.shape, np.nan, dtype=float)
+    interval_metadata: list[dict[str, Any]] = []
+    for segment, (interval, bounds, offset) in enumerate(
+        zip(retained_intervals, interval_distances, retained_offsets)
+    ):
+        segment_rows = continuity_segment == segment
+        compacted_distance[segment_rows] = (
+            float(offset) + session_distance[segment_rows] - float(bounds[0])
+        )
+        interval_metadata.append(
+            {
+                **copy.deepcopy(interval),
+                "session_distance_start_m": float(bounds[0]),
+                "session_distance_end_m": float(bounds[1]),
+                "compacted_distance_start_m": float(offset),
+                "compacted_distance_end_m": float(offset + max(0.0, bounds[1] - bounds[0])),
+            }
+        )
+    distance_origin_m = float(interval_distances[0, 0])
     stream.insert(0, "session_distance_m", session_distance)
-    stream["distance_m"] = session_distance - distance_origin_m
+    stream.insert(1, "continuity_segment", continuity_segment)
+    stream["distance_m"] = compacted_distance
 
     match_pairs = (
         match.matched[:-1]
@@ -647,18 +739,29 @@ def scope_spatial_context_to_track(
         _numeric(stream["representative_time_s"]),
         match_pairs,
     )
-    stream.insert(1, "track_station_m", track_station)
+    stream.insert(2, "track_station_m", track_station)
     stream.reset_index(drop=True, inplace=True)
+    _apply_track_scope_metric_boundaries(stream, metadata)
+
+    retained_distance_m = float(np.sum(retained_lengths))
+    outer_distance_m = max(0.0, float(interval_distances[-1, 1] - interval_distances[0, 0]))
+    scope_metadata["retained_time_intervals"] = interval_metadata
+    scope_metadata["removed_time_intervals"] = copy.deepcopy(
+        selected_with_passage["removed_time_intervals"]
+    )
 
     scope_metadata.update(
         {
             "status": "matched",
             "session_distance_origin_m": distance_origin_m,
             "session_distance_end_m": (
-                float(traversal_bounds_distance[1])
-                if np.isfinite(traversal_bounds_distance[1])
+                float(interval_distances[-1, 1])
+                if np.isfinite(interval_distances[-1, 1])
                 else float(session_distance[-1])
             ),
+            "retained_session_distance_m": retained_distance_m,
+            "removed_session_distance_m": max(0.0, outer_distance_m - retained_distance_m),
+            "continuity_segment_count": len(retained_intervals),
             "spatial_row_count": int(len(stream.index)),
         }
     )
@@ -667,7 +770,7 @@ def scope_spatial_context_to_track(
     coordinate.update(
         {
             "column": "distance_m",
-            "domain": "selected_session_traversal_distance",
+            "domain": "selected_forward_passage_compacted_session_distance",
             "origin": "selected_traversal_start",
         }
     )
@@ -675,6 +778,7 @@ def scope_spatial_context_to_track(
     time_mapping = metadata.get("time_mapping")
     time_mapping = dict(time_mapping) if isinstance(time_mapping, Mapping) else {}
     time_mapping["selected_time_bounds_s"] = [start_time_s, end_time_s]
+    time_mapping["retained_time_intervals"] = copy.deepcopy(interval_metadata)
     metadata["time_mapping"] = time_mapping
     quality = metadata.get("quality")
     quality = dict(quality) if isinstance(quality, Mapping) else {}
@@ -685,6 +789,243 @@ def scope_spatial_context_to_track(
     qc["track_scope"] = copy.deepcopy(scope_metadata)
     qc["status"] = metadata.get("status")
     return SpatialContextResult(stream_df=stream, stream_meta=metadata, qc=qc)
+
+
+def _retained_forward_time_intervals(
+    match: Any,
+    selected: Mapping[str, Any],
+    *,
+    selection: str,
+    station_regression_tolerance_m: float,
+    maximum_match_gap_s: float,
+) -> list[dict[str, Any]]:
+    """Return chronological pieces of the selected monotonic forward passage."""
+
+    start_time_s = float(selected["start_time_s"])
+    end_time_s = float(selected["end_time_s"])
+    selected_points = np.flatnonzero(
+        match.matched
+        & (match.time_s >= start_time_s)
+        & (match.time_s <= end_time_s)
+    )
+    if selected_points.size < 2:
+        return []
+    station = match.station_m[selected_points]
+    time_s = match.time_s[selected_points]
+
+    if selection == "first_forward_traversal":
+        kept_positions = _monotonic_passage_positions(
+            station,
+            bias="first",
+            tolerance_m=station_regression_tolerance_m,
+        )
+    elif selection == "longest_forward_traversal":
+        first = _monotonic_passage_positions(
+            station,
+            bias="first",
+            tolerance_m=station_regression_tolerance_m,
+        )
+        last = _monotonic_passage_positions(
+            station,
+            bias="last",
+            tolerance_m=station_regression_tolerance_m,
+        )
+        first_duration = _retained_adjacent_duration(time_s, first)
+        last_duration = _retained_adjacent_duration(time_s, last)
+        kept_positions = first if first_duration >= last_duration else last
+    else:
+        kept_positions = _monotonic_passage_positions(
+            station,
+            bias="last",
+            tolerance_m=station_regression_tolerance_m,
+        )
+    if kept_positions.size < 2:
+        return []
+
+    split_at = np.flatnonzero(
+        (np.diff(kept_positions) > 1)
+        | (np.diff(time_s[kept_positions]) > maximum_match_gap_s)
+    ) + 1
+    groups = np.split(kept_positions, split_at)
+    intervals: list[dict[str, Any]] = []
+    for group in groups:
+        if group.size == 0:
+            continue
+        first = int(group[0])
+        last = int(group[-1])
+        intervals.append(
+            {
+                "start_time_s": float(time_s[first]),
+                "end_time_s": float(time_s[last]),
+                "start_station_m": float(station[first]),
+                "end_station_m": float(station[last]),
+                "matched_point_count": int(group.size),
+            }
+        )
+    return intervals
+
+
+def _retained_adjacent_duration(time_s: np.ndarray, positions: np.ndarray) -> float:
+    if positions.size < 2:
+        return 0.0
+    adjacent = np.diff(positions) == 1
+    return float(np.sum(np.diff(time_s[positions])[adjacent]))
+
+
+def _monotonic_passage_positions(
+    station_m: np.ndarray,
+    *,
+    bias: str,
+    tolerance_m: float,
+) -> np.ndarray:
+    """Remove significant regressions, preferring the first or last station pass."""
+
+    station = np.asarray(station_m, dtype=float)
+    kept = np.arange(station.size, dtype=int)
+    while kept.size > 1:
+        values = station[kept]
+        if bias == "first":
+            reference = np.maximum.accumulate(values)
+            violations = np.flatnonzero(values < reference - tolerance_m)
+            if violations.size == 0:
+                break
+            violation = int(violations[0])
+            before = values[: violation + 1]
+            target = float(np.max(before))
+            target_error = np.abs(before - target)
+            cut_start = int(np.flatnonzero(target_error == np.min(target_error))[-1])
+            after = values[violation:]
+            after_error = np.abs(after - target)
+            cut_stop = violation + int(
+                np.flatnonzero(after_error == np.min(after_error))[0]
+            )
+        else:
+            reference = np.minimum.accumulate(values[::-1])[::-1]
+            violations = np.flatnonzero(values > reference + tolerance_m)
+            if violations.size == 0:
+                break
+            violation = int(violations[0])
+            after = values[violation:]
+            target = float(np.min(after))
+            after_error = np.abs(after - target)
+            cut_stop = violation + int(
+                np.flatnonzero(after_error == np.min(after_error))[-1]
+            )
+            before = values[: violation + 1]
+            before_error = np.abs(before - target)
+            cut_start = int(
+                np.flatnonzero(before_error == np.min(before_error))[-1]
+            )
+        if cut_stop <= cut_start + 1:
+            break
+        kept = np.r_[kept[: cut_start + 1], kept[cut_stop:]]
+    return kept
+
+
+def _apply_track_scope_metric_boundaries(
+    stream: pd.DataFrame,
+    metadata: dict[str, Any],
+) -> None:
+    """Remove cut-contaminated local estimates and smooth within retained pieces."""
+
+    if stream.empty or "continuity_segment" not in stream.columns:
+        return
+    segments = stream["continuity_segment"].to_numpy(dtype=int)
+    session_distance = _numeric(stream["session_distance_m"])
+    provenance = metadata.get("metric_provenance")
+    provenance = provenance if isinstance(provenance, dict) else {}
+
+    metric_specs = (
+        ("gradient", "gradient_fraction_local", "gradient_fraction", "regression_window_m"),
+        (
+            "twistiness",
+            "curvature_abs_rad_per_m_local",
+            "twistiness_rad_per_m",
+            "geometry_window_m",
+        ),
+        (
+            "front_suspension_activity",
+            "front_suspension_activity_local",
+            "front_suspension_activity",
+            None,
+        ),
+        (
+            "rear_suspension_activity",
+            "rear_suspension_activity_local",
+            "rear_suspension_activity",
+            None,
+        ),
+    )
+    spacing_m = float((metadata.get("coordinate") or {}).get("spacing_m") or 0.5)
+    for metric_name, local_column, smooth_column, window_field in metric_specs:
+        if local_column not in stream.columns or smooth_column not in stream.columns:
+            continue
+        metric_provenance = provenance.get(metric_name)
+        metric_provenance = metric_provenance if isinstance(metric_provenance, dict) else {}
+        exclusion_m = (
+            float(metric_provenance.get(window_field) or 0.0) * 0.5
+            if window_field is not None
+            else 0.0
+        )
+        if exclusion_m > 0.0:
+            local_values = _numeric(stream[local_column])
+            for segment in np.unique(segments):
+                rows = np.flatnonzero(segments == segment)
+                if rows.size == 0:
+                    continue
+                lower = float(session_distance[rows[0]]) + exclusion_m
+                upper = float(session_distance[rows[-1]]) - exclusion_m
+                boundary_rows = rows[
+                    (session_distance[rows] < lower) | (session_distance[rows] > upper)
+                ]
+                local_values[boundary_rows] = np.nan
+            stream[local_column] = local_values
+        smoothing_distance_m = float(metric_provenance.get("smoothing_distance_m") or 0.0)
+        if smoothing_distance_m > 0.0:
+            stream[smooth_column] = _smooth_within_segments(
+                _numeric(stream[local_column]),
+                segments,
+                spacing_m=spacing_m,
+                smoothing_distance_m=smoothing_distance_m,
+            )
+        metric_provenance["track_scope_boundary_handling"] = {
+            "local_boundary_exclusion_m": exclusion_m,
+            "smoothing_recomputed_within_continuity_segments": True,
+        }
+        provenance[metric_name] = metric_provenance
+
+    if {
+        "front_suspension_activity",
+        "rear_suspension_activity",
+        "combined_suspension_activity",
+    }.issubset(stream.columns):
+        front = _numeric(stream["front_suspension_activity"])
+        rear = _numeric(stream["rear_suspension_activity"])
+        combined = np.full(front.shape, np.nan, dtype=float)
+        both = np.isfinite(front) & np.isfinite(rear)
+        combined[both] = (front[both] + rear[both]) * 0.5
+        stream["combined_suspension_activity"] = combined
+    metadata["metric_provenance"] = provenance
+
+
+def _smooth_within_segments(
+    values: np.ndarray,
+    segments: np.ndarray,
+    *,
+    spacing_m: float,
+    smoothing_distance_m: float,
+) -> np.ndarray:
+    result = np.full(np.asarray(values).shape, np.nan, dtype=float)
+    for segment in np.unique(segments):
+        rows = np.flatnonzero(segments == segment)
+        if rows.size == 0:
+            continue
+        result[rows] = _centred_exponential_smooth(
+            np.asarray(values, dtype=float)[rows],
+            spacing_m=spacing_m,
+            smoothing_distance_m=smoothing_distance_m,
+        )
+    return result
 
 
 def materialize_spatial_context(
@@ -699,19 +1040,24 @@ def materialize_spatial_context(
     meta["spatial_context"] = {
         "schema": result.stream_meta.get("schema"),
         "version": result.stream_meta.get("version"),
+        "stream_name": SPATIAL_CONTEXT_STREAM_NAME,
+        "algorithm_version": result.stream_meta.get("algorithm_version"),
         "status": result.stream_meta.get("status"),
         "warnings": copy.deepcopy(result.stream_meta.get("warnings", [])),
     }
-    if result.stream_df.empty:
-        return result
-
     session.setdefault("stream_dfs", {})[SPATIAL_CONTEXT_STREAM_NAME] = result.stream_df
     meta.setdefault("secondary_streams", {})[SPATIAL_CONTEXT_STREAM_NAME] = result.stream_meta
+    coordinate = result.stream_meta.get("coordinate")
+    coordinate = coordinate if isinstance(coordinate, Mapping) else {}
+    effective_config = result.stream_meta.get("effective_config")
+    effective_config = effective_config if isinstance(effective_config, Mapping) else {}
+    distance_config = effective_config.get("distance")
+    distance_config = distance_config if isinstance(distance_config, Mapping) else {}
     meta.setdefault("streams", {})[SPATIAL_CONTEXT_STREAM_NAME] = {
         "kind": "spatial_uniform",
         "coordinate_col": "distance_m",
         "coordinate_unit": "m",
-        "spacing_m": result.stream_meta["coordinate"]["spacing_m"],
+        "spacing_m": coordinate.get("spacing_m", distance_config.get("grid_interval_m")),
         "time_col": "representative_time_s",
         "notes": "Session-scoped distance-domain spatial context product",
     }
@@ -745,6 +1091,7 @@ def _base_stream_meta(config: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "schema": SPATIAL_CONTEXT_STREAM_SCHEMA,
         "version": SPATIAL_CONTEXT_STREAM_VERSION,
+        "algorithm_version": int(config.get("algorithm_version", SPATIAL_CONTEXT_ALGORITHM_VERSION)),
         "stream_name": SPATIAL_CONTEXT_STREAM_NAME,
         "kind": "derived",
         "status": "unavailable",
@@ -952,7 +1299,7 @@ def _evaluate_distance_candidate(
     if len(time_s) < 2:
         diagnostic["reason"] = "insufficient_distinct_observations"
         return None, diagnostic
-    x_m, y_m = _local_xy(latitude, longitude)
+    x_m, y_m = local_xy(latitude, longitude)
     altitude = (
         _numeric(frame[source.altitude_column])[order][keep_observation]
         if source.altitude_column and source.altitude_column in frame.columns
@@ -980,7 +1327,7 @@ def _evaluate_distance_candidate(
     else:
         distance_model = str(config.get("distance_model") or "local_projection")
         raw_increments = (
-            _geodesic_segment_lengths(latitude, longitude)
+            geodesic_segment_lengths(latitude, longitude)
             if distance_model == "geodesic"
             else np.hypot(np.diff(x_m), np.diff(y_m))
         )
@@ -989,20 +1336,20 @@ def _evaluate_distance_candidate(
         denoising = config.get("geometry_denoising")
         denoising = denoising if isinstance(denoising, Mapping) else {}
         if bool(denoising.get("enabled", False)):
-            fitted_x, fitted_y = _denoise_route_positions(
+            fitted_x, fitted_y = denoise_route_positions(
                 raw_distance,
                 x_m,
                 y_m,
                 config=denoising,
             )
             if distance_model == "geodesic":
-                fitted_latitude, fitted_longitude = _local_latitude_longitude(
+                fitted_latitude, fitted_longitude = local_latitude_longitude(
                     fitted_x,
                     fitted_y,
                     source_latitude=latitude,
                     source_longitude=longitude,
                 )
-                increments = _geodesic_segment_lengths(
+                increments = geodesic_segment_lengths(
                     fitted_latitude,
                     fitted_longitude,
                 )
@@ -1131,6 +1478,7 @@ def _suspension_activity(
     end: str,
     candidate: _DistanceCandidate,
     edges: np.ndarray,
+    eligible: np.ndarray,
     config: Mapping[str, Any],
 ) -> Optional[dict[str, Any]]:
     column = resolve_signal_selector(
@@ -1160,10 +1508,7 @@ def _suspension_activity(
         primary_time,
         candidate.valid_pairs,
     )
-    active = np.ones(len(primary.index), dtype=bool)
-    use_active_mask = bool(config.get("use_preprocess_active_mask", True))
-    if use_active_mask and ACTIVE_MASK_COLUMN in primary.columns:
-        active = primary[ACTIVE_MASK_COLUMN].fillna(False).astype(bool).to_numpy()
+    active = primary[ACTIVE_MASK_COLUMN].fillna(False).astype(bool).to_numpy()
 
     start = mapped_distance[:-1]
     end_distance = mapped_distance[1:]
@@ -1194,6 +1539,7 @@ def _suspension_activity(
     )
     minimum_support = float(config.get("minimum_support_fraction", 0.25))
     local[support_fraction < minimum_support] = np.nan
+    local[~np.asarray(eligible, dtype=bool)] = np.nan
     smoothed = _centred_exponential_smooth(
         local,
         spacing_m=interval_m,
@@ -1209,7 +1555,7 @@ def _suspension_activity(
         "input_unit": unit,
         "input_to_metre_scale": unit_scale,
         "native_interval_count": int(np.count_nonzero(valid)),
-        "use_preprocess_active_mask": use_active_mask,
+        "use_preprocess_active_mask": True,
         "activity_mask": copy.deepcopy(activity_mask_qc) if isinstance(activity_mask_qc, Mapping) else None,
         "minimum_support_fraction": minimum_support,
         "smoothing_kernel": config.get("smoothing_kernel"),
@@ -1223,23 +1569,39 @@ def _suspension_activity(
     }
 
 
-def _local_linear_gradient(distance: np.ndarray, altitude: np.ndarray, *, window_m: float) -> np.ndarray:
+def _local_linear_gradient(
+    distance: np.ndarray,
+    altitude: np.ndarray,
+    *,
+    window_m: float,
+    eligible: Optional[np.ndarray] = None,
+) -> np.ndarray:
     result = np.full(distance.shape, np.nan, dtype=float)
     radius = window_m * 0.5
-    finite = np.isfinite(altitude)
-    for index, centre in enumerate(distance):
-        start = int(np.searchsorted(distance, centre - radius, side="left"))
-        stop = int(np.searchsorted(distance, centre + radius, side="right"))
-        mask = finite[start:stop]
-        if np.count_nonzero(mask) < 3:
-            continue
-        x = distance[start:stop][mask]
-        z = altitude[start:stop][mask]
-        x_c = x - float(np.mean(x))
-        denominator = float(np.dot(x_c, x_c))
-        if denominator <= 0:
-            continue
-        result[index] = float(np.dot(x_c, z - float(np.mean(z))) / denominator)
+    allowed = np.isfinite(distance)
+    if eligible is not None:
+        allowed &= np.asarray(eligible, dtype=bool)
+    for segment_start, segment_stop in _contiguous_true_ranges(allowed):
+        for index in range(segment_start, segment_stop):
+            centre = float(distance[index])
+            start = max(
+                segment_start,
+                int(np.searchsorted(distance, centre - radius, side="left")),
+            )
+            stop = min(
+                segment_stop,
+                int(np.searchsorted(distance, centre + radius, side="right")),
+            )
+            mask = np.isfinite(altitude[start:stop])
+            if np.count_nonzero(mask) < 3:
+                continue
+            x = distance[start:stop][mask]
+            z = altitude[start:stop][mask]
+            x_c = x - float(np.mean(x))
+            denominator = float(np.dot(x_c, x_c))
+            if denominator <= 0:
+                continue
+            result[index] = float(np.dot(x_c, z - float(np.mean(z))) / denominator)
     return result
 
 
@@ -1274,6 +1636,15 @@ def _source_local_polynomial_curvature(
         if require_full_window
         else np.asarray(eligible, dtype=bool)
     )
+    eligible_array = np.asarray(eligible, dtype=bool)
+    segment_start_for_target = np.full(target_distance.shape, -1, dtype=int)
+    segment_stop_for_target = np.full(target_distance.shape, -1, dtype=int)
+    for segment_start, segment_stop in _contiguous_true_ranges(eligible_array):
+        segment_start_for_target[segment_start:segment_stop] = segment_start
+        segment_stop_for_target[segment_start:segment_stop] = segment_stop
+    target_spacing_m = (
+        float(np.nanmedian(np.diff(target_distance))) if target_distance.size > 1 else 0.0
+    )
 
     for pair_start, pair_stop in _contiguous_true_ranges(candidate.continuous_pairs):
         source_slice = slice(pair_start, pair_stop + 1)
@@ -1300,9 +1671,17 @@ def _source_local_polynomial_curvature(
         target_start = int(np.searchsorted(target_distance, source_distance[0], side="left"))
         target_stop = int(np.searchsorted(target_distance, source_distance[-1], side="right"))
         for target_index in range(target_start, target_stop):
+            if not eligible_array[target_index]:
+                continue
             centre = float(target_distance[target_index])
-            left = int(np.searchsorted(source_distance, centre - radius_m, side="left"))
-            right = int(np.searchsorted(source_distance, centre + radius_m, side="right"))
+            segment_start = int(segment_start_for_target[target_index])
+            segment_stop = int(segment_stop_for_target[target_index])
+            segment_lower_m = float(target_distance[segment_start]) - target_spacing_m * 0.5
+            segment_upper_m = float(target_distance[segment_stop - 1]) + target_spacing_m * 0.5
+            fit_lower_m = max(centre - radius_m, segment_lower_m)
+            fit_upper_m = min(centre + radius_m, segment_upper_m)
+            left = int(np.searchsorted(source_distance, fit_lower_m, side="left"))
+            right = int(np.searchsorted(source_distance, fit_upper_m, side="right"))
             count = right - left
             observation_count[target_index] = max(observation_count[target_index], count)
             if count < required_observations or not full_support[target_index]:
@@ -1365,7 +1744,7 @@ def _weighted_local_polynomial_curvature(
     robust_iterations: int,
     robust_tuning_constant: float,
 ) -> Optional[float]:
-    coefficients = _weighted_local_polynomial_coefficients(
+    coefficients = weighted_local_polynomial_coefficients(
         distance,
         x_m,
         y_m,
@@ -1390,143 +1769,6 @@ def _weighted_local_polynomial_curvature(
     if denominator <= 1.0e-12:
         return None
     return float(abs(dx * ddy - dy * ddx) / denominator)
-
-
-def _weighted_local_polynomial_coefficients(
-    distance: np.ndarray,
-    x_m: np.ndarray,
-    y_m: np.ndarray,
-    horizontal_accuracy_m: np.ndarray,
-    *,
-    centre: float,
-    radius_m: float,
-    polynomial_order: int,
-    fit_weighting: str,
-    horizontal_accuracy_weighting: bool,
-    horizontal_accuracy_floor_m: float,
-    robust_iterations: int,
-    robust_tuning_constant: float,
-) -> Optional[tuple[np.ndarray, np.ndarray]]:
-    normalized_distance = (distance - centre) / radius_m
-    design = np.vander(normalized_distance, N=polynomial_order + 1, increasing=True)
-    if fit_weighting == "tricube":
-        scaled = np.minimum(np.abs(normalized_distance), 1.0)
-        base_weight = np.power(1.0 - np.power(scaled, 3.0), 3.0)
-    else:
-        base_weight = np.ones(distance.shape, dtype=float)
-
-    if horizontal_accuracy_weighting:
-        accuracy = np.asarray(horizontal_accuracy_m, dtype=float)
-        valid_accuracy = np.isfinite(accuracy) & (accuracy > 0.0)
-        if valid_accuracy.any():
-            fallback = float(np.median(accuracy[valid_accuracy]))
-            accuracy = np.where(valid_accuracy, accuracy, fallback)
-            accuracy = np.maximum(accuracy, horizontal_accuracy_floor_m)
-            base_weight = base_weight / np.square(accuracy)
-
-    robust_weight = np.ones(distance.shape, dtype=float)
-    coefficients: Optional[tuple[np.ndarray, np.ndarray]] = None
-    for iteration in range(robust_iterations + 1):
-        weight = base_weight * robust_weight
-        usable = np.isfinite(weight) & (weight > 0.0)
-        if np.count_nonzero(usable) < polynomial_order + 1:
-            return None
-        weighted_design = design[usable] * np.sqrt(weight[usable])[:, None]
-        if np.linalg.matrix_rank(weighted_design) < polynomial_order + 1:
-            return None
-        x_coefficients = np.linalg.lstsq(
-            weighted_design,
-            x_m[usable] * np.sqrt(weight[usable]),
-            rcond=None,
-        )[0]
-        y_coefficients = np.linalg.lstsq(
-            weighted_design,
-            y_m[usable] * np.sqrt(weight[usable]),
-            rcond=None,
-        )[0]
-        coefficients = (x_coefficients, y_coefficients)
-        if iteration >= robust_iterations:
-            break
-
-        x_residual = x_m - design @ x_coefficients
-        y_residual = y_m - design @ y_coefficients
-        centred_x_residual = x_residual - np.median(x_residual)
-        centred_y_residual = y_residual - np.median(y_residual)
-        radial_residual = np.hypot(centred_x_residual, centred_y_residual)
-        scale = 1.4826 * float(np.median(radial_residual))
-        if not np.isfinite(scale) or scale <= 1.0e-9:
-            break
-        normalized_residual = radial_residual / (
-            robust_tuning_constant * scale
-        )
-        robust_weight = np.where(
-            normalized_residual < 1.0,
-            np.square(1.0 - np.square(normalized_residual)),
-            0.0,
-        )
-
-    return coefficients
-
-
-def _denoise_route_positions(
-    distance: np.ndarray,
-    x_m: np.ndarray,
-    y_m: np.ndarray,
-    *,
-    config: Mapping[str, Any],
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return a locally fitted route without treating repeated positions as evidence."""
-
-    distinct = np.r_[True, np.diff(distance) > 1.0e-9]
-    source_distance = distance[distinct]
-    source_x = x_m[distinct]
-    source_y = y_m[distinct]
-    if source_distance.size < 3:
-        return x_m.copy(), y_m.copy()
-
-    window_m = float(config.get("window_m", 20.0))
-    radius_m = window_m * 0.5
-    polynomial_order = int(config.get("polynomial_order", 2))
-    required = polynomial_order + 1
-    fit_weighting = str(config.get("fit_weighting") or "tricube")
-    robust_iterations = int(config.get("robust_iterations", 2))
-    robust_tuning_constant = float(config.get("robust_tuning_constant", 4.685))
-    no_accuracy = np.full(source_distance.shape, np.nan, dtype=float)
-    fitted_x = source_x.copy()
-    fitted_y = source_y.copy()
-
-    left = 0
-    right = 0
-    for index, centre in enumerate(source_distance):
-        while left < len(source_distance) and source_distance[left] < centre - radius_m:
-            left += 1
-        right = max(right, left)
-        while right < len(source_distance) and source_distance[right] <= centre + radius_m:
-            right += 1
-        if right - left < required:
-            continue
-        coefficients = _weighted_local_polynomial_coefficients(
-            source_distance[left:right],
-            source_x[left:right],
-            source_y[left:right],
-            no_accuracy[left:right],
-            centre=float(centre),
-            radius_m=radius_m,
-            polynomial_order=polynomial_order,
-            fit_weighting=fit_weighting,
-            horizontal_accuracy_weighting=False,
-            horizontal_accuracy_floor_m=1.0,
-            robust_iterations=robust_iterations,
-            robust_tuning_constant=robust_tuning_constant,
-        )
-        if coefficients is not None:
-            fitted_x[index] = coefficients[0][0]
-            fitted_y[index] = coefficients[1][0]
-
-    return (
-        np.interp(distance, source_distance, fitted_x),
-        np.interp(distance, source_distance, fitted_y),
-    )
 
 
 def _spatial_window_point_count(
@@ -1618,6 +1860,35 @@ def _interpolate_time_values(
     return result
 
 
+def _step_boolean_values_at_times(
+    source_time: np.ndarray,
+    source_values: np.ndarray,
+    target_time: np.ndarray,
+) -> np.ndarray:
+    """Sample a time-domain boolean state without interpolating across transitions."""
+
+    source_time = np.asarray(source_time, dtype=float)
+    source_values = np.asarray(source_values, dtype=bool)
+    target_time = np.asarray(target_time, dtype=float)
+    result = np.zeros(target_time.shape, dtype=bool)
+    valid_source = np.isfinite(source_time)
+    order = np.flatnonzero(valid_source)
+    if order.size == 0:
+        return result
+    order = order[np.argsort(source_time[order], kind="stable")]
+    distinct = np.r_[True, np.diff(source_time[order]) > 1.0e-9]
+    order = order[distinct]
+    times = source_time[order]
+    values = source_values[order]
+    valid_target = np.isfinite(target_time)
+    positions = np.searchsorted(times, target_time[valid_target], side="right") - 1
+    within = (positions >= 0) & (target_time[valid_target] <= times[-1])
+    sampled = np.zeros(positions.shape, dtype=bool)
+    sampled[within] = values[positions[within]]
+    result[valid_target] = sampled
+    return result
+
+
 def _accumulate_interval_lengths(starts: np.ndarray, ends: np.ndarray, edges: np.ndarray) -> np.ndarray:
     quantities = np.asarray(ends, dtype=float) - np.asarray(starts, dtype=float)
     return _accumulate_interval_quantity(starts, ends, quantities, edges)
@@ -1676,51 +1947,6 @@ def _accumulate_interval_quantity(
             if overlap > 0:
                 result[bin_index] += quantity * overlap / duration
     return result
-
-
-def _local_xy(latitude_deg: np.ndarray, longitude_deg: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    latitude_rad = np.radians(latitude_deg)
-    longitude_rad = np.radians(longitude_deg)
-    latitude_origin = float(np.nanmedian(latitude_rad))
-    longitude_origin = float(longitude_rad[0])
-    x_m = _EARTH_RADIUS_M * (longitude_rad - longitude_origin) * math.cos(latitude_origin)
-    y_m = _EARTH_RADIUS_M * (latitude_rad - latitude_rad[0])
-    return x_m, y_m
-
-
-def _local_latitude_longitude(
-    x_m: np.ndarray,
-    y_m: np.ndarray,
-    *,
-    source_latitude: np.ndarray,
-    source_longitude: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    source_latitude_rad = np.radians(source_latitude)
-    latitude_origin = float(np.nanmedian(source_latitude_rad))
-    longitude_origin = math.radians(float(source_longitude[0]))
-    latitude_start = math.radians(float(source_latitude[0]))
-    latitude = np.degrees(y_m / _EARTH_RADIUS_M + latitude_start)
-    longitude = np.degrees(
-        x_m / (_EARTH_RADIUS_M * math.cos(latitude_origin)) + longitude_origin
-    )
-    return latitude, longitude
-
-
-def _geodesic_segment_lengths(latitude_deg: np.ndarray, longitude_deg: np.ndarray) -> np.ndarray:
-    latitude_rad = np.radians(latitude_deg)
-    delta_latitude = np.diff(latitude_rad)
-    delta_longitude = np.radians(np.diff(longitude_deg))
-    haversine_a = (
-        np.sin(delta_latitude * 0.5) ** 2
-        + np.cos(latitude_rad[:-1])
-        * np.cos(latitude_rad[1:])
-        * np.sin(delta_longitude * 0.5) ** 2
-    )
-    haversine_a = np.clip(haversine_a, 0.0, 1.0)
-    return 2.0 * _EARTH_RADIUS_M * np.arctan2(
-        np.sqrt(haversine_a),
-        np.sqrt(1.0 - haversine_a),
-    )
 
 
 def _contiguous_true_ranges(mask: np.ndarray) -> list[tuple[int, int]]:

@@ -8,7 +8,7 @@ import {
   trackMatchStatusLabel,
 } from '../domain/geospatial'
 import { candidateId, sessionByRef, sessionRefId, slugify, uniqueId } from '../domain/studySets'
-import { DEFAULT_ROUTE_GEOMETRY_DENOISING, denoiseRouteGeometry, pointAtStationM, routeLengthM } from '../domain/trackGeometry'
+import { pointAtStationM } from '../domain/trackGeometry'
 import type {
   SessionRecord,
   StudySessionRef,
@@ -463,14 +463,15 @@ export function TrackManagerModal({
       const gpsPoints = await dataSource.loadSessionGpsPoints(
         primarySession,
         primarySession.gpsSummary.preferredSourceId,
-        { maxPoints: 25_000 },
+        { maxPoints: 25_000, includeRouteGeometry: true },
       )
-      if (gpsPoints.path.length < 2) {
-        setMessage('Primary session does not have enough GPS points to create a track.')
+      const routeGeometry = gpsPoints.routeGeometry
+      if (routeGeometry.status !== 'succeeded' || routeGeometry.path.length < 2) {
+        setMessage('Primary session does not have enough canonical route geometry to create a track.')
         return
       }
-      const trackPath = denoiseRouteGeometry(gpsPoints.path)
-      const lengthM = routeLengthM(trackPath)
+      const trackPath = routeGeometry.path
+      const lengthM = routeGeometry.lengthM
       const savedTrack = await dataSource.saveTrack({
         id: '',
         name: displayName,
@@ -501,14 +502,9 @@ export function TrackManagerModal({
             maxPoints: gpsPoints.maxPoints,
             stride: gpsPoints.stride,
           },
-          geometryDenoising: {
-            estimator: DEFAULT_ROUTE_GEOMETRY_DENOISING.estimator,
-            windowM: DEFAULT_ROUTE_GEOMETRY_DENOISING.windowM,
-            polynomialOrder: DEFAULT_ROUTE_GEOMETRY_DENOISING.polynomialOrder,
-            fitWeighting: DEFAULT_ROUTE_GEOMETRY_DENOISING.fitWeighting,
-            robustIterations: DEFAULT_ROUTE_GEOMETRY_DENOISING.robustIterations,
-            robustTuningConstant: DEFAULT_ROUTE_GEOMETRY_DENOISING.robustTuningConstant,
-          },
+          ...(routeGeometry.geometryDenoising
+            ? { geometryDenoising: routeGeometry.geometryDenoising }
+            : {}),
         },
       })
       onTrackSaved(savedTrack)
