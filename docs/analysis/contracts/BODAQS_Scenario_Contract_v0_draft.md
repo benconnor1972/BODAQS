@@ -939,6 +939,14 @@ Deferred:
 - Synchronous evaluation accepts at most 32 explicit session references and
   returns at most 10,000 Episodes. Broader scopes require a future asynchronous
   execution form.
+- The initial SSA and SPD consumers select either no Scenario or one Scenario
+  restriction. That restriction intersects manual time windows, track-sector
+  scope, activity exclusion, and the member sessions of selected groupings.
+- Scratch Scenarios use the persisted definition shape without an id or
+  revision. They are local to the analysis tab, survive editor closure, and are
+  not restored after the tab is reloaded.
+- The initial Workbench does not batch Scenario evaluation. Selection of more
+  than 32 unique sessions is rejected before calling the synchronous service.
 
 The remaining pre-canonicalisation question is the semantic selector for a
 future processed brake-use signal.

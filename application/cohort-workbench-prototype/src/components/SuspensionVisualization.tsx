@@ -1,7 +1,8 @@
 import { memo, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode } from 'react'
 import * as d3 from 'd3'
-import { Activity, ChevronDown, ChevronLeft, ChevronRight, ChevronUp } from 'lucide-react'
+import { Activity, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, GitBranch } from 'lucide-react'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
+import { scratchScenario } from '../domain/scenarios'
 import {
   finishSuspensionCacheDiagnostics,
   getSuspensionCacheEntry,
@@ -17,6 +18,8 @@ import {
 import { sessionByRef, sessionRefId } from '../domain/studySets'
 import type {
   SessionRecord,
+  ScenarioEvaluationResponse,
+  ScenarioRecord,
   SessionBookmarkRecord,
   SessionSignalSummary,
   SignalQuerySignal,
@@ -29,6 +32,7 @@ import type {
   TrackpointRecord,
 } from '../domain/types'
 import { InfoTip } from './Common'
+import { ScenarioEditorModal } from './ScenarioEditorModal'
 
 const FRONT_COLOR = '#008c95'
 const REAR_COLOR = '#101820'
@@ -60,6 +64,7 @@ const PHASE_VELOCITY_AXIS_STEP = 10
 const PHASE_DEFAULT_CONDITIONAL_DISTRIBUTION_BINS = 60
 const PHASE_CONDITIONAL_LOWER_QUANTILE = 0.001
 const PHASE_CONDITIONAL_UPPER_QUANTILE = 0.999
+const SCRATCH_SCENARIO_KEY = '__scratch__'
 const PHASE_CONTOUR_MASS_OPTIONS = [0.5, 0.8, 0.95, 0.99, 0.999] as const
 const PHASE_DEFAULT_CONTOUR_MASSES = [0.5, 0.8, 0.95]
 const VISUALIZATION_SESSION_CACHE_VERSION = 3
@@ -148,6 +153,12 @@ type LoadState =
   | { status: 'ready'; message: string; data: VisualizationData; diagnostics: SuspensionCacheDiagnostics }
   | { status: 'error'; message: string; data?: VisualizationData; diagnostics?: SuspensionCacheDiagnostics }
 
+type ScenarioEvaluationState =
+  | { status: 'idle'; message: string }
+  | { status: 'loading'; message: string }
+  | { status: 'ready'; message: string; result: ScenarioEvaluationResponse }
+  | { status: 'error'; message: string }
+
 type ComparisonLayout = 'entities' | 'ends'
 type ScopeMode = 'whole_session' | 'sector'
 type SuspensionEnd = 'front' | 'rear'
@@ -183,6 +194,7 @@ type SuspensionVisualizationSettings = {
   selectedSectorIds: string[]
   timeWindowsBySession: TimeWindowsBySession
   excludeInactivePeriods: boolean
+  selectedScenarioId: string | null
   signalChoices: SignalChoiceSelections
   frequencyDisplayModes: FrequencyDisplayModes
   showDisplacementMm: boolean
@@ -332,6 +344,7 @@ export function SuspensionVisualization({
   bookmarkRefreshToken = 0,
   onInspectSignals,
   mode = 'simple',
+  canWriteScenarios = Boolean(dataSource.saveScenario),
 }: {
   studySet: StudySet
   sessions: SessionRecord[]
@@ -340,6 +353,7 @@ export function SuspensionVisualization({
   bookmarkRefreshToken?: number
   onInspectSignals?: (sessionRef: StudySessionRef, window: TimeWindow) => void
   mode?: SuspensionVisualizationMode
+  canWriteScenarios?: boolean
 }) {
   const entities = useMemo(() => visualizationEntities(studySet), [studySet])
   const baseStudySetTracks = useMemo(() => tracks.filter((track) => studySet.trackIds.includes(track.id)), [studySet.trackIds, tracks])
@@ -362,6 +376,16 @@ export function SuspensionVisualization({
   const [selectedSectorIds, setSelectedSectorIds] = useState<string[]>(initialSettings.selectedSectorIds)
   const [timeWindowsBySession, setTimeWindowsBySession] = useState<TimeWindowsBySession>(initialSettings.timeWindowsBySession)
   const [excludeInactivePeriods, setExcludeInactivePeriods] = useState(initialSettings.excludeInactivePeriods)
+  const [savedScenarios, setSavedScenarios] = useState<ScenarioRecord[]>([])
+  const [savedScenariosLoaded, setSavedScenariosLoaded] = useState(() => !dataSource.listScenarios)
+  const [selectedScenarioKey, setSelectedScenarioKey] = useState(initialSettings.selectedScenarioId ?? '')
+  const [scratchScenarioDefinition, setScratchScenarioDefinition] = useState<ScenarioRecord | null>(null)
+  const [scenarioEditorOpen, setScenarioEditorOpen] = useState(false)
+  const [scenarioListMessage, setScenarioListMessage] = useState(() => dataSource.listScenarios ? 'Loading saved Scenarios...' : 'The current data source does not provide Scenarios.')
+  const [scenarioEvaluationState, setScenarioEvaluationState] = useState<ScenarioEvaluationState>({
+    status: 'idle',
+    message: 'No Scenario restriction selected.',
+  })
   const [signalChoices, setSignalChoices] = useState<SignalChoiceSelections>(initialSettings.signalChoices)
   const [frequencyDisplayModes, setFrequencyDisplayModes] = useState<FrequencyDisplayModes>(initialSettings.frequencyDisplayModes)
   const [showDisplacementMm, setShowDisplacementMm] = useState(initialSettings.showDisplacementMm)
@@ -395,6 +419,8 @@ export function SuspensionVisualization({
     setSelectedSectorIds(restored.selectedSectorIds)
     setTimeWindowsBySession(restored.timeWindowsBySession)
     setExcludeInactivePeriods(restored.excludeInactivePeriods)
+    setSelectedScenarioKey(restored.selectedScenarioId ?? '')
+    setScratchScenarioDefinition(null)
     setSignalChoices(restored.signalChoices)
     setFrequencyDisplayModes(restored.frequencyDisplayModes)
     setShowDisplacementMm(restored.showDisplacementMm)
@@ -448,6 +474,36 @@ export function SuspensionVisualization({
   }, [dataSource, studySet, trackMatchKey])
 
   useEffect(() => {
+    if (!dataSource.listScenarios) {
+      return
+    }
+    let cancelled = false
+    void dataSource.listScenarios()
+      .then((loaded) => {
+        if (cancelled) {
+          return
+        }
+        setSavedScenarios(sortScenarios(loaded))
+        setSavedScenariosLoaded(true)
+        setScenarioListMessage('')
+        setSelectedScenarioKey((current) => (
+          !current || current === SCRATCH_SCENARIO_KEY || loaded.some((scenario) => scenario.id === current) ? current : ''
+        ))
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return
+        }
+        setSavedScenarios([])
+        setSavedScenariosLoaded(true)
+        setScenarioListMessage(`Could not load saved Scenarios: ${errorMessage(error)}`)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [dataSource])
+
+  useEffect(() => {
     setSelectedTrackId((current) => {
       if (current && studySetTracks.some((track) => track.id === current)) {
         return current
@@ -465,6 +521,12 @@ export function SuspensionVisualization({
   const sectorKey = sectors.map((sector) => sector.id).join('|')
   const selectedSectors = useMemo(() => sectors.filter((sector) => selectedSectorIds.includes(sector.id)), [sectors, selectedSectorIds])
   const selectedSessionRefs = useMemo(() => uniqueSessionRefs(selectedEntities.flatMap((entity) => entity.sessionRefs)), [selectedEntities])
+  const selectedScenario = useMemo(
+    () => selectedScenarioKey === SCRATCH_SCENARIO_KEY
+      ? scratchScenarioDefinition
+      : savedScenarios.find((scenario) => scenario.id === selectedScenarioKey) ?? null,
+    [savedScenarios, scratchScenarioDefinition, selectedScenarioKey],
+  )
   const studySetSessionRefs = useMemo(() => uniqueSessionRefs(studySet.sessions), [studySetKey])
   const displacementUnitMode: DisplacementUnitMode = showDisplacementMm ? 'mm' : 'normalized'
   const displacementRoleConfigs = useMemo(() => displacementSignalRoleConfigs(displacementUnitMode), [displacementUnitMode])
@@ -478,6 +540,62 @@ export function SuspensionVisualization({
     [studySetSessionKey, sessions, resolvedSignalChoices, displacementRoleConfigs],
   )
   const signalChoiceSignature = useMemo(() => signalChoiceSelectionSignature(resolvedSignalChoices), [resolvedSignalChoices])
+  const selectedScenarioSignature = useMemo(
+    () => selectedScenario ? JSON.stringify(selectedScenario) : '',
+    [selectedScenario],
+  )
+  const selectedScenarioSessionKey = selectedSessionRefs.map(sessionRefId).join('|')
+
+  useEffect(() => {
+    if (!selectedScenario) {
+      setScenarioEvaluationState({ status: 'idle', message: 'No Scenario restriction selected.' })
+      return
+    }
+    if (selectedSessionRefs.length === 0) {
+      setScenarioEvaluationState({ status: 'idle', message: 'Select a session or group to evaluate the Scenario.' })
+      return
+    }
+    if (selectedSessionRefs.length > 32) {
+      setScenarioEvaluationState({ status: 'error', message: 'Scenario evaluation supports at most 32 selected sessions.' })
+      return
+    }
+    if (!dataSource.evaluateScenario) {
+      setScenarioEvaluationState({ status: 'error', message: 'The current data source cannot evaluate Scenarios.' })
+      return
+    }
+    let cancelled = false
+    setScenarioEvaluationState({ status: 'loading', message: `Evaluating ${selectedScenario.displayName}...` })
+    const request = selectedScenario.id && selectedScenario.revision
+      ? {
+          scenarioRef: { scenarioId: selectedScenario.id, revision: selectedScenario.revision },
+          sessions: selectedSessionRefs,
+          options: { includeCriterionDiagnostics: true },
+        }
+      : {
+          scenario: scratchScenario(selectedScenario),
+          sessions: selectedSessionRefs,
+          options: { includeCriterionDiagnostics: true },
+        }
+    void dataSource.evaluateScenario(request)
+      .then((result) => {
+        if (cancelled) {
+          return
+        }
+        setScenarioEvaluationState({
+          status: 'ready',
+          result,
+          message: `${result.summary.episodeCount} Episode(s) across ${result.summary.matchedSessionCount} of ${result.summary.requestedSessionCount} session(s).${result.status === 'succeeded' ? '' : ` Evaluation status: ${result.status}.`}`,
+        })
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setScenarioEvaluationState({ status: 'error', message: `Could not evaluate Scenario: ${errorMessage(error)}` })
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [dataSource, selectedScenario, selectedScenarioSessionKey, selectedScenarioSignature, selectedSessionRefs])
 
   useEffect(() => {
     setSelectedSectorIds((current) => {
@@ -499,6 +617,7 @@ export function SuspensionVisualization({
       selectedSectorIds,
       timeWindowsBySession,
       excludeInactivePeriods,
+      selectedScenarioId: selectedScenarioKey && selectedScenarioKey !== SCRATCH_SCENARIO_KEY ? selectedScenarioKey : null,
       signalChoices,
       frequencyDisplayModes,
       showDisplacementMm,
@@ -535,6 +654,7 @@ export function SuspensionVisualization({
     selectedSectorIds,
     timeWindowsBySession,
     excludeInactivePeriods,
+    selectedScenarioKey,
     signalChoices,
     frequencyDisplayModes,
     showDisplacementMm,
@@ -606,17 +726,34 @@ export function SuspensionVisualization({
 
   const data = loadState.data ?? null
   const deferredTimeWindowsBySession = useDeferredValue(timeWindowsBySession)
-  const scopedData = useMemo(
+  const windowedData = useMemo(
     () => (data ? applyTimeWindows(data, deferredTimeWindowsBySession) : null),
     [data, deferredTimeWindowsBySession],
   )
-  const baseAnalysisData = useMemo(
+  const activityFilteredBaseData = useMemo(
     () => (data && excludeInactivePeriods ? applyActivityMask(data) : data),
     [data, excludeInactivePeriods],
   )
+  const activityFilteredWindowedData = useMemo(
+    () => (windowedData && excludeInactivePeriods ? applyActivityMask(windowedData) : windowedData),
+    [windowedData, excludeInactivePeriods],
+  )
+  const scenarioEvaluation = scenarioEvaluationState.status === 'ready' ? scenarioEvaluationState.result : null
+  const baseAnalysisData = useMemo(
+    () => selectedScenario
+      ? scenarioEvaluation && activityFilteredBaseData
+        ? applyScenarioEpisodes(activityFilteredBaseData, scenarioEvaluation)
+        : null
+      : activityFilteredBaseData,
+    [activityFilteredBaseData, scenarioEvaluation, selectedScenario],
+  )
   const analysisData = useMemo(
-    () => (scopedData && excludeInactivePeriods ? applyActivityMask(scopedData) : scopedData),
-    [scopedData, excludeInactivePeriods],
+    () => selectedScenario
+      ? scenarioEvaluation && activityFilteredWindowedData
+        ? applyScenarioEpisodes(activityFilteredWindowedData, scenarioEvaluation)
+        : null
+      : activityFilteredWindowedData,
+    [activityFilteredWindowedData, scenarioEvaluation, selectedScenario],
   )
   const controlsCollapsed = collapsedPanels.includes('select-filter')
   const singleEntityDashboard = mode === 'simple' && selectedEntities.length === 1 && scopeMode === 'whole_session'
@@ -814,6 +951,18 @@ export function SuspensionVisualization({
                   <ActivityExclusionControl checked={excludeInactivePeriods} onChange={setExcludeInactivePeriods} />
                 </div>
 
+                <ScenarioControl
+                  scenarios={savedScenarios}
+                  scratch={scratchScenarioDefinition}
+                  selectedKey={selectedScenarioKey}
+                  loading={!savedScenariosLoaded}
+                  message={scenarioListMessage || scenarioEvaluationState.message}
+                  status={scenarioEvaluationState.status}
+                  warning={scenarioEvaluationState.status === 'error' || (scenarioEvaluationState.status === 'ready' && scenarioEvaluationState.result.status !== 'succeeded')}
+                  onChange={setSelectedScenarioKey}
+                  onEdit={() => setScenarioEditorOpen(true)}
+                />
+
                 {data && selectedSessionRefs.length > 0 && (
                   <TimeWindowManager
                     data={data}
@@ -885,6 +1034,8 @@ export function SuspensionVisualization({
           {loadState.status === 'loading' && <div className="viz-status">{loadState.message}</div>}
           {loadState.status === 'error' && <div className="viz-status warning">Could not load visualization data: {loadState.message}</div>}
           {loadState.status === 'idle' && <div className="viz-status">{loadState.message}</div>}
+          {selectedScenario && scenarioEvaluationState.status === 'loading' && <div className="viz-status">{scenarioEvaluationState.message}</div>}
+          {selectedScenario && scenarioEvaluationState.status === 'error' && <div className="viz-status warning">{scenarioEvaluationState.message}</div>}
 
           {data && data.warnings.length > 0 && (
             <div className="viz-status warning">
@@ -1305,6 +1456,24 @@ export function SuspensionVisualization({
         </div>
       </div>
 
+      {scenarioEditorOpen && (
+        <ScenarioEditorModal
+          dataSource={dataSource}
+          canWrite={canWriteScenarios}
+          initialScenario={selectedScenario}
+          allowScratch
+          onApplyScratch={(scenario) => {
+            setScratchScenarioDefinition(scenario)
+            setSelectedScenarioKey(SCRATCH_SCENARIO_KEY)
+          }}
+          onClose={() => setScenarioEditorOpen(false)}
+          onSaved={(saved) => {
+            setSavedScenarios((current) => sortScenarios([...current.filter((scenario) => scenario.id !== saved.id), saved]))
+            setSelectedScenarioKey(saved.id ?? '')
+          }}
+        />
+      )}
+
     </div>
   )
 }
@@ -1369,6 +1538,54 @@ function ActivityExclusionControl({
         <small>Uses preprocessing activity masks when available.</small>
       </span>
     </label>
+  )
+}
+
+function ScenarioControl({
+  scenarios,
+  scratch,
+  selectedKey,
+  loading,
+  message,
+  status,
+  warning,
+  onChange,
+  onEdit,
+}: {
+  scenarios: ScenarioRecord[]
+  scratch: ScenarioRecord | null
+  selectedKey: string
+  loading: boolean
+  message: string
+  status: ScenarioEvaluationState['status']
+  warning: boolean
+  onChange: (key: string) => void
+  onEdit: () => void
+}) {
+  return (
+    <section className="viz-scenario-control">
+      <div className="viz-scenario-control-heading">
+        <span>
+          <strong>Scenarios</strong>
+          <small>Restrict every selected session and group to matching Episodes.</small>
+        </span>
+        <GitBranch size={15} />
+      </div>
+      <div className="viz-scenario-control-row">
+        <label>
+          Scenario
+          <select disabled={loading} value={selectedKey} onChange={(event) => onChange(event.target.value)}>
+            <option value="">None</option>
+            {scratch && <option value={SCRATCH_SCENARIO_KEY}>Scratch: {scratch.displayName}</option>}
+            {scenarios.map((scenario) => (
+              <option key={scenario.id} value={scenario.id}>{scenario.displayName} (r{scenario.revision})</option>
+            ))}
+          </select>
+        </label>
+        <button className="ghost-action" type="button" onClick={onEdit}>Create or edit</button>
+      </div>
+      {message && <p className={`viz-scenario-status${warning || status === 'error' ? ' warning' : ''}`}>{message}</p>}
+    </section>
   )
 }
 
@@ -5734,6 +5951,7 @@ function restoredVisualizationSettings(
     selectedSectorIds: cached?.selectedSectorIds ? stringArrayValue(cached.selectedSectorIds) : [],
     timeWindowsBySession: cached?.timeWindowsBySession ? { ...cached.timeWindowsBySession } : {},
     excludeInactivePeriods: cached?.excludeInactivePeriods ?? true,
+    selectedScenarioId: typeof cached?.selectedScenarioId === 'string' && cached.selectedScenarioId ? cached.selectedScenarioId : null,
     signalChoices: cached?.signalChoices ? { ...cached.signalChoices } : {},
     frequencyDisplayModes: normalizedFrequencyDisplayModes(cached?.frequencyDisplayModes),
     showDisplacementMm: cached?.showDisplacementMm ?? mode === 'phase',
@@ -5806,6 +6024,14 @@ function persistVisualizationSettings(cacheKey: string, settings: SuspensionVisu
   } catch {
     // Analysis settings are a convenience cache; storage failures should not block charting.
   }
+}
+
+function sortScenarios(scenarios: ScenarioRecord[]) {
+  return [...scenarios].sort((left, right) => left.displayName.localeCompare(right.displayName, undefined, { sensitivity: 'base' }))
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function stringArrayValue(value: unknown) {
@@ -5888,6 +6114,65 @@ function eventTriggerTimeMap(rows: TableQueryRow[]) {
     }
   }
   return out
+}
+
+function applyScenarioEpisodes(data: VisualizationData, evaluation: ScenarioEvaluationResponse): VisualizationData {
+  const intervalsBySession = new Map(
+    evaluation.sessions.map((session) => [
+      sessionRefId(session.sessionRef),
+      session.episodes.map((episode) => ({ startS: episode.startTimeS, endS: episode.endTimeS })),
+    ]),
+  )
+  const signalsBySession: Record<string, Record<string, number[]>> = {}
+  for (const [sessionKey, signals] of Object.entries(data.signalsBySession)) {
+    const times = data.timeBySession[sessionKey] ?? []
+    const intervals = intervalsBySession.get(sessionKey) ?? []
+    const included = scenarioSampleMask(times, intervals)
+    signalsBySession[sessionKey] = Object.fromEntries(
+      Object.entries(signals).map(([role, values]) => [
+        role,
+        values.map((value, index) => included[index] ? value : Number.NaN),
+      ]),
+    )
+  }
+  return {
+    ...data,
+    signalsBySession,
+    events: filterRowsByScenarioEpisodes(data.events, data, intervalsBySession),
+    metrics: filterRowsByScenarioEpisodes(data.metrics, data, intervalsBySession),
+  }
+}
+
+function scenarioSampleMask(times: number[], intervals: TimeWindow[]) {
+  const included = Array.from({ length: times.length }, () => false)
+  let intervalIndex = 0
+  for (let index = 0; index < times.length; index += 1) {
+    const timeS = times[index]
+    if (!Number.isFinite(timeS)) {
+      continue
+    }
+    while (intervalIndex < intervals.length && timeS >= intervals[intervalIndex].endS) {
+      intervalIndex += 1
+    }
+    const interval = intervals[intervalIndex]
+    included[index] = Boolean(interval && timeS >= interval.startS && timeS < interval.endS)
+  }
+  return included
+}
+
+function filterRowsByScenarioEpisodes(
+  rows: TableQueryRow[],
+  data: VisualizationData,
+  intervalsBySession: Map<string, TimeWindow[]>,
+) {
+  return rows.filter((row) => {
+    const triggerTimeS = rowPrimaryTriggerTimeS(row, data)
+    if (triggerTimeS === null) {
+      return false
+    }
+    const intervals = intervalsBySession.get(sessionRefId(row.sessionRef)) ?? []
+    return intervals.some((interval) => triggerTimeS >= interval.startS && triggerTimeS < interval.endS)
+  })
 }
 
 function applyTimeWindows(data: VisualizationData, timeWindows: TimeWindowsBySession): VisualizationData {

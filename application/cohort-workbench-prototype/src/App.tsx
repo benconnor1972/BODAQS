@@ -38,6 +38,7 @@ import {
   sessionNoteFromSession,
 } from './components/SessionNoteEditorModal'
 import { SessionAltitudePreview } from './components/SessionAltitudePreview'
+import { ScenarioEditorModal } from './components/ScenarioEditorModal'
 import { SessionSignalPreview } from './components/SessionSignalPreview'
 import { SessionTable, type SessionColumnWidthId, type SessionColumnWidths, type SessionSelectionGesture } from './components/SessionTable'
 import { StudySessionTable } from './components/StudySessionTable'
@@ -181,6 +182,7 @@ async function mapWithConcurrency<T, R>(
 const LEGACY_SESSION_SELECTOR_COLUMNS_STORAGE_KEY = 'bodaqs.web.session-selector.columns.v1'
 const SESSION_SELECTOR_COLUMNS_STORAGE_KEY = 'bodaqs.web.session-selector.columns.v2'
 const SESSION_SELECTOR_COLUMN_WIDTHS_STORAGE_KEY = 'bodaqs.web.session-selector.column-widths.v1'
+const LIBRARY_SELECTIONS_STORAGE_KEY = 'bodaqs.web.library-selections.v1'
 const ANALYSIS_SCOPE_STORAGE_PREFIX = 'bodaqs.web.analysis-scope.v1.'
 
 type AnalysisRouteState = {
@@ -212,6 +214,7 @@ function App() {
   const [sessions, setSessions] = useState<SessionRecord[]>([])
   const [tracks, setTracks] = useState<TrackRecord[]>([])
   const [selectedLibraryIds, setSelectedLibraryIds] = useState<string[]>([])
+  const [librarySelectionScopeKey, setLibrarySelectionScopeKey] = useState<string | null>(null)
   const [visibleColumns, setVisibleColumns] = useState<ColumnId[]>(loadPersistedVisibleColumns)
   const [sessionColumnWidths, setSessionColumnWidths] = useState<SessionColumnWidths>(loadPersistedSessionColumnWidths)
   const [searchText, setSearchText] = useState('')
@@ -243,6 +246,7 @@ function App() {
   const [geoFilterQueryStates, setGeoFilterQueryStates] = useState<Record<string, GeoFilterQueryState>>({})
   const [tableColumnFilters, setTableColumnFilters] = useState<TableColumnFilter[]>([])
   const [filterManagerOpen, setFilterManagerOpen] = useState(false)
+  const [scenarioEditorOpen, setScenarioEditorOpen] = useState(false)
   const [columnMenuOpen, setColumnMenuOpen] = useState(false)
   const [modal, setModal] = useState<ModalState>(null)
   const [bookmarkRefreshToken, setBookmarkRefreshToken] = useState(0)
@@ -326,7 +330,9 @@ function App() {
         setTracks(loaded.tracks)
         setSavedStudySets(loaded.studySets)
         setSavedSessionFilters(loaded.savedFilters)
-        setSelectedLibraryIds(loaded.libraries.map((libraryItem) => libraryItem.id))
+        const selectionScope = librarySelectionScope('local-api', health.libraries_root ?? '')
+        setLibrarySelectionScopeKey(selectionScope)
+        setSelectedLibraryIds(librarySelectionForScope(selectionScope, loaded.libraries))
         setStatusMessage(
           `Connected to Library API at ${localDataSource.baseUrl}${health.read_only ? ' (read-only).' : '.'}`,
         )
@@ -352,7 +358,9 @@ function App() {
           setTracks(loaded.tracks)
           setSavedStudySets(loaded.studySets)
           setSavedSessionFilters(loaded.savedFilters)
-          setSelectedLibraryIds(loaded.libraries.map((libraryItem) => libraryItem.id))
+          const selectionScope = librarySelectionScope('fixture', '')
+          setLibrarySelectionScopeKey(selectionScope)
+          setSelectedLibraryIds(librarySelectionForScope(selectionScope, loaded.libraries))
           setStatusMessage(`Local API unavailable at ${localDataSource.baseUrl}; fixture prototype loaded. ${message}`)
         } catch (fixtureError) {
           if (cancelled) {
@@ -369,6 +377,13 @@ function App() {
       cancelled = true
     }
   }, [considerDemoWelcome, fixtureDataSource, localDataSource])
+
+  useEffect(() => {
+    if (!librarySelectionScopeKey) {
+      return
+    }
+    persistLibrarySelection(librarySelectionScopeKey, selectedLibraryIds)
+  }, [librarySelectionScopeKey, selectedLibraryIds])
 
   useEffect(() => {
     if (connectionMode !== 'local-api') {
@@ -962,7 +977,9 @@ function App() {
       setTracks(loaded.tracks)
       setSavedStudySets(loaded.studySets)
       setSavedSessionFilters(loaded.savedFilters)
-      setSelectedLibraryIds(loaded.libraries.map((libraryItem) => libraryItem.id))
+      const selectionScope = librarySelectionScope('local-api', resolvedRoot)
+      setLibrarySelectionScopeKey(selectionScope)
+      setSelectedLibraryIds(librarySelectionForScope(selectionScope, loaded.libraries))
       setStatusMessage(`Connected to ${libraryCount} ${libraryLabel} under ${resolvedRoot}.`)
       setActiveDataSource(localDataSource)
       setConnectionMode('local-api')
@@ -1009,11 +1026,6 @@ function App() {
       setStatusMessage(deep ? 'Deep refreshing library catalog...' : 'Reloading workbench data...')
     }
 
-    const selectedAllLibraries =
-      libraries.length > 0 &&
-      selectedLibraryIds.length === libraries.length &&
-      libraries.every((libraryItem) => selectedLibraryIds.includes(libraryItem.id))
-
     try {
       const libraryIdsToRefresh = selectedLibraryIds.length
         ? selectedLibraryIds
@@ -1039,12 +1051,7 @@ function App() {
       setTracks(loaded.tracks)
       setSavedStudySets(loaded.studySets)
       setSavedSessionFilters(loaded.savedFilters)
-      setSelectedLibraryIds((current) => {
-        if (selectedAllLibraries) {
-          return loaded.libraries.map((libraryItem) => libraryItem.id)
-        }
-        return current.filter((libraryId) => loadedLibraryIds.has(libraryId))
-      })
+      setSelectedLibraryIds((current) => current.filter((libraryId) => loadedLibraryIds.has(libraryId)))
       setSelectedCandidateIds((current) => current.filter((id) => loadedCandidateIds.has(id)))
       setPrimaryCandidateId((current) => (current && loadedCandidateIds.has(current) ? current : null))
       setSelectionAnchorCandidateId((current) => (current && loadedCandidateIds.has(current) ? current : null))
@@ -2236,7 +2243,12 @@ function App() {
           <PanelTitle
             icon={<Library size={18} />}
             title="Library Browser"
-            action={<span className="panel-title-spacer" />}
+            action={
+              <button className="ghost-action compact-filter-action" onClick={() => setScenarioEditorOpen(true)} type="button">
+                <GitBranch size={14} />
+                Scenarios
+              </button>
+            }
           />
 
           <section className={`module collapsible-module${librarySelectorCollapsed ? ' collapsed' : ''}`}>
@@ -2899,6 +2911,13 @@ function App() {
           onDelete={deleteSessionFilter}
         />
       )}
+      {scenarioEditorOpen && (
+        <ScenarioEditorModal
+          dataSource={activeDataSource}
+          canWrite={Boolean(canWriteLibraryState && activeDataSource.saveScenario)}
+          onClose={() => setScenarioEditorOpen(false)}
+        />
+      )}
       {pendingStudySetAction && (
         <UnsavedChangesDialog
           actionLabel={pendingActionLabel(pendingStudySetAction)}
@@ -3053,6 +3072,7 @@ function AnalysisRoutePage({
               dataSource={dataSource}
               bookmarkRefreshToken={bookmarkRefreshToken}
               mode={route.viewId === 'suspension-phase-diagram' ? 'phase' : 'simple'}
+              canWriteScenarios={canWrite}
               onInspectSignals={(sessionRef, window) => {
                 const session = sessionByRef(sessionRef, sessions)
                 if (session) {
@@ -3457,6 +3477,59 @@ function withTrackMatches(tracks: TrackRecord[], matches: SessionTrackMatchRecor
 
 function uniqueStrings(values: string[]) {
   return Array.from(new Set(values))
+}
+
+function librarySelectionScope(mode: 'local-api' | 'fixture', librariesRoot: string) {
+  if (mode === 'fixture') {
+    return 'fixture'
+  }
+  const normalizedRoot = librariesRoot.trim().replaceAll('\\', '/').replace(/\/$/, '').toLocaleLowerCase()
+  return `local-api:${normalizedRoot || 'configured-root'}`
+}
+
+function librarySelectionForScope(scopeKey: string, libraries: LibraryRecord[]) {
+  const availableIds = new Set(libraries.map((library) => library.id))
+  const persisted = loadPersistedLibrarySelections()[scopeKey]
+  if (!persisted) {
+    return libraries.map((library) => library.id)
+  }
+  return uniqueStrings(persisted).filter((libraryId) => availableIds.has(libraryId))
+}
+
+function persistLibrarySelection(scopeKey: string, selectedLibraryIds: string[]) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  try {
+    const selections = loadPersistedLibrarySelections()
+    selections[scopeKey] = uniqueStrings(selectedLibraryIds)
+    window.localStorage.setItem(LIBRARY_SELECTIONS_STORAGE_KEY, JSON.stringify(selections))
+  } catch {
+    // Browser storage may be unavailable or full; library selection remains valid for this tab.
+  }
+}
+
+function loadPersistedLibrarySelections(): Record<string, string[]> {
+  if (typeof window === 'undefined') {
+    return {}
+  }
+  try {
+    const raw = window.localStorage.getItem(LIBRARY_SELECTIONS_STORAGE_KEY)
+    if (!raw) {
+      return {}
+    }
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {}
+    }
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .filter((entry): entry is [string, unknown[]] => Array.isArray(entry[1]))
+        .map(([scope, ids]) => [scope, ids.filter((id): id is string => typeof id === 'string')]),
+    )
+  } catch {
+    return {}
+  }
 }
 
 function loadPersistedVisibleColumns(): ColumnId[] {

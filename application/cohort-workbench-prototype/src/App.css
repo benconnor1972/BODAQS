@@ -4247,6 +4247,112 @@ button {
   width: min(980px, calc(100vw - 32px));
 }
 
+.scenario-editor-modal {
+  width: min(1040px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+}
+
+.scenario-editor-content {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.32fr) minmax(420px, 1fr);
+  gap: var(--space-4);
+  min-height: min(620px, calc(100vh - 150px));
+  overflow: auto;
+}
+
+.scenario-editor-list,
+.scenario-editor-form {
+  display: grid;
+  align-content: start;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.scenario-editor-list {
+  max-height: calc(100vh - 160px);
+  overflow: auto;
+}
+
+.scenario-editor-identity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.scenario-editor-identity strong {
+  color: var(--ink);
+}
+
+.scenario-editor-json .filter-manager-textarea {
+  min-height: 390px;
+}
+
+.scenario-editor-help {
+  margin: -4px 0 0;
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.scenario-predicate-builder .condition-stack {
+  max-height: 390px;
+}
+
+.scenario-condition-grid {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(125px, 0.8fr) minmax(170px, 1.1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.scenario-condition-grid label,
+.scenario-range-editor label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.scenario-condition-grid select,
+.scenario-condition-grid input,
+.scenario-range-editor input {
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.82);
+  box-sizing: border-box;
+  color: var(--ink);
+  font: inherit;
+  text-transform: none;
+}
+
+.scenario-range-editor {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(90px, 1fr));
+  gap: 7px 8px;
+}
+
+.scenario-range-editor .scenario-bound-check {
+  display: flex;
+  align-items: center;
+  padding-top: 2px;
+  text-transform: none;
+}
+
+.scenario-range-editor .scenario-bound-check input {
+  width: auto;
+  min-height: auto;
+  padding: 0;
+}
+
 .filter-manager-content {
   display: grid;
   grid-template-columns: minmax(220px, 0.36fr) minmax(360px, 1fr);
@@ -4926,6 +5032,64 @@ button {
   display: grid;
   gap: var(--space-4);
   padding: 8px;
+}
+
+.viz-scenario-control {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-subtle);
+  background: var(--surface-warm);
+}
+
+.viz-scenario-control-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.viz-scenario-control-heading > span {
+  display: grid;
+  gap: 2px;
+}
+
+.viz-scenario-control-heading strong {
+  font-size: var(--text-section-title);
+}
+
+.viz-scenario-control-heading small,
+.viz-scenario-status {
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.viz-scenario-control-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: var(--space-2);
+}
+
+.viz-scenario-control-row label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+}
+
+.viz-scenario-control-row select {
+  width: 100%;
+  min-width: 0;
+}
+
+.viz-scenario-status {
+  margin: 0;
+}
+
+.viz-scenario-status.warning {
+  color: var(--danger);
 }
 
 .viz-entity-selector {
@@ -8153,7 +8317,9 @@ button {
   .study-geo-grid,
   .library-root-control,
   .filter-manager-content,
+  .scenario-editor-content,
   .filter-manager-row.two-columns,
+  .scenario-condition-grid,
   .viz-control-mode-row,
   .note-editor-form {
     grid-template-columns: 1fr;
