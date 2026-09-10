@@ -11,11 +11,12 @@ import {
 } from 'react'
 import {
   Activity,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Map as MapIcon,
   MapPin,
-  Mountain,
   Play,
   Plus,
   RotateCcw,
@@ -43,6 +44,12 @@ import {
   routeStationsM,
   stationAfterSectorReplacement,
 } from '../domain/trackGeometry'
+import {
+  nearestSpatialDistance,
+  spatialDistanceAxis,
+  spatialDistanceForTime,
+  spatialTimeAtDistance,
+} from '../domain/spatialContext'
 import { sessionByRef, sessionRefId, sessionToStudyRef, slugify, uniqueId } from '../domain/studySets'
 import type {
   GeoPosition,
@@ -51,6 +58,7 @@ import type {
   SessionRecord,
   SessionVideoAttachmentRecord,
   SessionVideoAttachmentsRecord,
+  SpatialContextWindowResponse,
   StudySet,
   TrackMatchStatus,
   TrackRecord,
@@ -212,7 +220,6 @@ const DRAFT_COLOR = '#008c95'
 const CUTLINE_LENGTH_M = 20
 const TRACK_ANALYSIS_VIEW_CONTEXT_STORAGE_PREFIX = 'bodaqs.track-analysis.view-context.v1:'
 const TRACK_ANALYSIS_VIDEO_PANEL_MIN_WIDTH_PX = 360
-const TRACK_ANALYSIS_VIDEO_PANEL_MAX_WIDTH_PX = 680
 const VIDEO_TARGET_SCRATCH = 'scratch'
 
 const OSM_RASTER_STYLE: StyleSpecification = {
@@ -333,21 +340,27 @@ export function TrackAnalysisView({
   )
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [spatialContextSettings, setSpatialContextSettings] = useState<SpatialContextSettings>(() => ({
-    sessionId: scopedSessions[0]
-      ? `${scopedSessions[0].libraryId}:${scopedSessions[0].runId}:${scopedSessions[0].sessionId}`
-      : '',
     selected: new Set([
       'gradient_fraction',
       'twistiness_rad_per_m',
       'combined_suspension_activity',
     ]),
-    binCount: 10,
-    gradientMinimum: -0.5,
-    gradientMaximum: 0.1,
-    twistinessMaximum: 0.25,
-    activityMaximum: 0.1,
-    showGridlines: false,
+    binCount: 12,
+    gradientMinimum: -0.45,
+    gradientMaximum: 0.15,
+    twistinessMaximum: 0.24,
+    activityMaximum: 0.12,
+    showGridlines: true,
   }))
+  const [focusEntityKey, setFocusEntityKey] = useState(() => (
+    scopedSessions[0]
+      ? focusKeyForSession(scopedSessions[0])
+      : workingTracks[0]
+        ? focusKeyForTrack(workingTracks[0])
+        : ''
+  ))
+  const [cursorDistanceM, setCursorDistanceM] = useState<number | null>(null)
+  const [loadedFocusSpatialData, setFocusSpatialData] = useState<SpatialContextWindowResponse | null>(null)
   const [activeSessionIds, setActiveSessionIds] = useState<Set<string>>(
     () => new Set(scopedSessionIds),
   )
@@ -362,7 +375,7 @@ export function TrackAnalysisView({
   const [showSegments, setShowSegments] = useState(false)
   const [automaticEndpoints, setAutomaticEndpoints] = useState(false)
   const [trimTracksOnSave, setTrimTracksOnSave] = useState(false)
-  const [lapTimingExpanded, setLapTimingExpanded] = useState(false)
+  const [lapTimingExpanded, setLapTimingExpanded] = useState(true)
   const [lapTimingDisplayMode, setLapTimingDisplayMode] = useState<LapTimingDisplayMode>('segment')
   const [findSessionsOpen, setFindSessionsOpen] = useState(false)
   const [findTracksOpen, setFindTracksOpen] = useState(false)
@@ -765,6 +778,67 @@ export function TrackAnalysisView({
         .filter(isReadyGpsPointSet),
     [activeSessions, gpsSourceBySessionId, loadedGps],
   )
+  const focusOptions = useMemo(
+    () => [
+      ...activeSessions.map((session) => ({
+        value: focusKeyForSession(session),
+        label: session.name,
+        group: 'Sessions' as const,
+      })),
+      ...visibleTracks.map((track) => ({
+        value: focusKeyForTrack(track),
+        label: track.name || 'Unnamed track',
+        group: 'Tracks' as const,
+      })),
+    ],
+    [activeSessions, visibleTracks],
+  )
+  const effectiveFocusEntityKey = focusOptions.some((option) => option.value === focusEntityKey)
+    ? focusEntityKey
+    : focusOptions[0]?.value ?? ''
+  useEffect(() => {
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled) {
+        setCursorDistanceM(null)
+        setFocusSpatialData(null)
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [effectiveFocusEntityKey])
+  const focusedSession = activeSessions.find((session) => focusKeyForSession(session) === effectiveFocusEntityKey) ?? null
+  const focusedContextTrack = visibleTracks.find((track) => focusKeyForTrack(track) === effectiveFocusEntityKey) ?? null
+  const focusSpatialData = focusedSession && loadedFocusSpatialData &&
+    sessionRefId(loadedFocusSpatialData.sessionRef) === sessionRecordId(focusedSession)
+    ? loadedFocusSpatialData
+    : null
+  const focusPointSet = focusedSession
+    ? activePointSets.find((item) => sessionRecordId(item.session) === sessionRecordId(focusedSession)) ?? null
+    : null
+  const focusSessionRoute = useMemo(
+    () => (focusPointSet ? timedSessionRoute(focusPointSet.loaded.pointSet) : null),
+    [focusPointSet],
+  )
+  const cursorTimeS = useMemo(
+    () => (focusedSession && focusSpatialData && cursorDistanceM !== null
+      ? spatialTimeAtDistance(focusSpatialData, cursorDistanceM)
+      : null),
+    [cursorDistanceM, focusSpatialData, focusedSession],
+  )
+  const cursorPosition = useMemo(
+    () => {
+      if (focusedSession && focusSessionRoute && cursorTimeS !== null) {
+        return playbackPositionForTimedRoute(focusSessionRoute, cursorTimeS)?.position ?? null
+      }
+      if (focusedContextTrack && cursorDistanceM !== null && focusedContextTrack.points.length >= 2) {
+        return pointAtStationM(focusedContextTrack.points, cursorDistanceM)
+      }
+      return null
+    },
+    [cursorDistanceM, cursorTimeS, focusSessionRoute, focusedContextTrack, focusedSession],
+  )
   const referenceVideoPointSet =
     referenceVideoSession
       ? activePointSets.find((item) => sessionRecordId(item.session) === sessionRecordId(referenceVideoSession))?.loaded.pointSet ?? null
@@ -886,32 +960,60 @@ export function TrackAnalysisView({
     () => buildLapTimingRows(activePointSets, referencePath, timingTrackpoints, validSegmentAliases),
     [activePointSets, timingTrackpoints, referencePath, validSegmentAliases],
   )
-  const trackAltitudeSamples = useMemo(
-    () => (selectedTrack ? altitudeSamplesForTrack(selectedTrack) : []),
-    [selectedTrack],
+  const altitudeSamples = useMemo(() => {
+    if (focusedContextTrack) {
+      return altitudeSamplesForTrack(focusedContextTrack)
+    }
+    return altitudeSamplesForSpatialContext(focusSpatialData)
+  }, [focusSpatialData, focusedContextTrack])
+  const focusDistanceAxis = useMemo(
+    () => focusedSession && focusSpatialData
+      ? spatialDistanceAxis(focusSpatialData.distance.values)
+      : spatialDistanceAxis(altitudeSamples.map((sample) => sample.distanceM)),
+    [altitudeSamples, focusSpatialData, focusedSession],
   )
-  const sessionAltitudeSamples = useMemo(
-    () => altitudeSamplesForSessionGps(activePointSets[0]?.loaded.pointSet ?? null),
-    [activePointSets],
-  )
-  const altitudeSamples = trackAltitudeSamples.length >= 2 ? trackAltitudeSamples : sessionAltitudeSamples
+  const altitudeTrackpoints = useMemo(() => {
+    if (focusedContextTrack) {
+      return focusedContextTrack.trackpoints
+    }
+    if (
+      !focusPointSet ||
+      !focusSpatialData ||
+      !timingTrack ||
+      !canUseReferenceVideoForTrack(timingTrack, focusedSession, trackSessionMatchCache)
+    ) {
+      return []
+    }
+    return timingTrack.trackpoints.flatMap((trackpoint) => {
+      const timeS = sessionTimeForHoverPosition(focusPointSet.loaded.pointSet, trackpoint.position, null)
+      const distanceM = timeS === null ? null : spatialDistanceForTime(focusSpatialData, timeS)
+      return distanceM === null ? [] : [{ ...trackpoint, stationM: distanceM }]
+    })
+  }, [focusPointSet, focusSpatialData, focusedContextTrack, focusedSession, timingTrack, trackSessionMatchCache])
   const videoAltitudeStationM = useMemo(() => {
     if (!videoPlaybackPosition) {
       return null
     }
-    if (trackAltitudeSamples.length >= 2 && selectedTrack?.points.length) {
-      return snapPositionToPath(lonLat(videoPlaybackPosition.position), selectedTrack.points, routeLengthM(selectedTrack.points)).stationM
+    if (focusedContextTrack?.points.length) {
+      return snapPositionToPath(lonLat(videoPlaybackPosition.position), focusedContextTrack.points, routeLengthM(focusedContextTrack.points)).stationM
     }
-    return videoPlaybackPosition.stationM
-  }, [selectedTrack, trackAltitudeSamples.length, videoPlaybackPosition])
-  const altitudeMeta =
-    trackAltitudeSamples.length >= 2
-      ? `${selectedTrack?.name ?? 'Track'} track altitude`
-      : activePointSets[0]
-        ? `${activePointSets[0].session.name} session altitude`
-        : 'No altitude'
-  const mapStatus = activePointSets.length
-    ? `${activePointSets.length} session path(s) / ${visibleTracks.length} visible track(s) / ${timingTrackpoints.length} focused point(s)`
+    if (focusedSession && focusSpatialData && referenceVideoSession && sessionRecordId(focusedSession) === sessionRecordId(referenceVideoSession) && videoSessionTimeS !== null) {
+      return spatialDistanceForTime(focusSpatialData, videoSessionTimeS)
+    }
+    return null
+  }, [focusSpatialData, focusedContextTrack, focusedSession, referenceVideoSession, videoPlaybackPosition, videoSessionTimeS])
+  const altitudeMeta = focusedContextTrack
+    ? `${focusedContextTrack.name || 'Track'} track`
+    : focusedSession
+      ? `${focusedSession.name} session`
+      : 'No focus entity'
+  const focusPath = focusedContextTrack?.points ?? (
+    focusPointSet?.loaded.pointSet.routeGeometry.path.length
+      ? focusPointSet.loaded.pointSet.routeGeometry.path
+      : focusPointSet?.loaded.pointSet.path ?? []
+  )
+  const mapStatus = activePointSets.length || visibleTracks.length
+    ? `${activePointSets.length} session path(s) / ${visibleTracks.length} visible track(s) / ${effectiveFocusEntityKey ? 'focus selected' : 'no focus'}`
     : 'No active GPS paths loaded'
   const dirtyTrackCount = workingTracks.filter((track) => track.dirty).length
 
@@ -1004,10 +1106,16 @@ export function TrackAnalysisView({
     event.preventDefault()
     event.stopPropagation()
     const startClientX = event.clientX
-    const startWidthPx = videoPanelWidthPx
+    const videoPanel = event.currentTarget.closest<HTMLElement>('.track-analysis-video-panel')
+    const mapBand = videoPanel?.parentElement
+    const startWidthPx = videoPanel?.getBoundingClientRect().width ?? videoPanelWidthPx
+    const mapBandWidthPx = mapBand?.getBoundingClientRect().width ?? window.innerWidth
+    const mapBandColumnGapPx = mapBand ? Number.parseFloat(window.getComputedStyle(mapBand).columnGap) || 0 : 0
+    const maximumWidthPx = Math.max(0, (mapBandWidthPx - mapBandColumnGapPx) / 2)
+    const minimumWidthPx = Math.min(TRACK_ANALYSIS_VIDEO_PANEL_MIN_WIDTH_PX, maximumWidthPx)
     const onMove = (moveEvent: PointerEvent) => {
       const nextWidth = startWidthPx + (startClientX - moveEvent.clientX)
-      setVideoPanelWidthPx(clampNumber(nextWidth, TRACK_ANALYSIS_VIDEO_PANEL_MIN_WIDTH_PX, TRACK_ANALYSIS_VIDEO_PANEL_MAX_WIDTH_PX))
+      setVideoPanelWidthPx(clampNumber(nextWidth, minimumWidthPx, maximumWidthPx))
     }
     const onUp = () => {
       window.removeEventListener('pointermove', onMove)
@@ -1657,6 +1765,30 @@ export function TrackAnalysisView({
     }))
   }, [selectedTrack])
 
+  const handleMapFocusHover = useCallback((position: GeoPosition | null) => {
+    if (!position) {
+      setCursorDistanceM(null)
+      return
+    }
+    if (focusedContextTrack?.points.length) {
+      setCursorDistanceM(
+        snapPositionToPath(lonLat(position), focusedContextTrack.points, routeLengthM(focusedContextTrack.points)).stationM,
+      )
+      return
+    }
+    if (!focusPointSet || !focusSpatialData) {
+      setCursorDistanceM(null)
+      return
+    }
+    const timeS = sessionTimeForHoverPosition(
+      focusPointSet.loaded.pointSet,
+      position,
+      cursorTimeS,
+    )
+    const distanceM = timeS === null ? null : spatialDistanceForTime(focusSpatialData, timeS)
+    setCursorDistanceM(distanceM === null ? null : nearestSpatialDistance(focusSpatialData.distance.values, distanceM))
+  }, [cursorTimeS, focusPointSet, focusSpatialData, focusedContextTrack])
+
   return (
     <div className={`track-analysis ${drawerOpen ? 'drawer-open' : 'drawer-closed'}`}>
       <aside className="track-analysis-drawer">
@@ -2034,11 +2166,17 @@ export function TrackAnalysisView({
               <TrackPanelTitle
                 icon={<Activity size={15} />}
                 title="Spatial context"
-                info="Choose the evidence session and visible metrics. Histogram ranges are exact; the bin count excludes the additional underflow and overflow bins."
+                info="The focus entity controls the map cursor and altitude profile. Session focus also supplies spatial metrics; track focus leaves those metrics unavailable for now."
               />
               <SpatialContextControls
-                sessions={activeSessions}
+                focusOptions={focusOptions}
+                focusValue={effectiveFocusEntityKey}
                 settings={spatialContextSettings}
+                onFocusChange={(value) => {
+                  setFocusEntityKey(value)
+                  setCursorDistanceM(null)
+                  setFocusSpatialData(null)
+                }}
                 onChange={setSpatialContextSettings}
               />
             </section>
@@ -2063,6 +2201,9 @@ export function TrackAnalysisView({
               segmentAliases={validSegmentAliases}
               hideSegmentNames={!showSegments}
               videoMarkerPosition={videoPlaybackPosition?.position ?? null}
+              cursorPosition={cursorPosition}
+              focusPath={focusPath}
+              onFocusHoverPosition={handleMapFocusHover}
               onCreateTrackpoint={addDraftTrackpoint}
               onMoveTrackpoint={moveDraftTrackpoint}
               onAdjustCutline={adjustDraftCutline}
@@ -2128,76 +2269,77 @@ export function TrackAnalysisView({
           )}
         </div>
 
-        <section className={`track-analysis-bottom ${lapTimingExpanded ? 'lap-expanded' : ''}`}>
-          {!lapTimingExpanded && (
-            <div className="track-analysis-lower-card">
-              <TrackPanelTitle
-                icon={<Mountain size={15} />}
-                title="Altitude profile"
-                meta={altitudeMeta}
-                action={
-                  <button
-                    type="button"
-                    className="track-analysis-panel-toggle"
-                    onClick={() => setLapTimingExpanded(true)}
-                    title="Collapse altitude profile"
-                  >
-                    <ChevronLeft size={14} />
-                  </button>
-                }
-              />
-              <AltitudeChart samples={altitudeSamples} trackpoints={timingTrackpoints} playbackStationM={videoAltitudeStationM} />
-            </div>
-          )}
-          {lapTimingExpanded && (
-            <button
-              type="button"
-              className="track-analysis-altitude-rail"
-              onClick={() => setLapTimingExpanded(false)}
-              title="Show altitude profile"
-            >
-              <ChevronRight size={14} />
-              <span>Altitude profile</span>
-            </button>
-          )}
-          <div className="track-analysis-lower-card">
+        <section className="track-analysis-bottom">
+          <div className={`track-analysis-lower-card${lapTimingExpanded ? '' : ' collapsed'}`}>
             <TrackPanelTitle
               icon={<Timer size={15} />}
               title="Lap timing"
               meta={lapTimingRows.length ? `${lapTimingRows.length} timing row(s)` : 'No sectors'}
               action={
-                <div className="track-analysis-lap-mode-toggle" role="group" aria-label="Lap timing display mode">
+                <>
+                  {lapTimingExpanded && (
+                    <div className="track-analysis-lap-mode-toggle" role="group" aria-label="Lap timing display mode">
+                      <button
+                        type="button"
+                        className={lapTimingDisplayMode === 'segment' ? 'active' : ''}
+                        onClick={() => setLapTimingDisplayMode('segment')}
+                      >
+                        Segment
+                      </button>
+                      <button
+                        type="button"
+                        className={lapTimingDisplayMode === 'cumulative' ? 'active' : ''}
+                        onClick={() => setLapTimingDisplayMode('cumulative')}
+                      >
+                        Cumulative
+                      </button>
+                    </div>
+                  )}
                   <button
                     type="button"
-                    className={lapTimingDisplayMode === 'segment' ? 'active' : ''}
-                    onClick={() => setLapTimingDisplayMode('segment')}
+                    className="track-analysis-panel-toggle"
+                    aria-expanded={lapTimingExpanded}
+                    onClick={() => setLapTimingExpanded((current) => !current)}
+                    title={lapTimingExpanded ? 'Collapse lap timing upwards' : 'Expand lap timing'}
                   >
-                    Segment
+                    {lapTimingExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                   </button>
-                  <button
-                    type="button"
-                    className={lapTimingDisplayMode === 'cumulative' ? 'active' : ''}
-                    onClick={() => setLapTimingDisplayMode('cumulative')}
-                  >
-                    Cumulative
-                  </button>
-                </div>
+                </>
               }
             />
-            <LapTimingTable
-              activePointSets={activePointSets}
-              rows={lapTimingRows}
-              trackpointCount={draftTrackpoints.length}
-              displayMode={lapTimingDisplayMode}
-            />
+            {lapTimingExpanded && (
+              <LapTimingTable
+                activePointSets={activePointSets}
+                rows={lapTimingRows}
+                trackpointCount={draftTrackpoints.length}
+                displayMode={lapTimingDisplayMode}
+              />
+            )}
           </div>
         </section>
         <SpatialContextPanel
-          sessions={activeSessions}
+          session={focusedSession}
           dataSource={dataSource}
           videoSession={referenceVideoSession}
           videoSessionTimeS={videoSessionTimeS}
           settings={spatialContextSettings}
+          cursorDistanceM={cursorDistanceM}
+          altitudeContent={
+            <div className="track-analysis-altitude-chart-wrap">
+              <strong>Altitude</strong><small>m · {altitudeMeta}</small>
+              <AltitudeChart
+                samples={altitudeSamples}
+                trackpoints={altitudeTrackpoints}
+                distanceAxis={focusDistanceAxis}
+                playbackStationM={videoAltitudeStationM}
+                hoverStationM={cursorDistanceM}
+                onHoverStationM={setCursorDistanceM}
+              />
+            </div>
+          }
+          unavailableMessage={focusedContextTrack ? 'Spatial metrics are session-derived; select a session focus to display them.' : undefined}
+          onCursorDistanceChange={setCursorDistanceM}
+          onDataChange={setFocusSpatialData}
         />
       </section>
       {findSessionsOpen && (
@@ -3517,6 +3659,9 @@ function TrackAnalysisMap({
   segmentAliases,
   hideSegmentNames,
   videoMarkerPosition,
+  cursorPosition,
+  focusPath,
+  onFocusHoverPosition,
   onCreateTrackpoint,
   onMoveTrackpoint,
   onAdjustCutline,
@@ -3531,6 +3676,9 @@ function TrackAnalysisMap({
   segmentAliases: TrackSegmentAliasRecord[]
   hideSegmentNames: boolean
   videoMarkerPosition: GeoPosition | null
+  cursorPosition: GeoPosition | null
+  focusPath: GeoPosition[]
+  onFocusHoverPosition: (position: GeoPosition | null) => void
   onCreateTrackpoint: (position: [number, number]) => void
   onMoveTrackpoint: (trackpointId: string, position: [number, number]) => void
   onAdjustCutline: (trackpointId: string, handle: CutlineHandle, position: [number, number]) => void
@@ -3546,12 +3694,14 @@ function TrackAnalysisMap({
   const deleteTrackpointRef = useRef(onDeleteTrackpoint)
   const trackpointDragEndRef = useRef(onTrackpointDragEnd)
   const viewportBoundsChangedRef = useRef(onViewportBoundsChanged)
+  const focusPathRef = useRef(focusPath)
+  const focusHoverRef = useRef(onFocusHoverPosition)
   const dragHandleRef = useRef<DragHandle | null>(null)
   const suppressClickRef = useRef(false)
   const hasFitInitialDataRef = useRef(false)
   const previousGeometrySignatureRef = useRef('')
   const videoMarkerPositionRef = useRef<GeoPosition | null>(videoMarkerPosition)
-  videoMarkerPositionRef.current = videoMarkerPosition
+  const cursorPositionRef = useRef<GeoPosition | null>(cursorPosition)
   const hasData = sessionPaths.some((path) => path.path.length >= 2) || visibleTracks.some((track) => track.points.length >= 2)
   const geometrySignature = useMemo(
     () =>
@@ -3593,6 +3743,22 @@ function TrackAnalysisMap({
   useEffect(() => {
     viewportBoundsChangedRef.current = onViewportBoundsChanged
   }, [onViewportBoundsChanged])
+
+  useEffect(() => {
+    videoMarkerPositionRef.current = videoMarkerPosition
+  }, [videoMarkerPosition])
+
+  useEffect(() => {
+    cursorPositionRef.current = cursorPosition
+  }, [cursorPosition])
+
+  useEffect(() => {
+    focusPathRef.current = focusPath
+  }, [focusPath])
+
+  useEffect(() => {
+    focusHoverRef.current = onFocusHoverPosition
+  }, [onFocusHoverPosition])
 
   useEffect(() => {
     if (!hasData || !containerRef.current || mapRef.current) {
@@ -3666,6 +3832,7 @@ function TrackAnalysisMap({
     map.on('mousemove', (event) => {
       const handle = dragHandleRef.current
       if (!handle) {
+        focusHoverRef.current(focusPositionAtPointer(map, event.point, focusPathRef.current))
         map.getCanvas().style.cursor = queryPointHandleFeature(map, event.point) ? 'grab' : ''
         return
       }
@@ -3690,15 +3857,19 @@ function TrackAnalysisMap({
     })
     map.on('moveend', reportViewportBounds)
     map.on('zoomend', reportViewportBounds)
+    const clearFocusHover = () => focusHoverRef.current(null)
+    map.getCanvas().addEventListener('mouseleave', clearFocusHover)
     map.once('load', () => {
       // Install the independent playback layer with the latest position even if
       // video begins before the MapLibre style has finished loading.
       ensureVideoHeadLayer(map, videoMarkerPositionRef.current)
+      ensureSpatialHoverLayer(map, cursorPositionRef.current)
       reportViewportBounds()
     })
     mapRef.current = map
     return () => {
       map.getCanvas().removeEventListener('contextmenu', preventContextMenu)
+      map.getCanvas().removeEventListener('mouseleave', clearFocusHover)
       map.off('moveend', reportViewportBounds)
       map.off('zoomend', reportViewportBounds)
       map.remove()
@@ -3770,6 +3941,22 @@ function TrackAnalysisMap({
     }
   }, [hasData, videoMarkerPosition])
 
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !hasData) {
+      return
+    }
+    const applySpatialHover = () => ensureSpatialHoverLayer(map, cursorPosition)
+    if (map.isStyleLoaded()) {
+      applySpatialHover()
+      return
+    }
+    map.once('load', applySpatialHover)
+    return () => {
+      map.off('load', applySpatialHover)
+    }
+  }, [cursorPosition, hasData])
+
   if (!hasData) {
     return (
       <div className="track-analysis-map-empty">
@@ -3785,58 +3972,89 @@ function TrackAnalysisMap({
 function AltitudeChart({
   samples,
   trackpoints,
+  distanceAxis,
   playbackStationM,
+  hoverStationM,
+  onHoverStationM,
 }: {
   samples: AltitudeSample[]
   trackpoints: DraftTrackpoint[]
+  distanceAxis: ReturnType<typeof spatialDistanceAxis>
   playbackStationM: number | null
+  hoverStationM: number | null
+  onHoverStationM: (stationM: number | null) => void
 }) {
-  if (samples.length < 2) {
-    return <div className="track-analysis-placeholder">No altitude data is available for the selected track or session.</div>
+  const finiteSamples = samples.filter((sample) => Number.isFinite(sample.elevationM))
+  if (finiteSamples.length < 2) {
+    return <div className="track-analysis-placeholder">No mapped altitude is available for the focus entity.</div>
   }
-  const width = 640
-  const height = 178
-  const padding = { top: 20, right: 22, bottom: 46, left: 54 }
-  const minDistance = Math.min(...samples.map((item) => item.distanceM))
-  const maxDistance = Math.max(...samples.map((item) => item.distanceM))
-  const elevations = samples.map((item) => item.elevationM)
+  const width = 920
+  const height = 125
+  const padding = { top: 14, right: 20, bottom: 34, left: 64 }
+  const elevations = finiteSamples.map((item) => item.elevationM)
   const minElevation = Math.min(...elevations)
   const maxElevation = Math.max(...elevations)
   const elevationStep = gridStep(maxElevation - minElevation, [10, 20, 50, 100, 200], 3)
-  const distanceStep = gridStep(maxDistance - minDistance, [100, 200, 500, 1000, 2000], 3)
   const elevationDomain = gridDomain(minElevation, maxElevation, elevationStep)
-  const distanceDomain = gridDomain(minDistance, maxDistance, distanceStep)
   const elevationTicks = gridTicks(elevationDomain.min, elevationDomain.max, elevationStep)
-  const distanceTicks = gridTicks(distanceDomain.min, distanceDomain.max, distanceStep)
   const plotWidth = width - padding.left - padding.right
   const plotHeight = height - padding.top - padding.bottom
   const xForDistance = (distanceM: number) =>
-    padding.left + ((distanceM - distanceDomain.min) / Math.max(1, distanceDomain.max - distanceDomain.min)) * plotWidth
+    padding.left + ((distanceM - distanceAxis.min) / Math.max(1, distanceAxis.max - distanceAxis.min)) * plotWidth
   const yForElevation = (elevationM: number) =>
     padding.top + (1 - (elevationM - elevationDomain.min) / Math.max(1, elevationDomain.max - elevationDomain.min)) * plotHeight
+  let drawingAltitude = false
   const path = samples
-    .map((item, index) => {
+    .map((item) => {
+      if (!Number.isFinite(item.elevationM)) {
+        drawingAltitude = false
+        return ''
+      }
       const x = xForDistance(item.distanceM)
       const y = yForElevation(item.elevationM)
-      return `${index === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`
+      const command = drawingAltitude ? 'L' : 'M'
+      drawingAltitude = true
+      return `${command} ${x.toFixed(1)} ${y.toFixed(1)}`
     })
     .join(' ')
   const plottedTrackpoints = trackpoints
-    .filter((trackpoint) => trackpoint.stationM >= distanceDomain.min && trackpoint.stationM <= distanceDomain.max)
+    .filter((trackpoint) => trackpoint.stationM >= distanceAxis.min && trackpoint.stationM <= distanceAxis.max)
     .map((trackpoint) => ({
       trackpoint,
       x: xForDistance(trackpoint.stationM),
       y: yForElevation(interpolateAltitude(samples, trackpoint.stationM)),
     }))
   const playbackMarker =
-    playbackStationM !== null && playbackStationM >= distanceDomain.min && playbackStationM <= distanceDomain.max
+    playbackStationM !== null && playbackStationM >= distanceAxis.min && playbackStationM <= distanceAxis.max
       ? {
           x: xForDistance(playbackStationM),
           y: yForElevation(interpolateAltitude(samples, playbackStationM)),
         }
       : null
+  const hoverMarker =
+    hoverStationM !== null && hoverStationM >= distanceAxis.min && hoverStationM <= distanceAxis.max
+      ? {
+          x: xForDistance(hoverStationM),
+          y: yForElevation(interpolateAltitude(samples, hoverStationM)),
+        }
+      : null
+  function handlePointerMove(event: ReactPointerEvent<SVGSVGElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const viewBoxX = ((event.clientX - bounds.left) / Math.max(1, bounds.width)) * width
+    const plotX = clampNumber(viewBoxX, padding.left, width - padding.right)
+    onHoverStationM(
+      distanceAxis.min + ((plotX - padding.left) / plotWidth) * (distanceAxis.max - distanceAxis.min),
+    )
+  }
   return (
-    <svg className="track-analysis-altitude-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Altitude profile chart">
+    <svg
+      className="track-analysis-altitude-chart"
+      viewBox={`0 0 ${width} ${height}`}
+      role="img"
+      aria-label="Altitude profile chart"
+      onPointerMove={handlePointerMove}
+      onPointerLeave={() => onHoverStationM(null)}
+    >
       {elevationTicks.map((tick) => {
         const y = yForElevation(tick)
         return (
@@ -3848,7 +4066,7 @@ function AltitudeChart({
           </g>
         )
       })}
-      {distanceTicks.map((tick) => {
+      {distanceAxis.ticks.map((tick) => {
         const x = xForDistance(tick)
         return (
           <g key={`distance-${tick}`} className="track-analysis-altitude-grid">
@@ -3873,6 +4091,12 @@ function AltitudeChart({
         <g className="track-analysis-altitude-playback-marker">
           <line x1={playbackMarker.x} x2={playbackMarker.x} y1={padding.top} y2={height - padding.bottom} />
           <circle cx={playbackMarker.x} cy={playbackMarker.y} r={4.4} />
+        </g>
+      )}
+      {hoverMarker && (
+        <g className="track-analysis-altitude-hover-marker">
+          <line x1={hoverMarker.x} x2={hoverMarker.x} y1={padding.top} y2={height - padding.bottom} />
+          <circle cx={hoverMarker.x} cy={hoverMarker.y} r={3.8} />
         </g>
       )}
       <text className="track-analysis-altitude-axis-title" x={(padding.left + width - padding.right) / 2} y={height - 3} textAnchor="middle">
@@ -4016,24 +4240,24 @@ function altitudeSamplesForTrack(track: Pick<TrackRecord, 'points'>): AltitudeSa
     .filter(isAltitudeSample)
 }
 
-function altitudeSamplesForSessionGps(pointSet: SessionGpsPointSet | null): AltitudeSample[] {
-  if (!pointSet) {
+function altitudeSamplesForSpatialContext(spatialData: SpatialContextWindowResponse | null): AltitudeSample[] {
+  if (!spatialData) {
     return []
   }
-  const positions = pointSet.points
-    .filter(
-      (point) =>
-        Number.isFinite(point.longitude) &&
-        Number.isFinite(point.latitude) &&
-        point.elevationM !== null &&
-        Number.isFinite(point.elevationM),
-    )
-    .map((point) => [point.longitude, point.latitude, point.elevationM as number] as GeoPosition)
-  const stations = routeStationsM(positions)
-  return positions.map((position, index) => ({
-    distanceM: stations[index] ?? 0,
-    elevationM: position[2] as number,
-  }))
+  const altitude = spatialData.metrics.find((signal) => signal.column === 'altitude_m')
+  if (!altitude) {
+    return []
+  }
+  return spatialData.distance.values.flatMap((distanceM, index) => {
+    if (typeof distanceM !== 'number' || !Number.isFinite(distanceM)) {
+      return []
+    }
+    const elevationM = altitude.values[index]
+    return [{
+      distanceM,
+      elevationM: typeof elevationM === 'number' && Number.isFinite(elevationM) ? elevationM : Number.NaN,
+    }]
+  })
 }
 
 function videoStateData(state: VideoPanelState) {
@@ -4094,6 +4318,35 @@ function sessionTimeForPosition(pointSet: SessionGpsPointSet, position: GeoPosit
   const snapped = nearestPointOnLine(lineString(route.positions.map(lonLat)), point(lonLat(position)), { units: 'meters' })
   const stationM = clampNumber(Number(snapped.properties?.location ?? 0), 0, route.stations[route.stations.length - 1] ?? 0)
   return interpolateTimeAtStation(route.stations, route.times, stationM)
+}
+
+function sessionTimeForHoverPosition(
+  pointSet: SessionGpsPointSet,
+  position: GeoPosition,
+  preferredTimeS: number | null,
+): number | null {
+  const timedPoints = pointSet.points.filter(
+    (candidate) => candidate.timeS !== null && Number.isFinite(candidate.timeS) && Number.isFinite(candidate.longitude) && Number.isFinite(candidate.latitude),
+  )
+  if (!timedPoints.length) {
+    return null
+  }
+  const latitude = position[1]
+  const candidates = timedPoints.map((candidate) => ({
+    timeS: candidate.timeS as number,
+    distanceM: Math.hypot(
+      (candidate.longitude - position[0]) * metersPerDegreeLongitude(latitude),
+      (candidate.latitude - latitude) * 110_540,
+    ),
+  }))
+  const minimumDistanceM = Math.min(...candidates.map((candidate) => candidate.distanceM))
+  const nearby = candidates.filter((candidate) => candidate.distanceM <= minimumDistanceM + 2)
+  if (preferredTimeS !== null) {
+    return nearby.reduce((best, candidate) => (
+      Math.abs(candidate.timeS - preferredTimeS) < Math.abs(best.timeS - preferredTimeS) ? candidate : best
+    )).timeS
+  }
+  return nearby.reduce((latest, candidate) => candidate.timeS > latest ? candidate.timeS : latest, nearby[0].timeS)
 }
 
 function timedSessionRoute(pointSet: SessionGpsPointSet) {
@@ -4665,6 +4918,44 @@ function ensureVideoHeadLayer(map: MapLibreMap, position: GeoPosition | null) {
   }
 }
 
+function ensureSpatialHoverLayer(map: MapLibreMap, position: GeoPosition | null) {
+  const hasPosition = Boolean(position && Number.isFinite(position[0]) && Number.isFinite(position[1]))
+  const data: FeatureCollection<Point, { label: string }> = {
+    type: 'FeatureCollection',
+    features: hasPosition
+      ? [
+          {
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: lonLat(position as GeoPosition) },
+            properties: { label: 'Spatial hover' },
+          },
+        ]
+      : [],
+  }
+  const existingSource = map.getSource('track-analysis-spatial-hover') as GeoJSONSource | undefined
+  if (existingSource) {
+    existingSource.setData(data)
+  } else {
+    map.addSource('track-analysis-spatial-hover', { type: 'geojson', data })
+  }
+  if (!map.getLayer('track-analysis-spatial-hover-circle')) {
+    map.addLayer({
+      id: 'track-analysis-spatial-hover-circle',
+      type: 'circle',
+      source: 'track-analysis-spatial-hover',
+      paint: {
+        'circle-color': '#008c95',
+        'circle-radius': 7,
+        'circle-stroke-width': 3,
+        'circle-stroke-color': '#ffffff',
+      },
+    })
+  }
+  if (map.getLayer('track-analysis-spatial-hover-circle')) {
+    map.moveLayer('track-analysis-spatial-hover-circle')
+  }
+}
+
 function queryPointHandleFeature(map: MapLibreMap, point: { x: number; y: number }) {
   if (!map.getLayer('track-analysis-point-hitboxes')) {
     return null
@@ -4943,6 +5234,23 @@ function snapPositionToPath(position: [number, number], path: GeoPosition[], pat
   }
 }
 
+function focusPositionAtPointer(
+  map: MapLibreMap,
+  pointer: { x: number; y: number },
+  path: GeoPosition[],
+): GeoPosition | null {
+  if (path.length < 2) {
+    return null
+  }
+  const snapped = nearestPointOnLine(lineString(path.map(lonLat)), point(map.unproject([pointer.x, pointer.y]).toArray()), { units: 'meters' })
+  const coordinates = snapped.geometry.coordinates
+  const screenPosition = map.project([coordinates[0], coordinates[1]])
+  if (Math.hypot(screenPosition.x - pointer.x, screenPosition.y - pointer.y) > 14) {
+    return null
+  }
+  return [coordinates[0], coordinates[1]]
+}
+
 function vectorMeters(from: GeoPosition, to: [number, number]) {
   return {
     x: (to[0] - from[0]) * metersPerDegreeLongitude(from[1]),
@@ -5142,6 +5450,14 @@ function sessionRecordId(session: SessionRecord) {
   return sessionRefId(sessionToStudyRef(session))
 }
 
+function focusKeyForSession(session: SessionRecord) {
+  return `session:${sessionRecordId(session)}`
+}
+
+function focusKeyForTrack(track: Pick<WorkingTrack, 'workingId'>) {
+  return `track:${track.workingId}`
+}
+
 function trackSourceMatchesSession(source: NonNullable<TrackRecord['source']>, session: SessionRecord) {
   if (source.libraryId && source.libraryId !== session.libraryId) {
     return false
@@ -5201,11 +5517,7 @@ function readTrackAnalysisViewContext(key: string): PersistedTrackAnalysisViewCo
       removedSessionIds: stringArrayValue(parsed.removedSessionIds),
       addedTrackIds: stringArrayValue(parsed.addedTrackIds),
       videoPanelOpen: typeof parsed.videoPanelOpen === 'boolean' ? parsed.videoPanelOpen : false,
-      videoPanelWidthPx: clampNumber(
-        typeof parsed.videoPanelWidthPx === 'number' ? parsed.videoPanelWidthPx : TRACK_ANALYSIS_VIDEO_PANEL_MIN_WIDTH_PX,
-        TRACK_ANALYSIS_VIDEO_PANEL_MIN_WIDTH_PX,
-        TRACK_ANALYSIS_VIDEO_PANEL_MAX_WIDTH_PX,
-      ),
+      videoPanelWidthPx: normalizeVideoPanelWidthPx(parsed.videoPanelWidthPx),
     }
   } catch {
     return emptyTrackAnalysisViewContext()
@@ -5222,11 +5534,7 @@ function writeTrackAnalysisViewContext(key: string, context: PersistedTrackAnaly
       removedSessionIds: uniqueStrings(context.removedSessionIds),
       addedTrackIds: uniqueStrings(context.addedTrackIds),
       videoPanelOpen: context.videoPanelOpen,
-      videoPanelWidthPx: clampNumber(
-        context.videoPanelWidthPx,
-        TRACK_ANALYSIS_VIDEO_PANEL_MIN_WIDTH_PX,
-        TRACK_ANALYSIS_VIDEO_PANEL_MAX_WIDTH_PX,
-      ),
+      videoPanelWidthPx: normalizeVideoPanelWidthPx(context.videoPanelWidthPx),
     }
     if (
       !normalized.addedSessionIds.length &&
@@ -5252,6 +5560,12 @@ function emptyTrackAnalysisViewContext(): PersistedTrackAnalysisViewContext {
     videoPanelOpen: false,
     videoPanelWidthPx: TRACK_ANALYSIS_VIDEO_PANEL_MIN_WIDTH_PX,
   }
+}
+
+function normalizeVideoPanelWidthPx(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(TRACK_ANALYSIS_VIDEO_PANEL_MIN_WIDTH_PX, value)
+    : TRACK_ANALYSIS_VIDEO_PANEL_MIN_WIDTH_PX
 }
 
 function stringArrayValue(value: unknown) {

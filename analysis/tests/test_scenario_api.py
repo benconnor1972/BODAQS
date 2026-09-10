@@ -61,6 +61,7 @@ def _library(tmp_path: Path) -> tuple[Path, Path, dict]:
         {
             "distance_m": [0.0, 10.0, 20.0, 30.0, 40.0, 50.0],
             "representative_time_s": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+            "altitude_m": [100.0, 101.0, 102.0, None, 104.0, 105.0],
             "twistiness_rad_per_m": [0.0, 0.1, 0.2, None, 0.0, 0.0],
             "distance_support_fraction": [1.0, 1.0, 1.0, 0.0, 1.0, 1.0],
             "active_mask_qc": [1, 1, 1, 0, 1, 1],
@@ -76,6 +77,7 @@ def _library(tmp_path: Path) -> tuple[Path, Path, dict]:
             "coordinate": {"column": "distance_m", "unit": "m", "spacing_m": 10.0},
             "time_mapping": {"column": "representative_time_s"},
             "signals": {
+                "altitude_m": {"display_name": "Altitude", "quantity": "altitude", "unit": "m"},
                 "twistiness_rad_per_m": {"display_name": "Twistiness", "unit": "rad/m"}
             },
             "warnings": [],
@@ -135,6 +137,17 @@ def test_spatial_context_window_returns_native_distance_and_gaps(tmp_path: Path)
     assert response["distance"]["values"] == [10.0, 20.0, 30.0, 40.0]
     assert response["time_mapping"]["values"] == [1.0, 2.0, 3.0, 4.0]
     assert response["metrics"][0]["values"] == [0.1, 0.2, None, 0.0]
+
+
+def test_spatial_context_window_returns_mapped_altitude(tmp_path: Path) -> None:
+    libraries_root, _, ref = _library(tmp_path)
+    response = LibraryAdapter(libraries_root).get_spatial_context_window(
+        "default-library",
+        {"session": ref, "metrics": ["altitude_m"]},
+    )
+
+    assert response["metrics"][0]["column"] == "altitude_m"
+    assert response["metrics"][0]["values"] == [100.0, 101.0, 102.0, None, 104.0, 105.0]
 
 
 def test_scenario_evaluation_respects_activity_and_support_gaps(tmp_path: Path) -> None:

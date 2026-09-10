@@ -579,7 +579,7 @@ evidence for gradient, twistiness, or suspension activity.
 ```json
 {
   "enabled": true,
-  "algorithm_version": 3,
+  "algorithm_version": 4,
   "distance": {
     "source_priority": [
       "gps_geometry"

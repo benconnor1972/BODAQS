@@ -29,6 +29,7 @@ SPATIAL_CONTEXT_WINDOW_SCHEMA = "bodaqs.spatial_context_window"
 SPATIAL_CONTEXT_WINDOW_VERSION = 1
 SPATIAL_CONTEXT_STREAM_NAME = "spatial_context"
 DEFAULT_METRICS = (
+    "altitude_m",
     "gradient_fraction",
     "twistiness_rad_per_m",
     "front_suspension_activity",
@@ -172,6 +173,7 @@ def get_spatial_context_window(
         response["provenance"] = {
             "algorithm_version": metadata.get("algorithm_version"),
             "effective_config": metadata.get("effective_config"),
+            "evidence_provenance": metadata.get("evidence_provenance"),
             "metric_provenance": metadata.get("metric_provenance"),
             "quality": metadata.get("quality"),
         }

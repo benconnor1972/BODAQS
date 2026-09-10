@@ -1649,7 +1649,8 @@ Time-domain and distance-domain windows remain distinct even when a consumer
 displays them in the same view. Event and Metrics queries remain compact
 table-oriented endpoints.
 
-The spatial-context endpoint returns selected canonical metrics on their
+The spatial-context endpoint returns selected canonical distance-domain series,
+including mapped evidence such as `altitude_m` and derived metrics, on their
 native `distance_m` coordinate together with `representative_time_s`, validity
 diagnostics, and optional preprocessing provenance. It is separate from the
 time-series endpoint so clients do not mistake the coarser spatial grid for

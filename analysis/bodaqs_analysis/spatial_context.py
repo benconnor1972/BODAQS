@@ -36,7 +36,7 @@ from .track_traversal import (
 SPATIAL_CONTEXT_STREAM_NAME = "spatial_context"
 SPATIAL_CONTEXT_STREAM_SCHEMA = "bodaqs.spatial_context_stream"
 SPATIAL_CONTEXT_STREAM_VERSION = 1
-SPATIAL_CONTEXT_ALGORITHM_VERSION = 3
+SPATIAL_CONTEXT_ALGORITHM_VERSION = 4
 ACTIVE_MASK_COLUMN = "active_mask_qc"
 
 DEFAULT_SPATIAL_CONTEXT_TRACK_SCOPE_CONFIG: dict[str, Any] = {
@@ -329,8 +329,25 @@ def derive_spatial_context(
         }
     )
     signals: dict[str, dict[str, Any]] = {}
+    evidence_provenance: dict[str, Any] = {}
     metric_provenance: dict[str, Any] = {}
     availability: dict[str, bool] = {}
+
+    altitude_available = bool(np.isfinite(altitude_grid).any())
+    if altitude_available:
+        altitude_provenance = {
+            "method": "piecewise_linear_distance_interpolation",
+            "source_column": candidate.source.altitude_column,
+            "source_id": candidate.source.source_id,
+            "stream_name": candidate.source.stream_name,
+            "source_kind": candidate.source.source_kind,
+            "distance_candidate_kind": candidate.kind,
+            "valid_pair_policy": "distance_source_valid_pairs",
+            "active_mask_policy": "not_applied_to_mapped_evidence",
+        }
+        stream["altitude_m"] = altitude_grid
+        evidence_provenance["altitude"] = altitude_provenance
+        signals.update(_altitude_signal_registry(altitude_provenance))
 
     gradient_cfg = cfg.get("gradient") if isinstance(cfg.get("gradient"), Mapping) else {}
     if bool(gradient_cfg.get("enabled", False)):
@@ -525,6 +542,7 @@ def derive_spatial_context(
                 "valid_interval_count": int(np.count_nonzero(candidate.valid_pairs)),
                 "coverage_ratio": candidate.diagnostics.get("time_coverage_ratio"),
             },
+            "evidence_provenance": evidence_provenance,
             "metric_provenance": metric_provenance,
             "quality": {
                 **copy.deepcopy(candidate.diagnostics),
@@ -532,6 +550,7 @@ def derive_spatial_context(
                 "distance_supported_rows": int(np.count_nonzero(distance_eligible)),
                 "active_mask_available": active_mask_available,
                 "active_spatial_rows": int(np.count_nonzero(spatial_active)),
+                "evidence_availability": {"altitude": altitude_available},
                 "metric_availability": availability,
             },
             "signals": signals,
@@ -1098,6 +1117,7 @@ def _base_stream_meta(config: Mapping[str, Any]) -> dict[str, Any]:
         "effective_config": copy.deepcopy(dict(config)),
         "distance_source": {},
         "time_mapping": {},
+        "evidence_provenance": {},
         "metric_provenance": {},
         "quality": {},
         "signals": {},
@@ -1977,6 +1997,20 @@ def _gradient_signal_registry(provenance: Mapping[str, Any]) -> dict[str, dict[s
             processing_role="primary_analysis",
             provenance=provenance,
         ),
+    }
+
+
+def _altitude_signal_registry(provenance: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        "altitude_m": {
+            "kind": "mapped_evidence",
+            "domain": "spatial_context",
+            "quantity": "altitude",
+            "unit": "m",
+            "processing_role": "mapped_evidence",
+            "origin": "analysis",
+            "derivation": copy.deepcopy(dict(provenance)),
+        }
     }
 
 

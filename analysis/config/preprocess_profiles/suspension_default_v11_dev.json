@@ -91,7 +91,7 @@
     },
     "spatial_context": {
       "enabled": true,
-      "algorithm_version": 3,
+      "algorithm_version": 4,
       "distance": {
         "source_priority": [
           "gps_geometry"

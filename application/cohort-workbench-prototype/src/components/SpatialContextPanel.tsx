@@ -1,20 +1,25 @@
-import { type PointerEvent as ReactPointerEvent, useEffect, useMemo, useState } from 'react'
-import { Activity } from 'lucide-react'
+import { type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { Activity, ChevronDown, ChevronRight } from 'lucide-react'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
-import { sessionToStudyRef } from '../domain/studySets'
+import { nearestSpatialDistance, spatialDistanceAxis, spatialDistanceForTime } from '../domain/spatialContext'
+import { sessionRefId, sessionToStudyRef } from '../domain/studySets'
 import type { SessionRecord, SpatialContextWindowResponse, TimeseriesWindowSignal } from '../domain/types'
 import { InfoTip, PanelTitle } from './Common'
 
 type SpatialContextPanelProps = {
-  sessions: SessionRecord[]
+  session: SessionRecord | null
   dataSource: LibraryDataSource
   videoSession: SessionRecord | null
   videoSessionTimeS: number | null
   settings: SpatialContextSettings
+  cursorDistanceM: number | null
+  altitudeContent: ReactNode
+  unavailableMessage?: string
+  onCursorDistanceChange: (distanceM: number | null) => void
+  onDataChange?: (data: SpatialContextWindowResponse | null) => void
 }
 
 export type SpatialContextSettings = {
-  sessionId: string
   selected: Set<string>
   binCount: number
   gradientMinimum: number
@@ -25,8 +30,10 @@ export type SpatialContextSettings = {
 }
 
 type SpatialContextControlsProps = {
-  sessions: SessionRecord[]
+  focusOptions: Array<{ value: string; label: string; group: 'Sessions' | 'Tracks' }>
+  focusValue: string
   settings: SpatialContextSettings
+  onFocusChange: (value: string) => void
   onChange: (settings: SpatialContextSettings) => void
 }
 
@@ -44,7 +51,7 @@ type MetricDefinition = {
 }
 
 const METRICS: MetricDefinition[] = [
-  { column: 'gradient_fraction', label: 'Gradient', unit: 'rise / run', color: '#008c95', group: 'gradient' },
+  { column: 'gradient_fraction', label: 'Gradient', unit: '%', color: '#008c95', group: 'gradient' },
   { column: 'twistiness_rad_per_m', label: 'Twistiness', unit: 'rad / m', color: '#b66a2c', group: 'twistiness' },
   { column: 'front_suspension_activity', label: 'Front activity', unit: 'm / m', color: '#1769aa', group: 'activity' },
   { column: 'rear_suspension_activity', label: 'Rear activity', unit: 'm / m', color: '#8f4aa8', group: 'activity' },
@@ -53,9 +60,7 @@ const METRICS: MetricDefinition[] = [
 
 const HISTOGRAM_COLOR = '#008c95'
 
-export function SpatialContextControls({ sessions, settings, onChange }: SpatialContextControlsProps) {
-  const session = sessions.find((item) => sessionKey(item) === settings.sessionId) ?? sessions[0] ?? null
-
+export function SpatialContextControls({ focusOptions, focusValue, settings, onFocusChange, onChange }: SpatialContextControlsProps) {
   function update(patch: Partial<SpatialContextSettings>) {
     onChange({ ...settings, ...patch })
   }
@@ -70,13 +75,20 @@ export function SpatialContextControls({ sessions, settings, onChange }: Spatial
   return (
     <div className="track-analysis-spatial-controls">
       <label className="track-analysis-field">
-        <span>Evidence session</span>
+        <span>Session or Track</span>
         <select
-          disabled={!sessions.length}
-          value={session ? sessionKey(session) : ''}
-          onChange={(event) => update({ sessionId: event.target.value })}
+          disabled={!focusOptions.length}
+          value={focusValue}
+          onChange={(event) => onFocusChange(event.target.value)}
         >
-          {sessions.map((item) => <option key={sessionKey(item)} value={sessionKey(item)}>{item.name}</option>)}
+          {(['Sessions', 'Tracks'] as const).map((group) => {
+            const options = focusOptions.filter((option) => option.group === group)
+            return options.length ? (
+              <optgroup key={group} label={group}>
+                {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </optgroup>
+            ) : null
+          })}
         </select>
       </label>
       <fieldset>
@@ -113,20 +125,20 @@ export function SpatialContextControls({ sessions, settings, onChange }: Spatial
           onChange={(binCount) => update({ binCount })}
         />
         <NumberControl
-          label="Gradient min"
-          value={settings.gradientMinimum}
-          max={settings.gradientMaximum - 0.0001}
-          step={0.05}
-          normalize={(value) => Math.min(value, settings.gradientMaximum - 0.0001)}
-          onChange={(gradientMinimum) => update({ gradientMinimum })}
+          label="Gradient min (%)"
+          value={settings.gradientMinimum * 100}
+          max={settings.gradientMaximum * 100 - 0.01}
+          step={5}
+          normalize={(value) => Math.min(value, settings.gradientMaximum * 100 - 0.01)}
+          onChange={(gradientMinimumPercent) => update({ gradientMinimum: gradientMinimumPercent / 100 })}
         />
         <NumberControl
-          label="Gradient max"
-          value={settings.gradientMaximum}
-          min={settings.gradientMinimum + 0.0001}
-          step={0.05}
-          normalize={(value) => Math.max(value, settings.gradientMinimum + 0.0001)}
-          onChange={(gradientMaximum) => update({ gradientMaximum })}
+          label="Gradient max (%)"
+          value={settings.gradientMaximum * 100}
+          min={settings.gradientMinimum * 100 + 0.01}
+          step={5}
+          normalize={(value) => Math.max(value, settings.gradientMinimum * 100 + 0.01)}
+          onChange={(gradientMaximumPercent) => update({ gradientMaximum: gradientMaximumPercent / 100 })}
         />
         <NumberControl
           label="Twistiness max"
@@ -145,24 +157,24 @@ export function SpatialContextControls({ sessions, settings, onChange }: Spatial
           onChange={(activityMaximum) => update({ activityMaximum })}
         />
       </div>
-      <small className="track-analysis-spatial-range-note">
-        Bin count applies inside each stated range. Gradient adds underflow and overflow bins; the other metrics add an overflow bin.
-      </small>
     </div>
   )
 }
 
 export function SpatialContextPanel({
-  sessions,
+  session,
   dataSource,
   videoSession,
   videoSessionTimeS,
   settings,
+  cursorDistanceM,
+  altitudeContent,
+  unavailableMessage,
+  onCursorDistanceChange,
+  onDataChange,
 }: SpatialContextPanelProps) {
   const [loadState, setLoadState] = useState<LoadState>({ status: 'idle', data: null, message: '' })
-  const [hoverDistanceM, setHoverDistanceM] = useState<number | null>(null)
-
-  const session = sessions.find((item) => sessionKey(item) === settings.sessionId) ?? sessions[0] ?? null
+  const [expanded, setExpanded] = useState(true)
 
   useEffect(() => {
     let cancelled = false
@@ -172,9 +184,9 @@ export function SpatialContextPanel({
           setLoadState({
             status: 'idle',
             data: null,
-            message: dataSource.loadSpatialContextWindow
-              ? 'Select an active session.'
-              : 'Spatial-context data is not supported by this data source.',
+            message: unavailableMessage ?? (dataSource.loadSpatialContextWindow
+              ? 'Select a session as the focus entity.'
+              : 'Spatial-context data is not supported by this data source.'),
           })
         }
       })
@@ -205,9 +217,15 @@ export function SpatialContextPanel({
     return () => {
       cancelled = true
     }
-  }, [dataSource, session])
+  }, [dataSource, session, unavailableMessage])
 
-  const data = loadState.status === 'ready' ? loadState.data : null
+  const data = loadState.status === 'ready' && session &&
+    sessionRefId(loadState.data.sessionRef) === sessionRefId(sessionToStudyRef(session))
+    ? loadState.data
+    : null
+  useEffect(() => {
+    onDataChange?.(data)
+  }, [data, onDataChange])
   const distanceAxis = useMemo(() => spatialDistanceAxis(data?.distance.values ?? []), [data])
   const availableColumns = useMemo(() => new Set(data?.metrics.map((metric) => metric.column) ?? []), [data])
   const selectedMetrics = METRICS.filter((metric) => settings.selected.has(metric.column) && availableColumns.has(metric.column))
@@ -215,24 +233,40 @@ export function SpatialContextPanel({
     if (!data || !session || !videoSession || videoSessionTimeS === null || sessionKey(session) !== sessionKey(videoSession)) {
       return null
     }
-    return distanceForTime(data, videoSessionTimeS)
+    return spatialDistanceForTime(data, videoSessionTimeS)
   }, [data, session, videoSession, videoSessionTimeS])
 
+  function handleHoverDistance(distanceM: number | null) {
+    const resolvedDistanceM = data && distanceM !== null ? nearestSpatialDistance(data.distance.values, distanceM) : null
+    onCursorDistanceChange(resolvedDistanceM)
+  }
+
   return (
-    <section className="track-analysis-spatial-card">
+    <section className={`track-analysis-spatial-card${expanded ? '' : ' collapsed'}`}>
       <PanelTitle
         icon={<Activity size={15} />}
         title="Spatial context"
         action={
           <span className="track-analysis-title-meta">
             {data ? `${data.sampling.sourcePoints.toLocaleString()} spatial samples` : loadState.message}
-            <InfoTip text="Canonical session-derived metrics on cumulative session distance. These plots do not replace full-resolution time-domain signals." />
+            <InfoTip text="Distance-domain altitude evidence and canonical session-derived metrics. Track focus provides track altitude; metrics remain session-derived and do not replace full-resolution time-domain signals." />
+            <button
+              type="button"
+              className="track-analysis-panel-toggle"
+              aria-expanded={expanded}
+              aria-label={expanded ? 'Collapse spatial context' : 'Expand spatial context'}
+              onClick={() => setExpanded((current) => !current)}
+              title={expanded ? 'Collapse spatial context' : 'Expand spatial context'}
+            >
+              {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            </button>
           </span>
         }
       />
-      <div className="track-analysis-spatial-body">
-        {loadState.status === 'loading' || loadState.status === 'idle' || loadState.status === 'error' ? (
-          <div className="track-analysis-placeholder">{loadState.message}</div>
+      {expanded && <div className="track-analysis-spatial-body">
+        {altitudeContent}
+        {!data ? (
+          <div className="track-analysis-placeholder">{loadState.message || 'Loading spatial contextâ€¦'}</div>
         ) : selectedMetrics.length ? (
           <div className="track-analysis-spatial-content">
             <div className="track-analysis-spatial-plots">
@@ -242,10 +276,8 @@ export function SpatialContextPanel({
                   data={loadState.data!}
                   definition={definition}
                   distanceAxis={distanceAxis}
-                  hoverDistanceM={hoverDistanceM}
-                  onHoverDistance={(distanceM) => setHoverDistanceM(
-                    distanceM === null ? null : nearestDistance(loadState.data!.distance.values, distanceM),
-                  )}
+                  hoverDistanceM={cursorDistanceM}
+                  onHoverDistance={handleHoverDistance}
                   playbackDistanceM={playbackDistanceM}
                   showGridlines={settings.showGridlines}
                   valueMinimum={definition.group === 'gradient' ? settings.gradientMinimum : 0}
@@ -269,19 +301,43 @@ export function SpatialContextPanel({
         ) : (
           <div className="track-analysis-placeholder">Select at least one available metric.</div>
         )}
-      </div>
+      </div>}
     </section>
   )
 }
 
 function NumberControl({ label, value, min, max, step, normalize, onChange }: { label: string; value: number; min?: number; max?: number; step: number; normalize: (value: number) => number; onChange: (value: number) => void }) {
+  const [draft, setDraft] = useState(String(value))
+
+  function commit() {
+    const parsed = Number(draft)
+    if (!draft.trim() || !Number.isFinite(parsed)) {
+      setDraft(String(value))
+      return
+    }
+    const committed = normalize(parsed)
+    setDraft(String(committed))
+    onChange(committed)
+  }
+
   return (
     <label className="track-analysis-field">
       <span>{label}</span>
-      <input type="number" value={value} min={min} max={max} step={step} onChange={(event) => {
-        const next = Number(event.target.value)
-        if (Number.isFinite(next)) onChange(normalize(next))
-      }} />
+      <input
+        type="number"
+        value={draft}
+        min={min}
+        max={max}
+        step={step}
+        onBlur={commit}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') event.currentTarget.blur()
+          if (event.key === 'Escape') {
+            setDraft(String(value))
+          }
+        }}
+      />
     </label>
   )
 }
@@ -311,8 +367,8 @@ function MetricLineChart({
   const points = alignedPoints(data.distance.values, signal?.values ?? [])
   if (points.length < 2) return <div className="track-analysis-spatial-chart-empty">No valid {definition.label.toLowerCase()} data.</div>
   const width = 920
-  const height = 150
-  const padding = { top: 15, right: 20, bottom: 34, left: 64 }
+  const height = 105
+  const padding = { top: 10, right: 20, bottom: 28, left: 64 }
   const valueAxis = spatialValueAxis(valueMinimum, valueMaximum)
   const plotWidth = width - padding.left - padding.right
   const plotHeight = height - padding.top - padding.bottom
@@ -353,7 +409,7 @@ function MetricLineChart({
             {showGridlines
               ? <line className="track-analysis-spatial-grid" x1={padding.left} x2={width - padding.right} y1={y(tick)} y2={y(tick)} />
               : <line className="track-analysis-spatial-tick" x1={padding.left - 4} x2={padding.left} y1={y(tick)} y2={y(tick)} />}
-            <text x={padding.left - 8} y={y(tick) + 4} textAnchor="end">{formatMetricValue(tick)}</text>
+            <text x={padding.left - 8} y={y(tick) + 4} textAnchor="end">{formatMetricDisplayValue(definition, tick)}</text>
           </g>
         ))}
         <line className="track-analysis-spatial-axis" x1={padding.left} x2={width - padding.right} y1={height - padding.bottom} y2={height - padding.bottom} />
@@ -378,7 +434,7 @@ function MetricLineChart({
           <strong>{formatDistance(hoverDistanceM)}</strong>
           <span>
             <i style={{ background: definition.color }} />
-            {definition.label}: {hoverValue === null ? 'No value' : `${formatMetricValue(hoverValue)} ${definition.unit}`}
+            {definition.label}: {hoverValue === null ? 'No value' : formatMetricDisplayValue(definition, hoverValue, true)}
           </span>
         </div>
       )}
@@ -388,19 +444,25 @@ function MetricLineChart({
 
 function MetricHistogram({ definition, signal, binCount, lower, upper }: { definition: MetricDefinition; signal: TimeseriesWindowSignal | null; binCount: number; lower: number; upper: number }) {
   const values = (signal?.values ?? []).filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
-  const histogram = makeHistogram(values, lower, upper, binCount, definition.group === 'gradient')
+  const twoSided = definition.group === 'gradient'
+  const histogram = makeHistogram(values, lower, upper, binCount, twoSided, (value) => formatMetricDisplayValue(definition, value))
+  const boundaries = Array.from({ length: binCount + 1 }, (_, index) => lower + ((upper - lower) * index) / binCount)
   const width = 280
-  const height = 145
-  const padding = { top: 18, right: 12, bottom: 34, left: 38 }
+  const height = 168
+  const padding = { top: 18, right: 12, bottom: 57, left: 24 }
   const plotWidth = width - padding.left - padding.right
   const plotHeight = height - padding.top - padding.bottom
   const maximum = Math.max(1, ...histogram.map((bin) => bin.count))
   const barWidth = plotWidth / Math.max(1, histogram.length)
+  const zeroX = padding.left + (
+    (twoSided ? 1 : 0) + Math.max(0, Math.min(binCount, ((0 - lower) / (upper - lower)) * binCount))
+  ) * barWidth
   return (
     <div className="track-analysis-spatial-histogram">
       <strong>{definition.label}</strong>
       <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${definition.label} histogram`}>
         <line className="track-analysis-spatial-axis" x1={padding.left} x2={width - padding.right} y1={height - padding.bottom} y2={height - padding.bottom} />
+        <line className="track-analysis-spatial-axis" x1={zeroX} x2={zeroX} y1={padding.top} y2={height - padding.bottom} />
         {histogram.map((bin, index) => {
           const barHeight = (bin.count / maximum) * plotHeight
           return (
@@ -420,26 +482,32 @@ function MetricHistogram({ definition, signal, binCount, lower, upper }: { defin
             </rect>
           )
         })}
-        <text x={padding.left} y={height - 8} textAnchor="start">{histogram[0]?.label ?? ''}</text>
-        <text x={width - padding.right} y={height - 8} textAnchor="end">{histogram.at(-1)?.label ?? ''}</text>
-        <text x={padding.left - 6} y={padding.top + 4} textAnchor="end">{maximum}</text>
+        {boundaries.map((boundary, index) => {
+          const boundaryX = padding.left + (index + (twoSided ? 1 : 0)) * barWidth
+          return (
+            <g key={`boundary-${index}`}>
+              <line className="track-analysis-spatial-tick" x1={boundaryX} x2={boundaryX} y1={height - padding.bottom} y2={height - padding.bottom + 4} />
+              <text
+                className="track-analysis-spatial-histogram-boundary"
+                x={boundaryX}
+                y={height - padding.bottom + 9}
+                dy="0.35em"
+                textAnchor="end"
+                transform={`rotate(-90 ${boundaryX} ${height - padding.bottom + 9})`}
+              >
+                {formatMetricDisplayValue(definition, boundary)}
+              </text>
+            </g>
+          )
+        })}
       </svg>
     </div>
   )
 }
 
-function spatialDistanceAxis(distances: Array<number | null>) {
-  const maximumDistance = Math.max(0, ...distances.filter((value): value is number => typeof value === 'number' && Number.isFinite(value)))
-  const step = gridStep(maximumDistance, [100, 200, 500, 1000, 2000], 3)
-  const max = Math.max(step * 4, Math.ceil(maximumDistance / step) * step)
-  return { min: 0, max, step, ticks: gridTicks(0, max, step) }
-}
-
 function spatialValueAxis(minimum: number, maximum: number) {
   const step = niceNumericStep(maximum - minimum, 5)
   const ticks = gridTicks(minimum, maximum, step)
-  if (!ticks.some((tick) => Math.abs(tick - minimum) < step * 0.001)) ticks.unshift(minimum)
-  if (!ticks.some((tick) => Math.abs(tick - maximum) < step * 0.001)) ticks.push(maximum)
   return { min: minimum, max: maximum, ticks }
 }
 
@@ -451,11 +519,6 @@ function niceNumericStep(span: number, targetIntervals: number) {
   return factor * magnitude
 }
 
-function gridStep(span: number, candidates: number[], minimumGridlines: number) {
-  const safeSpan = Math.max(0, span)
-  return [...candidates].reverse().find((candidate) => safeSpan / candidate >= minimumGridlines) ?? candidates[0]
-}
-
 function gridTicks(minimum: number, maximum: number, step: number) {
   const ticks: number[] = []
   const start = Math.ceil(minimum / step) * step
@@ -463,20 +526,6 @@ function gridTicks(minimum: number, maximum: number, step: number) {
     ticks.push(Math.round(value * 1e9) / 1e9)
   }
   return ticks
-}
-
-function nearestDistance(distances: Array<number | null>, target: number) {
-  let nearest: number | null = null
-  let nearestDelta = Number.POSITIVE_INFINITY
-  distances.forEach((distance) => {
-    if (typeof distance !== 'number' || !Number.isFinite(distance)) return
-    const delta = Math.abs(distance - target)
-    if (delta < nearestDelta) {
-      nearest = distance
-      nearestDelta = delta
-    }
-  })
-  return nearest
 }
 
 function metricValueAtDistance(distances: Array<number | null>, values: Array<number | null>, target: number) {
@@ -494,7 +543,7 @@ function metricValueAtDistance(distances: Array<number | null>, values: Array<nu
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
-function makeHistogram(values: number[], lower: number, upper: number, binCount: number, twoSided: boolean) {
+function makeHistogram(values: number[], lower: number, upper: number, binCount: number, twoSided: boolean, formatValue: (value: number) => string) {
   const width = (upper - lower) / binCount
   const counts = Array.from({ length: binCount }, () => 0)
   let below = 0
@@ -504,9 +553,9 @@ function makeHistogram(values: number[], lower: number, upper: number, binCount:
     else if (value > upper) above += 1
     else counts[Math.min(binCount - 1, Math.floor((value - lower) / width))] += 1
   })
-  const bins = counts.map((count, index) => ({ count, label: `${formatMetricValue(lower + index * width)}–${formatMetricValue(lower + (index + 1) * width)}` }))
-  if (twoSided) bins.unshift({ count: below, label: `<${formatMetricValue(lower)}` })
-  bins.push({ count: above, label: `>${formatMetricValue(upper)}` })
+  const bins = counts.map((count, index) => ({ count, label: `${formatValue(lower + index * width)}–${formatValue(lower + (index + 1) * width)}` }))
+  if (twoSided) bins.unshift({ count: below, label: `<${formatValue(lower)}` })
+  bins.push({ count: above, label: `>${formatValue(upper)}` })
   return bins
 }
 
@@ -537,27 +586,20 @@ function metricPath(distances: Array<number | null>, values: Array<number | null
   }).join(' ')
 }
 
-function distanceForTime(data: SpatialContextWindowResponse, timeS: number) {
-  const times = data.timeMapping.values
-  const distances = data.distance.values
-  for (let index = 1; index < times.length; index += 1) {
-    const before = times[index - 1]
-    const after = times[index]
-    const beforeDistance = distances[index - 1]
-    const afterDistance = distances[index]
-    if (typeof before !== 'number' || typeof after !== 'number' || typeof beforeDistance !== 'number' || typeof afterDistance !== 'number' || after <= before || timeS < before || timeS > after) continue
-    const fraction = (timeS - before) / (after - before)
-    return beforeDistance + fraction * (afterDistance - beforeDistance)
-  }
-  return null
-}
-
 function sessionKey(session: SessionRecord) {
   return `${session.libraryId}:${session.runId}:${session.sessionId}`
 }
 
 function formatMetricValue(value: number) {
   return Math.abs(value) >= 10 ? value.toFixed(1) : value.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')
+}
+
+function formatMetricDisplayValue(definition: MetricDefinition, value: number, includeUnit = false) {
+  if (definition.group === 'gradient') {
+    return `${Math.round(value * 100)}%`
+  }
+  const formatted = formatMetricValue(value)
+  return includeUnit && definition.unit ? `${formatted} ${definition.unit}` : formatted
 }
 
 function formatDistance(distanceM: number) {

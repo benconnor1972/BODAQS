@@ -577,7 +577,7 @@
 
 .track-analysis-main {
   display: grid;
-  grid-template-rows: minmax(430px, 2fr) minmax(220px, 1fr) auto;
+  grid-template-rows: minmax(430px, 2fr) auto auto;
   gap: var(--space-3);
   min-width: 0;
 }
@@ -638,11 +638,6 @@
   gap: var(--space-2);
 }
 
-.track-analysis-spatial-range-note {
-  color: var(--muted);
-  font-size: var(--text-caption);
-}
-
 .track-analysis-spatial-content,
 .track-analysis-spatial-plots {
   display: grid;
@@ -651,6 +646,7 @@
 }
 
 .track-analysis-spatial-chart-wrap,
+.track-analysis-altitude-chart-wrap,
 .track-analysis-spatial-histogram,
 .track-analysis-spatial-chart-empty {
   min-width: 0;
@@ -659,22 +655,34 @@
   background: var(--surface-muted);
 }
 
-.track-analysis-spatial-chart-wrap {
+.track-analysis-spatial-chart-wrap,
+.track-analysis-altitude-chart-wrap {
   position: relative;
 }
 
 .track-analysis-spatial-chart-wrap strong,
+.track-analysis-altitude-chart-wrap strong,
 .track-analysis-spatial-histogram strong {
   margin-right: var(--space-2);
   color: var(--ink);
+}
+
+.track-analysis-spatial-chart-wrap strong,
+.track-analysis-altitude-chart-wrap strong {
+  font-size: var(--text-section-title);
+}
+
+.track-analysis-spatial-histogram strong {
   font-size: var(--text-body);
 }
 
-.track-analysis-spatial-chart-wrap small {
+.track-analysis-spatial-chart-wrap small,
+.track-analysis-altitude-chart-wrap small {
   color: var(--muted);
 }
 
 .track-analysis-spatial-chart-wrap svg,
+.track-analysis-altitude-chart-wrap svg,
 .track-analysis-spatial-histogram svg {
   display: block;
   width: 100%;
@@ -682,7 +690,11 @@
   overflow: visible;
 }
 
-.track-analysis-spatial-chart-wrap text,
+.track-analysis-spatial-chart-wrap text {
+  fill: var(--muted);
+  font-size: 10px;
+}
+
 .track-analysis-spatial-histogram text {
   fill: var(--muted);
   font-size: 11px;
@@ -705,8 +717,11 @@
 
 .track-analysis-spatial-zero {
   stroke: var(--line-strong);
-  stroke-dasharray: 3 3;
   stroke-width: 1;
+}
+
+.track-analysis-spatial-card.collapsed {
+  grid-template-rows: auto;
 }
 
 .track-analysis-spatial-playback {
@@ -777,6 +792,10 @@
   filter: drop-shadow(0 0 3px rgba(0, 140, 149, 0.32));
 }
 
+.track-analysis-spatial-histogram text.track-analysis-spatial-histogram-boundary {
+  font-size: 9px;
+}
+
 @media (max-width: 1050px) {
   .track-analysis-spatial-range-controls {
     grid-template-columns: repeat(2, minmax(100px, 1fr));
@@ -792,7 +811,9 @@
 }
 
 .track-analysis-main.video-open .track-analysis-map-band {
-  grid-template-columns: minmax(0, 1fr) var(--track-analysis-video-width, 360px);
+  grid-template-columns:
+    minmax(0, 1fr)
+    minmax(0, min(var(--track-analysis-video-width, 360px), calc((100% - var(--space-3)) / 2)));
 }
 
 .track-analysis-map-card,
@@ -804,6 +825,7 @@
 
 .track-analysis-video-panel {
   position: relative;
+  grid-template-rows: auto auto;
   min-width: 0;
   border: var(--border-subtle);
   background: var(--surface);
@@ -847,7 +869,7 @@
   min-width: 0;
   min-height: 0;
   padding: var(--space-3);
-  overflow: auto;
+  overflow: visible;
 }
 
 .track-analysis-video-player,
@@ -950,48 +972,27 @@
 
 .track-analysis-bottom {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-3);
   min-width: 0;
   min-height: 0;
 }
 
-.track-analysis-bottom.lap-expanded {
-  grid-template-columns: 34px minmax(0, 1fr);
+.track-analysis-video-player {
+  display: block;
+  height: auto;
+  max-width: none;
 }
 
-.track-analysis-altitude-rail {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  width: 34px;
-  min-height: 220px;
-  padding: var(--space-3) 0;
-  border: var(--border-subtle);
-  background: var(--surface);
-  color: var(--teal-strong);
-  cursor: pointer;
-  font-size: var(--text-caption);
-  font-weight: var(--weight-bold);
-  writing-mode: vertical-rl;
-}
-
-.track-analysis-altitude-rail svg {
-  writing-mode: horizontal-tb;
-}
-
-.track-analysis-altitude-rail:hover {
-  border-color: rgba(0, 140, 149, 0.5);
-  background: var(--teal-soft);
+.track-analysis-lower-card.collapsed {
+  grid-template-rows: auto;
 }
 
 .track-analysis-altitude-chart {
   display: block;
   width: 100%;
-  height: 100%;
-  min-height: 170px;
-  padding: var(--space-3);
+  height: auto;
+  min-height: 0;
   overflow: visible;
 }
 
@@ -1013,7 +1014,7 @@
 
 .track-analysis-altitude-chart text {
   fill: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-caption);
 }
 
 .track-analysis-altitude-axis-title {
@@ -1048,6 +1049,17 @@
   fill: #f59e0b;
   stroke: #ffffff;
   stroke-width: 1.6;
+}
+
+.track-analysis-altitude-hover-marker line {
+  stroke: rgba(0, 140, 149, 0.62);
+  stroke-width: 1;
+}
+
+.track-analysis-altitude-hover-marker circle {
+  fill: var(--teal);
+  stroke: #ffffff;
+  stroke-width: 1.4;
 }
 
 .track-analysis-lap-table-wrap {

@@ -174,12 +174,17 @@ def test_spatial_context_derives_recorded_distance_gradient_and_native_rate_acti
     assert result.stream_meta["distance_source"]["selected"]["candidate_kind"] == "recorded_gps_or_fit_distance"
     assert result.stream_df["distance_m"].is_monotonic_increasing
     assert result.stream_df["distance_m"].is_unique
+    assert np.nanmedian(result.stream_df["altitude_m"]) == pytest.approx(205.0, abs=0.1)
     assert np.nanmedian(result.stream_df["gradient_fraction"]) == pytest.approx(0.1, abs=1.0e-6)
     assert np.nanmedian(result.stream_df["front_suspension_activity"]) == pytest.approx(0.04, rel=0.03)
     assert np.nanmedian(result.stream_df["rear_suspension_activity"]) == pytest.approx(0.032, rel=0.03)
     provenance = result.stream_meta["metric_provenance"]["front_suspension_activity"]
     assert provenance["method"] == "native_rate_absolute_movement_per_ground_distance"
     assert provenance["activity_mask"]["policy"] == "test_activity"
+    altitude_provenance = result.stream_meta["evidence_provenance"]["altitude"]
+    assert altitude_provenance["method"] == "piecewise_linear_distance_interpolation"
+    assert altitude_provenance["active_mask_policy"] == "not_applied_to_mapped_evidence"
+    assert result.stream_meta["signals"]["altitude_m"]["quantity"] == "altitude"
 
 
 def test_activity_per_distance_is_approximately_speed_invariant() -> None:
@@ -512,6 +517,7 @@ def test_all_metrics_treat_inactivity_as_a_hard_boundary() -> None:
     inactive = result.stream_df["distance_m"].between(40.0, 60.0)
 
     assert not result.stream_df.loc[inactive, "active_mask_qc"].any()
+    assert result.stream_df.loc[inactive, "altitude_m"].notna().all()
     for column in (
         "gradient_fraction_local",
         "gradient_fraction",
@@ -700,6 +706,7 @@ def test_long_gps_gap_remains_unsupported_and_is_not_smoothed_across() -> None:
 
     assert (result.stream_df.loc[gap, "distance_support_fraction"] == 0.0).all()
     assert result.stream_df.loc[gap, "representative_time_s"].isna().all()
+    assert result.stream_df.loc[gap, "altitude_m"].isna().all()
     assert result.stream_df.loc[gap, "gradient_fraction"].isna().all()
     assert result.stream_df.loc[gap, "front_suspension_activity"].isna().all()
 
@@ -727,7 +734,9 @@ def test_materialized_stream_round_trips_through_artifact_writer(tmp_path) -> No
         )
     )
     assert len(persisted.index) == len(result.stream_df.index)
+    assert "altitude_m" in persisted.columns
     assert persisted_meta["schema"] == "bodaqs.spatial_context_stream"
+    assert persisted_meta["evidence_provenance"]["altitude"]["source_id"] == "gps_fit"
     assert persisted_meta["metric_provenance"]["rear_suspension_activity"]["resolved_column"].startswith(
         "rear_wheel_disp"
     )
@@ -798,7 +807,7 @@ def test_unavailable_materialized_stream_round_trips_for_persistence(tmp_path) -
     persisted_meta = session["meta"]["secondary_streams"][SPATIAL_CONTEXT_STREAM_NAME]
     assert persisted_meta["status"] == "unavailable"
     assert persisted_meta["effective_config"] == DEFAULT_SPATIAL_CONTEXT_CONFIG
-    assert session["meta"]["spatial_context"]["algorithm_version"] == 3
+    assert session["meta"]["spatial_context"]["algorithm_version"] == 4
     assert session["meta"]["streams"][SPATIAL_CONTEXT_STREAM_NAME]["spacing_m"] == 0.5
 
     store = ArtifactStore(tmp_path / "artifacts")

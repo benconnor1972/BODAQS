@@ -541,7 +541,25 @@ For the canonical whole-session stream, `distance_m` is session cumulative
 distance. In a track-scoped result, it is compacted session-derived distance
 over the retained continuity segments.
 
-### 8.3 Optional metric columns
+### 8.3 Optional mapped-evidence columns
+
+| column | type | unit | meaning |
+|---|---|---|---|
+| `altitude_m` | float/null | m | Selected session GPS altitude mapped directly onto the regular distance grid |
+
+`altitude_m` is mapped source evidence rather than a derived metric. Version 0
+maps the altitude from the selected coherent GPS distance candidate by
+piecewise-linear interpolation against source distance. It uses the same valid
+source pairs as `representative_time_s` and must remain null across rejected
+distance intervals, unavailable altitude endpoints, and source gaps beyond the
+configured interpolation limit.
+
+The shared `active_mask_qc` does not by itself invalidate `altitude_m`.
+Activity still governs the eligibility and continuity of derived metrics,
+including gradient. A finer spatial grid must not be represented as finer
+altitude measurement resolution.
+
+### 8.4 Optional metric columns
 
 | column | type | unit | meaning |
 |---|---|---|---|
@@ -562,7 +580,7 @@ Metric columns may be absent when their required evidence cannot be resolved.
 Consumers must distinguish an absent metric from a present metric containing
 null regions.
 
-### 8.4 Optional track-scope coordinate columns
+### 8.5 Optional track-scope coordinate columns
 
 | column | type | unit | meaning |
 |---|---|---|---|
@@ -573,10 +591,11 @@ null regions.
 These columns are present only in a track-scoped result. They are coordinate
 or QC evidence rather than spatial-context metrics.
 
-### 8.5 Signal registry
+### 8.6 Signal registry
 
-Every numeric metric intended for semantic selection must have a signal entry
-in the stream-local `signals` registry. Registry entries should include:
+Every mapped-evidence or numeric metric column intended for semantic selection
+must have a signal entry in the stream-local `signals` registry. Registry
+entries should include:
 
 - `quantity`;
 - `unit`;
@@ -599,7 +618,7 @@ A persisted stream metadata document should have this overall shape:
 {
   "schema": "bodaqs.spatial_context_stream",
   "version": 1,
-  "algorithm_version": 3,
+  "algorithm_version": 4,
   "stream_name": "spatial_context",
   "kind": "derived",
   "coordinate": {
@@ -629,6 +648,7 @@ A persisted stream metadata document should have this overall shape:
     "retained_session_distance_m": 0.0,
     "removed_session_distance_m": 0.0
   },
+  "evidence_provenance": {},
   "metric_provenance": {},
   "quality": {},
   "signals": {},
@@ -649,6 +669,8 @@ Required metadata behavior:
 - `distance_source` records all evaluated candidates and the selected source.
 - `time_mapping` records interpolation method, maximum gap, valid intervals,
   and mapping coverage.
+- `evidence_provenance` records source identity and mapping behavior for mapped
+  evidence such as `altitude_m`.
 - `track_scope`, when present, records track identity and revision, selection
   policy, effective matching thresholds, sequence-matcher diagnostics, all
   qualifying forward traversals, the selected traversal, retained and removed
@@ -775,6 +797,9 @@ A conforming implementation should test at least these invariants:
     cross a cut are null and smoothing is regenerated per segment.
 15. Sequence-aware projection does not jump between distant track stations at
     an overlapping or self-near section merely because the local distances tie.
+16. `altitude_m` uses the selected candidate's altitude evidence, remains null
+    across invalid distance intervals, and is not removed solely because
+    `active_mask_qc` is false.
 
 The implementation maintains a compact real-data regression corpus under
 `analysis/tests/data/spatial_context`. Its physical cases retain native-rate
