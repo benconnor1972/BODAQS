@@ -114,18 +114,23 @@ export function SpatialContextControls({ focusOptions, focusValue, settings, onF
         />
         <span>Show gridlines</span>
       </label>
-      <div className="track-analysis-spatial-range-controls">
+      <NumberControl
+        label="In-range bins"
+        value={settings.binCount}
+        min={1}
+        max={100}
+        step={1}
+        normalize={(value) => Math.max(1, Math.min(100, Math.round(value)))}
+        onChange={(binCount) => update({ binCount })}
+      />
+      <div className="track-analysis-spatial-range-table" role="table" aria-label="Spatial metric ranges">
+        <span aria-hidden="true" />
+        <strong role="columnheader">Min</strong>
+        <strong role="columnheader">Max</strong>
+        <span role="rowheader">Gradient (%)</span>
         <NumberControl
-          label="In-range bins"
-          value={settings.binCount}
-          min={1}
-          max={100}
-          step={1}
-          normalize={(value) => Math.max(1, Math.min(100, Math.round(value)))}
-          onChange={(binCount) => update({ binCount })}
-        />
-        <NumberControl
-          label="Gradient min (%)"
+          compact
+          label="Gradient minimum (%)"
           value={settings.gradientMinimum * 100}
           max={settings.gradientMaximum * 100 - 0.01}
           step={5}
@@ -133,23 +138,30 @@ export function SpatialContextControls({ focusOptions, focusValue, settings, onF
           onChange={(gradientMinimumPercent) => update({ gradientMinimum: gradientMinimumPercent / 100 })}
         />
         <NumberControl
-          label="Gradient max (%)"
+          compact
+          label="Gradient maximum (%)"
           value={settings.gradientMaximum * 100}
           min={settings.gradientMinimum * 100 + 0.01}
           step={5}
           normalize={(value) => Math.max(value, settings.gradientMinimum * 100 + 0.01)}
           onChange={(gradientMaximumPercent) => update({ gradientMaximum: gradientMaximumPercent / 100 })}
         />
+        <span role="rowheader">Twistiness (rad/m)</span>
+        <span aria-hidden="true" />
         <NumberControl
-          label="Twistiness max"
+          compact
+          label="Twistiness maximum (rad/m)"
           value={settings.twistinessMaximum}
           min={0.0001}
           step={0.05}
           normalize={(value) => Math.max(0.0001, value)}
           onChange={(twistinessMaximum) => update({ twistinessMaximum })}
         />
+        <span role="rowheader">Activity (m/m)</span>
+        <span aria-hidden="true" />
         <NumberControl
-          label="Activity max"
+          compact
+          label="Activity maximum (m/m)"
           value={settings.activityMaximum}
           min={0.0001}
           step={0.01}
@@ -306,7 +318,7 @@ export function SpatialContextPanel({
   )
 }
 
-function NumberControl({ label, value, min, max, step, normalize, onChange }: { label: string; value: number; min?: number; max?: number; step: number; normalize: (value: number) => number; onChange: (value: number) => void }) {
+function NumberControl({ label, value, min, max, step, normalize, onChange, compact = false }: { label: string; value: number; min?: number; max?: number; step: number; normalize: (value: number) => number; onChange: (value: number) => void; compact?: boolean }) {
   const [draft, setDraft] = useState(String(value))
 
   function commit() {
@@ -321,9 +333,10 @@ function NumberControl({ label, value, min, max, step, normalize, onChange }: { 
   }
 
   return (
-    <label className="track-analysis-field">
-      <span>{label}</span>
+    <label className={`track-analysis-field${compact ? ' compact-number-control' : ''}`}>
+      {!compact && <span>{label}</span>}
       <input
+        aria-label={label}
         type="number"
         value={draft}
         min={min}

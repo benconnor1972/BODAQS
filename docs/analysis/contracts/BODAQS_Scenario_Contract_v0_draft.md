@@ -723,6 +723,23 @@ Scenario facets may overlap. A sample or Event may therefore appear in more
 than one facet. The application must not imply that facet counts are mutually
 exclusive or additive unless disjointness has been established.
 
+The initial SSA and SPD application integration treats each selected Scenario
+as an independent facet population and provides an explicit `All qualifying
+data` population for the null-Scenario comparison. Session time windows and
+inactive-period exclusion form the base population before Scenario Episodes
+are applied. Selecting several Scenarios does not intersect those Scenarios
+with one another.
+
+With no Scenario checkbox selected, the view presents the unfiltered base
+population as a single implicit population. Selecting `All qualifying data`
+explicitly is useful when that baseline is to be compared with one or more
+selected Scenarios.
+
+Scenario controls are active only in Session view. Track view preserves the
+selection but does not evaluate or apply it; this avoids implying a common
+track-distance basis that the initial session-derived Scenario contract does
+not provide.
+
 ### 13.4 Existing analysis dimensions
 
 Scenario is an additional analysis dimension alongside:
@@ -833,6 +850,23 @@ An initial pandas/NumPy implementation is acceptable. Persistent indexes or a
 columnar query engine should be introduced only if measured workloads justify
 them.
 
+The initial Library API implementation maintains a disposable per-session
+activity index for `require_active` evaluation. The index is derived from the
+canonical activity-mask column and contains source-index runs plus conservative
+time-cell intervals; it is not a new source of truth and is invalidated by the
+session data or metadata artifact identity. It is built on first use, shared
+between Scenario definitions, and may be discarded and rebuilt at any time.
+Full per-sample activity or Scenario masks are not persisted.
+
+Measurements against the initial spatial-context regression corpus found only
+six to eight encoded active/inactive runs in physical extracts containing
+26,001 to 286,398 samples. Serialized indexes were approximately 1.3--1.8 KB.
+Warm Parquet reads of the relevant columns were approximately 12 ms on the
+development machine, so a general decoded-column cache and proactive
+session/Scenario materialization are deferred. Conservative sample-cell
+intervalisation is vectorized while retaining the source-sample boundary
+semantics in this contract.
+
 ---
 
 ## 18. Quality And Diagnostics
@@ -939,9 +973,11 @@ Deferred:
 - Synchronous evaluation accepts at most 32 explicit session references and
   returns at most 10,000 Episodes. Broader scopes require a future asynchronous
   execution form.
-- The initial SSA and SPD consumers select either no Scenario or one Scenario
-  restriction. That restriction intersects manual time windows, track-sector
-  scope, activity exclusion, and the member sessions of selected groupings.
+- The initial SSA and SPD Session view selects one or more Scenario facet
+  populations and may include an explicit `All qualifying data` baseline.
+  Manual time windows, activity exclusion, and selected entity membership form
+  the base population before each Scenario is applied independently. Track view
+  preserves but does not apply Scenario or time-window selections.
 - Scratch Scenarios use the persisted definition shape without an id or
   revision. They are local to the analysis tab, survive editor closure, and are
   not restored after the tab is reloaded.

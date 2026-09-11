@@ -11,6 +11,7 @@ import pandas as pd
 
 from bodaqs_analysis.artifacts import ArtifactStore
 
+from .activity_index import activity_regions, build_activity_index, sample_cell_intervals
 from .cache import stable_cache_digest
 from .errors import InvalidRequestError, LibraryApiError
 from .ids import make_session_key, make_session_ref_id
@@ -66,6 +67,7 @@ def evaluate_scenario(
     *,
     scenario: Mapping[str, Any],
     library_root: Callable[[str], Path],
+    activity_index_loader: Callable[[Path, Mapping[str, str]], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if not isinstance(request, Mapping):
         raise InvalidRequestError("Scenario evaluation request must be an object.")
@@ -97,7 +99,12 @@ def evaluate_scenario(
     for root, ref in zip(roots, refs):
         try:
             result = _evaluate_session(
-                root, ref, effective, evaluation_id, include_diagnostics
+                root,
+                ref,
+                effective,
+                evaluation_id,
+                include_diagnostics,
+                activity_index_loader,
             )
         except LibraryApiError as exc:
             result = {
@@ -116,6 +123,70 @@ def evaluate_scenario(
                 f"Scenario evaluation exceeded the {MAX_EPISODES} Episode limit.",
                 details={"maximum": MAX_EPISODES},
             )
+    return _scenario_evaluation_response(
+        effective=effective,
+        digest=digest,
+        input_artifacts=input_artifacts,
+        evaluation_id=evaluation_id,
+        results=results,
+    )
+
+
+def compose_scenario_evaluation(
+    request: Mapping[str, Any],
+    *,
+    scenario: Mapping[str, Any],
+    library_root: Callable[[str], Path],
+    session_results: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Compose a public evaluation response from independently cached sessions."""
+
+    # Reuse the canonical key validation so composition observes the same request
+    # limits and input-artifact identity as direct evaluation.
+    scenario_evaluation_cache_key(request, scenario=scenario, library_root=library_root)
+    sessions = request.get("sessions")
+    assert isinstance(sessions, list)
+    if len(session_results) != len(sessions):
+        raise InvalidRequestError(
+            "Scenario session result count does not match the requested scope.",
+            details={"requested": len(sessions), "received": len(session_results)},
+        )
+    effective = normalize_scenario(scenario, scenario_id=_text_or_none(scenario.get("scenario_id")))
+    digest = stable_cache_digest(effective)
+    refs = [_session_ref(raw_ref) for raw_ref in sessions]
+    input_artifacts = [
+        artifact
+        for ref in refs
+        for artifact in _input_artifacts(library_root(ref["library_id"]), ref, effective)
+    ]
+    evaluation_id = (
+        "scenario-eval-"
+        f"{stable_cache_digest({'scenario': digest, 'sessions': refs, 'input_artifacts': input_artifacts})[:12]}"
+    )
+    results = [dict(result) for result in session_results]
+    if sum(int(item.get("episode_count") or 0) for item in results) > MAX_EPISODES:
+        raise InvalidRequestError(
+            f"Scenario evaluation exceeded the {MAX_EPISODES} Episode limit.",
+            details={"maximum": MAX_EPISODES},
+        )
+    return _scenario_evaluation_response(
+        effective=effective,
+        digest=digest,
+        input_artifacts=input_artifacts,
+        evaluation_id=evaluation_id,
+        results=results,
+    )
+
+
+def _scenario_evaluation_response(
+    *,
+    effective: Mapping[str, Any],
+    digest: str,
+    input_artifacts: Sequence[Mapping[str, Any]],
+    evaluation_id: str,
+    results: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    results = _episodes_for_evaluation(results, evaluation_id)
     evaluated = [item for item in results if item["status"] != "unavailable"]
     status = "succeeded" if len(evaluated) == len(results) and all(item["status"] == "succeeded" for item in results) else ("unavailable" if not evaluated else "partial")
     distance_values = [item["matched_distance_m"] for item in results]
@@ -149,12 +220,39 @@ def evaluate_scenario(
     }
 
 
+def _episodes_for_evaluation(
+    results: Sequence[Mapping[str, Any]],
+    evaluation_id: str,
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for result in results:
+        item = dict(result)
+        ref = item.get("session_ref") if isinstance(item.get("session_ref"), Mapping) else {}
+        session_key = str(
+            ref.get("session_key")
+            or make_session_key(str(ref.get("run_id") or ""), str(ref.get("session_id") or ""))
+        )
+        episodes: list[dict[str, Any]] = []
+        for index, raw_episode in enumerate(item.get("episodes") or []):
+            episode = dict(raw_episode)
+            ordinal = int(episode.get("ordinal") or index + 1)
+            episode["episode_id"] = (
+                "episode-"
+                f"{stable_cache_digest([evaluation_id, session_key, episode.get('start_time_s'), episode.get('end_time_s'), ordinal])[:12]}"
+            )
+            episodes.append(episode)
+        item["episodes"] = episodes
+        normalized.append(item)
+    return normalized
+
+
 def _evaluate_session(
     root: Path,
     ref: dict[str, str],
     scenario: Mapping[str, Any],
     evaluation_id: str,
     include_diagnostics: bool,
+    activity_index_loader: Callable[[Path, Mapping[str, str]], Mapping[str, Any]] | None,
 ) -> dict[str, Any]:
     store = ArtifactStore(root)
     if not store.session_dir(ref["run_id"], ref["session_id"]).exists():
@@ -163,7 +261,12 @@ def _evaluate_session(
     truth, known = _evaluate_node(store, ref, scenario["predicate"], diagnostics)
     activity = scenario["eligibility_policy"]["activity"]
     if activity == "require_active":
-        active_truth, active_known, active_diag = _activity_regions(store, ref)
+        activity_index = (
+            activity_index_loader(root, ref)
+            if activity_index_loader is not None
+            else build_activity_index(root, ref)
+        )
+        active_truth, active_known, active_diag = activity_regions(activity_index)
         diagnostics.append(active_diag)
         truth, known = _and_states([(truth, known), (active_truth, active_known)])
 
@@ -245,8 +348,8 @@ def _evaluate_node(
             if "active_mask_qc" in frame:
                 known_mask &= pd.to_numeric(frame["active_mask_qc"], errors="coerce").fillna(0).to_numpy() > 0
             true_mask &= known_mask
-        known = _sample_cells(times, known_mask)
-        truth = _sample_cells(times, true_mask)
+        known = sample_cell_intervals(times, known_mask)
+        truth = sample_cell_intervals(times, true_mask)
         info = spec.get("info") if isinstance(spec.get("info"), Mapping) else {}
         diagnostics.append(
             {
@@ -284,16 +387,27 @@ def _load_series(
 ) -> tuple[pd.DataFrame, dict[str, Any], str, str, str]:
     run_id, session_id = ref["run_id"], ref["session_id"]
     stream_name = str(series["stream_name"])
+    session_metadata = _read_json_object(store.path_session_meta(run_id, session_id))
     if stream_name == "primary":
         path = store.path_session_df(run_id, session_id)
-        metadata = _read_json_object(store.path_session_meta(run_id, session_id))
+        metadata = session_metadata
         kind = "primary"
     elif stream_name == "spatial_context":
         path = store.path_session_stream_df(run_id, session_id, stream_name)
         metadata = _read_json_object(store.path_session_stream_meta(run_id, session_id, stream_name))
         kind = "spatial_context"
     else:
-        raise InvalidRequestError("Initial Scenario evaluation supports primary and spatial_context streams only.")
+        secondary = session_metadata.get("secondary_streams")
+        registered = secondary.get(stream_name) if isinstance(secondary, Mapping) else None
+        if not isinstance(registered, Mapping):
+            raise InvalidRequestError(
+                "Scenario source stream is not registered for this session.",
+                details={"stream_name": stream_name},
+            )
+        path = store.path_session_stream_df(run_id, session_id, stream_name)
+        disk_metadata = _read_json_object(store.path_session_stream_meta(run_id, session_id, stream_name))
+        metadata = _merge_stream_metadata(registered, disk_metadata)
+        kind = "time_series"
     if not path.exists():
         raise InvalidRequestError("Scenario source stream is unavailable.", details={"stream_name": stream_name})
     columns = _parquet_columns(path)
@@ -314,6 +428,22 @@ def _load_series(
     if kind == "spatial_context":
         read_columns.extend(column for column in ("distance_support_fraction", "active_mask_qc") if column in columns)
     return pd.read_parquet(path, columns=list(dict.fromkeys(read_columns))), metadata, coordinate_column, time_column, kind
+
+
+def _merge_stream_metadata(
+    registered: Mapping[str, Any],
+    materialized: Mapping[str, Any],
+) -> dict[str, Any]:
+    merged = dict(registered)
+    merged.update(materialized)
+    registered_signals = registered.get("signals")
+    materialized_signals = materialized.get("signals")
+    if isinstance(registered_signals, Mapping) or isinstance(materialized_signals, Mapping):
+        signals = dict(registered_signals) if isinstance(registered_signals, Mapping) else {}
+        if isinstance(materialized_signals, Mapping):
+            signals.update(materialized_signals)
+        merged["signals"] = signals
+    return merged
 
 
 def _criterion_masks(
@@ -339,24 +469,6 @@ def _criterion_masks(
         elif op == "eq": true = values.to_numpy() == criterion["value"]
         else: true = values.isin(criterion["value"]).to_numpy()
     return known, known & np.asarray(true, dtype=bool)
-
-
-def _activity_regions(store: ArtifactStore, ref: Mapping[str, str]) -> tuple[list[Interval], list[Interval], dict[str, Any]]:
-    path = store.path_session_df(ref["run_id"], ref["session_id"])
-    metadata = _read_json_object(store.path_session_meta(ref["run_id"], ref["session_id"]))
-    columns = _parquet_columns(path)
-    candidates = [column for column in ("active_mask_qc", "inactive_mask_qc", "inactive_mask") if column in columns]
-    if not candidates:
-        return [], [], {"criterion_id": "$activity", "status": "unavailable", "warnings": [{"code": "activity_mask_unavailable"}]}
-    time_column, _ = _resolve_time_column(metadata, columns)
-    column = candidates[0]
-    frame = pd.read_parquet(path, columns=[time_column, column])
-    times = pd.to_numeric(frame[time_column], errors="coerce").to_numpy(dtype=float)
-    raw = pd.to_numeric(frame[column], errors="coerce").to_numpy(dtype=float)
-    known_mask = np.isfinite(times) & np.isfinite(raw)
-    true_mask = known_mask & ((raw > 0) if column == "active_mask_qc" else (raw <= 0))
-    truth, known = _sample_cells(times, true_mask), _sample_cells(times, known_mask)
-    return truth, known, {"criterion_id": "$activity", "status": "succeeded", "resolved_series": {"stream_name": "primary", "column": column, "coordinate_column": time_column, "coordinate_unit": "s"}, "true_duration_s": _duration(truth), "unknown_duration_s": None, "warnings": []}
 
 
 def _distance_mapper(store: ArtifactStore, ref: Mapping[str, str]) -> Callable[[float], float | None] | None:
@@ -404,20 +516,6 @@ def _distance_mapper(store: ArtifactStore, ref: Mapping[str, str]) -> Callable[[
                 return float(np.interp(value, segment_times, segment_distances))
         return None
     return map_time
-
-
-def _sample_cells(times: np.ndarray, selected: np.ndarray) -> list[Interval]:
-    valid_times = np.sort(np.unique(times[np.isfinite(times)]))
-    diffs = np.diff(valid_times)
-    positive = diffs[diffs > 1e-9]
-    nominal = (
-        float(np.median(positive))
-        if positive.size >= 2
-        else (min(float(positive[0]), 0.1) if positive.size else 0.001)
-    )
-    half = nominal / 2.0
-    cells = [(max(0.0, float(time) - half), float(time) + half) for time in times[np.asarray(selected, dtype=bool)] if np.isfinite(time)]
-    return _union(cells)
 
 
 def _and_states(states: Sequence[tuple[list[Interval], list[Interval]]]) -> tuple[list[Interval], list[Interval]]:

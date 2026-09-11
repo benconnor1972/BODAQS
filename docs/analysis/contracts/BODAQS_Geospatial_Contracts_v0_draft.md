@@ -384,10 +384,11 @@ Validation notes:
   profiles for an earlier revision are not valid for the edited revision.
 - Historical anchor ids in `geometry_edits` are provenance and need not remain
   live if a user later removes those trackpoints.
-- `segment_aliases`, if present, are optional labels for adjacent ordered
-  trackpoint pairs. They are an interpretation aid, not first-class track
-  geometry.
-- segment aliases whose endpoints do not exist, or whose `to_trackpoint_id` is
+- `segment_aliases`, if present, are optional sector labels for adjacent ordered
+  trackpoint pairs. The serialized field name is retained for v1 compatibility;
+  `sector` is the canonical user-facing term. These labels are an interpretation
+  aid, not first-class track geometry.
+- sector aliases whose endpoints do not exist, or whose `to_trackpoint_id` is
   not the first ordered trackpoint after `from_trackpoint_id`, should be ignored
   or dropped during normalization.
 
@@ -397,11 +398,13 @@ minimal `Track` object.
 
 ---
 
-## 7. Segment Alias Contract v1
+## 7. Sector Alias Contract v1 (`segment_aliases` serialization)
 
-A `segment_alias` is an optional display name for the interval between two
+A sector alias is an optional display name for the interval between two
 adjacent trackpoints. It exists to make lap-timing and map displays easier to
-read without promoting named sectors to a separate root-scoped concept.
+read without promoting sectors to separate root-scoped objects. Version 1
+serializes these annotations in `segment_aliases`; consumers should display
+them as sectors.
 
 Minimal example:
 
@@ -424,11 +427,11 @@ Rules:
   so that the alias is no longer well formed.
 - consumers should fall back to "`from` to `to`" wording when no alias exists.
 - `timing_role` is optional. Missing or unknown values should be treated as
-  `timed`; `untimed` marks the segment for exclusion from lap-timing sector
+  `timed`; `untimed` marks the sector for exclusion from lap-timing sector
   rows and timed totals.
-- if a segment annotation is retained for non-display metadata such as
+- if a sector annotation is retained for non-display metadata such as
   `timing_role: "untimed"`, consumers should provide a default display name
-  such as `Segment 1` when no user name is present.
+  such as `Sector 1` when no user name is present.
 
 ---
 

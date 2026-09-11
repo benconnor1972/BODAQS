@@ -598,7 +598,7 @@ def _normalized_segment_aliases(value: Any, *, trackpoints: list[dict[str, Any]]
             str(trackpoints[pair_index + 1].get("trackpoint_id") or ""),
         )
         adjacent_pairs.add(pair)
-        default_names[pair] = f"Segment {pair_index + 1}"
+        default_names[pair] = f"Sector {pair_index + 1}"
     aliases: list[dict[str, str]] = []
     seen_pairs: set[tuple[str, str]] = set()
     for index, item in enumerate(value):
@@ -614,7 +614,7 @@ def _normalized_segment_aliases(value: Any, *, trackpoints: list[dict[str, Any]]
             continue
         pair = (from_trackpoint_id, to_trackpoint_id)
         if not display_name and timing_role == "untimed":
-            display_name = default_names.get(pair, f"Segment {index + 1}")
+            display_name = default_names.get(pair, f"Sector {index + 1}")
         if not display_name:
             continue
         if pair not in adjacent_pairs or pair in seen_pairs:

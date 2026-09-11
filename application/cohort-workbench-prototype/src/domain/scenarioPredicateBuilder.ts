@@ -40,7 +40,7 @@ export const scenarioSeriesDefinitions: ScenarioSeriesDefinition[] = [
   { key: 'front_activity', label: 'Front suspension activity', streamName: 'spatial_context', column: 'front_suspension_activity', unit: 'm/m', defaultValue: 0.02 },
   { key: 'rear_activity', label: 'Rear suspension activity', streamName: 'spatial_context', column: 'rear_suspension_activity', unit: 'm/m', defaultValue: 0.02 },
   { key: 'combined_activity', label: 'Combined suspension activity', streamName: 'spatial_context', column: 'combined_suspension_activity', unit: 'm/m', defaultValue: 0.02 },
-  { key: 'gps_speed', label: 'GPS speed', streamName: 'primary', column: 'gps_speed_mps', unit: 'm/s', defaultValue: 2 },
+  { key: 'gps_speed', label: 'GPS speed', streamName: 'gps_logger', column: 'speed_mps', unit: 'm/s', defaultValue: 2 },
 ]
 
 export const scenarioOperatorLabels: Record<ScenarioNumericOperator, string> = {
@@ -138,4 +138,3 @@ function finiteInput(value: string, label: string) {
 function nextEditorId() {
   return `scenario-condition-${nextEditorIdValue++}`
 }
-

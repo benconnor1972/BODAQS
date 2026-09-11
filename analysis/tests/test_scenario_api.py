@@ -1,10 +1,12 @@
 import json
+import shutil
 from pathlib import Path
 
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
+import bodaqs_analysis.library_api.adapter as adapter_module
 from bodaqs_analysis.artifacts import ArtifactStore
 from bodaqs_analysis.library_api import LibraryAdapter
 from bodaqs_analysis.library_api.errors import InvalidScenarioError, RevisionConflictError
@@ -54,6 +56,29 @@ def _library(tmp_path: Path) -> tuple[Path, Path, dict]:
             "signals": {
                 "gps_speed_mps": {"quantity": "speed", "source": "gps", "unit": "m/s"},
                 "active_mask_qc": {"kind": "qc", "quantity": "mask"},
+            },
+            "secondary_streams": {
+                "gps_logger": {
+                    "stream_name": "gps_logger",
+                    "kind": "intermittent",
+                    "signals": {
+                        "speed_mps": {"quantity": "speed", "source": "logger_gps", "unit": "m/s"},
+                    },
+                },
+            },
+        },
+    )
+    store.write_df(
+        store.path_session_stream_df("run-1", "session-1", "gps_logger"),
+        pd.DataFrame({"time_s": [0.0, 2.0, 4.0], "speed_mps": [1.0, 4.0, 1.0]}),
+    )
+    store.write_json(
+        store.path_session_stream_meta("run-1", "session-1", "gps_logger"),
+        {
+            "stream_name": "gps_logger",
+            "kind": "intermittent",
+            "signals": {
+                "speed_mps": {"quantity": "speed", "source": "logger_gps", "unit": "m/s"},
             },
         },
     )
@@ -168,6 +193,49 @@ def test_scenario_evaluation_respects_activity_and_support_gaps(tmp_path: Path) 
     assert spatial_response["sessions"][0]["episodes"][0]["end_time_s"] == pytest.approx(2.5)
 
 
+def test_scenario_evaluation_uses_native_registered_gps_stream(tmp_path: Path) -> None:
+    libraries_root, _, ref = _library(tmp_path)
+    scenario = {
+        "display_name": "Fast GPS",
+        "predicate": {
+            "criterion_id": "fast",
+            "series": {"stream_name": "gps_logger", "column": "speed_mps"},
+            "op": "gte",
+            "value": 2.0,
+        },
+        "eligibility_policy": {"activity": "ignore"},
+    }
+
+    response = LibraryAdapter(libraries_root).evaluate_scenario({"scenario": scenario, "sessions": [ref]})
+
+    result = response["sessions"][0]
+    assert result["status"] == "succeeded"
+    assert result["episode_count"] == 1
+    assert result["episodes"][0]["start_time_s"] == pytest.approx(1.0)
+    assert result["episodes"][0]["end_time_s"] == pytest.approx(3.0)
+    assert result["criteria"][0]["resolved_series"] == {
+        "stream_name": "gps_logger",
+        "column": "speed_mps",
+        "unit": "m/s",
+        "coordinate_column": "time_s",
+        "coordinate_unit": "s",
+    }
+
+
+def test_scenario_evaluation_reuses_activity_index_across_scenarios(tmp_path: Path) -> None:
+    libraries_root, _, ref = _library(tmp_path)
+    adapter = LibraryAdapter(libraries_root)
+    adapter.evaluate_scenario({"scenario": _scenario(), "sessions": [ref]})
+    slower = _scenario()
+    slower["display_name"] = "Slower riding"
+    slower["predicate"]["value"] = 1.0
+    adapter.evaluate_scenario({"scenario": slower, "sessions": [ref]})
+
+    events = adapter.cache_diagnostics()["activity_index_cache"]["event_counts"]
+    assert events["built"] == 1
+    assert events["memory_hit"] == 1
+
+
 def test_scenario_evaluation_cache_identity_tracks_input_artifacts(tmp_path: Path) -> None:
     libraries_root, library_root, ref = _library(tmp_path)
     request = {"scenario": _scenario(), "sessions": [ref]}
@@ -179,6 +247,61 @@ def test_scenario_evaluation_cache_identity_tracks_input_artifacts(tmp_path: Pat
     second = LibraryAdapter(libraries_root).evaluate_scenario(request)
     assert second["evaluation_id"] != first["evaluation_id"]
     assert second["provenance"]["input_artifacts"]
+
+
+def test_scenario_evaluation_reuses_cached_sessions_when_scope_grows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    libraries_root, library_root, first_ref = _library(tmp_path)
+    store = ArtifactStore(library_root)
+    shutil.copytree(
+        store.session_dir("run-1", "session-1"),
+        store.session_dir("run-1", "session-2"),
+    )
+    second_ref = {
+        "library_id": "default-library",
+        "run_id": "run-1",
+        "session_id": "session-2",
+        "session_key": "run-1::session-2",
+    }
+    direct_evaluate = adapter_module.evaluate_scenario
+    evaluated_sessions: list[str] = []
+
+    def counted_evaluate(request: dict, **kwargs: object) -> dict:
+        evaluated_sessions.extend(str(item["session_id"]) for item in request["sessions"])
+        return direct_evaluate(request, **kwargs)
+
+    monkeypatch.setattr(adapter_module, "evaluate_scenario", counted_evaluate)
+    adapter = LibraryAdapter(libraries_root)
+    first = adapter.evaluate_scenario({"scenario": _scenario(), "sessions": [first_ref]})
+    adapter = LibraryAdapter(libraries_root)
+    expanded = adapter.evaluate_scenario({"scenario": _scenario(), "sessions": [first_ref, second_ref]})
+
+    assert first["summary"]["requested_session_count"] == 1
+    assert expanded["summary"]["requested_session_count"] == 2
+    assert [item["session_ref"]["session_id"] for item in expanded["sessions"]] == ["session-1", "session-2"]
+    assert first["sessions"][0]["episodes"][0]["episode_id"] != expanded["sessions"][0]["episodes"][0]["episode_id"]
+    assert evaluated_sessions == ["session-1", "session-2"]
+    expanded_timing = next(
+        item for item in reversed(adapter.cache_diagnostics()["timings"])
+        if item["operation"] == "scenario_evaluation"
+    )
+    assert expanded_timing["session_persistent_hits"] == 1
+    assert expanded_timing["session_misses"] == 1
+
+    second_meta_path = store.path_session_meta("run-1", "session-2")
+    second_metadata = json.loads(second_meta_path.read_text(encoding="utf-8"))
+    second_metadata["test_revision"] = 2
+    _write_json(second_meta_path, second_metadata)
+    refreshed = adapter.evaluate_scenario({"scenario": _scenario(), "sessions": [first_ref, second_ref]})
+
+    assert refreshed["evaluation_id"] != expanded["evaluation_id"]
+    assert evaluated_sessions == ["session-1", "session-2", "session-2"]
+    scenario_timings = [
+        item for item in adapter.cache_diagnostics()["timings"]
+        if item["operation"] == "scenario_evaluation"
+    ]
+    assert scenario_timings[-1]["cache_status"] == "composed"
+    assert scenario_timings[-1]["session_memory_hits"] == 1
+    assert scenario_timings[-1]["session_misses"] == 1
 
 
 def test_scenario_http_routes(tmp_path: Path) -> None:

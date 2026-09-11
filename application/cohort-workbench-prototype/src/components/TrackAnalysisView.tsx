@@ -37,6 +37,7 @@ import maplibregl, {
 import { lineString, nearestPointOnLine, point } from '@turf/turf'
 import type { Feature, FeatureCollection, LineString, Point } from 'geojson'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
+import { gpsQualityTone, gpsSummaryLine } from '../domain/geospatial'
 import {
   pointAtStationM,
   replaceRouteSectorWithConnector,
@@ -1827,6 +1828,10 @@ export function TrackAnalysisView({
                   const gpsQuality = session.gpsSummary.quality
                   const sources = session.gpsSummary.sources ?? []
                   const addedOnly = addedSessionIds.has(id) && !scopedSessionIdSet.has(id)
+                  const detail = [
+                    session.videoSummary.present ? `${session.videoSummary.enabledCount} video enabled` : '',
+                    addedOnly ? 'added to view' : '',
+                  ].filter(Boolean).join(' - ')
                   return (
                     <div key={id} className={`track-analysis-session-row ${addedOnly ? 'added' : 'scoped'}`}>
                       <input
@@ -1846,21 +1851,27 @@ export function TrackAnalysisView({
                             />
                           )}
                         </strong>
-                        <small>
-                          {gpsQuality === 'usable' ? 'usable GPS' : `${gpsQuality || 'unknown'} GPS`}
-                          {session.videoSummary.present ? ` - ${session.videoSummary.enabledCount} video enabled` : ''}
-                          {addedOnly ? ' - added to view' : ''}
-                        </small>
+                        {detail && <small>{detail}</small>}
                       </span>
-                      <button
-                        type="button"
-                        className="icon-only small"
-                        onClick={() => removeSessionFromView(session)}
-                        title="Remove from this analysis view"
-                        aria-label={`Remove ${session.name} from this analysis view`}
-                      >
-                        <X size={13} />
-                      </button>
+                      <div className="track-analysis-session-actions">
+                        <span
+                          aria-label={`GPS: ${gpsSummaryLine(session.gpsSummary)}`}
+                          className={`track-analysis-gps-status icon-${gpsQualityTone(gpsQuality)}`}
+                          role="img"
+                          title={gpsSummaryLine(session.gpsSummary)}
+                        >
+                          <MapPin size={15} />
+                        </span>
+                        <button
+                          type="button"
+                          className="icon-button icon-alert track-analysis-row-icon"
+                          onClick={() => removeSessionFromView(session)}
+                          title="Remove from this analysis view"
+                          aria-label={`Remove ${session.name} from this analysis view`}
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
                       {sources.length > 1 && (
                         <select
                           value={gpsSourceBySessionId[id] ?? session.gpsSummary.preferredSourceId ?? sources[0]?.sourceId ?? ''}
@@ -1954,7 +1965,7 @@ export function TrackAnalysisView({
                             </button>
                             <button
                               type="button"
-                              className={`icon-only small ${track.persistedId ? '' : 'danger-icon'}`}
+                              className={track.persistedId ? 'icon-only small' : 'icon-button icon-alert track-analysis-row-icon'}
                               disabled={track.saving}
                               onClick={(event) => {
                                 event.stopPropagation()
@@ -1963,7 +1974,7 @@ export function TrackAnalysisView({
                               aria-label={`Discard ${track.name}`}
                               title={track.persistedId ? 'Discard changes' : 'Discard scratch track'}
                             >
-                              {track.persistedId ? <RotateCcw size={13} /> : <Trash2 size={13} />}
+                              {track.persistedId ? <RotateCcw size={13} /> : <Trash2 size={15} />}
                             </button>
                           </>
                         )}
@@ -1989,7 +2000,7 @@ export function TrackAnalysisView({
                           (!localAddedTrackIds.has(track.persistedId) || studySet.trackIds.includes(track.persistedId)) && (
                             <button
                               type="button"
-                              className="icon-only small danger-icon"
+                              className="icon-button icon-alert track-analysis-row-icon"
                               disabled={track.deleting}
                               onClick={(event) => {
                                 event.stopPropagation()
@@ -1998,13 +2009,13 @@ export function TrackAnalysisView({
                               aria-label={`Delete ${track.name}`}
                               title="Delete saved track"
                             >
-                              <Trash2 size={13} />
+                              <Trash2 size={15} />
                             </button>
                           )}
                         {!track.dirty && !track.persistedId && (
                           <button
                             type="button"
-                            className="icon-only small danger-icon"
+                            className="icon-button icon-alert track-analysis-row-icon"
                             onClick={(event) => {
                               event.stopPropagation()
                               discardWorkingTrack(track.workingId)
@@ -2012,7 +2023,7 @@ export function TrackAnalysisView({
                             aria-label={`Discard ${track.name}`}
                             title="Discard scratch track"
                           >
-                            <Trash2 size={13} />
+                            <Trash2 size={15} />
                           </button>
                         )}
                       </div>
@@ -2043,12 +2054,12 @@ export function TrackAnalysisView({
               )}
             </section>
 
-            <section className="track-analysis-control-card">
+            <section className="track-analysis-control-card track-analysis-trackpoints-card">
               <TrackPanelTitle
                 icon={<MapPin size={15} />}
                 title="Trackpoints"
                 meta={selectedTrack ? `${draftTrackpoints.length} point(s)` : 'No focused track'}
-                info="Edit the focused track's point names, segment labels, and save-time track-shaping options."
+                info="Edit the focused track's point names, sector labels, and save-time track-shaping options."
               />
               <div className="track-analysis-label-options">
                 <label>
@@ -2080,7 +2091,7 @@ export function TrackAnalysisView({
                       type="checkbox"
                       onChange={(event) => setShowSegments(event.target.checked)}
                     />
-                    <span>Show segments</span>
+                    <span>Show sectors</span>
                   </label>
                 </div>
               )}
@@ -2088,7 +2099,7 @@ export function TrackAnalysisView({
                 {selectedTrack && draftTrackpoints.length ? (
                   orderedDraftTrackpoints.flatMap((trackpoint, index) => {
                     const nextTrackpoint = orderedDraftTrackpoints[index + 1]
-                    const segmentDefaultName = `Segment ${index + 1}`
+                    const segmentDefaultName = `Sector ${index + 1}`
                     const alias = nextTrackpoint
                       ? segmentAliasForPair(selectedTrack.segmentAliases, trackpoint.id, nextTrackpoint.id)
                       : null
@@ -2117,8 +2128,14 @@ export function TrackAnalysisView({
                               <Play size={13} />
                             </button>
                           )}
-                          <button type="button" className="icon-only small" onClick={() => removeDraftTrackpoint(trackpoint.id)}>
-                            <Trash2 size={13} />
+                          <button
+                            aria-label={`Delete ${trackpoint.name || trackpoint.id}`}
+                            className="icon-button icon-alert track-analysis-row-icon"
+                            onClick={() => removeDraftTrackpoint(trackpoint.id)}
+                            title="Delete trackpoint"
+                            type="button"
+                          >
+                            <Trash2 size={15} />
                           </button>
                         </div>
                       </div>,
@@ -2126,8 +2143,8 @@ export function TrackAnalysisView({
                         <div key={`${trackpoint.id}-${nextTrackpoint.id}-segment`} className="track-analysis-segment-row">
                           <span className="track-analysis-row-glyph track-analysis-segment-glyph" aria-hidden="true" />
                           <input
-                            aria-label={`Segment name from ${trackpoint.name || trackpoint.id} to ${nextTrackpoint.name || nextTrackpoint.id}`}
-                            placeholder="Optional segment name"
+                            aria-label={`Sector name from ${trackpoint.name || trackpoint.id} to ${nextTrackpoint.name || nextTrackpoint.id}`}
+                            placeholder="Optional sector name"
                             value={alias?.name ?? ''}
                             onChange={(event) => renameSegmentAlias(trackpoint.id, nextTrackpoint.id, event.target.value)}
                           />
@@ -2284,7 +2301,7 @@ export function TrackAnalysisView({
                         className={lapTimingDisplayMode === 'segment' ? 'active' : ''}
                         onClick={() => setLapTimingDisplayMode('segment')}
                       >
-                        Segment
+                        Sector
                       </button>
                       <button
                         type="button"
@@ -4458,12 +4475,12 @@ function validSegmentAliasesForTrack(track: {
   for (let index = 0; index < ordered.length - 1; index += 1) {
     const key = segmentAliasKey(ordered[index].id, ordered[index + 1].id)
     adjacentPairs.add(key)
-    pairDefaultNames.set(key, `Segment ${index + 1}`)
+    pairDefaultNames.set(key, `Sector ${index + 1}`)
   }
   return track.segmentAliases
     .map((alias) => {
       const key = segmentAliasKey(alias.fromTrackpointId, alias.toTrackpointId)
-      const name = alias.name.trim() || (alias.timingRole === 'untimed' ? pairDefaultNames.get(key) || 'Segment' : '')
+      const name = alias.name.trim() || (alias.timingRole === 'untimed' ? pairDefaultNames.get(key) || 'Sector' : '')
       const timingRole: TrackSegmentAliasRecord['timingRole'] = alias.timingRole === 'untimed' ? 'untimed' : 'timed'
       return { ...alias, name, timingRole }
     })

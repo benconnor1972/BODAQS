@@ -114,6 +114,8 @@ export function ScenarioPredicateBuilder({
                       <select value={condition.streamName} onChange={(event) => updateCondition(condition.editorId, { streamName: event.target.value })}>
                         <option value="spatial_context">Spatial context</option>
                         <option value="primary">Primary</option>
+                        <option value="gps_logger">Logger GPS</option>
+                        <option value="gps_fit">FIT GPS</option>
                       </select>
                     </label>
                     <label>

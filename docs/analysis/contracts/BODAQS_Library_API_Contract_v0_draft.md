@@ -509,8 +509,9 @@ The API-facing summary is:
 - tracks are root-scoped objects under the configured libraries root.
 - a track contains one and only one directed geospatial path.
 - trackpoints are named locations along that path, ordered by `station_m`.
-- optional `segment_aliases` name adjacent trackpoint-to-trackpoint intervals
-  for display, without creating a separate segment object.
+- optional `segment_aliases` name adjacent trackpoint-to-trackpoint sectors for
+  display, without creating a separate sector object. The field name is a v1
+  serialization compatibility name; UI wording uses `sector`.
 - default trackpoint cutlines are generated from policy.
 - trackpoints store only cutline overrides unless explicit geometry editing is
   introduced later.
@@ -635,16 +636,16 @@ Workbench rebuild action may reload their recorded session-GPS source, replace
 the working geometry, and re-snap trackpoints; persistence still requires the
 ordinary revision-checked track update.
 
-Track `segment_aliases` are optional labels for adjacent ordered trackpoint
-pairs. They should be ignored or dropped if either endpoint is missing, or if
+Track `segment_aliases` are optional sector labels for adjacent ordered
+trackpoint pairs. They should be ignored or dropped if either endpoint is missing, or if
 the `to_trackpoint_id` is not the first trackpoint after `from_trackpoint_id`
 when ordered by `station_m`.
 
-Segment aliases may also carry optional segment display metadata. `timing_role`
-defaults to `timed`; `untimed` marks the segment for exclusion from lap-timing
-sector rows and timed totals. If an otherwise unnamed segment is retained for
+Sector aliases may also carry optional display metadata. `timing_role`
+defaults to `timed`; `untimed` marks the sector for exclusion from lap-timing
+sector rows and timed totals. If an otherwise unnamed sector is retained for
 `timing_role`, consumers should provide a default display name such as
-`Segment 1`.
+`Sector 1`.
 
 Track `geometry_edits` is optional audit provenance. The initial supported
 operation, `replace_sector_with_connector`, records a user-confirmed removal
@@ -1671,10 +1672,12 @@ POST   /api/v1/scenario-evaluations
 
 Scenario writes use revision checks. Evaluation accepts exactly one saved
 `scenario_ref` or embedded `scenario`, plus no more than 32 explicit session
-references. The initial evaluator supports up to four leaf criteria over the
-`primary` and `spatial_context` streams and caps a synchronous result at 10,000
-Episodes. Evaluation is read-only and continues to work when the service is in
-read-only mode; Scenario persistence does not.
+references. The evaluator supports up to four leaf criteria over `primary`,
+`spatial_context`, and registered materialised time-domain secondary streams,
+and caps a synchronous result at 10,000 Episodes. Secondary-stream criteria
+retain their native source-sample boundaries. Evaluation is read-only and
+continues to work when the service is in read-only mode; Scenario persistence
+does not.
 
 ---
 

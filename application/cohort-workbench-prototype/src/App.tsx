@@ -48,7 +48,7 @@ import { UnsavedChangesDialog } from './components/UnsavedChangesDialog'
 import { FixtureLibraryDataSource } from './data/FixtureLibraryDataSource'
 import { LocalApiDataSource } from './data/LocalApiDataSource'
 import type { LibraryDataSource, SessionNoteSaveResult } from './data/LibraryDataSource'
-import { invalidateSuspensionCacheForSession } from './data/SuspensionAnalysisCache'
+import { invalidateSuspensionCacheForLibraries, invalidateSuspensionCacheForSession } from './data/SuspensionAnalysisCache'
 import {
   broadcastSessionDeleted,
   broadcastStudySetDeleted,
@@ -458,11 +458,15 @@ function App() {
           return
         }
         const next = Object.fromEntries(revisions.map((item) => [item.libraryId, item.revision]))
-        const changed = Object.entries(next).some(
-          ([libraryId, revision]) => catalogRevisionsRef.current[libraryId] !== undefined && catalogRevisionsRef.current[libraryId] !== revision,
-        )
+        const changedLibraryIds = Object.entries(next)
+          .filter(([libraryId, revision]) => (
+            catalogRevisionsRef.current[libraryId] !== undefined
+            && catalogRevisionsRef.current[libraryId] !== revision
+          ))
+          .map(([libraryId]) => libraryId)
         catalogRevisionsRef.current = next
-        if (changed) {
+        if (changedLibraryIds.length > 0) {
+          invalidateSuspensionCacheForLibraries(activeDataSource, changedLibraryIds)
           void refreshWorkbenchData({ quiet: true, automatic: true })
         }
       } catch {

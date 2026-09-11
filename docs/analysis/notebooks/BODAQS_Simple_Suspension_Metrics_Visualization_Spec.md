@@ -15,14 +15,19 @@ application.
 The goal is a clean but flexible comparison view for suspension signals,
 metrics, event counts, and distributions, starting from a Study Set scope.
 
-The core visualization grammar is:
+The core visualization grammar has two explicit analysis modes:
 
-- selected Study Set entities can be arranged horizontally, with front/rear
-  compared within each entity
-- front/rear can alternatively be arranged horizontally, with selected
-  entities compared within each end
-- sectors, when enabled, are arranged vertically in track order
-- each quantity or chart family lives in a vertically collapsible panel
+- **Session view** consumes enabled sessions and groups, optional per-session
+  time windows, and one or more Scenario populations. Its comparison dimensions
+  are entity, suspension end, and Scenario.
+- **Track view** consumes one enabled track and only enabled individual sessions
+  that have a valid crossing pair for at least one selected sector. Its
+  comparison dimensions are session, suspension end, and sector. Groups,
+  unmatched sessions, time windows, and Scenarios are retained but inactive.
+- In either mode, the three active comparison dimensions are assigned
+  bijectively to `across`, `down`, and `on_chart`. Series colour follows the
+  `on_chart` dimension.
+- Each quantity or chart family lives in a vertically collapsible panel.
 
 The first implementation should feel like a high-value quick view, not a
 general pivot-table builder. It should nevertheless use data and component
@@ -80,6 +85,16 @@ Implementation checkpoint:
   The browser assigns raw signal samples to sectors using trackpoint
   crossing-time intervals from loaded track match summaries, then renders
   front/rear mini ridgeline distributions by sector.
+- The earlier whole-session/sector toggle and two-way comparison-layout toggle
+  are superseded by Session view and Track view plus the shared three-dimension
+  comparison assignment.
+- Session view supports multiple independently evaluated Scenario populations
+  and an explicit `All qualifying data` baseline. Scenario populations may
+  overlap and are not presented as additive.
+- Track view requires a single enabled track. Only enabled individual sessions
+  with valid bounding-trackpoint crossings for the selected sector are charted.
+- The mode, enabled scope items, mode-specific filters, and comparison
+  assignments are retained in browser visualization settings.
 
 ## 3. Architecture Direction
 
@@ -224,15 +239,16 @@ The entity strip should scroll horizontally if it exceeds available width.
 Do not paginate in the first implementation unless horizontal scrolling proves
 unworkable.
 
-The browser visualization now also supports a comparison-layout control:
+The browser visualization uses one shared comparison-layout control. Each
+active mode supplies exactly three dimensions, and the user assigns each one
+to exactly one of `across`, `down`, and `on_chart`. Reassigning a dimension
+swaps it with the dimension already occupying that placement, so the layout is
+always valid.
 
-- `Entities as columns`: the original entity strip; front/rear are compared
-  within each entity tile.
-- `Ends as columns`: front and rear become the horizontal tiles; selected
-  entities are overlaid as colored series within each end tile.
-
-This control is intended to become part of the general visualization grammar,
-not a one-off chart option.
+Session-view defaults are entity across, Scenario down, and suspension end on
+chart. Track-view defaults are sector across, session down, and suspension end
+on chart. A singleton `down` dimension is visually collapsed rather than
+adding an empty-looking facet tier.
 
 Within each entity, front/rear comparison is arranged according to the chart
 type:
@@ -549,16 +565,20 @@ a later slice.
 
 ## 11. User Controls
 
-Minimum first-version controls:
+Current controls:
 
 - entry point from the session browser / Study Set browser
-- visualization entity selector: sessions and groupings, groupings deselected by
-  default
-- visualization scope selector: whole session vs sector scaffold
-- comparison layout selector: entities as columns vs ends as columns
+- analysis scope containing independently enabled sessions, groupings, and at
+  most one track; groupings are deselected by default
+- inactive-period exclusion in the scope block
+- Session view / Track view mode selector, with Session view as the default
+- Session view: optional per-session time windows and one or more Scenario
+  populations, including `All qualifying data`
+- Track view: trackpoint-bounded sector selection; only enabled matched
+  individual sessions qualify
+- comparison assignment requiring the mode's entity, end, and Scenario/sector
+  dimensions to use `across`, `down`, and `on_chart` exactly once
 - panel collapse/expand
-- sector breakdown toggle, initially scaffolded for displacement and velocity
-  panels
 - engineering-unit display option for displacement stats if engineering-unit
   values are available
 
@@ -571,8 +591,9 @@ Nice-to-have but not required for first implementation:
 - save visualization setup
 - single-session time-window navigator
 
-Visualization entity selection is local to the visualization view and must not
-mutate the Study Set.
+Visualization scope and presentation selection are local to the visualization
+view and must not mutate the Study Set. Mode-inapplicable settings are preserved
+so switching modes does not discard the user's previous setup.
 
 ## 12. Implementation Plan
 
@@ -615,7 +636,7 @@ Acceptance criteria:
 
 ### Slice 1A: Comparison Layout Flip
 
-Status: implemented
+Status: implemented, then superseded by Slice 4's three-dimension grammar
 
 Goal:
 
@@ -637,6 +658,64 @@ Acceptance criteria:
 - distribution panels remain scale-comparable across the panel
 - compression and rebound scatter panels keep shared axes and regression
   summaries in both modes
+
+### Slice 5: Session/Track Modes And Three-Dimension Comparison
+
+Status: implemented
+
+Goal:
+
+Separate filtering semantics that are valid in session time from comparisons
+that require one matched track, while giving SSA and SPD the same compact
+faceting grammar.
+
+Implemented behavior:
+
+- Scope independently enables sessions, groups, and one track; inactive-period
+  exclusion remains a convenient scope-level control.
+- Session view applies time windows and supports multiple Scenario populations,
+  including a null-Scenario baseline.
+- Track view ignores groups and unmatched sessions and applies selected sectors
+  using conservative bounding-trackpoint crossing times.
+- Each mode assigns its three active dimensions to `across`, `down`, and
+  `on_chart` exactly once, with swap-on-selection behavior.
+- The generic faceting path is shared by distributions, event counts, metric
+  scatter charts, and phase-diagram variants.
+- Mode-specific settings are preserved while inactive, and older saved
+  whole-session/sector settings migrate to the corresponding mode.
+
+### Slice 6: Population And Scenario Caching
+
+Status: initial implementation complete
+
+Session time windows, inactive-period exclusion, and Scenario Episodes are
+represented in the browser as reusable population selections over immutable
+source arrays. The implementation:
+
+- compiles the combined selection into a compact per-session byte mask only
+  when a chart first needs sample values;
+- caches chart-ready selected values against the stable population view;
+- retains bounded population-view and Scenario-evaluation caches;
+- caches Scenario requests independently so adding another Scenario comparison
+  reuses evaluations already loaded in the browser; and
+- invalidates browser Scenario cache identity when the underlying suspension
+  analysis cache is invalidated.
+
+The Library API caches Scenario evaluation at both the complete-request and
+individual-session levels. Multi-session responses are composed from those
+session entries, so changing scope or reprocessing one session does not require
+re-evaluating unaffected sessions. Cache timing and hit/miss diagnostics are
+available through the existing service diagnostics and the browser's
+`bodaqs.debug.suspension-cache` debug switch.
+
+Activity eligibility has a separate, disposable per-session run index derived
+from the canonical activity mask. It is built lazily, shared across Scenario
+definitions, persisted only as a rebuildable service cache entry, and keyed by
+the session data and metadata artifact identities. The regression corpus shows
+that this run representation remains very small even for the longest current
+sessions. Proactive all-Scenario mask generation, a general decoded-column
+cache, and startup prewarming remain deferred until measurements demonstrate a
+need.
 
 ### Slice 2: API Hardening For Chart-Ready Data
 
@@ -693,6 +772,10 @@ Acceptance criteria:
 - frontend build passes
 
 ### Slice 3B: Add Distribution Sector Data And Ridgelines
+
+Historical note: the acceptance criteria and limitations below describe the
+original sector-scaffold slice. Slice 5 supersedes its grouping, layout, and
+panel-coverage constraints with Track view and the generic comparison grammar.
 
 Status: initial browser-side implementation complete
 
