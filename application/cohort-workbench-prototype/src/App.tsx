@@ -13,6 +13,7 @@ import {
   GitBranch,
   Library,
   Layers3,
+  ListFilter,
   MapPin,
   Minus,
   Play,
@@ -2247,12 +2248,7 @@ function App() {
           <PanelTitle
             icon={<Library size={18} />}
             title="Library Browser"
-            action={
-              <button className="ghost-action compact-filter-action" onClick={() => setScenarioEditorOpen(true)} type="button">
-                <GitBranch size={14} />
-                Scenarios
-              </button>
-            }
+            action={null}
           />
 
           <section className={`module collapsible-module${librarySelectorCollapsed ? ' collapsed' : ''}`}>
@@ -2596,6 +2592,20 @@ function App() {
                 onAttachSession={addSessionRefToStudySet}
                 onTrackDeleted={deleteTrackFromWorkbench}
               />
+
+              <section className="geo-card library-scenarios-card">
+                <div className="geo-card-title">
+                  <ListFilter size={16} aria-hidden="true" />
+                  <strong className="inline-heading">
+                    Scenarios
+                    <InfoTip text="Create, edit, save, and reuse scenario predicates for analysis filtering." />
+                  </strong>
+                  <button className="secondary-action compact" onClick={() => setScenarioEditorOpen(true)} type="button">
+                    <ListFilter size={14} />
+                    Create or edit
+                  </button>
+                </div>
+              </section>
             </div>
           </section>
         </aside>

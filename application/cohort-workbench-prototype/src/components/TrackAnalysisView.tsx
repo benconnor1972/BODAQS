@@ -2160,12 +2160,12 @@ export function TrackAnalysisView({
                           </label>
                           <button
                             aria-label={`Delete track geometry from ${trackpoint.name || trackpoint.id} to ${nextTrackpoint.name || nextTrackpoint.id}`}
-                            className="icon-only small danger-icon track-analysis-segment-delete"
+                            className="icon-button icon-alert track-analysis-row-icon track-analysis-segment-delete"
                             onClick={() => deleteSegmentGeometry(trackpoint.id, nextTrackpoint.id)}
                             title="Delete this sector and connect its trackpoints directly"
                             type="button"
                           >
-                            <Scissors size={13} />
+                            <Scissors size={15} />
                           </button>
                         </div>
                       ) : null,
