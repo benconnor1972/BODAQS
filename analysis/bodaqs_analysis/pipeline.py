@@ -59,6 +59,7 @@ from .raw_signal_dropouts import (
 )
 from .sensor_aliases import canonical_end, canonical_sensor_id
 from .signalname import SignalNameError, SignalNameParts, format_signal_name, parse_signal_name
+from .spatial_context import materialize_spatial_context
 
 _UNIT_RE = re.compile(r"\[(.*?)\]")
 _FILENAME_STEM_LONG_DATETIME_RE = re.compile(
@@ -3176,6 +3177,7 @@ def preprocess_resolved(
     butterworth_generate_residuals: bool = False,
     motion_derivation: Optional[Mapping[str, Any]] = None,
     activity_detection: Optional[Mapping[str, Any]] = None,
+    spatial_context: Optional[Mapping[str, Any]] = None,
     include_events: bool = True,
     include_metrics: bool = True,
     strict: bool = True,
@@ -3214,6 +3216,7 @@ def preprocess_resolved(
             prefer_postprocessing_transformations = bool(cfg.get("ignore_on_logger_transformations"))
         motion_derivation = cfg.get("motion_derivation", motion_derivation)
         activity_detection = cfg.get("activity_detection", activity_detection)
+        spatial_context = cfg.get("spatial_context", spatial_context)
         butterworth_smoothing = cfg.get("butterworth_smoothing", butterworth_smoothing)
         butterworth_generate_residuals = bool(
             cfg.get("butterworth_generate_residuals", butterworth_generate_residuals)
@@ -3331,6 +3334,16 @@ def preprocess_resolved(
     )
     imu_attitude_s = time.perf_counter() - stage_started
 
+    stage_started = time.perf_counter()
+    if isinstance(spatial_context, Mapping) and bool(spatial_context.get("enabled", False)):
+        spatial_result = materialize_spatial_context(session_obj, spatial_context)
+        logger.info(
+            "Spatial-context preprocessing complete: status=%s rows=%d",
+            spatial_result.stream_meta.get("status"),
+            len(spatial_result.stream_df.index),
+        )
+    spatial_context_s = time.perf_counter() - stage_started
+
     if resolved_schema is not None:
         logger.info("Schema load complete")
 
@@ -3443,6 +3456,7 @@ def preprocess_resolved(
         fit_enrichment_s
         + core_preprocessing_s
         + imu_attitude_s
+        + spatial_context_s
         + event_detection_s
         + segment_extraction_s
         + metric_calculation_s
@@ -3463,6 +3477,7 @@ def preprocess_resolved(
                 "fit_enrichment": fit_enrichment_s,
                 "core_preprocessing": core_preprocessing_s,
                 "imu_attitude": imu_attitude_s,
+                "spatial_context": spatial_context_s,
                 "event_detection": event_detection_s,
                 "segment_extraction": segment_extraction_s,
                 "metric_calculation": metric_calculation_s,
@@ -3513,6 +3528,7 @@ def preprocess_session(
     butterworth_generate_residuals: bool = False,
     motion_derivation: Optional[Mapping[str, Any]] = None,
     activity_detection: Optional[Mapping[str, Any]] = None,
+    spatial_context: Optional[Mapping[str, Any]] = None,
     timezone: Optional[str] = None,
     include_events: bool = True,
     include_metrics: bool = True,
@@ -3600,6 +3616,7 @@ def preprocess_session(
         butterworth_generate_residuals=butterworth_generate_residuals,
         motion_derivation=motion_derivation,
         activity_detection=activity_detection,
+        spatial_context=spatial_context,
         include_events=include_events,
         include_metrics=include_metrics,
         strict=strict,

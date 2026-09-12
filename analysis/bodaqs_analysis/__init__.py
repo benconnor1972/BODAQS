@@ -64,6 +64,11 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "save_preprocess_profile": (".preprocess_profile", "save_preprocess_profile"),
     "validate_preprocess_config": (".preprocess_profile", "validate_preprocess_config"),
     "validate_preprocess_profile": (".preprocess_profile", "validate_preprocess_profile"),
+    "DEFAULT_SPATIAL_CONTEXT_CONFIG": (".spatial_context", "DEFAULT_SPATIAL_CONTEXT_CONFIG"),
+    "SpatialContextResult": (".spatial_context", "SpatialContextResult"),
+    "derive_spatial_context": (".spatial_context", "derive_spatial_context"),
+    "materialize_spatial_context": (".spatial_context", "materialize_spatial_context"),
+    "normalize_spatial_context_config": (".spatial_context", "normalize_spatial_context_config"),
     "PreprocessBatchRequest": (".library_preprocessing", "PreprocessBatchRequest"),
     "batch_result_to_study_set": (".library_preprocessing", "batch_result_to_study_set"),
     "preprocess_requested_sessions_to_library": (

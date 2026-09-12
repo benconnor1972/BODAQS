@@ -241,6 +241,110 @@ static bool rtcI2cWrite_(uint8_t reg, const uint8_t* data, size_t len) {
   return ok;
 }
 
+static constexpr uint8_t kRv3028StatusReg_ = 0x0E;
+static constexpr uint8_t kRv3028Control1Reg_ = 0x0F;
+static constexpr uint8_t kRv3028EeCommandReg_ = 0x27;
+static constexpr uint8_t kRv3028EeBackupReg_ = 0x37;
+static constexpr uint8_t kRv3028EeBusyMask_ = 0x80;
+static constexpr uint8_t kRv3028EeReadDisableMask_ = 0x08;
+static constexpr uint8_t kRv3028TrickleChargeEnableMask_ = 0x20;
+static constexpr uint8_t kRv3028BackupSwitchModeMask_ = 0x0C;
+static constexpr uint8_t kRv3028BackupSwitchLevelMode_ = 0x0C;
+static constexpr uint32_t kRv3028EeBusyTimeoutMs_ = 200;
+
+static bool rv3028WaitForEepromReady_() {
+  const uint32_t startedAtMs = millis();
+  do {
+    uint8_t status = 0;
+    if (!rtcI2cRead_(kRv3028StatusReg_, &status, 1)) return false;
+    if ((status & kRv3028EeBusyMask_) == 0) return true;
+    delay(1);
+  } while ((uint32_t)(millis() - startedAtMs) < kRv3028EeBusyTimeoutMs_);
+
+  RTC_LOGW("RV3028 EEPROM remained busy for %lu ms\n",
+           (unsigned long)kRv3028EeBusyTimeoutMs_);
+  return false;
+}
+
+static bool rv3028EnsureBackupConfig_() {
+  uint8_t backup = 0;
+  if (!rtcI2cRead_(kRv3028EeBackupReg_, &backup, 1)) {
+    RTC_LOGW("RV3028 backup configuration read failed\n");
+    return false;
+  }
+
+  // A8 uses a non-rechargeable CR1220. Preserve the factory-calibrated
+  // offset and all unrelated settings, disable trickle charging, and select
+  // Level Switching Mode so VBACKUP takes over when VDD falls below 2 V.
+  const uint8_t desired =
+      (uint8_t)((backup &
+                 (uint8_t)~(kRv3028TrickleChargeEnableMask_ |
+                            kRv3028BackupSwitchModeMask_)) |
+                kRv3028BackupSwitchLevelMode_);
+
+  if (backup == desired) {
+    RTC_LOGI("RV3028 backup configuration ok: reg37=0x%02X\n",
+             (unsigned)backup);
+    return true;
+  }
+
+  RTC_LOGW("RV3028 backup configuration needs repair: reg37=0x%02X target=0x%02X\n",
+           (unsigned)backup,
+           (unsigned)desired);
+
+  if (!rv3028WaitForEepromReady_()) return false;
+
+  uint8_t control1 = 0;
+  if (!rtcI2cRead_(kRv3028Control1Reg_, &control1, 1)) {
+    RTC_LOGW("RV3028 Control 1 read failed before EEPROM update\n");
+    return false;
+  }
+
+  const uint8_t control1WithAutoRefreshDisabled =
+      (uint8_t)(control1 | kRv3028EeReadDisableMask_);
+  if (!rtcI2cWrite_(kRv3028Control1Reg_,
+                    &control1WithAutoRefreshDisabled,
+                    1)) {
+    RTC_LOGW("RV3028 could not disable EEPROM auto-refresh\n");
+    return false;
+  }
+
+  bool updateOk = rtcI2cWrite_(kRv3028EeBackupReg_, &desired, 1);
+  uint8_t command = 0x00;
+  if (updateOk) {
+    updateOk = rtcI2cWrite_(kRv3028EeCommandReg_, &command, 1);
+  }
+  command = 0x11; // Update all configuration RAM mirrors into EEPROM.
+  if (updateOk) {
+    updateOk = rtcI2cWrite_(kRv3028EeCommandReg_, &command, 1);
+  }
+  if (updateOk) {
+    updateOk = rv3028WaitForEepromReady_();
+  }
+
+  const uint8_t control1WithAutoRefreshEnabled =
+      (uint8_t)(control1 & (uint8_t)~kRv3028EeReadDisableMask_);
+  const bool refreshRestored = rtcI2cWrite_(kRv3028Control1Reg_,
+                                           &control1WithAutoRefreshEnabled,
+                                           1);
+  if (!updateOk || !refreshRestored) {
+    RTC_LOGW("RV3028 backup configuration EEPROM update failed\n");
+    return false;
+  }
+
+  uint8_t verified = 0;
+  if (!rtcI2cRead_(kRv3028EeBackupReg_, &verified, 1) || verified != desired) {
+    RTC_LOGW("RV3028 backup configuration verify failed: reg37=0x%02X expected=0x%02X\n",
+             (unsigned)verified,
+             (unsigned)desired);
+    return false;
+  }
+
+  RTC_LOGI("RV3028 backup configuration repaired and persisted: reg37=0x%02X\n",
+           (unsigned)verified);
+  return true;
+}
+
 static bool rv3028ReadEpoch_(time_t& epochOut) {
   uint8_t status = 0;
   if (!rtcI2cRead_(0x0E, &status, 1)) return false;
@@ -661,6 +765,9 @@ void RTCManager_begin(const board::RtcProfile& rtcProfile) {
            (unsigned)rtcProfile.type,
            (unsigned)rtcProfile.i2c_addr,
            (unsigned)rtcProfile.bus_index);
+  if (rtcProfile.type == board::RtcType::RV3028) {
+    (void)rv3028EnsureBackupConfig_();
+  }
   RTCManager_begin(RTC_EXTERNAL, s_externalRtcWire);
 }
 

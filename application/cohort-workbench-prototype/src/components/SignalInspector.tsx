@@ -4285,6 +4285,13 @@ function catalogGpsPointSet(session: SessionRecord): SessionGpsPointSet {
       elevationM: null,
     })),
     path: session.gps.map(([longitude, latitude]) => [longitude, latitude] as GeoPosition),
+    routeGeometry: {
+      status: 'unavailable',
+      pointCount: 0,
+      lengthM: 0,
+      path: [],
+      geometryDenoising: null,
+    },
     warnings: [...session.gpsSummary.warnings],
   }
 }

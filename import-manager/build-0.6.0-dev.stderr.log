@@ -1,0 +1,306 @@
+123 INFO: PyInstaller: 6.20.0, contrib hooks: 2026.5
+125 INFO: Python: 3.11.9
+140 INFO: Platform: Windows-10-10.0.26200-SP0
+140 INFO: Python environment: C:\Users\benco\dev\BODAQS\.venv
+143 INFO: Removing temporary files and cleaning cache in C:\Users\benco\AppData\Local\pyinstaller
+285 INFO: Module search paths (PYTHONPATH):
+['C:\\Users\\benco\\dev\\BODAQS\\import-manager',
+ 'C:\\Users\\benco\\AppData\\Local\\Python\\pythoncore-3.11-64\\python311.zip',
+ 'C:\\Users\\benco\\AppData\\Local\\Python\\pythoncore-3.11-64\\DLLs',
+ 'C:\\Users\\benco\\AppData\\Local\\Python\\pythoncore-3.11-64\\Lib',
+ 'C:\\Users\\benco\\AppData\\Local\\Python\\pythoncore-3.11-64',
+ 'C:\\Users\\benco\\dev\\BODAQS\\.venv',
+ 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages',
+ 'C:\\Users\\benco\\dev\\BODAQS\\import-manager',
+ 'C:\\Users\\benco\\dev\\BODAQS\\import-manager\\build\\generated',
+ 'C:\\Users\\benco\\dev\\BODAQS\\analysis']
+669 INFO: Appending 'datas' from .spec
+683 INFO: checking Analysis
+685 INFO: Building Analysis because Analysis-00.toc is non existent
+685 INFO: Looking for Python shared library...
+685 INFO: Using Python shared library: C:\Users\benco\AppData\Local\Python\pythoncore-3.11-64\python311.dll
+685 INFO: Running Analysis Analysis-00.toc
+685 INFO: Target bytecode optimization level: 0
+685 INFO: Initializing module dependency graph...
+687 INFO: Initializing module graph hook caches...
+699 INFO: Analyzing modules for base_library.zip ...
+1569 INFO: Processing standard module hook 'hook-heapq.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+1632 INFO: Processing standard module hook 'hook-encodings.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+2903 INFO: Processing standard module hook 'hook-pickle.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+4237 INFO: Caching module dependency graph...
+4280 INFO: Analyzing C:\Users\benco\dev\BODAQS\import-manager\bodaqs_import_agent_setup.py
+4528 INFO: Processing standard module hook 'hook-_ctypes.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+4822 INFO: Processing pre-find-module-path hook 'hook-tkinter.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+4835 INFO: TclTkInfo: initializing cached Tcl/Tk info...
+5369 INFO: Processing standard module hook 'hook-_tkinter.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+5429 INFO: Processing standard module hook 'hook-PIL.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+5498 INFO: Processing standard module hook 'hook-PIL.Image.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+5847 INFO: Processing standard module hook 'hook-numpy.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+6283 INFO: Processing standard module hook 'hook-difflib.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+6430 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+6495 INFO: Processing standard module hook 'hook-xml.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+7491 INFO: Processing standard module hook 'hook-sysconfig.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+7555 INFO: Processing standard module hook 'hook-platform.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+7902 INFO: Processing standard module hook 'hook-psutil.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+8581 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+8597 INFO: SetuptoolsInfo: initializing cached setuptools info...
+9664 INFO: Processing standard module hook 'hook-charset_normalizer.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+9849 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+9959 INFO: Processing standard module hook 'hook-xml.dom.domreg.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+10295 INFO: Processing standard module hook 'hook-PIL.ImageFilter.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+11503 INFO: Processing standard module hook 'hook-pandas.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+12829 INFO: Processing standard module hook 'hook-pytz.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+13096 INFO: Processing standard module hook 'hook-scipy.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+13755 INFO: Processing standard module hook 'hook-pycparser.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+13938 INFO: Processing standard module hook 'hook-setuptools.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+13948 INFO: Processing pre-safe-import-module hook 'hook-distutils.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+13950 INFO: Processing pre-find-module-path hook 'hook-distutils.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+14245 INFO: Processing standard module hook 'hook-distutils.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+14277 INFO: Processing standard module hook 'hook-distutils.util.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+14308 INFO: Processing standard module hook 'hook-_osx_support.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+14324 INFO: Processing pre-safe-import-module hook 'hook-packaging.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+14483 INFO: Processing pre-safe-import-module hook 'hook-jaraco.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+14483 INFO: Setuptools: 'jaraco' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.jaraco'!
+14498 INFO: Processing standard module hook 'hook-setuptools._vendor.jaraco.text.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+14498 INFO: Processing pre-safe-import-module hook 'hook-importlib_resources.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+14498 INFO: Processing pre-safe-import-module hook 'hook-backports.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+14498 INFO: Setuptools: 'backports' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.backports'!
+14599 INFO: Processing pre-safe-import-module hook 'hook-more_itertools.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+14600 INFO: Setuptools: 'more_itertools' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.more_itertools'!
+14814 INFO: Processing pre-safe-import-module hook 'hook-importlib_metadata.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+14816 INFO: Setuptools: 'importlib_metadata' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.importlib_metadata'!
+14828 INFO: Processing standard module hook 'hook-setuptools._vendor.importlib_metadata.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+14838 INFO: Processing pre-safe-import-module hook 'hook-zipp.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+14838 INFO: Setuptools: 'zipp' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.zipp'!
+14997 INFO: Processing pre-safe-import-module hook 'hook-tomli.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+14997 INFO: Setuptools: 'tomli' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.tomli'!
+15477 INFO: Processing pre-safe-import-module hook 'hook-wheel.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+16258 INFO: Processing standard module hook 'hook-scipy.linalg.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+16353 INFO: Processing standard module hook 'hook-scipy.special._ufuncs.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+17495 INFO: Processing standard module hook 'hook-scipy.spatial._ckdtree.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+17990 INFO: Processing standard module hook 'hook-scipy.spatial.transform.rotation.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+18977 INFO: Processing standard module hook 'hook-scipy.stats._stats.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+19392 INFO: Processing standard module hook 'hook-scipy.sparse.csgraph.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+20112 INFO: Processing standard module hook 'hook-scipy.special._ellip_harm_2.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+22089 INFO: Processing standard module hook 'hook-pandas.io.formats.style.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+24087 INFO: Processing standard module hook 'hook-pandas.plotting.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+24920 INFO: Processing standard module hook 'hook-sqlite3.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+25227 INFO: Processing standard module hook 'hook-pandas.io.clipboard.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+25424 INFO: Processing standard module hook 'hook-dateutil.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+25560 INFO: Processing pre-safe-import-module hook 'hook-six.moves.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+25892 INFO: Processing standard module hook 'hook-fsspec.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+28929 INFO: Processing standard module hook 'hook-fastparquet.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+29056 INFO: Processing standard module hook 'hook-zoneinfo.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+29664 INFO: Processing pre-safe-import-module hook 'hook-platformdirs.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+29688 INFO: Processing standard module hook 'hook-platformdirs.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+30054 INFO: Processing pre-safe-import-module hook 'hook-gi.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+30440 INFO: Processing standard module hook 'hook-pystray.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+30807 INFO: Processing module hooks (post-graph stage)...
+30896 INFO: Processing standard module hook 'hook-urllib3.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+31468 INFO: Processing standard module hook 'hook-certifi.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+31640 INFO: Processing standard module hook 'hook-jinja2.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+32042 WARNING: Hidden import "pycparser.lextab" not found!
+32053 WARNING: Hidden import "pycparser.yacctab" not found!
+32397 INFO: Processing standard module hook 'hook-PIL.SpiderImagePlugin.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+32427 WARNING: Hidden import "scipy.special._cdflib" not found!
+32769 INFO: Processing standard module hook 'hook-_tkinter.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+32769 INFO: Processing standard module hook 'hook-tzdata.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+33367 INFO: Performing binary vs. data reclassification (2163 entries)
+33571 INFO: Looking for ctypes DLLs
+33929 INFO: Analyzing run-time hooks ...
+33944 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+33944 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+33960 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+33960 INFO: Including run-time hook 'pyi_rth_setuptools.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+33963 INFO: Including run-time hook 'pyi_rth_traitlets.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\rthooks'
+33963 INFO: Including run-time hook 'pyi_rth__tkinter.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+34029 INFO: Creating base_library.zip...
+34039 INFO: Looking for dynamic libraries
+0.00s - Debugger warning: It seems that frozen modules are being used, which may
+0.03s - make the debugger miss breakpoints. Please pass -Xfrozen_modules=off
+0.00s - to python to disable frozen modules.
+0.00s - Note: Debugging will proceed. Set PYDEVD_DISABLE_FILE_VALIDATION=1 to disable this validation.
+36842 INFO: Extra DLL search directories (AddDllDirectory): ['C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\numpy.libs', 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\pandas.libs', 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\scipy.libs']
+36842 INFO: Extra DLL search directories (PATH): []
+39257 INFO: Warnings written to C:\Users\benco\dev\BODAQS\import-manager\build\pyinstaller\bodaqs_import_agent_setup\warn-bodaqs_import_agent_setup.txt
+39462 INFO: Graph cross-reference written to C:\Users\benco\dev\BODAQS\import-manager\build\pyinstaller\bodaqs_import_agent_setup\xref-bodaqs_import_agent_setup.html
+39550 INFO: checking PYZ
+39550 INFO: Building PYZ because PYZ-00.toc is non existent
+39550 INFO: Building PYZ (ZlibArchive) C:\Users\benco\dev\BODAQS\import-manager\build\pyinstaller\bodaqs_import_agent_setup\PYZ-00.pyz
+41071 INFO: Building PYZ (ZlibArchive) C:\Users\benco\dev\BODAQS\import-manager\build\pyinstaller\bodaqs_import_agent_setup\PYZ-00.pyz completed successfully.
+41111 INFO: checking PKG
+41111 INFO: Building PKG because PKG-00.toc is non existent
+41111 INFO: Building PKG (CArchive) bodaqs-import-setup.pkg
+41143 INFO: Building PKG (CArchive) bodaqs-import-setup.pkg completed successfully.
+41143 INFO: Bootloader C:\Users\benco\dev\BODAQS\.venv\Lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\runw.exe
+41143 INFO: checking EXE
+41143 INFO: Building EXE because EXE-00.toc is non existent
+41143 INFO: Building EXE from EXE-00.toc
+41143 INFO: Copying bootloader EXE to C:\Users\benco\dev\BODAQS\import-manager\build\pyinstaller\bodaqs_import_agent_setup\bodaqs-import-setup.exe
+41175 INFO: Copying icon to EXE
+41221 INFO: Copying 0 resources to EXE
+41221 INFO: Embedding manifest in EXE
+41242 INFO: Appending PKG archive to EXE
+41401 INFO: Fixing EXE headers
+42258 INFO: Building EXE from EXE-00.toc completed successfully.
+42313 INFO: checking COLLECT
+42313 INFO: Building COLLECT because COLLECT-00.toc is non existent
+42313 INFO: Building COLLECT COLLECT-00.toc
+45211 INFO: Building COLLECT COLLECT-00.toc completed successfully.
+45244 INFO: Build complete! The results are available in: C:\Users\benco\dev\BODAQS\import-manager\dist\pyinstaller
+134 INFO: PyInstaller: 6.20.0, contrib hooks: 2026.5
+146 INFO: Python: 3.11.9
+158 INFO: Platform: Windows-10-10.0.26200-SP0
+158 INFO: Python environment: C:\Users\benco\dev\BODAQS\.venv
+158 INFO: Removing temporary files and cleaning cache in C:\Users\benco\AppData\Local\pyinstaller
+158 INFO: Module search paths (PYTHONPATH):
+['C:\\Users\\benco\\dev\\BODAQS\\import-manager',
+ 'C:\\Users\\benco\\AppData\\Local\\Python\\pythoncore-3.11-64\\python311.zip',
+ 'C:\\Users\\benco\\AppData\\Local\\Python\\pythoncore-3.11-64\\DLLs',
+ 'C:\\Users\\benco\\AppData\\Local\\Python\\pythoncore-3.11-64\\Lib',
+ 'C:\\Users\\benco\\AppData\\Local\\Python\\pythoncore-3.11-64',
+ 'C:\\Users\\benco\\dev\\BODAQS\\.venv',
+ 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages',
+ 'C:\\Users\\benco\\dev\\BODAQS\\import-manager',
+ 'C:\\Users\\benco\\dev\\BODAQS\\import-manager\\build\\generated',
+ 'C:\\Users\\benco\\dev\\BODAQS\\analysis']
+563 INFO: checking Analysis
+574 INFO: Building Analysis because Analysis-00.toc is non existent
+574 INFO: Looking for Python shared library...
+574 INFO: Using Python shared library: C:\Users\benco\AppData\Local\Python\pythoncore-3.11-64\python311.dll
+574 INFO: Running Analysis Analysis-00.toc
+574 INFO: Target bytecode optimization level: 0
+574 INFO: Initializing module dependency graph...
+580 INFO: Initializing module graph hook caches...
+594 INFO: Analyzing modules for base_library.zip ...
+1486 INFO: Processing standard module hook 'hook-heapq.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+1550 INFO: Processing standard module hook 'hook-encodings.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+2734 INFO: Processing standard module hook 'hook-pickle.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+3842 INFO: Caching module dependency graph...
+3900 INFO: Analyzing C:\Users\benco\dev\BODAQS\import-manager\bodaqs_library_service.py
+4106 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+4264 INFO: Processing standard module hook 'hook-xml.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+4461 INFO: Processing standard module hook 'hook-_ctypes.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+5126 INFO: Processing standard module hook 'hook-pydantic.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+5501 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+5513 INFO: SetuptoolsInfo: initializing cached setuptools info...
+6135 INFO: Processing standard module hook 'hook-platform.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+6399 INFO: Processing standard module hook 'hook-zoneinfo.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+6415 INFO: Processing standard module hook 'hook-sysconfig.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+7075 INFO: Processing standard module hook 'hook-anyio.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+8336 INFO: Processing standard module hook 'hook-pandas.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+9516 INFO: Processing standard module hook 'hook-numpy.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+9908 INFO: Processing standard module hook 'hook-difflib.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+10664 INFO: Processing standard module hook 'hook-psutil.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+11767 INFO: Processing standard module hook 'hook-charset_normalizer.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+12080 INFO: Processing standard module hook 'hook-pytz.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+12381 INFO: Processing standard module hook 'hook-scipy.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+13057 INFO: Processing standard module hook 'hook-pycparser.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+13213 INFO: Processing standard module hook 'hook-setuptools.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+13217 INFO: Processing pre-safe-import-module hook 'hook-distutils.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+13217 INFO: Processing pre-find-module-path hook 'hook-distutils.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+13535 INFO: Processing standard module hook 'hook-distutils.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+13570 INFO: Processing standard module hook 'hook-distutils.util.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+13594 INFO: Processing standard module hook 'hook-_osx_support.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+13618 INFO: Processing pre-safe-import-module hook 'hook-packaging.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+13756 INFO: Processing pre-safe-import-module hook 'hook-jaraco.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+13756 INFO: Setuptools: 'jaraco' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.jaraco'!
+13778 INFO: Processing standard module hook 'hook-setuptools._vendor.jaraco.text.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+13778 INFO: Processing pre-safe-import-module hook 'hook-importlib_resources.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+13786 INFO: Processing pre-safe-import-module hook 'hook-backports.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+13786 INFO: Setuptools: 'backports' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.backports'!
+13836 INFO: Processing pre-safe-import-module hook 'hook-more_itertools.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+13852 INFO: Setuptools: 'more_itertools' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.more_itertools'!
+14014 INFO: Processing pre-safe-import-module hook 'hook-importlib_metadata.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+14014 INFO: Setuptools: 'importlib_metadata' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.importlib_metadata'!
+14026 INFO: Processing standard module hook 'hook-setuptools._vendor.importlib_metadata.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+14042 INFO: Processing pre-safe-import-module hook 'hook-zipp.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+14042 INFO: Setuptools: 'zipp' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.zipp'!
+14227 INFO: Processing pre-safe-import-module hook 'hook-tomli.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+14227 INFO: Setuptools: 'tomli' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.tomli'!
+14688 INFO: Processing pre-safe-import-module hook 'hook-wheel.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+15361 INFO: Processing standard module hook 'hook-scipy.linalg.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+15504 INFO: Processing standard module hook 'hook-scipy.special._ufuncs.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+16551 INFO: Processing standard module hook 'hook-scipy.spatial._ckdtree.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+17078 INFO: Processing standard module hook 'hook-scipy.spatial.transform.rotation.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+18196 INFO: Processing standard module hook 'hook-scipy.stats._stats.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+18755 INFO: Processing standard module hook 'hook-scipy.sparse.csgraph.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+19456 INFO: Processing standard module hook 'hook-scipy.special._ellip_harm_2.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+21450 INFO: Processing standard module hook 'hook-pandas.io.formats.style.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+23462 INFO: Processing standard module hook 'hook-pandas.plotting.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+24274 INFO: Processing standard module hook 'hook-sqlite3.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+24557 INFO: Processing standard module hook 'hook-pandas.io.clipboard.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+24794 INFO: Processing standard module hook 'hook-dateutil.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+24937 INFO: Processing pre-safe-import-module hook 'hook-six.moves.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+25114 INFO: Processing standard module hook 'hook-fsspec.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+25761 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+25785 INFO: Processing standard module hook 'hook-xml.dom.domreg.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+26610 INFO: Processing standard module hook 'hook-fastparquet.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+27298 INFO: Processing pre-safe-import-module hook 'hook-platformdirs.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+27314 INFO: Processing standard module hook 'hook-platformdirs.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+27642 INFO: Processing pre-find-module-path hook 'hook-tkinter.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+27657 INFO: TclTkInfo: initializing cached Tcl/Tk info...
+28243 INFO: Processing standard module hook 'hook-_tkinter.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+28259 INFO: Processing pre-safe-import-module hook 'hook-gi.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+28579 INFO: Processing standard module hook 'hook-uvicorn.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+29425 INFO: Analyzing hidden import 'uvicorn.lifespan.on'
+29462 INFO: Analyzing hidden import 'uvicorn.loops.auto'
+29478 INFO: Analyzing hidden import 'uvicorn.protocols.http.auto'
+29478 INFO: Analyzing hidden import 'uvicorn.protocols.websockets.auto'
+29478 INFO: Processing module hooks (post-graph stage)...
+29677 INFO: Processing standard module hook 'hook-urllib3.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+29924 INFO: Processing standard module hook 'hook-certifi.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+30123 INFO: Processing standard module hook 'hook-jinja2.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+30476 WARNING: Hidden import "pycparser.lextab" not found!
+30488 WARNING: Hidden import "pycparser.yacctab" not found!
+30765 WARNING: Hidden import "scipy.special._cdflib" not found!
+31122 INFO: Processing standard module hook 'hook-_tkinter.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+31142 INFO: Processing standard module hook 'hook-tzdata.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+31656 INFO: Performing binary vs. data reclassification (2154 entries)
+31865 INFO: Looking for ctypes DLLs
+32138 INFO: Analyzing run-time hooks ...
+32144 INFO: Including run-time hook 'pyi_rth__tkinter.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+32144 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+32144 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+32144 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+32144 INFO: Including run-time hook 'pyi_rth_setuptools.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+32144 INFO: Including run-time hook 'pyi_rth_traitlets.py' from 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\rthooks'
+32256 INFO: Creating base_library.zip...
+32256 INFO: Looking for dynamic libraries
+0.00s - Debugger warning: It seems that frozen modules are being used, which may
+0.00s - make the debugger miss breakpoints. Please pass -Xfrozen_modules=off
+0.00s - to python to disable frozen modules.
+0.00s - Note: Debugging will proceed. Set PYDEVD_DISABLE_FILE_VALIDATION=1 to disable this validation.
+35458 INFO: Extra DLL search directories (AddDllDirectory): ['C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\pandas.libs', 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\numpy.libs', 'C:\\Users\\benco\\dev\\BODAQS\\.venv\\Lib\\site-packages\\scipy.libs']
+35474 INFO: Extra DLL search directories (PATH): []
+37668 INFO: Warnings written to C:\Users\benco\dev\BODAQS\import-manager\build\pyinstaller\bodaqs_library_service\warn-bodaqs_library_service.txt
+37868 INFO: Graph cross-reference written to C:\Users\benco\dev\BODAQS\import-manager\build\pyinstaller\bodaqs_library_service\xref-bodaqs_library_service.html
+37932 INFO: checking PYZ
+37948 INFO: Building PYZ because PYZ-00.toc is non existent
+37948 INFO: Building PYZ (ZlibArchive) C:\Users\benco\dev\BODAQS\import-manager\build\pyinstaller\bodaqs_library_service\PYZ-00.pyz
+39357 INFO: Building PYZ (ZlibArchive) C:\Users\benco\dev\BODAQS\import-manager\build\pyinstaller\bodaqs_library_service\PYZ-00.pyz completed successfully.
+39400 INFO: checking PKG
+39400 INFO: Building PKG because PKG-00.toc is non existent
+39400 INFO: Building PKG (CArchive) bodaqs-library-service.pkg
+39431 INFO: Building PKG (CArchive) bodaqs-library-service.pkg completed successfully.
+39431 INFO: Bootloader C:\Users\benco\dev\BODAQS\.venv\Lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\run.exe
+39431 INFO: checking EXE
+39431 INFO: Building EXE because EXE-00.toc is non existent
+39431 INFO: Building EXE from EXE-00.toc
+39431 INFO: Copying bootloader EXE to C:\Users\benco\dev\BODAQS\import-manager\build\pyinstaller\bodaqs_library_service\bodaqs-library-service.exe
+39525 INFO: Copying icon to EXE
+39566 INFO: Copying 0 resources to EXE
+39566 INFO: Embedding manifest in EXE
+39598 INFO: Appending PKG archive to EXE
+39661 INFO: Fixing EXE headers
+39933 INFO: Building EXE from EXE-00.toc completed successfully.
+39949 INFO: checking COLLECT
+39949 INFO: Building COLLECT because COLLECT-00.toc is non existent
+39959 INFO: Building COLLECT COLLECT-00.toc
+42334 INFO: Building COLLECT COLLECT-00.toc completed successfully.
+42381 INFO: Build complete! The results are available in: C:\Users\benco\dev\BODAQS\import-manager\dist\pyinstaller
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.

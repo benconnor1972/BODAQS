@@ -22,6 +22,7 @@ export type SuspensionCacheDiagnostics = {
 type InternalCacheStore = SuspensionCacheStore<unknown>
 
 const suspensionCacheByDataSource = new WeakMap<LibraryDataSource, InternalCacheStore>()
+const suspensionCacheGenerationByDataSource = new WeakMap<LibraryDataSource, number>()
 const DEFAULT_SESSION_ENTRY_LIMIT = 96
 const DEFAULT_COMPOSED_ENTRY_LIMIT = 24
 
@@ -87,6 +88,7 @@ export function setSuspensionComposedCacheEntry<T>(
 }
 
 export function invalidateSuspensionCacheForSession(dataSource: LibraryDataSource, sessionRefId: string) {
+  incrementSuspensionCacheGeneration(dataSource)
   const store = suspensionCacheByDataSource.get(dataSource)
   if (!store) {
     return
@@ -105,7 +107,27 @@ export function invalidateSuspensionCacheForSession(dataSource: LibraryDataSourc
   store.composed.clear()
 }
 
+export function invalidateSuspensionCacheForLibraries(dataSource: LibraryDataSource, libraryIds: string[]) {
+  const needles = [...new Set(libraryIds.filter(Boolean))].map((libraryId) => `|${libraryId}|||`)
+  if (needles.length === 0) {
+    return
+  }
+  incrementSuspensionCacheGeneration(dataSource)
+  const store = suspensionCacheByDataSource.get(dataSource)
+  if (!store) {
+    return
+  }
+  for (const entries of [store.entries, store.inFlight, store.composed]) {
+    for (const key of [...entries.keys()]) {
+      if (needles.some((needle) => key.includes(needle))) {
+        entries.delete(key)
+      }
+    }
+  }
+}
+
 export function clearSuspensionCache(dataSource: LibraryDataSource) {
+  incrementSuspensionCacheGeneration(dataSource)
   const store = suspensionCacheByDataSource.get(dataSource)
   if (!store) {
     return
@@ -113,6 +135,14 @@ export function clearSuspensionCache(dataSource: LibraryDataSource) {
   store.entries.clear()
   store.inFlight.clear()
   store.composed.clear()
+}
+
+export function getSuspensionCacheGeneration(dataSource: LibraryDataSource) {
+  return suspensionCacheGenerationByDataSource.get(dataSource) ?? 0
+}
+
+function incrementSuspensionCacheGeneration(dataSource: LibraryDataSource) {
+  suspensionCacheGenerationByDataSource.set(dataSource, getSuspensionCacheGeneration(dataSource) + 1)
 }
 
 export function startSuspensionCacheDiagnostics(requestedSessionCount: number): SuspensionCacheDiagnostics {

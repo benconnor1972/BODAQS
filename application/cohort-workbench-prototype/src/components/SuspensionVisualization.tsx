@@ -1,9 +1,11 @@
-import { memo, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode } from 'react'
+import { Fragment, memo, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
 import * as d3 from 'd3'
-import { Activity, ChevronDown, ChevronLeft, ChevronRight, ChevronUp } from 'lucide-react'
+import { Activity, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, FileClock, Folder, ListFilter, Milestone, Route } from 'lucide-react'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
+import { scratchScenario } from '../domain/scenarios'
 import {
   finishSuspensionCacheDiagnostics,
+  getSuspensionCacheGeneration,
   getSuspensionCacheEntry,
   getSuspensionComposedCacheEntry,
   setSuspensionCacheEntry,
@@ -17,6 +19,8 @@ import {
 import { sessionByRef, sessionRefId } from '../domain/studySets'
 import type {
   SessionRecord,
+  ScenarioEvaluationResponse,
+  ScenarioRecord,
   SessionBookmarkRecord,
   SessionSignalSummary,
   SignalQuerySignal,
@@ -29,6 +33,7 @@ import type {
   TrackpointRecord,
 } from '../domain/types'
 import { InfoTip } from './Common'
+import { ScenarioEditorModal } from './ScenarioEditorModal'
 
 const FRONT_COLOR = '#008c95'
 const REAR_COLOR = '#101820'
@@ -60,6 +65,8 @@ const PHASE_VELOCITY_AXIS_STEP = 10
 const PHASE_DEFAULT_CONDITIONAL_DISTRIBUTION_BINS = 60
 const PHASE_CONDITIONAL_LOWER_QUANTILE = 0.001
 const PHASE_CONDITIONAL_UPPER_QUANTILE = 0.999
+const SCRATCH_SCENARIO_KEY = '__scratch__'
+const BASELINE_SCENARIO_KEY = '__all__'
 const PHASE_CONTOUR_MASS_OPTIONS = [0.5, 0.8, 0.95, 0.99, 0.999] as const
 const PHASE_DEFAULT_CONTOUR_MASSES = [0.5, 0.8, 0.95]
 const VISUALIZATION_SESSION_CACHE_VERSION = 3
@@ -142,14 +149,31 @@ type VisualizationData = {
   warnings: string[]
 }
 
+type ActivityMaskSummary = {
+  supportedSessions: number
+  totalSessions: number
+  inactiveSamples: number
+  totalSamples: number
+}
+
 type LoadState =
   | { status: 'idle'; message: string; data?: VisualizationData; diagnostics?: SuspensionCacheDiagnostics }
   | { status: 'loading'; message: string; data?: VisualizationData; diagnostics?: SuspensionCacheDiagnostics }
   | { status: 'ready'; message: string; data: VisualizationData; diagnostics: SuspensionCacheDiagnostics }
   | { status: 'error'; message: string; data?: VisualizationData; diagnostics?: SuspensionCacheDiagnostics }
 
+type ScenarioEvaluationState =
+  | { status: 'idle'; message: string }
+  | { status: 'loading'; message: string }
+  | { status: 'ready'; message: string; results: Record<string, ScenarioEvaluationResponse>; failedCount: number }
+  | { status: 'error'; message: string }
+
 type ComparisonLayout = 'entities' | 'ends'
 type ScopeMode = 'whole_session' | 'sector'
+type AnalysisMode = 'session' | 'track'
+type FacetPlacement = 'across' | 'down' | 'on_chart'
+type FacetDimension = 'entity' | 'end' | 'scenario' | 'sector'
+type FacetAssignments = Partial<Record<FacetDimension, FacetPlacement>>
 type SuspensionEnd = 'front' | 'rear'
 type PhaseAxisRange = [number, number]
 type SuspensionVisualizationMode = 'simple' | 'phase'
@@ -163,6 +187,13 @@ type DistributionStatsMode = 'basic' | 'displacement'
 type MirroredMetricSpec = { compressionMetricName: string; reboundMetricName: string }
 type TimeWindow = { startS: number; endS: number }
 type TimeWindowsBySession = Record<string, TimeWindow>
+type PopulationSelection = {
+  key: string
+  timeWindowsBySession: TimeWindowsBySession
+  requireActivity: boolean
+  scenarioIdentity: string | null
+  scenarioIntervalsBySession: Record<string, TimeWindow[]> | null
+}
 type DisplacementSignalRole = (typeof DISPLACEMENT_SIGNAL_ROLE_CONFIGS)[number]['role']
 type DisplacementSignalRoleConfig = (typeof DISPLACEMENT_SIGNAL_ROLE_CONFIGS)[number]
 type SignalChoiceSelections = Record<string, string>
@@ -183,6 +214,11 @@ type SuspensionVisualizationSettings = {
   selectedSectorIds: string[]
   timeWindowsBySession: TimeWindowsBySession
   excludeInactivePeriods: boolean
+  selectedScenarioId: string | null
+  analysisMode?: AnalysisMode
+  selectedScenarioIds?: string[]
+  sessionFacetAssignments?: FacetAssignments
+  trackFacetAssignments?: FacetAssignments
   signalChoices: SignalChoiceSelections
   frequencyDisplayModes: FrequencyDisplayModes
   showDisplacementMm: boolean
@@ -223,11 +259,6 @@ type CachedSessionVisualizationData = {
 type VisualizationLoadResult = {
   data: VisualizationData
   diagnostics: SuspensionCacheDiagnostics
-}
-
-type TimedTableRow = {
-  row: TableQueryRow
-  triggerTimeS: number
 }
 
 type HistogramBin = {
@@ -279,7 +310,6 @@ type SectorInterval = {
 
 const visualizationSettingsCache = new Map<string, SuspensionVisualizationSettings>()
 const monotonicTimeArrayCache = new WeakMap<number[], boolean>()
-const rowTimeIndexCache = new WeakMap<TableQueryRow[], TimedTableRow[]>()
 const entitySignalValuesCache = new WeakMap<VisualizationData, Map<string, number[]>>()
 const rowSessionGroupCache = new WeakMap<TableQueryRow[], Map<string, TableQueryRow[]>>()
 const entityRowsCache = new WeakMap<TableQueryRow[], Map<string, TableQueryRow[]>>()
@@ -295,8 +325,16 @@ const percentValuesCache = new WeakMap<number[], number[]>()
 const sectorIntervalCache = new WeakMap<TrackRecord, Map<string, SectorInterval | null>>()
 const lastSectorIdCache = new WeakMap<TrackRecord, string | null>()
 const trackObjectIdCache = new WeakMap<TrackRecord, number>()
-const activeMaskCache = new WeakMap<VisualizationData, Map<string, boolean[] | null>>()
+const activeMaskCache = new WeakMap<VisualizationData, Map<string, Uint8Array | null>>()
+const populationSourceCache = new WeakMap<VisualizationData, VisualizationData>()
+const populationSelectionCache = new WeakMap<VisualizationData, PopulationSelection>()
+const populationViewCache = new WeakMap<VisualizationData, Map<string, VisualizationData>>()
+const populationSampleMaskCache = new WeakMap<VisualizationData, Map<string, Uint8Array | null>>()
+const scenarioEvaluationCache = new WeakMap<LibraryDataSource, Map<string, Promise<ScenarioEvaluationResponse>>>()
+const EMPTY_SCENARIO_RESULTS: Record<string, ScenarioEvaluationResponse> = {}
 const VISUALIZATION_SETTINGS_STORAGE_PREFIX = 'bodaqs.suspension-visualization.settings.'
+const POPULATION_VIEW_CACHE_LIMIT = 32
+const SCENARIO_EVALUATION_CACHE_LIMIT = 64
 let nextTrackObjectId = 1
 
 type TrackSector = {
@@ -324,6 +362,11 @@ type DistributionRole = {
   color: string
 }
 
+const MemoFacetedDistributionGrid = memo(FacetedDistributionGrid)
+const MemoFacetedScatterGrid = memo(FacetedScatterGrid)
+const MemoFacetedEventCountGrid = memo(FacetedEventCountGrid)
+const MemoFacetedPhaseDiagram = memo(FacetedPhaseDiagram)
+
 export function SuspensionVisualization({
   studySet,
   sessions,
@@ -332,6 +375,7 @@ export function SuspensionVisualization({
   bookmarkRefreshToken = 0,
   onInspectSignals,
   mode = 'simple',
+  canWriteScenarios = Boolean(dataSource.saveScenario),
 }: {
   studySet: StudySet
   sessions: SessionRecord[]
@@ -340,6 +384,7 @@ export function SuspensionVisualization({
   bookmarkRefreshToken?: number
   onInspectSignals?: (sessionRef: StudySessionRef, window: TimeWindow) => void
   mode?: SuspensionVisualizationMode
+  canWriteScenarios?: boolean
 }) {
   const entities = useMemo(() => visualizationEntities(studySet), [studySet])
   const baseStudySetTracks = useMemo(() => tracks.filter((track) => studySet.trackIds.includes(track.id)), [studySet.trackIds, tracks])
@@ -357,11 +402,30 @@ export function SuspensionVisualization({
   const [collapsedPanels, setCollapsedPanels] = useState<string[]>(initialSettings.collapsedPanels)
   const [comparisonLayout, setComparisonLayout] = useState<ComparisonLayout>(initialSettings.comparisonLayout)
   const [scopeMode, setScopeMode] = useState<ScopeMode>(initialSettings.scopeMode)
+  const [analysisMode, setAnalysisMode] = useState<AnalysisMode>(initialSettings.analysisMode ?? 'session')
+  const [sessionFacetAssignments, setSessionFacetAssignments] = useState<FacetAssignments>(
+    initialSettings.sessionFacetAssignments ?? defaultSessionFacetAssignments(),
+  )
+  const [trackFacetAssignments, setTrackFacetAssignments] = useState<FacetAssignments>(
+    initialSettings.trackFacetAssignments ?? defaultTrackFacetAssignments(),
+  )
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(() => initialSettings.selectedTrackId)
   const [selectedEnds, setSelectedEnds] = useState<SuspensionEnd[]>(initialSettings.selectedEnds)
   const [selectedSectorIds, setSelectedSectorIds] = useState<string[]>(initialSettings.selectedSectorIds)
   const [timeWindowsBySession, setTimeWindowsBySession] = useState<TimeWindowsBySession>(initialSettings.timeWindowsBySession)
   const [excludeInactivePeriods, setExcludeInactivePeriods] = useState(initialSettings.excludeInactivePeriods)
+  const [savedScenarios, setSavedScenarios] = useState<ScenarioRecord[]>([])
+  const [savedScenariosLoaded, setSavedScenariosLoaded] = useState(() => !dataSource.listScenarios)
+  const [selectedScenarioKeys, setSelectedScenarioKeys] = useState<string[]>(
+    initialSettings.selectedScenarioIds ?? (initialSettings.selectedScenarioId ? [initialSettings.selectedScenarioId] : [BASELINE_SCENARIO_KEY]),
+  )
+  const [scratchScenarioDefinition, setScratchScenarioDefinition] = useState<ScenarioRecord | null>(null)
+  const [scenarioEditorOpen, setScenarioEditorOpen] = useState(false)
+  const [scenarioListMessage, setScenarioListMessage] = useState(() => dataSource.listScenarios ? 'Loading saved Scenarios...' : 'The current data source does not provide Scenarios.')
+  const [scenarioEvaluationState, setScenarioEvaluationState] = useState<ScenarioEvaluationState>({
+    status: 'idle',
+    message: 'No Scenario restriction selected.',
+  })
   const [signalChoices, setSignalChoices] = useState<SignalChoiceSelections>(initialSettings.signalChoices)
   const [frequencyDisplayModes, setFrequencyDisplayModes] = useState<FrequencyDisplayModes>(initialSettings.frequencyDisplayModes)
   const [showDisplacementMm, setShowDisplacementMm] = useState(initialSettings.showDisplacementMm)
@@ -383,6 +447,8 @@ export function SuspensionVisualization({
   const [phasePositionConditionNormalized, setPhasePositionConditionNormalized] = useState<PhaseAxisRange>(initialSettings.phasePositionConditionNormalized)
   const [phaseVelocityCondition, setPhaseVelocityCondition] = useState<PhaseAxisRange>(initialSettings.phaseVelocityCondition)
   const [loadState, setLoadState] = useState<LoadState>({ status: 'idle', message: 'Select sessions or groups to visualize.' })
+  const deferredExcludeInactivePeriods = useDeferredValue(excludeInactivePeriods)
+  const deferredSelectedScenarioKeys = useDeferredValue(selectedScenarioKeys)
 
   useEffect(() => {
     const restored = restoredVisualizationSettings(settingsCacheKey, visualizationEntities(studySet), studySetTracks, mode)
@@ -390,11 +456,16 @@ export function SuspensionVisualization({
     setCollapsedPanels(restored.collapsedPanels)
     setComparisonLayout(restored.comparisonLayout)
     setScopeMode(restored.scopeMode)
+    setAnalysisMode(restored.analysisMode ?? 'session')
+    setSessionFacetAssignments(restored.sessionFacetAssignments ?? defaultSessionFacetAssignments())
+    setTrackFacetAssignments(restored.trackFacetAssignments ?? defaultTrackFacetAssignments())
     setSelectedTrackId(restored.selectedTrackId)
     setSelectedEnds(restored.selectedEnds)
     setSelectedSectorIds(restored.selectedSectorIds)
     setTimeWindowsBySession(restored.timeWindowsBySession)
     setExcludeInactivePeriods(restored.excludeInactivePeriods)
+    setSelectedScenarioKeys(restored.selectedScenarioIds ?? (restored.selectedScenarioId ? [restored.selectedScenarioId] : [BASELINE_SCENARIO_KEY]))
+    setScratchScenarioDefinition(null)
     setSignalChoices(restored.signalChoices)
     setFrequencyDisplayModes(restored.frequencyDisplayModes)
     setShowDisplacementMm(restored.showDisplacementMm)
@@ -448,11 +519,44 @@ export function SuspensionVisualization({
   }, [dataSource, studySet, trackMatchKey])
 
   useEffect(() => {
+    if (!dataSource.listScenarios) {
+      return
+    }
+    let cancelled = false
+    void dataSource.listScenarios()
+      .then((loaded) => {
+        if (cancelled) {
+          return
+        }
+        setSavedScenarios(sortScenarios(loaded))
+        setSavedScenariosLoaded(true)
+        setScenarioListMessage('')
+        setSelectedScenarioKeys((current) => {
+          const retained = current.filter((key) => (
+            key === BASELINE_SCENARIO_KEY || key === SCRATCH_SCENARIO_KEY || loaded.some((scenario) => scenario.id === key)
+          ))
+          return retained
+        })
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return
+        }
+        setSavedScenarios([])
+        setSavedScenariosLoaded(true)
+        setScenarioListMessage(`Could not load saved Scenarios: ${errorMessage(error)}`)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [dataSource])
+
+  useEffect(() => {
     setSelectedTrackId((current) => {
       if (current && studySetTracks.some((track) => track.id === current)) {
         return current
       }
-      return studySetTracks[0]?.id ?? null
+      return null
     })
     if (studySetTracks.length === 0) {
       setScopeMode('whole_session')
@@ -460,11 +564,18 @@ export function SuspensionVisualization({
   }, [studySetKey, studySetTrackKey])
 
   const selectedEntities = useMemo(() => entities.filter((entity) => selectedEntityIds.includes(entity.id)), [entities, selectedEntityIds])
-  const selectedTrack = useMemo(() => studySetTracks.find((track) => track.id === selectedTrackId) ?? studySetTracks[0] ?? null, [selectedTrackId, studySetTracks])
+  const selectedTrack = useMemo(() => studySetTracks.find((track) => track.id === selectedTrackId) ?? null, [selectedTrackId, studySetTracks])
   const sectors = useMemo(() => selectedTrack ? trackSectors(selectedTrack) : [], [selectedTrack])
   const sectorKey = sectors.map((sector) => sector.id).join('|')
   const selectedSectors = useMemo(() => sectors.filter((sector) => selectedSectorIds.includes(sector.id)), [sectors, selectedSectorIds])
   const selectedSessionRefs = useMemo(() => uniqueSessionRefs(selectedEntities.flatMap((entity) => entity.sessionRefs)), [selectedEntities])
+  const selectedScenarios = useMemo(() => deferredSelectedScenarioKeys
+    .filter((key) => key !== BASELINE_SCENARIO_KEY)
+    .map((key) => key === SCRATCH_SCENARIO_KEY
+      ? scratchScenarioDefinition
+      : savedScenarios.find((scenario) => scenario.id === key) ?? null)
+    .filter((scenario): scenario is ScenarioRecord => Boolean(scenario)), [deferredSelectedScenarioKeys, savedScenarios, scratchScenarioDefinition])
+  const selectedScenario = selectedScenarios[0] ?? null
   const studySetSessionRefs = useMemo(() => uniqueSessionRefs(studySet.sessions), [studySetKey])
   const displacementUnitMode: DisplacementUnitMode = showDisplacementMm ? 'mm' : 'normalized'
   const displacementRoleConfigs = useMemo(() => displacementSignalRoleConfigs(displacementUnitMode), [displacementUnitMode])
@@ -478,6 +589,85 @@ export function SuspensionVisualization({
     [studySetSessionKey, sessions, resolvedSignalChoices, displacementRoleConfigs],
   )
   const signalChoiceSignature = useMemo(() => signalChoiceSelectionSignature(resolvedSignalChoices), [resolvedSignalChoices])
+  const cacheGeneration = getSuspensionCacheGeneration(dataSource)
+  const selectedScenarioSignature = useMemo(() => JSON.stringify(selectedScenarios), [selectedScenarios])
+  const scenarioEvaluationSessionRefs = useMemo(
+    () => [...selectedSessionRefs].sort((left, right) => sessionRefId(left).localeCompare(sessionRefId(right))),
+    [selectedSessionRefs],
+  )
+  const selectedScenarioSessionKey = scenarioEvaluationSessionRefs.map(sessionRefId).join('|')
+
+  useEffect(() => {
+    if (analysisMode !== 'session' || selectedScenarios.length === 0) {
+      setScenarioEvaluationState({ status: 'idle', message: 'No Scenario restriction selected.' })
+      return
+    }
+    if (selectedSessionRefs.length === 0) {
+      setScenarioEvaluationState({ status: 'idle', message: 'Select a session or group to evaluate the Scenario.' })
+      return
+    }
+    if (selectedSessionRefs.length > 32) {
+      setScenarioEvaluationState({ status: 'error', message: 'Scenario evaluation supports at most 32 selected sessions.' })
+      return
+    }
+    if (!dataSource.evaluateScenario) {
+      setScenarioEvaluationState({ status: 'error', message: 'The current data source cannot evaluate Scenarios.' })
+      return
+    }
+    let cancelled = false
+    setScenarioEvaluationState({ status: 'loading', message: `Evaluating ${selectedScenarios.length} Scenario${selectedScenarios.length === 1 ? '' : 's'}...` })
+    const evaluateScenario = dataSource.evaluateScenario.bind(dataSource)
+    const requests = selectedScenarios.map((scenario) => {
+      const request = scenario.id && scenario.revision
+        ? {
+            scenarioRef: { scenarioId: scenario.id, revision: scenario.revision },
+            sessions: scenarioEvaluationSessionRefs,
+            options: { includeCriterionDiagnostics: true },
+          }
+        : {
+            scenario: scratchScenario(scenario),
+            sessions: scenarioEvaluationSessionRefs,
+            options: { includeCriterionDiagnostics: true },
+          }
+      const requestKey = `${cacheGeneration}\n${selectedScenarioSessionKey}\n${JSON.stringify(scenario.id && scenario.revision ? { id: scenario.id, revision: scenario.revision } : scratchScenario(scenario))}`
+      return cachedScenarioEvaluation(dataSource, requestKey, () => evaluateScenario(request))
+        .then((result) => ({ key: scenarioKey(scenario), result }))
+    })
+    const evaluation = Promise.allSettled(requests).then((settled) => {
+        const results = settled.flatMap((item) => item.status === 'fulfilled' ? [item.value] : [])
+        const failedCount = settled.length - results.length
+        if (results.length === 0) {
+          const firstFailure = settled.find((item) => item.status === 'rejected')
+          throw firstFailure && firstFailure.status === 'rejected' ? firstFailure.reason : new Error('No Scenario evaluation completed.')
+        }
+        const resultMap = Object.fromEntries(results.map((item) => [item.key, item.result]))
+        const evaluationResults = results.map((item) => item.result)
+        return {
+          results: resultMap,
+          failedCount,
+          episodeCount: evaluationResults.reduce((total, result) => total + result.summary.episodeCount, 0),
+          matchedSessionCount: evaluationResults.reduce((total, result) => total + result.summary.matchedSessionCount, 0),
+        }
+      })
+    void evaluation
+      .then((batch) => {
+        if (cancelled) return
+        setScenarioEvaluationState({
+          status: 'ready',
+          results: batch.results,
+          failedCount: batch.failedCount,
+          message: `${batch.episodeCount} Episode(s) across ${batch.matchedSessionCount} Scenario-session match(es).${batch.failedCount ? ` ${batch.failedCount} Scenario evaluation(s) failed.` : ''}`,
+        })
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setScenarioEvaluationState({ status: 'error', message: `Could not evaluate Scenario: ${errorMessage(error)}` })
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [analysisMode, cacheGeneration, dataSource, scenarioEvaluationSessionRefs, selectedScenarioSessionKey, selectedScenarioSignature, selectedScenarios, selectedSessionRefs.length])
 
   useEffect(() => {
     setSelectedSectorIds((current) => {
@@ -494,11 +684,16 @@ export function SuspensionVisualization({
       collapsedPanels,
       comparisonLayout,
       scopeMode,
+      analysisMode,
+      sessionFacetAssignments,
+      trackFacetAssignments,
       selectedTrackId,
       selectedEnds,
       selectedSectorIds,
       timeWindowsBySession,
       excludeInactivePeriods,
+      selectedScenarioId: selectedScenarioKeys.find((key) => key !== BASELINE_SCENARIO_KEY && key !== SCRATCH_SCENARIO_KEY) ?? null,
+      selectedScenarioIds: selectedScenarioKeys.filter((key) => key !== SCRATCH_SCENARIO_KEY),
       signalChoices,
       frequencyDisplayModes,
       showDisplacementMm,
@@ -530,11 +725,15 @@ export function SuspensionVisualization({
     collapsedPanels,
     comparisonLayout,
     scopeMode,
+    analysisMode,
+    sessionFacetAssignments,
+    trackFacetAssignments,
     selectedTrackId,
     selectedEnds,
     selectedSectorIds,
     timeWindowsBySession,
     excludeInactivePeriods,
+    selectedScenarioKeys,
     signalChoices,
     frequencyDisplayModes,
     showDisplacementMm,
@@ -605,37 +804,76 @@ export function SuspensionVisualization({
   }, [dataSource, sessions, studySetSessionKey, signalChoiceSignature, displacementUnitMode, mode])
 
   const data = loadState.data ?? null
+  const activityMaskSummary = useMemo(() => data ? summarizeActivityMasks(data) : null, [data])
   const deferredTimeWindowsBySession = useDeferredValue(timeWindowsBySession)
-  const scopedData = useMemo(
+  const windowedData = useMemo(
     () => (data ? applyTimeWindows(data, deferredTimeWindowsBySession) : null),
     [data, deferredTimeWindowsBySession],
   )
-  const baseAnalysisData = useMemo(
-    () => (data && excludeInactivePeriods ? applyActivityMask(data) : data),
-    [data, excludeInactivePeriods],
+  const activityFilteredBaseData = useMemo(
+    () => (data && deferredExcludeInactivePeriods ? applyActivityMask(data) : data),
+    [data, deferredExcludeInactivePeriods],
   )
-  const analysisData = useMemo(
-    () => (scopedData && excludeInactivePeriods ? applyActivityMask(scopedData) : scopedData),
-    [scopedData, excludeInactivePeriods],
+  const activityFilteredWindowedData = useMemo(
+    () => (windowedData && deferredExcludeInactivePeriods ? applyActivityMask(windowedData) : windowedData),
+    [deferredExcludeInactivePeriods, windowedData],
   )
+  const scenarioResults = scenarioEvaluationState.status === 'ready' ? scenarioEvaluationState.results : EMPTY_SCENARIO_RESULTS
+  const scenarioPopulations = useMemo<ScenarioFacetPopulation[]>(() => {
+    if (analysisMode !== 'session' || !activityFilteredWindowedData) {
+      return []
+    }
+    const populationKeys = deferredSelectedScenarioKeys.length ? deferredSelectedScenarioKeys : [BASELINE_SCENARIO_KEY]
+    return populationKeys.flatMap((key, index) => {
+      if (key === BASELINE_SCENARIO_KEY) {
+        return [{ key, label: 'All qualifying data', data: activityFilteredWindowedData, color: facetPalette(index) }]
+      }
+      const scenario = key === SCRATCH_SCENARIO_KEY
+        ? scratchScenarioDefinition
+        : savedScenarios.find((item) => item.id === key) ?? null
+      const evaluation = scenarioResults[key]
+      return scenario && evaluation
+        ? [{ key, label: scenario.displayName, data: applyScenarioEpisodes(activityFilteredWindowedData, evaluation), color: facetPalette(index) }]
+        : []
+    })
+  }, [activityFilteredWindowedData, analysisMode, deferredSelectedScenarioKeys, savedScenarios, scenarioResults, scratchScenarioDefinition])
+  const baseAnalysisData = activityFilteredBaseData
+  const analysisData = analysisMode === 'track'
+    ? activityFilteredBaseData
+    : scenarioPopulations[0]?.data ?? null
+  const trackEligibleEntities = useMemo(() => selectedTrack
+    ? selectedEntities.filter((entity) => entity.kind === 'session' && sectors.some((sector) => sectorTimeInterval(selectedTrack, entity.sessionRefs[0], sector)))
+    : [], [selectedEntities, sectors, selectedTrack])
+  const trackEntities = useMemo(() => selectedTrack
+    ? selectedEntities.filter((entity) => entity.kind === 'session' && selectedSectors.some((sector) => sectorTimeInterval(selectedTrack, entity.sessionRefs[0], sector)))
+    : [], [selectedEntities, selectedSectors, selectedTrack])
+  const activeEntities = analysisMode === 'track' ? trackEntities : selectedEntities
+  const facetModel = useMemo(() => buildAnalysisFacetModel({
+    analysisMode,
+    entities: activeEntities,
+    ends: selectedEnds,
+    scenarios: scenarioPopulations,
+    sectors: selectedSectors,
+    assignments: analysisMode === 'track' ? trackFacetAssignments : sessionFacetAssignments,
+    track: selectedTrack,
+  }), [activeEntities, analysisMode, scenarioPopulations, selectedEnds, selectedSectors, selectedTrack, sessionFacetAssignments, trackFacetAssignments])
   const controlsCollapsed = collapsedPanels.includes('select-filter')
-  const singleEntityDashboard = mode === 'simple' && selectedEntities.length === 1 && scopeMode === 'whole_session'
-  const panelComparisonLayout: ComparisonLayout = singleEntityDashboard ? 'entities' : comparisonLayout
-  const velocityDomain = baseAnalysisData
+  const singleEntityDashboard = mode === 'simple' && activeEntities.length === 1 && analysisMode === 'session'
+  const velocityDomain = useMemo(() => baseAnalysisData
     ? metricMagnitudeCandidateDomain(selectedEntities, baseAnalysisData, selectedEnds, VELOCITY_METRIC_SPEC, VELOCITY_DOMAIN_LIMITS)
-    : ([0, 2000] as [number, number])
-  const strokeLengthDomain = baseAnalysisData
+    : ([0, 2000] as [number, number]), [baseAnalysisData, selectedEnds, selectedEntities])
+  const strokeLengthDomain = useMemo(() => baseAnalysisData
     ? metricMagnitudeCandidateDomain(selectedEntities, baseAnalysisData, selectedEnds, STROKE_LENGTH_METRIC_SPEC, STROKE_LENGTH_DOMAIN_LIMITS)
-    : ([0, 100] as [number, number])
+    : ([0, 100] as [number, number]), [baseAnalysisData, selectedEnds, selectedEntities])
   const displacementFrontRole = showDisplacementMm ? 'front_displacement_mm' : 'front_displacement'
   const displacementRearRole = showDisplacementMm ? 'rear_displacement_mm' : 'rear_displacement'
   const phaseDisplacementRoles = useMemo<Record<SuspensionEnd, string>>(() => ({
     front: displacementFrontRole,
     rear: displacementRearRole,
   }), [displacementFrontRole, displacementRearRole])
-  const displacementXDomain = showDisplacementMm && baseAnalysisData
+  const displacementXDomain = useMemo(() => showDisplacementMm && baseAnalysisData
     ? displacementMmCandidateDomain(selectedEntities, baseAnalysisData, selectedEnds, DISPLACEMENT_MM_DOMAIN_LIMITS)
-    : ([0, 100] as [number, number])
+    : ([0, 100] as [number, number]), [baseAnalysisData, selectedEnds, selectedEntities, showDisplacementMm])
   const displacementXLabel = showDisplacementMm ? 'wheel displacement (mm)' : 'wheel displacement, % of max'
   const phaseXAxisBounds = useMemo<PhaseAxisRange>(() => showDisplacementMm
     ? [...PHASE_DISPLACEMENT_MM_BOUNDS]
@@ -650,26 +888,30 @@ export function SuspensionVisualization({
   const deferredPhasePositionCondition = useDeferredValue(phasePositionCondition)
   const deferredPhaseVelocityConditionRange = useDeferredValue(phaseVelocityConditionRange)
   const phaseAutoDomain = useMemo(() => {
-    if (!analysisData) {
+    if (!baseAnalysisData) {
       return null
     }
-    const visibleSectors = scopeMode === 'sector' ? selectedSectors : [null]
-    const series = selectedEntities.flatMap((entity) => visibleSectors.flatMap((sector) => orderedSuspensionEnds(selectedEnds).map((end) => ({
-      id: `${entity.id}-${end}-${sector?.id ?? 'all'}`,
+    const series = allFacetSelections(facetModel).map((selection, index) => {
+      const entity = selection.entity?.value as VisualizationEntity
+      const end = selection.end?.value as SuspensionEnd
+      const sector = selection.sector?.value as TrackSector | undefined
+      const facetPopulation = facetData(selection, baseAnalysisData)
+      return {
+      id: `${entity.id}-${end}-${sector?.id ?? 'all'}-${index}`,
       label: entity.label,
       color: roleColor(end),
       points: phasePointsForEntityEnd(
         entity,
-        analysisData,
+        facetPopulation,
         end === 'front' ? displacementFrontRole : displacementRearRole,
         `${end}_velocity`,
-        selectedTrack,
+        facetModel.track,
         sector ? [sector] : null,
         showDisplacementMm ? 1 : 100,
       ),
-    }))))
+    }})
     return phaseDomain(series)
-  }, [analysisData, displacementFrontRole, displacementRearRole, scopeMode, selectedEnds, selectedEntities, selectedSectors, selectedTrack, showDisplacementMm])
+  }, [baseAnalysisData, displacementFrontRole, displacementRearRole, facetModel, showDisplacementMm])
 
   useEffect(() => {
     if (!phaseAutoDomain) {
@@ -777,7 +1019,7 @@ export function SuspensionVisualization({
                     <InfoTip text="Choose which sessions, groups, ends, sectors, scope, layout, and time windows are shown in this analysis view. Study Set membership is not changed." />
                   </strong>
                   <small>
-                    {selectedEntityIds.length} sessions/groups, {selectedEnds.length} ends, {selectedSectors.length} sectors
+                    {selectedEntityIds.length} sessions/groups, {selectedTrack ? '1 track' : 'no track'} · {analysisMode === 'session' ? 'Session view' : 'Track view'}
                   </small>
                 </span>
                 <ChevronLeft size={16} />
@@ -785,36 +1027,43 @@ export function SuspensionVisualization({
               <div className="viz-control-panel-body">
                 <VisualizationFilterChips
                   entities={entities}
-                  scopeMode={scopeMode}
-                  sectors={sectors}
-                  selectedEndKeys={selectedEnds}
+                  tracks={studySetTracks}
                   selectedEntityIds={selectedEntityIds}
-                  selectedSectorIds={selectedSectorIds}
-                  onToggleEnd={toggleEnd}
+                  selectedTrackId={selectedTrack?.id ?? null}
                   onToggleEntity={toggleEntity}
-                  onToggleSector={toggleSector}
+                  onTrackChange={setSelectedTrackId}
+                  excludeInactivePeriods={excludeInactivePeriods}
+                  activityMaskSummary={activityMaskSummary}
+                  activityMaskUpdating={excludeInactivePeriods !== deferredExcludeInactivePeriods}
+                  onExcludeInactivePeriodsChange={setExcludeInactivePeriods}
                 />
 
                 {signalChoiceGroups.length > 0 && (
                   <SignalChoiceControl groups={signalChoiceGroups} onChange={setSignalChoice} />
                 )}
 
-                <div className="viz-control-mode-row">
-                  <ScopeModeControl
-                    value={scopeMode}
-                    onChange={setScopeMode}
-                    tracks={studySetTracks}
-                    selectedTrackId={selectedTrack?.id ?? null}
-                    onTrackChange={setSelectedTrackId}
-                    sectors={sectors}
-                  />
+                <AnalysisModeControl value={analysisMode} onChange={setAnalysisMode} trackAvailable={Boolean(selectedTrack && trackEligibleEntities.length > 0)} />
 
-                  <ComparisonLayoutToggle value={comparisonLayout} onChange={setComparisonLayout} />
+                <EndSelectionControl selectedEnds={selectedEnds} onToggleEnd={toggleEnd} />
 
-                  <ActivityExclusionControl checked={excludeInactivePeriods} onChange={setExcludeInactivePeriods} />
-                </div>
+                {analysisMode === 'session' && <ScenarioControl
+                  scenarios={savedScenarios}
+                  scratch={scratchScenarioDefinition}
+                  selectedKeys={selectedScenarioKeys}
+                  loading={!savedScenariosLoaded}
+                  message={scenarioListMessage || scenarioEvaluationState.message}
+                  status={scenarioEvaluationState.status}
+                  updating={selectedScenarioKeys !== deferredSelectedScenarioKeys}
+                  warning={scenarioEvaluationState.status === 'error' || (scenarioEvaluationState.status === 'ready' && (scenarioEvaluationState.failedCount > 0 || Object.values(scenarioEvaluationState.results).some((result) => result.status !== 'succeeded')))}
+                  onChange={setSelectedScenarioKeys}
+                  onEdit={() => setScenarioEditorOpen(true)}
+                />}
 
-                {data && selectedSessionRefs.length > 0 && (
+                {analysisMode === 'track' && (
+                  <SectorSelectionControl sectors={sectors} selectedSectorIds={selectedSectorIds} onToggleSector={toggleSector} track={selectedTrack} matchedSessionCount={trackEntities.length} loading={visualizationTrackMatchesLoading} />
+                )}
+
+                {analysisMode === 'session' && data && selectedSessionRefs.length > 0 && (
                   <TimeWindowManager
                     data={data}
                     dataSource={dataSource}
@@ -828,6 +1077,12 @@ export function SuspensionVisualization({
                     onInspectSignals={onInspectSignals}
                   />
                 )}
+
+                <FacetAssignmentControl
+                  dimensions={analysisMode === 'session' ? ['entity', 'end', 'scenario'] : ['entity', 'end', 'sector']}
+                  value={analysisMode === 'session' ? sessionFacetAssignments : trackFacetAssignments}
+                  onChange={analysisMode === 'session' ? setSessionFacetAssignments : setTrackFacetAssignments}
+                />
 
                 {mode === 'phase' ? (
                   <PhaseDisplayOptionsControl
@@ -885,6 +1140,8 @@ export function SuspensionVisualization({
           {loadState.status === 'loading' && <div className="viz-status">{loadState.message}</div>}
           {loadState.status === 'error' && <div className="viz-status warning">Could not load visualization data: {loadState.message}</div>}
           {loadState.status === 'idle' && <div className="viz-status">{loadState.message}</div>}
+          {selectedScenario && scenarioEvaluationState.status === 'loading' && <div className="viz-status">{scenarioEvaluationState.message}</div>}
+          {selectedScenario && scenarioEvaluationState.status === 'error' && <div className="viz-status warning">{scenarioEvaluationState.message}</div>}
 
           {data && data.warnings.length > 0 && (
             <div className="viz-status warning">
@@ -905,15 +1162,10 @@ export function SuspensionVisualization({
               onToggle={() => togglePanel('phase-diagram')}
             >
               <PhaseProvenanceNote entities={selectedEntities} sessions={sessions} />
-              <PhaseDiagramGrid
+              <MemoFacetedPhaseDiagram
                 variant="phase"
-                data={analysisData}
-                entities={selectedEntities}
-                ends={selectedEnds}
-                layout={panelComparisonLayout}
-                scopeMode={scopeMode}
-                selectedTrack={selectedTrack}
-                sectors={selectedSectors}
+                fallbackData={activityFilteredBaseData}
+                model={facetModel}
                 displacementRoles={phaseDisplacementRoles}
                 displacementScale={showDisplacementMm ? 1 : 100}
                 densityBins={phaseDensityBins}
@@ -939,15 +1191,10 @@ export function SuspensionVisualization({
               collapsed={collapsedPanels.includes('phase-contours')}
               onToggle={() => togglePanel('phase-contours')}
             >
-              <PhaseDiagramGrid
+              <MemoFacetedPhaseDiagram
                 variant="contours"
-                data={analysisData}
-                entities={selectedEntities}
-                ends={selectedEnds}
-                layout={panelComparisonLayout}
-                scopeMode={scopeMode}
-                selectedTrack={selectedTrack}
-                sectors={selectedSectors}
+                fallbackData={activityFilteredBaseData}
+                model={facetModel}
                 displacementRoles={phaseDisplacementRoles}
                 displacementScale={showDisplacementMm ? 1 : 100}
                 densityBins={phaseDensityBins}
@@ -973,15 +1220,10 @@ export function SuspensionVisualization({
               collapsed={collapsedPanels.includes('phase-velocity-given-position')}
               onToggle={() => togglePanel('phase-velocity-given-position')}
             >
-              <PhaseDiagramGrid
+              <MemoFacetedPhaseDiagram
                 variant="velocity_given_position"
-                data={analysisData}
-                entities={selectedEntities}
-                ends={selectedEnds}
-                layout={panelComparisonLayout}
-                scopeMode={scopeMode}
-                selectedTrack={selectedTrack}
-                sectors={selectedSectors}
+                fallbackData={activityFilteredBaseData}
+                model={facetModel}
                 displacementRoles={phaseDisplacementRoles}
                 displacementScale={showDisplacementMm ? 1 : 100}
                 densityBins={phaseDensityBins}
@@ -1007,15 +1249,10 @@ export function SuspensionVisualization({
               collapsed={collapsedPanels.includes('phase-position-given-velocity')}
               onToggle={() => togglePanel('phase-position-given-velocity')}
             >
-              <PhaseDiagramGrid
+              <MemoFacetedPhaseDiagram
                 variant="position_given_velocity"
-                data={analysisData}
-                entities={selectedEntities}
-                ends={selectedEnds}
-                layout={panelComparisonLayout}
-                scopeMode={scopeMode}
-                selectedTrack={selectedTrack}
-                sectors={selectedSectors}
+                fallbackData={activityFilteredBaseData}
+                model={facetModel}
                 displacementRoles={phaseDisplacementRoles}
                 displacementScale={showDisplacementMm ? 1 : 100}
                 densityBins={phaseDensityBins}
@@ -1044,55 +1281,21 @@ export function SuspensionVisualization({
             collapsed={collapsedPanels.includes('displacement')}
             onToggle={() => togglePanel('displacement')}
           >
-            {scopeMode === 'sector' ? (
-              <SectorDistributionScaffold
-                quantity="displacement"
-                layout={comparisonLayout}
-                entities={selectedEntities}
-                ends={selectedEnds}
-                data={analysisData}
-                scaleData={baseAnalysisData}
-                selectedTrack={selectedTrack}
-                sectors={selectedSectors}
-                allSectors={sectors}
-                frontRole={displacementFrontRole}
-                rearRole={displacementRearRole}
-                displayMode={frequencyDisplayModes.displacement}
-                showDisplacementStatsOnChart={showDisplacementStatsOnChart}
-                xDomain={displacementXDomain}
-                xLabel={displacementXLabel}
-                bins={SECTOR_DISTRIBUTION_BINS}
-                trackMatchesLoading={visualizationTrackMatchesLoading}
-                valueTransform={displacementValueTransform}
-                statsMode="displacement"
-                statsFormatter={displacementStatsFormatter}
-              />
-            ) : (
-              <DistributionGrid
-                chartKind="histogram"
-                displayMode={frequencyDisplayModes.displacement}
-                layout={panelComparisonLayout}
-                entities={selectedEntities}
-                roles={distributionRoles(displacementFrontRole, displacementRearRole, selectedEnds)}
-                xDomain={displacementXDomain}
-                xLabel={displacementXLabel}
-                bins={WHOLE_SESSION_DISTRIBUTION_BINS}
-                yMax={distributionYMax(
-                  selectedEntities,
-                  distributionRoles(displacementFrontRole, displacementRearRole, selectedEnds),
-                  (entity, role) => displacementValueTransform(entitySignalValues(entity, baseAnalysisData, role.signalRole)),
-                  displacementXDomain,
-                  WHOLE_SESSION_DISTRIBUTION_BINS,
-                  'histogram',
-                )}
-                sessions={sessions}
-                showStats
-                showDisplacementStatsOnChart={showDisplacementStatsOnChart}
-                statsMode="displacement"
-                statsFormatter={displacementStatsFormatter}
-                valueForEntityRole={(entity, role) => displacementValueTransform(entitySignalValues(entity, analysisData, role.signalRole))}
-              />
-            )}
+            <MemoFacetedDistributionGrid
+              model={facetModel}
+              fallbackData={activityFilteredBaseData}
+              chartKind="histogram"
+              displayMode={frequencyDisplayModes.displacement}
+              xDomain={displacementXDomain}
+              xLabel={displacementXLabel}
+              bins={analysisMode === 'track' ? SECTOR_DISTRIBUTION_BINS : WHOLE_SESSION_DISTRIBUTION_BINS}
+              signalRoles={phaseDisplacementRoles}
+              valueTransform={displacementValueTransform}
+              showStats
+              showDisplacementStatsOnChart={showDisplacementStatsOnChart}
+              statsMode="displacement"
+              statsFormatter={displacementStatsFormatter}
+            />
           </VisualizationPanel>
 
           <VisualizationPanel
@@ -1102,51 +1305,7 @@ export function SuspensionVisualization({
             collapsed={collapsedPanels.includes('velocity')}
             onToggle={() => togglePanel('velocity')}
           >
-            {scopeMode === 'sector' ? (
-              <SectorMetricDistributionScaffold
-                data={analysisData}
-                scaleData={baseAnalysisData}
-                entities={selectedEntities}
-                ends={selectedEnds}
-                layout={comparisonLayout}
-                metricSpec={VELOCITY_METRIC_SPEC}
-                displayMode={frequencyDisplayModes.velocity}
-                selectedTrack={selectedTrack}
-                sectors={selectedSectors}
-                allSectors={sectors}
-                xLabel="stroke maximum wheel velocity (mm/s)"
-                bins={SECTOR_DISTRIBUTION_BINS}
-                domainCandidates={VELOCITY_DOMAIN_LIMITS}
-                showStatsOnChart={showVelocityStatsOnChart}
-                statsFormatter={VELOCITY_STATS_FORMATTER}
-                trackMatchesLoading={visualizationTrackMatchesLoading}
-              />
-            ) : (
-              <DistributionGrid
-                chartKind="mirrored_velocity"
-                displayMode={frequencyDisplayModes.velocity}
-                layout={panelComparisonLayout}
-                entities={selectedEntities}
-                roles={distributionRoles('', '', selectedEnds)}
-                xDomain={velocityDomain}
-                xLabel="stroke maximum wheel velocity (mm/s)"
-                bins={WHOLE_SESSION_DISTRIBUTION_BINS}
-                yMax={distributionYMax(
-                  selectedEntities,
-                  distributionRoles('', '', selectedEnds),
-                  (entity, role) => metricMirroredValuesForEntityEnd(entity, baseAnalysisData, role.key, VELOCITY_METRIC_SPEC),
-                  velocityDomain,
-                  WHOLE_SESSION_DISTRIBUTION_BINS,
-                  'mirrored_velocity',
-                )}
-                sessions={sessions}
-                showStats
-                showMirroredStatsOnChart={showVelocityStatsOnChart}
-                statsFormatter={VELOCITY_STATS_FORMATTER}
-                statsTransform={Math.abs}
-                valueForEntityRole={(entity, role) => metricMirroredValuesForEntityEnd(entity, analysisData, role.key, VELOCITY_METRIC_SPEC)}
-              />
-            )}
+            <MemoFacetedDistributionGrid model={facetModel} fallbackData={activityFilteredBaseData} chartKind="mirrored_velocity" displayMode={frequencyDisplayModes.velocity} xDomain={velocityDomain} xLabel="stroke maximum wheel velocity (mm/s)" bins={analysisMode === 'track' ? SECTOR_DISTRIBUTION_BINS : WHOLE_SESSION_DISTRIBUTION_BINS} metricSpec={VELOCITY_METRIC_SPEC} showStats showMirroredStatsOnChart={showVelocityStatsOnChart} statsFormatter={VELOCITY_STATS_FORMATTER} statsTransform={Math.abs} />
           </VisualizationPanel>
 
           <VisualizationPanel
@@ -1156,51 +1315,7 @@ export function SuspensionVisualization({
             collapsed={collapsedPanels.includes('stroke-length')}
             onToggle={() => togglePanel('stroke-length')}
           >
-            {scopeMode === 'sector' ? (
-              <SectorMetricDistributionScaffold
-                data={analysisData}
-                scaleData={baseAnalysisData}
-                entities={selectedEntities}
-                ends={selectedEnds}
-                layout={comparisonLayout}
-                metricSpec={STROKE_LENGTH_METRIC_SPEC}
-                displayMode={frequencyDisplayModes.strokeLength}
-                selectedTrack={selectedTrack}
-                sectors={selectedSectors}
-                allSectors={sectors}
-                xLabel="wheel stroke length (mm)"
-                bins={SECTOR_DISTRIBUTION_BINS}
-                domainCandidates={STROKE_LENGTH_DOMAIN_LIMITS}
-                showStatsOnChart={showStrokeLengthStatsOnChart}
-                statsFormatter={STROKE_LENGTH_STATS_FORMATTER}
-                trackMatchesLoading={visualizationTrackMatchesLoading}
-              />
-            ) : (
-              <DistributionGrid
-                chartKind="mirrored_velocity"
-                displayMode={frequencyDisplayModes.strokeLength}
-                layout={panelComparisonLayout}
-                entities={selectedEntities}
-                roles={distributionRoles('', '', selectedEnds)}
-                xDomain={strokeLengthDomain}
-                xLabel="wheel stroke length (mm)"
-                bins={WHOLE_SESSION_DISTRIBUTION_BINS}
-                yMax={distributionYMax(
-                  selectedEntities,
-                  distributionRoles('', '', selectedEnds),
-                  (entity, role) => metricMirroredValuesForEntityEnd(entity, baseAnalysisData, role.key, STROKE_LENGTH_METRIC_SPEC),
-                  strokeLengthDomain,
-                  WHOLE_SESSION_DISTRIBUTION_BINS,
-                  'mirrored_velocity',
-                )}
-                sessions={sessions}
-                showStats
-                showMirroredStatsOnChart={showStrokeLengthStatsOnChart}
-                statsFormatter={STROKE_LENGTH_STATS_FORMATTER}
-                statsTransform={Math.abs}
-                valueForEntityRole={(entity, role) => metricMirroredValuesForEntityEnd(entity, analysisData, role.key, STROKE_LENGTH_METRIC_SPEC)}
-              />
-            )}
+            <MemoFacetedDistributionGrid model={facetModel} fallbackData={activityFilteredBaseData} chartKind="mirrored_velocity" displayMode={frequencyDisplayModes.strokeLength} xDomain={strokeLengthDomain} xLabel="wheel stroke length (mm)" bins={analysisMode === 'track' ? SECTOR_DISTRIBUTION_BINS : WHOLE_SESSION_DISTRIBUTION_BINS} metricSpec={STROKE_LENGTH_METRIC_SPEC} showStats showMirroredStatsOnChart={showStrokeLengthStatsOnChart} statsFormatter={STROKE_LENGTH_STATS_FORMATTER} statsTransform={Math.abs} />
           </VisualizationPanel>
 
           <VisualizationPanel
@@ -1210,34 +1325,7 @@ export function SuspensionVisualization({
             collapsed={collapsedPanels.includes('compression')}
             onToggle={() => togglePanel('compression')}
           >
-            {scopeMode === 'sector' ? (
-              <SectorScatterScaffold
-                data={analysisData}
-                ends={selectedEnds}
-                entities={selectedEntities}
-                eventType={COMPRESSION_EVENT_TYPE}
-                layout={comparisonLayout}
-                selectedTrack={selectedTrack}
-                sectors={selectedSectors}
-                allSectors={sectors}
-                xMetric={SCATTER_X_METRIC}
-                yMetric={COMPRESSION_Y_METRIC}
-                yLabel="Compression velocity (mm/s)"
-                trackMatchesLoading={visualizationTrackMatchesLoading}
-              />
-            ) : (
-              <ScatterEntityStrip
-                layout={panelComparisonLayout}
-                entities={selectedEntities}
-                data={analysisData}
-                eventType={COMPRESSION_EVENT_TYPE}
-                xMetric={SCATTER_X_METRIC}
-                yMetric={COMPRESSION_Y_METRIC}
-                yLabel="Compression velocity (mm/s)"
-                ends={selectedEnds}
-                showRegression
-              />
-            )}
+            <MemoFacetedScatterGrid model={facetModel} fallbackData={activityFilteredBaseData} eventType={COMPRESSION_EVENT_TYPE} xMetric={SCATTER_X_METRIC} yMetric={COMPRESSION_Y_METRIC} yLabel="Compression velocity (mm/s)" />
           </VisualizationPanel>
 
           <VisualizationPanel
@@ -1247,34 +1335,7 @@ export function SuspensionVisualization({
             collapsed={collapsedPanels.includes('rebound')}
             onToggle={() => togglePanel('rebound')}
           >
-            {scopeMode === 'sector' ? (
-              <SectorScatterScaffold
-                data={analysisData}
-                ends={selectedEnds}
-                entities={selectedEntities}
-                eventType={REBOUND_EVENT_TYPE}
-                layout={comparisonLayout}
-                selectedTrack={selectedTrack}
-                sectors={selectedSectors}
-                allSectors={sectors}
-                xMetric={SCATTER_X_METRIC}
-                yMetric={REBOUND_Y_METRIC}
-                yLabel="Rebound velocity (mm/s)"
-                trackMatchesLoading={visualizationTrackMatchesLoading}
-              />
-            ) : (
-              <ScatterEntityStrip
-                layout={panelComparisonLayout}
-                entities={selectedEntities}
-                data={analysisData}
-                eventType={REBOUND_EVENT_TYPE}
-                xMetric={SCATTER_X_METRIC}
-                yMetric={REBOUND_Y_METRIC}
-                yLabel="Rebound velocity (mm/s)"
-                ends={selectedEnds}
-                showRegression
-              />
-            )}
+            <MemoFacetedScatterGrid model={facetModel} fallbackData={activityFilteredBaseData} eventType={REBOUND_EVENT_TYPE} xMetric={SCATTER_X_METRIC} yMetric={REBOUND_Y_METRIC} yLabel="Rebound velocity (mm/s)" />
           </VisualizationPanel>
 
           <VisualizationPanel
@@ -1284,19 +1345,7 @@ export function SuspensionVisualization({
             collapsed={collapsedPanels.includes('events')}
             onToggle={() => togglePanel('events')}
           >
-            {scopeMode === 'sector' ? (
-              <SectorEventCountScaffold
-                data={analysisData}
-                ends={selectedEnds}
-                entities={selectedEntities}
-                selectedTrack={selectedTrack}
-                sectors={selectedSectors}
-                allSectors={sectors}
-                trackMatchesLoading={visualizationTrackMatchesLoading}
-              />
-            ) : (
-              <EventCountStrip entities={selectedEntities} data={analysisData} ends={selectedEnds} />
-            )}
+            <MemoFacetedEventCountGrid model={facetModel} fallbackData={activityFilteredBaseData} />
           </VisualizationPanel>
             </>
           )}
@@ -1304,6 +1353,26 @@ export function SuspensionVisualization({
       )}
         </div>
       </div>
+
+      {scenarioEditorOpen && (
+        <ScenarioEditorModal
+          dataSource={dataSource}
+          canWrite={canWriteScenarios}
+          initialScenario={selectedScenario}
+          allowScratch
+          onApplyScratch={(scenario) => {
+            setScratchScenarioDefinition(scenario)
+            setSelectedScenarioKeys((current) => uniqueStrings([...current.filter((key) => key !== SCRATCH_SCENARIO_KEY), SCRATCH_SCENARIO_KEY]))
+          }}
+          onClose={() => setScenarioEditorOpen(false)}
+          onSaved={(saved) => {
+            setSavedScenarios((current) => sortScenarios([...current.filter((scenario) => scenario.id !== saved.id), saved]))
+            if (saved.id) {
+              setSelectedScenarioKeys((current) => uniqueStrings([...current.filter((key) => key !== SCRATCH_SCENARIO_KEY), saved.id as string]))
+            }
+          }}
+        />
+      )}
 
     </div>
   )
@@ -1323,52 +1392,240 @@ function PhaseProvenanceNote({ entities, sessions }: { entities: VisualizationEn
   )
 }
 
-function ComparisonLayoutToggle({
-  value,
-  onChange,
-}: {
-  value: ComparisonLayout
-  onChange: (value: ComparisonLayout) => void
-}) {
-  return (
-    <div className="viz-layout-toggle" aria-label="Comparison layout">
-      <div className="viz-layout-buttons">
-        <button
-          className={value === 'entities' ? 'active' : ''}
-          type="button"
-          onClick={() => onChange('entities')}
-        >
-          Session vs session
-          <small>Front/rear together</small>
-        </button>
-        <button
-          className={value === 'ends' ? 'active' : ''}
-          type="button"
-          onClick={() => onChange('ends')}
-        >
-          Front vs rear
-          <small>Sessions/groups together</small>
-        </button>
-      </div>
-    </div>
-  )
-}
-
 function ActivityExclusionControl({
   checked,
+  summary,
+  updating,
   onChange,
 }: {
   checked: boolean
+  summary: ActivityMaskSummary | null
+  updating: boolean
   onChange: (checked: boolean) => void
 }) {
+  const detail = updating
+    ? 'Updating charts…'
+    : !summary
+    ? 'Loading preprocessing activity masks.'
+    : summary.supportedSessions === 0
+      ? 'No preprocessing activity masks are available.'
+      : checked
+        ? `${summary.inactiveSamples.toLocaleString()} inactive of ${summary.totalSamples.toLocaleString()} samples excluded across ${summary.supportedSessions} of ${summary.totalSessions} session(s).`
+        : `${summary.inactiveSamples.toLocaleString()} inactive samples currently included across ${summary.supportedSessions} of ${summary.totalSessions} session(s).`
   return (
-    <label className="viz-activity-toggle">
-      <input checked={checked} onChange={(event) => onChange(event.target.checked)} type="checkbox" />
+    <label className={`viz-activity-toggle${checked ? ' active' : ''}`}>
+      <input aria-label="Exclude inactive periods" checked={checked} onChange={(event) => onChange(event.currentTarget.checked)} type="checkbox" />
       <span>
         <strong>Exclude inactive periods</strong>
-        <small>Uses preprocessing activity masks when available.</small>
+        <small>{detail}</small>
       </span>
     </label>
+  )
+}
+
+type EntityType = 'session' | 'group' | 'track' | 'sector' | 'scenario'
+
+function EntityTypeGlyph({ type, detail }: { type: EntityType; detail?: string }) {
+  const label = type[0].toUpperCase() + type.slice(1)
+  const accessibleLabel = detail ? `${label}: ${detail}` : label
+  const icon = type === 'session'
+    ? <FileClock aria-hidden="true" size={14} />
+    : type === 'group'
+      ? <Folder aria-hidden="true" size={14} />
+      : type === 'track'
+        ? <Route aria-hidden="true" size={14} />
+        : type === 'sector'
+          ? <Milestone aria-hidden="true" size={14} />
+          : <ListFilter aria-hidden="true" size={14} />
+  return <span aria-label={accessibleLabel} className="viz-entity-type-glyph" title={accessibleLabel}>{icon}</span>
+}
+
+function FacetKindGlyph({ dimension, item }: { dimension: FacetDimension; item: FacetItem }) {
+  if (dimension === 'entity') {
+    const entity = item.value as VisualizationEntity
+    return <EntityTypeGlyph type={entity.kind === 'grouping' ? 'group' : 'session'} />
+  }
+  if (dimension === 'sector') return <EntityTypeGlyph type="sector" />
+  if (dimension === 'scenario') return <EntityTypeGlyph type="scenario" />
+  return (
+    <span aria-label="Suspension end" className="viz-entity-type-glyph" title="Suspension end">
+      <Activity aria-hidden="true" size={14} />
+    </span>
+  )
+}
+
+type ScenarioFacetPopulation = {
+  key: string
+  label: string
+  data: VisualizationData
+  color: string
+}
+
+type FacetItem = {
+  id: string
+  label: string
+  color: string
+  value: VisualizationEntity | SuspensionEnd | ScenarioFacetPopulation | TrackSector
+}
+
+type FacetSelection = Partial<Record<FacetDimension, FacetItem>>
+
+type AnalysisFacetModel = {
+  assignments: FacetAssignments
+  dimensions: FacetDimension[]
+  items: Partial<Record<FacetDimension, FacetItem[]>>
+  track: TrackRecord | null
+}
+
+function AnalysisModeControl({ value, onChange, trackAvailable }: { value: AnalysisMode; onChange: (value: AnalysisMode) => void; trackAvailable: boolean }) {
+  const trackDisabled = value === 'session' && !trackAvailable
+  return (
+    <section className="viz-analysis-mode-control">
+      <strong>Analysis mode</strong>
+      <label className={`viz-analysis-mode-toggle${trackDisabled ? ' disabled' : ''}`}>
+        <span className={value === 'session' ? 'active' : ''}>Session</span>
+        <input
+          aria-label="Use Track view"
+          checked={value === 'track'}
+          disabled={trackDisabled}
+          onChange={(event) => onChange(event.target.checked ? 'track' : 'session')}
+          type="checkbox"
+        />
+        <i aria-hidden="true" />
+        <span className={value === 'track' ? 'active' : ''}>Track</span>
+      </label>
+      <small>{value === 'session' ? 'Time windows and Scenario comparisons.' : 'Matched sessions and track sectors.'}</small>
+      {trackDisabled && <small>No enabled session has usable sector crossings for the selected track.</small>}
+    </section>
+  )
+}
+
+function EndSelectionControl({ selectedEnds, onToggleEnd }: { selectedEnds: SuspensionEnd[]; onToggleEnd: (end: SuspensionEnd) => void }) {
+  return (
+    <section className="viz-mode-filter-control">
+      <strong>Ends</strong>
+      <div className="viz-entity-chips">
+        {(['front', 'rear'] as const).map((end) => (
+          <button className={`viz-entity-chip end-chip${selectedEnds.includes(end) ? ' selected' : ''}`} key={end} onClick={() => onToggleEnd(end)} type="button">
+            <span className="color-dot" style={{ backgroundColor: roleColor(end) }} />
+            <span>{formatRole(end)}</span>
+          </button>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function SectorSelectionControl({ sectors, selectedSectorIds, onToggleSector, track, matchedSessionCount, loading }: {
+  sectors: TrackSector[]
+  selectedSectorIds: string[]
+  onToggleSector: (sectorId: string) => void
+  track: TrackRecord | null
+  matchedSessionCount: number
+  loading: boolean
+}) {
+  return (
+    <section className="viz-mode-filter-control">
+      <strong>Sectors</strong>
+      <small>{track ? `${track.name} · ${loading ? 'checking matches' : `${matchedSessionCount} enabled matched session(s)`}` : 'Select a track in Scope.'}</small>
+      <div className="viz-entity-chips">
+        {sectors.length === 0 && <span className="viz-filter-empty">No trackpoint-bounded sectors available.</span>}
+        {sectors.map((sector) => (
+          <button className={`viz-entity-chip sector-chip${selectedSectorIds.includes(sector.id) ? ' selected' : ''}`} key={sector.id} onClick={() => onToggleSector(sector.id)} type="button">
+            <EntityTypeGlyph type="sector" />
+            <span className="viz-entity-chip-label">{sector.label}</span>
+            <small>{formatMetres(sector.lengthM)}</small>
+          </button>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function FacetAssignmentControl({ dimensions, value, onChange }: {
+  dimensions: FacetDimension[]
+  value: FacetAssignments
+  onChange: (value: FacetAssignments) => void
+}) {
+  function assign(dimension: FacetDimension, placement: FacetPlacement) {
+    const other = dimensions.find((candidate) => candidate !== dimension && value[candidate] === placement)
+    const previous = value[dimension]
+    const next = { ...value, [dimension]: placement }
+    if (other && previous) next[other] = previous
+    onChange(next)
+  }
+  return (
+    <section className="viz-facet-control">
+      <strong>Comparison layout</strong>
+      <div className="viz-facet-assignment-grid">
+        <span />
+        <span>Across</span>
+        <span>Down</span>
+        <span>On chart</span>
+        {dimensions.map((dimension) => <Fragment key={dimension}>
+          <strong>{facetDimensionLabel(dimension)}</strong>
+          {(['across', 'down', 'on_chart'] as const).map((placement) => (
+            <label key={placement}>
+              <input checked={value[dimension] === placement} name={`facet-${dimension}`} onChange={() => assign(dimension, placement)} type="radio" />
+            </label>
+          ))}
+        </Fragment>)}
+      </div>
+    </section>
+  )
+}
+
+function ScenarioControl({
+  scenarios,
+  scratch,
+  selectedKeys,
+  loading,
+  message,
+  status,
+  updating,
+  warning,
+  onChange,
+  onEdit,
+}: {
+  scenarios: ScenarioRecord[]
+  scratch: ScenarioRecord | null
+  selectedKeys: string[]
+  loading: boolean
+  message: string
+  status: ScenarioEvaluationState['status']
+  updating: boolean
+  warning: boolean
+  onChange: (keys: string[]) => void
+  onEdit: () => void
+}) {
+  return (
+    <section className="viz-scenario-control">
+      <div className="viz-scenario-control-heading">
+        <span>
+          <strong>Scenarios</strong>
+          <small>Select comparison populations. Scenario Episodes may overlap.</small>
+        </span>
+        <ListFilter size={15} />
+      </div>
+      <div className="viz-scenario-control-row">
+        <div className="viz-scenario-picker" aria-label="Scenario populations">
+          <label className="viz-scenario-option">
+            <input aria-label="Include all qualifying data" checked={selectedKeys.includes(BASELINE_SCENARIO_KEY)} onChange={(event) => onChange(selectionWith(selectedKeys, BASELINE_SCENARIO_KEY, event.currentTarget.checked))} type="checkbox" />
+            <span>All qualifying data</span>
+          </label>
+          {scratch && <label className="viz-scenario-option">
+            <input aria-label={`Include Scratch: ${scratch.displayName}`} checked={selectedKeys.includes(SCRATCH_SCENARIO_KEY)} onChange={(event) => onChange(selectionWith(selectedKeys, SCRATCH_SCENARIO_KEY, event.currentTarget.checked))} type="checkbox" />
+            <span>Scratch: {scratch.displayName}</span>
+          </label>}
+          {scenarios.map((scenario) => scenario.id ? <label className="viz-scenario-option" key={scenario.id}>
+            <input aria-label={`Include ${scenario.displayName}`} checked={selectedKeys.includes(scenario.id)} disabled={loading} onChange={(event) => onChange(selectionWith(selectedKeys, scenario.id as string, event.currentTarget.checked))} type="checkbox" />
+            <span>{scenario.displayName} (r{scenario.revision})</span>
+          </label> : null)}
+        </div>
+        <button className="ghost-action" type="button" onClick={onEdit}>Create or edit</button>
+      </div>
+      {(updating || message) && <p className={`viz-scenario-status${warning || status === 'error' ? ' warning' : ''}`}>{updating ? 'Updating selection…' : message}</p>}
+    </section>
   )
 }
 
@@ -1398,8 +1655,7 @@ function DisplayOptionsControl({
   return (
     <section className="viz-display-options">
       <strong>Display options</strong>
-      <fieldset className="viz-frequency-options">
-        <legend>Frequency data</legend>
+      <div className="viz-frequency-mode-list">
         <FrequencyModePair
           extra={
             <>
@@ -1458,7 +1714,7 @@ function DisplayOptionsControl({
           value={modes.strokeLength}
           onChange={(mode) => onChange('strokeLength', mode)}
         />
-      </fieldset>
+      </div>
     </section>
   )
 }
@@ -1790,9 +2046,22 @@ function TimeWindowManager({
     sessionRefs.find((sessionRef) => sessionRefId(sessionRef) === activeSessionKey) ?? sessionRefs[0] ?? null
   const clippedCount = sessionRefs.filter((sessionRef) => Boolean(timeWindows[sessionRefId(sessionRef)])).length
 
+  function handleSessionTabKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    let nextIndex: number | null = null
+    if (event.key === 'ArrowDown' || event.key === 'ArrowRight') nextIndex = (index + 1) % sessionRefs.length
+    if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') nextIndex = (index - 1 + sessionRefs.length) % sessionRefs.length
+    if (event.key === 'Home') nextIndex = 0
+    if (event.key === 'End') nextIndex = sessionRefs.length - 1
+    if (nextIndex === null) return
+    event.preventDefault()
+    setActiveSessionKey(sessionRefId(sessionRefs[nextIndex]))
+    event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[nextIndex]?.focus()
+  }
+
   if (!activeSessionRef) {
     return null
   }
+  const activeSessionIndex = Math.max(0, sessionRefs.findIndex((sessionRef) => sessionRefId(sessionRef) === sessionRefId(activeSessionRef)))
 
   return (
     <section className="viz-time-window-manager" aria-label="Per-session time windows">
@@ -1810,37 +2079,50 @@ function TimeWindowManager({
         </button>
       </div>
 
-      <div className="viz-time-window-session-list">
-        {sessionRefs.map((sessionRef) => {
+      {sessionRefs.length > 1 && <div aria-label="Session time windows" className="viz-time-window-session-tabs" role="tablist" aria-orientation="vertical">
+        {sessionRefs.map((sessionRef, index) => {
           const key = sessionRefId(sessionRef)
           const session = sessionByRef(sessionRef, sessions) ?? null
           const window = timeWindows[key] ?? null
+          const selected = key === sessionRefId(activeSessionRef)
           return (
             <button
-              className={`viz-time-window-session-chip${key === sessionRefId(activeSessionRef) ? ' selected' : ''}${window ? ' clipped' : ''}`}
+              aria-controls="viz-time-window-session-panel"
+              aria-selected={selected}
+              className={`viz-time-window-session-tab${selected ? ' selected' : ''}${window ? ' clipped' : ''}`}
+              id={`viz-time-window-session-tab-${index}`}
               key={key}
+              role="tab"
+              tabIndex={selected ? 0 : -1}
               type="button"
               onClick={() => setActiveSessionKey(key)}
+              onKeyDown={(event) => handleSessionTabKeyDown(event, index)}
             >
               <span>{sessionRef.label || session?.name || sessionRef.sessionId}</span>
               <small>{window ? `${formatTimeOffset(window.startS)} - ${formatTimeOffset(window.endS)}` : 'Full session'}</small>
             </button>
           )
         })}
-      </div>
+      </div>}
 
-      <TimeWindowNavigator
-        embedded
-        data={data}
-        dataSource={dataSource}
-        bookmarkRefreshToken={bookmarkRefreshToken}
-        sessionRef={activeSessionRef}
-        session={sessionByRef(activeSessionRef, sessions) ?? null}
-        window={timeWindows[sessionRefId(activeSessionRef)] ?? null}
-        onChange={(nextWindow) => onChange(activeSessionRef, nextWindow)}
-        onReset={() => onReset(activeSessionRef)}
-        onInspectSignals={onInspectSignals ? (window) => onInspectSignals(activeSessionRef, window) : undefined}
-      />
+      <div
+        aria-labelledby={sessionRefs.length > 1 ? `viz-time-window-session-tab-${activeSessionIndex}` : undefined}
+        id="viz-time-window-session-panel"
+        role={sessionRefs.length > 1 ? 'tabpanel' : undefined}
+      >
+        <TimeWindowNavigator
+          embedded
+          data={data}
+          dataSource={dataSource}
+          bookmarkRefreshToken={bookmarkRefreshToken}
+          sessionRef={activeSessionRef}
+          session={sessionByRef(activeSessionRef, sessions) ?? null}
+          window={timeWindows[sessionRefId(activeSessionRef)] ?? null}
+          onChange={(nextWindow) => onChange(activeSessionRef, nextWindow)}
+          onReset={() => onReset(activeSessionRef)}
+          onInspectSignals={onInspectSignals ? (window) => onInspectSignals(activeSessionRef, window) : undefined}
+        />
+      </div>
     </section>
   )
 }
@@ -2181,30 +2463,31 @@ function TimeWindowOverview({
 
 function VisualizationFilterChips({
   entities,
-  scopeMode,
-  sectors,
-  selectedEndKeys,
+  tracks,
   selectedEntityIds,
-  selectedSectorIds,
-  onToggleEnd,
+  selectedTrackId,
   onToggleEntity,
-  onToggleSector,
+  onTrackChange,
+  excludeInactivePeriods,
+  activityMaskSummary,
+  activityMaskUpdating,
+  onExcludeInactivePeriodsChange,
 }: {
   entities: VisualizationEntity[]
-  scopeMode: ScopeMode
-  sectors: TrackSector[]
-  selectedEndKeys: SuspensionEnd[]
+  tracks: TrackRecord[]
   selectedEntityIds: string[]
-  selectedSectorIds: string[]
-  onToggleEnd: (end: SuspensionEnd) => void
+  selectedTrackId: string | null
   onToggleEntity: (entityId: string) => void
-  onToggleSector: (sectorId: string) => void
+  onTrackChange: (trackId: string | null) => void
+  excludeInactivePeriods: boolean
+  activityMaskSummary: ActivityMaskSummary | null
+  activityMaskUpdating: boolean
+  onExcludeInactivePeriodsChange: (checked: boolean) => void
 }) {
-  const selectedSectorCount = sectors.filter((sector) => selectedSectorIds.includes(sector.id)).length
   return (
     <div
       className="viz-entity-selector"
-      aria-label={`Visualization filters: ${selectedEntityIds.length} sessions/groups, ${selectedEndKeys.length} ends, ${selectedSectorCount} sectors`}
+      aria-label={`Analysis scope: ${selectedEntityIds.length} sessions/groups, ${selectedTrackId ? 'one track' : 'no track'}`}
     >
 
       <div className="viz-filter-group">
@@ -2221,8 +2504,11 @@ function VisualizationFilterChips({
                 style={entity.color ? { borderColor: entity.color } : undefined}
               >
                 {entity.color && <span className="color-dot" style={{ backgroundColor: entity.color }} />}
-                <span>{entity.label}</span>
-                <small>{entity.kind === 'grouping' ? `${entity.sessionRefs.length} pooled` : 'session'}</small>
+                <EntityTypeGlyph
+                  type={entity.kind === 'grouping' ? 'group' : 'session'}
+                  detail={entity.kind === 'grouping' ? `${entity.sessionRefs.length} pooled sessions` : undefined}
+                />
+                <span className="viz-entity-chip-label">{entity.label}</span>
               </button>
             )
           })}
@@ -2230,51 +2516,27 @@ function VisualizationFilterChips({
       </div>
 
       <div className="viz-filter-group">
-        <strong>Ends</strong>
+        <strong className="inline-heading">Tracks <InfoTip text="Track view uses one enabled track as its coordinate and sector frame. Session view retains but ignores this choice." /></strong>
         <div className="viz-entity-chips">
-          {(['front', 'rear'] as const).map((end) => (
-            <button
-              className={`viz-entity-chip end-chip${selectedEndKeys.includes(end) ? ' selected' : ''}`}
-              key={end}
-              type="button"
-              onClick={() => onToggleEnd(end)}
-            >
-              <span className="color-dot" style={{ backgroundColor: roleColor(end) }} />
-              <span>{formatRole(end)}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="viz-filter-group">
-        <strong className="inline-heading">
-          Sectors
-          <InfoTip
-            text={
-              scopeMode === 'sector'
-                ? 'Selected sectors only are displayed and included in the overall view.'
-                : 'Sector selections applied only in sector scope.'
-            }
-          />
-        </strong>
-        <div className="viz-entity-chips">
-          {sectors.length === 0 && <span className="viz-filter-empty">No sectors available for the selected track.</span>}
-          {sectors.map((sector) => {
-            const selected = selectedSectorIds.includes(sector.id)
+          {tracks.length === 0 && <span className="viz-filter-empty">No tracks in this Study Set.</span>}
+          {tracks.map((track) => {
+            const sectorCount = trackSectors(track).length
             return (
               <button
-                className={`viz-entity-chip sector-chip${selected ? ' selected' : ''}`}
-                key={sector.id}
+                className={`viz-entity-chip track-chip${selectedTrackId === track.id ? ' selected' : ''}`}
+                key={track.id}
                 type="button"
-                onClick={() => onToggleSector(sector.id)}
+                onClick={() => onTrackChange(selectedTrackId === track.id ? null : track.id)}
               >
-                <span>{sector.label}</span>
-                <small>{formatMetres(sector.lengthM)}</small>
+                <EntityTypeGlyph type="track" />
+                <span className="viz-entity-chip-label">{track.name}</span>
+                <small>{sectorCount} {sectorCount === 1 ? 'sector' : 'sectors'}</small>
               </button>
             )
           })}
         </div>
       </div>
+      <ActivityExclusionControl checked={excludeInactivePeriods} summary={activityMaskSummary} updating={activityMaskUpdating} onChange={onExcludeInactivePeriodsChange} />
     </div>
   )
 }
@@ -2317,71 +2579,6 @@ function SignalChoiceControl({
   )
 }
 
-function ScopeModeControl({
-  value,
-  onChange,
-  tracks,
-  selectedTrackId,
-  onTrackChange,
-  sectors,
-}: {
-  value: ScopeMode
-  onChange: (value: ScopeMode) => void
-  tracks: TrackRecord[]
-  selectedTrackId: string | null
-  onTrackChange: (trackId: string | null) => void
-  sectors: TrackSector[]
-}) {
-  const hasTracks = tracks.length > 0
-  return (
-    <div className="viz-scope-control" aria-label="Visualization scope">
-      <div className="viz-scope-main">
-        <div className="viz-layout-buttons">
-          <button
-            className={value === 'whole_session' ? 'active' : ''}
-            type="button"
-            onClick={() => onChange('whole_session')}
-          >
-            Whole session
-            <small>Current charts</small>
-          </button>
-          <button
-            className={value === 'sector' ? 'active' : ''}
-            type="button"
-            disabled={!hasTracks}
-            onClick={() => onChange('sector')}
-          >
-            By sector
-            <small>{hasTracks ? 'Track ordered' : 'No track attached'}</small>
-          </button>
-        </div>
-      </div>
-      {value === 'sector' && (
-        <div className="viz-sector-config">
-          <label>
-            Track
-            <select
-              value={selectedTrackId ?? ''}
-              onChange={(event) => onTrackChange(event.target.value || null)}
-              disabled={!hasTracks}
-            >
-              {tracks.map((track) => (
-                <option value={track.id} key={track.id}>
-                  {track.name} ({track.trackpoints.length} trackpoints)
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="viz-sector-summary">
-            <strong>{sectors.length}</strong>
-            <span>trackpoint-bounded sector(s) available</span>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
 function VisualizationPanel({
   id,
   title,
@@ -2411,6 +2608,130 @@ function VisualizationPanel({
       {!collapsed && children}
     </section>
   )
+}
+
+function FacetGrid({ model, minTileWidth, renderCell }: {
+  model: AnalysisFacetModel
+  minTileWidth: number
+  renderCell: (series: FacetSelection[]) => ReactNode
+}) {
+  const acrossDimension = facetDimensionAt(model, 'across')
+  const downDimension = facetDimensionAt(model, 'down')
+  const onChartDimension = facetDimensionAt(model, 'on_chart')
+  if (!acrossDimension || !downDimension || !onChartDimension) return <div className="viz-sector-empty"><strong>Invalid comparison layout.</strong></div>
+  const acrossItems = model.items[acrossDimension] ?? []
+  const downItems = model.items[downDimension] ?? []
+  const onChartItems = model.items[onChartDimension] ?? []
+  if (!acrossItems.length || !downItems.length || !onChartItems.length) {
+    return <div className="viz-sector-empty"><strong>No qualifying analysis populations.</strong><span>Check the enabled scope items and mode filters.</span></div>
+  }
+  return (
+    <div className="viz-generic-facet-grid">
+      {downItems.map((downItem) => (
+        <section className="viz-generic-facet-row" key={downItem.id}>
+          {downItems.length > 1 && <header><strong>{downItem.label}</strong><small>{facetDimensionLabel(downDimension)}</small></header>}
+          <div className="viz-entity-strip responsive" style={responsiveStripStyle(acrossItems.length, minTileWidth)}>
+            {acrossItems.map((acrossItem) => {
+              const fixed: FacetSelection = { [downDimension]: downItem, [acrossDimension]: acrossItem }
+              return (
+                <article className="viz-entity-tile" key={`${downItem.id}:${acrossItem.id}`}>
+                  <header className="viz-entity-tile-header"><strong>{acrossItem.label}</strong><FacetKindGlyph dimension={acrossDimension} item={acrossItem} /></header>
+                  {renderCell(onChartItems.map((onChartItem) => ({ ...fixed, [onChartDimension]: onChartItem })))}
+                </article>
+              )
+            })}
+          </div>
+        </section>
+      ))}
+    </div>
+  )
+}
+
+function FacetedDistributionGrid({ model, fallbackData, chartKind, displayMode, xDomain, xLabel, bins, signalRoles, metricSpec, valueTransform = (values) => values, showStats = false, showDisplacementStatsOnChart = false, showMirroredStatsOnChart = false, statsMode = 'basic', statsFormatter = formatPercentValue, statsTransform = (value) => value }: {
+  model: AnalysisFacetModel
+  fallbackData: VisualizationData
+  chartKind: DistributionChartKind
+  displayMode: FrequencyDisplayMode
+  xDomain: [number, number]
+  xLabel: string
+  bins: number
+  signalRoles?: Record<SuspensionEnd, string>
+  metricSpec?: MirroredMetricSpec
+  valueTransform?: (values: number[]) => number[]
+  showStats?: boolean
+  showDisplacementStatsOnChart?: boolean
+  showMirroredStatsOnChart?: boolean
+  statsMode?: DistributionStatsMode
+  statsFormatter?: (value: number | null) => string
+  statsTransform?: (value: number) => number
+}) {
+  const selections = allFacetSelections(model)
+  const valuesFor = (selection: FacetSelection) => facetDistributionValues(selection, model, fallbackData, signalRoles, metricSpec, valueTransform)
+  const yMax = distributionYMaxForValues(selections.map(valuesFor), xDomain, bins, chartKind)
+  const yLabel = displayMode === 'cumulative' ? 'cumulative frequency' : 'proportion'
+  return <FacetGrid model={model} minTileWidth={352} renderCell={(cellSelections) => {
+    const series = cellSelections.map((selection) => {
+      const onChart = facetItemAtPlacement(model, selection, 'on_chart')
+      return { id: onChart?.id ?? 'series', label: onChart?.label ?? 'Series', color: onChart?.color ?? FRONT_COLOR, values: valuesFor(selection) }
+    })
+    return <>
+      {chartKind === 'mirrored_velocity'
+        ? <MirroredVelocityChart bins={bins} displayMode={displayMode} series={series} showStatsOnChart={showMirroredStatsOnChart} statsFormatter={statsFormatter} xDomain={xDomain} xLabel={xLabel} yLabel={yLabel} yMax={displayMode === 'cumulative' ? 1 : yMax} />
+        : <FrequencyChartBlock bins={bins} displacementStatsFormatter={statsFormatter} displayMode={displayMode} series={series} showDisplacementGlyphs={statsMode === 'displacement' && showDisplacementStatsOnChart} xDomain={xDomain} xLabel={xLabel} yLabel={yLabel} yMax={displayMode === 'cumulative' ? 1 : yMax} />}
+      <EntitySeriesLegend series={series.map((item) => ({ id: item.id, label: item.label, color: item.color, count: item.values.length }))} emptyLabel="No matching values" />
+      {showStats && <DistributionStats formatter={statsFormatter} mode={statsMode} series={series} splitMirrored={chartKind === 'mirrored_velocity'} transform={statsTransform} />}
+    </>
+  }} />
+}
+
+function FacetedScatterGrid({ model, fallbackData, eventType, xMetric, yMetric, yLabel }: {
+  model: AnalysisFacetModel
+  fallbackData: VisualizationData
+  eventType: string
+  xMetric: string
+  yMetric: string
+  yLabel: string
+}) {
+  const pointsFor = (selection: FacetSelection) => {
+    const entity = selection.entity?.value as VisualizationEntity
+    const end = selection.end?.value as SuspensionEnd
+    const data = facetData(selection, fallbackData)
+    const rows = facetRows(entity, data.metrics, data, model.track, selection.sector?.value as TrackSector | undefined)
+    return scatterPoints(rows, eventType, xMetric, yMetric).filter((point) => point.role === end)
+  }
+  const allPoints = allFacetSelections(model).flatMap(pointsFor)
+  const extent = { x: paddedExtent(allPoints.map((point) => point.x), [0, 100]), y: paddedExtent(allPoints.map((point) => point.y), [-1500, 1500]) }
+  return <FacetGrid model={model} minTileWidth={352} renderCell={(cellSelections) => {
+    const series = cellSelections.map((selection) => {
+      const onChart = facetItemAtPlacement(model, selection, 'on_chart')
+      return { id: onChart?.id ?? 'series', label: onChart?.label ?? 'Series', color: onChart?.color ?? FRONT_COLOR, points: pointsFor(selection) }
+    })
+    return <><EntityScatterChart series={series} xDomain={extent.x} yDomain={extent.y} xLabel="Stroke displacement" yLabel={yLabel} showRegression /><EntitySeriesLegend series={series.map((item) => ({ ...item, count: item.points.length }))} emptyLabel="No metric rows" /></>
+  }} />
+}
+
+function FacetedEventCountGrid({ model, fallbackData }: { model: AnalysisFacetModel; fallbackData: VisualizationData }) {
+  const rowsFor = (selection: FacetSelection) => {
+    const entity = selection.entity?.value as VisualizationEntity
+    const end = selection.end?.value as SuspensionEnd
+    const data = facetData(selection, fallbackData)
+    return facetRows(entity, data.events, data, model.track, selection.sector?.value as TrackSector | undefined).filter((row) => row.signalRole === end)
+  }
+  return <FacetGrid model={model} minTileWidth={330} renderCell={(cellSelections) => {
+    const series = cellSelections.map((selection) => {
+      const onChart = facetItemAtPlacement(model, selection, 'on_chart')
+      return { id: onChart?.id ?? 'series', label: onChart?.label ?? 'Series', color: onChart?.color ?? FRONT_COLOR, rows: rowsFor(selection) }
+    })
+    return <ComparativeEventCountTable series={series} />
+  }} />
+}
+
+function ComparativeEventCountTable({ series }: { series: Array<{ id: string; label: string; color: string; rows: TableQueryRow[] }> }) {
+  const eventTypes = uniqueStrings(series.flatMap((item) => item.rows.map((row) => row.eventType || 'unknown'))).sort()
+  return <table className="viz-count-table"><thead><tr><th>Event</th>{series.map((item) => <th key={item.id}><span className="color-dot" style={{ background: item.color }} /> {item.label}</th>)}</tr></thead><tbody>
+    {eventTypes.length === 0 && <tr><td colSpan={series.length + 1}>No events</td></tr>}
+    {eventTypes.map((eventType) => <tr key={eventType}><td>{eventType}</td>{series.map((item) => <td key={item.id}>{item.rows.filter((row) => (row.eventType || 'unknown') === eventType).length || '-'}</td>)}</tr>)}
+  </tbody></table>
 }
 
 function DistributionGrid({
@@ -3175,6 +3496,57 @@ function EventCountStrip({
   )
 }
 
+type FacetedPhaseDiagramProps = Omit<PhaseDiagramGridProps, 'data' | 'entities' | 'ends' | 'layout' | 'scopeMode' | 'selectedTrack' | 'sectors'> & {
+  model: AnalysisFacetModel
+  fallbackData: VisualizationData
+}
+
+function FacetedPhaseDiagram({ model, fallbackData, variant, displacementRoles, displacementScale, densityBins, contourMasses, conditionalBins, renderMode, markOpacity, scatterMarkSize, showGridlines, positionConditionRange, velocityConditionRange, xDomainOverride, yDomainOverride, logDensity, showZeroLines, xLabel }: FacetedPhaseDiagramProps) {
+  const pointsFor = (selection: FacetSelection) => {
+    const entity = selection.entity?.value as VisualizationEntity
+    const end = selection.end?.value as SuspensionEnd
+    const sector = selection.sector?.value as TrackSector | undefined
+    const data = facetData(selection, fallbackData)
+    return phasePointsForEntityEnd(entity, data, displacementRoles[end], `${end}_velocity`, model.track, sector ? [sector] : null, displacementScale)
+  }
+  const allSeries = allFacetSelections(model).map((selection) => ({ id: facetSelectionKey(selection), label: '', color: '', points: pointsFor(selection) }))
+  const automaticDomain = phaseDomain(allSeries)
+  const domain = { x: xDomainOverride ?? automaticDomain.x, y: yDomainOverride ?? automaticDomain.y }
+  return <FacetGrid model={model} minTileWidth={520} renderCell={(cellSelections) => {
+    const series = cellSelections.map((selection) => {
+      const onChart = facetItemAtPlacement(model, selection, 'on_chart')
+      return { id: facetSelectionKey(selection), label: onChart?.label ?? 'Series', color: onChart?.color ?? FRONT_COLOR, points: pointsFor(selection) }
+    })
+    const conditional = (variant === 'velocity_given_position' || variant === 'position_given_velocity')
+      ? series.map((item) => {
+          const values = phaseConditionalValues(item.points, variant, positionConditionRange, velocityConditionRange)
+          return { ...item, values, matchedCount: values.length }
+        })
+      : null
+    const conditionalDomain = phaseConditionalDataDomain(conditional, variant)
+    const chart = variant === 'contours'
+      ? <PhaseProbabilityContourChart contourMasses={contourMasses} densityBins={densityBins} series={series} showGridlines={showGridlines} showZeroLines={showZeroLines} xDomain={domain.x} yDomain={domain.y} xLabel={xLabel} />
+      : variant === 'velocity_given_position' || variant === 'position_given_velocity'
+        ? <PhaseConditionalDistributionChart bins={conditionalBins} conditionTitle={phaseConditionalChartTitle(variant, positionConditionRange, velocityConditionRange, xLabel)} series={conditional ?? []} showGridlines={showGridlines} target={variant} xDomain={conditionalDomain ?? [0, 1]} xLabel={xLabel} />
+        : <PhaseDensityChart densityBins={densityBins} markOpacity={markOpacity} renderMode={renderMode} logDensity={logDensity} scatterMarkSize={scatterMarkSize} series={series} showGridlines={showGridlines} showZeroLines={showZeroLines} xDomain={domain.x} yDomain={domain.y} xLabel={xLabel} />
+    const legendSeries = series.map((item) => {
+      const matchedCount = conditional?.find((candidate) => candidate.id === item.id)?.matchedCount ?? item.points.length
+      return {
+        id: item.id,
+        label: item.label,
+        color: item.color,
+        count: matchedCount,
+        detail: conditional ? `${formatProportion(item.points.length ? matchedCount / item.points.length : 0)} of phase samples` : undefined,
+      }
+    })
+    return <>{chart}<EntitySeriesLegend series={legendSeries} emptyLabel={conditional ? 'No samples in conditioning window' : 'No paired samples'} /></>
+  }} />
+}
+
+function facetSelectionKey(selection: FacetSelection) {
+  return (['entity', 'end', 'scenario', 'sector'] as const).map((dimension) => selection[dimension]?.id ?? '').join(':')
+}
+
 type PhaseDiagramGridProps = {
   variant: PhaseChartVariant
   data: VisualizationData
@@ -3378,6 +3750,14 @@ function PhaseDiagramGridComponent({
 }
 
 const PhaseDiagramGrid = memo(PhaseDiagramGridComponent, phaseDiagramGridPropsEqual)
+
+// Compatibility renderers for the pre-mode visualization grammar. Keeping them
+// referenced allows older persisted settings to remain readable during migration.
+void SectorDistributionScaffold
+void SectorMetricDistributionScaffold
+void SectorScatterScaffold
+void SectorEventCountScaffold
+void PhaseDiagramGrid
 
 function phaseDiagramGridPropsEqual(previous: PhaseDiagramGridProps, next: PhaseDiagramGridProps) {
   if (
@@ -5720,8 +6100,9 @@ function restoredVisualizationSettings(
       )
     : defaultSelectedEntityIds
   const validTrackIds = new Set(tracks.map((track) => track.id))
-  const selectedTrackId = cached?.selectedTrackId && validTrackIds.has(cached.selectedTrackId)
-    ? cached.selectedTrackId
+  const hasCachedTrackSelection = Boolean(cached && Object.prototype.hasOwnProperty.call(cached, 'selectedTrackId'))
+  const selectedTrackId = hasCachedTrackSelection
+    ? cached?.selectedTrackId && validTrackIds.has(cached.selectedTrackId) ? cached.selectedTrackId : null
     : tracks[0]?.id ?? null
   return {
     selectedEntityIds,
@@ -5729,11 +6110,20 @@ function restoredVisualizationSettings(
     collapsedPanels: cached?.collapsedPanels ? stringArrayValue(cached.collapsedPanels) : ['select-filter'],
     comparisonLayout: cached?.comparisonLayout ?? 'entities',
     scopeMode: cached?.scopeMode ?? 'whole_session',
+    analysisMode: cached?.analysisMode === 'track' || cached?.analysisMode === 'session'
+      ? cached.analysisMode
+      : cached?.scopeMode === 'sector' ? 'track' : 'session',
+    selectedScenarioIds: cached?.selectedScenarioIds
+      ? normalizedScenarioSelections(cached.selectedScenarioIds)
+      : cached?.selectedScenarioId ? [cached.selectedScenarioId] : [BASELINE_SCENARIO_KEY],
+    sessionFacetAssignments: normalizedFacetAssignments(cached?.sessionFacetAssignments, defaultSessionFacetAssignments()),
+    trackFacetAssignments: normalizedFacetAssignments(cached?.trackFacetAssignments, defaultTrackFacetAssignments()),
     selectedTrackId,
     selectedEnds: normalizedSelectedEnds(cached?.selectedEnds),
     selectedSectorIds: cached?.selectedSectorIds ? stringArrayValue(cached.selectedSectorIds) : [],
     timeWindowsBySession: cached?.timeWindowsBySession ? { ...cached.timeWindowsBySession } : {},
     excludeInactivePeriods: cached?.excludeInactivePeriods ?? true,
+    selectedScenarioId: typeof cached?.selectedScenarioId === 'string' && cached.selectedScenarioId ? cached.selectedScenarioId : null,
     signalChoices: cached?.signalChoices ? { ...cached.signalChoices } : {},
     frequencyDisplayModes: normalizedFrequencyDisplayModes(cached?.frequencyDisplayModes),
     showDisplacementMm: cached?.showDisplacementMm ?? mode === 'phase',
@@ -5806,6 +6196,14 @@ function persistVisualizationSettings(cacheKey: string, settings: SuspensionVisu
   } catch {
     // Analysis settings are a convenience cache; storage failures should not block charting.
   }
+}
+
+function sortScenarios(scenarios: ScenarioRecord[]) {
+  return [...scenarios].sort((left, right) => left.displayName.localeCompare(right.displayName, undefined, { sensitivity: 'base' }))
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function stringArrayValue(value: unknown) {
@@ -5890,122 +6288,367 @@ function eventTriggerTimeMap(rows: TableQueryRow[]) {
   return out
 }
 
-function applyTimeWindows(data: VisualizationData, timeWindows: TimeWindowsBySession): VisualizationData {
-  const windowSessionKeys = Object.keys(timeWindows)
-  if (windowSessionKeys.length === 0) {
-    return data
+function defaultSessionFacetAssignments(): FacetAssignments {
+  return { entity: 'across', scenario: 'down', end: 'on_chart' }
+}
+
+function defaultTrackFacetAssignments(): FacetAssignments {
+  return { sector: 'across', entity: 'down', end: 'on_chart' }
+}
+
+function normalizedFacetAssignments(value: FacetAssignments | undefined, fallback: FacetAssignments): FacetAssignments {
+  if (!value || typeof value !== 'object') return fallback
+  const dimensions = Object.keys(fallback) as FacetDimension[]
+  const placements = dimensions.map((dimension) => value[dimension])
+  return Object.keys(value).length === dimensions.length
+    && placements.length === 3
+    && new Set(placements).size === 3
+    && placements.every((placement) => placement === 'across' || placement === 'down' || placement === 'on_chart')
+    ? Object.fromEntries(dimensions.map((dimension) => [dimension, value[dimension]]))
+    : fallback
+}
+
+function normalizedScenarioSelections(value: unknown) {
+  return uniqueStrings(stringArrayValue(value))
+}
+
+function selectionWith(current: string[], key: string, selected: boolean) {
+  if (!selected) return current.filter((item) => item !== key)
+  return current.includes(key) ? current : [...current, key]
+}
+
+function scenarioKey(scenario: ScenarioRecord) {
+  return scenario.id ?? SCRATCH_SCENARIO_KEY
+}
+
+function cachedScenarioEvaluation(
+  dataSource: LibraryDataSource,
+  key: string,
+  load: () => Promise<ScenarioEvaluationResponse>,
+) {
+  let cache = scenarioEvaluationCache.get(dataSource)
+  if (!cache) {
+    cache = new Map()
+    scenarioEvaluationCache.set(dataSource, cache)
   }
-  const windowedSessions = new Set(windowSessionKeys)
-  const signalsBySession: Record<string, Record<string, number[]>> = {}
-  const timeBySession: Record<string, number[]> = {}
-  for (const [key, signals] of Object.entries(data.signalsBySession)) {
-    const times = data.timeBySession[key] ?? []
-    const window = timeWindows[key] ?? null
-    if (!window) {
-      signalsBySession[key] = signals
-      timeBySession[key] = times
-      continue
-    }
-    const range = timeWindowIndexRange(times, window)
-    timeBySession[key] = times.slice(range.startIndex, range.endIndex)
-    signalsBySession[key] = {}
-    for (const [role, values] of Object.entries(signals)) {
-      signalsBySession[key][role] = values.slice(range.startIndex, range.endIndex)
-    }
+  const cached = cache.get(key)
+  if (cached) {
+    cache.delete(key)
+    cache.set(key, cached)
+    debugPopulationPerformance('scenario-client-hit', key, 0)
+    return cached
   }
-  for (const [key, times] of Object.entries(data.timeBySession)) {
-    if (timeBySession[key]) {
-      continue
+  const started = suspensionCacheNowMs()
+  const pending = load()
+  cache.set(key, pending)
+  pruneOldestMapEntries(cache, SCENARIO_EVALUATION_CACHE_LIMIT)
+  void pending.then(
+    () => debugPopulationPerformance('scenario-client-load', key, suspensionCacheNowMs() - started),
+    () => cache?.delete(key),
+  )
+  return pending
+}
+
+function pruneOldestMapEntries<K, V>(entries: Map<K, V>, limit: number) {
+  while (entries.size > limit) {
+    const oldest = entries.keys().next().value as K | undefined
+    if (oldest === undefined) return
+    entries.delete(oldest)
+  }
+}
+
+function debugPopulationPerformance(event: string, key: string, durationMs: number, data?: VisualizationData) {
+  if (typeof window === 'undefined') return
+  try {
+    if (window.localStorage.getItem('bodaqs.debug.suspension-cache') !== '1') return
+  } catch {
+    return
+  }
+  console.debug('[BODAQS] suspension population cache', {
+    event,
+    keyLength: key.length,
+    durationMs: Math.round(durationMs),
+    sessions: data ? Object.keys(data.timeBySession).length : undefined,
+  })
+}
+
+function facetDimensionLabel(dimension: FacetDimension) {
+  if (dimension === 'entity') return 'Session/group'
+  return dimension[0].toUpperCase() + dimension.slice(1)
+}
+
+function facetPalette(index: number) {
+  return ['#2f7d6d', '#cc6b49', '#496fa8', '#8a5f9e', '#9a7b24', '#3f7f91'][index % 6]
+}
+
+function buildAnalysisFacetModel({ analysisMode, entities, ends, scenarios, sectors, assignments, track }: {
+  analysisMode: AnalysisMode
+  entities: VisualizationEntity[]
+  ends: SuspensionEnd[]
+  scenarios: ScenarioFacetPopulation[]
+  sectors: TrackSector[]
+  assignments: FacetAssignments
+  track: TrackRecord | null
+}): AnalysisFacetModel {
+  const entityItems = entities.map((entity, index) => ({ id: entity.id, label: entity.label, color: entityColor(entity, index), value: entity }))
+  const endItems = ends.map((end) => ({ id: end, label: formatRole(end), color: roleColor(end), value: end }))
+  if (analysisMode === 'session') {
+    return {
+      assignments,
+      dimensions: ['entity', 'end', 'scenario'],
+      items: {
+        entity: entityItems,
+        end: endItems,
+        scenario: scenarios.map((scenario) => ({ id: scenario.key, label: scenario.label, color: scenario.color, value: scenario })),
+      },
+      track: null,
     }
-    const window = timeWindows[key] ?? null
-    if (!window) {
-      timeBySession[key] = times
-      continue
-    }
-    const range = timeWindowIndexRange(times, window)
-    timeBySession[key] = times.slice(range.startIndex, range.endIndex)
   }
   return {
-    ...data,
-    timeBySession,
-    signalsBySession,
-    events: filterRowsByTimeWindows(data.events, data, timeWindows, windowedSessions),
-    metrics: filterRowsByTimeWindows(data.metrics, data, timeWindows, windowedSessions),
+    assignments,
+    dimensions: ['entity', 'end', 'sector'],
+    items: {
+      entity: entityItems,
+      end: endItems,
+      sector: sectors.map((sector, index) => ({ id: sector.id, label: sector.label, color: facetPalette(index), value: sector })),
+    },
+    track,
   }
+}
+
+function facetDimensionAt(model: AnalysisFacetModel, placement: FacetPlacement) {
+  return model.dimensions.find((dimension) => model.assignments[dimension] === placement) ?? null
+}
+
+function facetItemAtPlacement(model: AnalysisFacetModel, selection: FacetSelection, placement: FacetPlacement) {
+  const dimension = facetDimensionAt(model, placement)
+  return dimension ? selection[dimension] : undefined
+}
+
+function allFacetSelections(model: AnalysisFacetModel) {
+  let selections: FacetSelection[] = [{}]
+  for (const dimension of model.dimensions) {
+    const items = model.items[dimension] ?? []
+    selections = selections.flatMap((selection) => items.map((item) => ({ ...selection, [dimension]: item })))
+  }
+  return selections
+}
+
+function facetData(selection: FacetSelection, fallback: VisualizationData) {
+  return (selection.scenario?.value as ScenarioFacetPopulation | undefined)?.data ?? fallback
+}
+
+function facetRows(entity: VisualizationEntity, rows: TableQueryRow[], data: VisualizationData, track: TrackRecord | null, sector?: TrackSector) {
+  const entityScoped = entityRows(entity, rows)
+  return track && sector ? rowsInSectorsForEntity(entity, entityScoped, data, track, [sector]) : entityScoped
+}
+
+function facetDistributionValues(
+  selection: FacetSelection,
+  model: AnalysisFacetModel,
+  fallbackData: VisualizationData,
+  signalRoles: Record<SuspensionEnd, string> | undefined,
+  metricSpec: MirroredMetricSpec | undefined,
+  transform: (values: number[]) => number[],
+) {
+  const entity = selection.entity?.value as VisualizationEntity
+  const end = selection.end?.value as SuspensionEnd
+  const sector = selection.sector?.value as TrackSector | undefined
+  const data = facetData(selection, fallbackData)
+  if (metricSpec) {
+    const rows = facetRows(entity, data.metrics, data, model.track, sector)
+    return transform(metricMirroredValuesForRows(rows, end, metricSpec))
+  }
+  const role = signalRoles?.[end] ?? ''
+  return transform(model.track && sector
+    ? sectorValuesForEntity(entity, data, model.track, sector, role)
+    : entitySignalValues(entity, data, role))
+}
+
+function distributionYMaxForValues(valuesBySeries: number[][], xDomain: [number, number], bins: number, chartKind: DistributionChartKind) {
+  let maximum = 0
+  for (const values of valuesBySeries) {
+    const seriesBins = chartKind === 'mirrored_velocity'
+      ? Object.values(mirroredVelocityBins(values, xDomain, bins)).flat()
+      : histogramBins(values, xDomain, bins)
+    for (const bin of seriesBins) maximum = Math.max(maximum, bin.proportion)
+  }
+  return maximum || 1
+}
+
+function applyScenarioEpisodes(data: VisualizationData, evaluation: ScenarioEvaluationResponse): VisualizationData {
+  const scenarioIntervalsBySession = Object.fromEntries(
+    evaluation.sessions.map((session) => [
+      sessionRefId(session.sessionRef),
+      session.episodes
+        .map((episode) => ({ startS: episode.startTimeS, endS: episode.endTimeS }))
+        .sort((left, right) => left.startS - right.startS || left.endS - right.endS),
+    ]),
+  )
+  return populationView(data, {
+    scenarioIdentity: evaluation.evaluationId,
+    scenarioIntervalsBySession,
+  })
+}
+
+function applyTimeWindows(data: VisualizationData, timeWindows: TimeWindowsBySession): VisualizationData {
+  return Object.keys(timeWindows).length === 0 ? data : populationView(data, { timeWindowsBySession: timeWindows })
 }
 
 function applyActivityMask(data: VisualizationData): VisualizationData {
-  const signalsBySession: Record<string, Record<string, number[]>> = {}
-  const timeBySession: Record<string, number[]> = {}
-  let changed = false
-  for (const [key, times] of Object.entries(data.timeBySession)) {
-    const signals = data.signalsBySession[key] ?? {}
-    const activeMask = activeMaskForSession(data, key)
-    if (!activeMask || times.length === 0) {
-      timeBySession[key] = times
-      signalsBySession[key] = signals
-      continue
-    }
-    const indexes = activeIndexes(activeMask, times.length)
-    if (indexes.length === times.length) {
-      timeBySession[key] = times
-      signalsBySession[key] = signals
-      continue
-    }
-    changed = true
-    timeBySession[key] = indexes.map((index) => times[index])
-    signalsBySession[key] = Object.fromEntries(
-      Object.entries(signals).map(([role, values]) => [role, indexes.map((index) => values[index] ?? Number.NaN)]),
-    )
-  }
-  for (const [key, signals] of Object.entries(data.signalsBySession)) {
-    if (!signalsBySession[key]) {
-      signalsBySession[key] = signals
-    }
-  }
-  if (!changed) {
-    return data
-  }
-  return {
-    ...data,
-    timeBySession,
-    signalsBySession,
-    events: filterRowsByActivity(data.events, data),
-    metrics: filterRowsByActivity(data.metrics, data),
-  }
+  return populationView(data, { requireActivity: true })
 }
 
-function activeMaskForSession(data: VisualizationData, sessionKey: string): boolean[] | null {
-  const cached = activeMaskCache.get(data)
+function populationView(
+  data: VisualizationData,
+  changes: Partial<Omit<PopulationSelection, 'key'>>,
+): VisualizationData {
+  const source = populationSourceCache.get(data) ?? data
+  const current = populationSelectionCache.get(data)
+  const selectionWithoutKey = {
+    timeWindowsBySession: changes.timeWindowsBySession ?? current?.timeWindowsBySession ?? {},
+    requireActivity: changes.requireActivity ?? current?.requireActivity ?? false,
+    scenarioIdentity: changes.scenarioIdentity ?? current?.scenarioIdentity ?? null,
+    scenarioIntervalsBySession: changes.scenarioIntervalsBySession ?? current?.scenarioIntervalsBySession ?? null,
+  }
+  if (
+    Object.keys(selectionWithoutKey.timeWindowsBySession).length === 0
+    && !selectionWithoutKey.requireActivity
+    && selectionWithoutKey.scenarioIntervalsBySession === null
+  ) {
+    return source
+  }
+  const key = populationSelectionKey(selectionWithoutKey)
+  let views = populationViewCache.get(source)
+  if (!views) {
+    views = new Map()
+    populationViewCache.set(source, views)
+  }
+  const cached = views.get(key)
+  if (cached) {
+    views.delete(key)
+    views.set(key, cached)
+    debugPopulationPerformance('view-hit', key, 0, cached)
+    return cached
+  }
+  const started = suspensionCacheNowMs()
+  const selection: PopulationSelection = { ...selectionWithoutKey, key }
+  const view: VisualizationData = {
+    ...source,
+    events: filterRowsForPopulation(source.events, source, selection),
+    metrics: filterRowsForPopulation(source.metrics, source, selection),
+  }
+  populationSourceCache.set(view, source)
+  populationSelectionCache.set(view, selection)
+  views.set(key, view)
+  pruneOldestMapEntries(views, POPULATION_VIEW_CACHE_LIMIT)
+  debugPopulationPerformance('view-build', key, suspensionCacheNowMs() - started, view)
+  return view
+}
+
+function populationSelectionKey(selection: Omit<PopulationSelection, 'key'>) {
+  const windows = Object.entries(selection.timeWindowsBySession)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([sessionKey, window]) => [sessionKey, window.startS, window.endS])
+  return JSON.stringify({
+    windows,
+    active: selection.requireActivity,
+    scenario: selection.scenarioIdentity,
+  })
+}
+
+function filterRowsForPopulation(rows: TableQueryRow[], source: VisualizationData, selection: PopulationSelection) {
+  return rows.filter((row) => rowIncludedInPopulation(row, source, selection))
+}
+
+function rowIncludedInPopulation(row: TableQueryRow, source: VisualizationData, selection: PopulationSelection) {
+  const sessionKey = sessionRefId(row.sessionRef)
+  const triggerTimeS = rowPrimaryTriggerTimeS(row, source)
+  const window = selection.timeWindowsBySession[sessionKey]
+  if (window && (triggerTimeS === null || triggerTimeS < window.startS || triggerTimeS > window.endS)) {
+    return false
+  }
+  if (selection.requireActivity && !rowActiveAtTrigger(row, source)) {
+    return false
+  }
+  if (selection.scenarioIntervalsBySession !== null) {
+    if (triggerTimeS === null) {
+      return false
+    }
+    const intervals = selection.scenarioIntervalsBySession[sessionKey] ?? []
+    if (!timeInSortedPopulationIntervals(triggerTimeS, intervals)) {
+      return false
+    }
+  }
+  return true
+}
+
+function timeInSortedPopulationIntervals(timeS: number, intervals: TimeWindow[]) {
+  let low = 0
+  let high = intervals.length
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2)
+    if (intervals[mid].endS <= timeS) {
+      low = mid + 1
+    } else {
+      high = mid
+    }
+  }
+  const interval = intervals[low]
+  return Boolean(interval && timeS >= interval.startS && timeS < interval.endS)
+}
+
+function summarizeActivityMasks(data: VisualizationData): ActivityMaskSummary {
+  let supportedSessions = 0
+  let inactiveSamples = 0
+  let totalSamples = 0
+  const sessionKeys = Object.keys(data.timeBySession)
+  for (const key of sessionKeys) {
+    const times = data.timeBySession[key] ?? []
+    const mask = activeMaskForSession(data, key)
+    if (!mask || times.length === 0) continue
+    const limit = Math.min(mask.length, times.length)
+    supportedSessions += 1
+    totalSamples += limit
+    for (let index = 0; index < limit; index += 1) {
+      if (!mask[index]) inactiveSamples += 1
+    }
+  }
+  return { supportedSessions, totalSessions: sessionKeys.length, inactiveSamples, totalSamples }
+}
+
+function activeMaskForSession(data: VisualizationData, sessionKey: string): Uint8Array | null {
+  const source = populationSourceCache.get(data) ?? data
+  const cached = activeMaskCache.get(source)
   if (cached?.has(sessionKey)) {
     return cached.get(sessionKey) ?? null
   }
-  const signals = data.signalsBySession[sessionKey]
+  const signals = source.signalsBySession[sessionKey]
   if (!signals) {
-    cacheActiveMask(data, sessionKey, null)
+    cacheActiveMask(source, sessionKey, null)
     return null
   }
   for (const role of INACTIVE_MASK_ROLES) {
     const values = signals[role]
     if (hasUsableMask(values)) {
-      const mask = values.map((value) => !maskValueTruthy(value))
-      cacheActiveMask(data, sessionKey, mask)
+      const mask = Uint8Array.from(values, (value) => maskValueTruthy(value) ? 0 : 1)
+      cacheActiveMask(source, sessionKey, mask)
       return mask
     }
   }
   for (const role of ACTIVE_MASK_ROLES) {
     const values = signals[role]
     if (hasUsableMask(values)) {
-      const mask = values.map(maskValueTruthy)
-      cacheActiveMask(data, sessionKey, mask)
+      const mask = Uint8Array.from(values, (value) => maskValueTruthy(value) ? 1 : 0)
+      cacheActiveMask(source, sessionKey, mask)
       return mask
     }
   }
-  cacheActiveMask(data, sessionKey, null)
+  cacheActiveMask(source, sessionKey, null)
   return null
 }
 
-function cacheActiveMask(data: VisualizationData, sessionKey: string, mask: boolean[] | null) {
+function cacheActiveMask(data: VisualizationData, sessionKey: string, mask: Uint8Array | null) {
   const cached = activeMaskCache.get(data)
   if (cached) {
     cached.set(sessionKey, mask)
@@ -6026,19 +6669,62 @@ function maskValueTruthy(value: number) {
   return Number.isFinite(value) && value !== 0
 }
 
-function activeIndexes(mask: boolean[], length: number) {
-  const limit = Math.min(mask.length, length)
-  const indexes: number[] = []
-  for (let index = 0; index < limit; index += 1) {
-    if (mask[index]) {
-      indexes.push(index)
-    }
+function populationSampleMask(data: VisualizationData, sessionKey: string): Uint8Array | null {
+  const selection = populationSelectionCache.get(data)
+  if (!selection) {
+    return null
   }
-  return indexes
+  const cached = populationSampleMaskCache.get(data)
+  if (cached?.has(sessionKey)) {
+    return cached.get(sessionKey) ?? null
+  }
+  const source = populationSourceCache.get(data) ?? data
+  const times = source.timeBySession[sessionKey] ?? []
+  const window = selection.timeWindowsBySession[sessionKey]
+  const activeMask = selection.requireActivity ? activeMaskForSession(source, sessionKey) : null
+  const scenarioIntervals = selection.scenarioIntervalsBySession?.[sessionKey] ?? []
+  const hasScenarioConstraint = selection.scenarioIntervalsBySession !== null
+  if (!window && !activeMask && !hasScenarioConstraint) {
+    cachePopulationSampleMask(data, sessionKey, null)
+    return null
+  }
+  const started = suspensionCacheNowMs()
+  const mask = new Uint8Array(times.length)
+  let scenarioIndex = 0
+  for (let index = 0; index < times.length; index += 1) {
+    const timeS = times[index]
+    if (window && (!Number.isFinite(timeS) || timeS < window.startS || timeS > window.endS)) {
+      continue
+    }
+    if (activeMask && !activeMask[index]) {
+      continue
+    }
+    if (hasScenarioConstraint) {
+      if (!Number.isFinite(timeS)) {
+        continue
+      }
+      while (scenarioIndex < scenarioIntervals.length && timeS >= scenarioIntervals[scenarioIndex].endS) {
+        scenarioIndex += 1
+      }
+      const interval = scenarioIntervals[scenarioIndex]
+      if (!interval || timeS < interval.startS || timeS >= interval.endS) {
+        continue
+      }
+    }
+    mask[index] = 1
+  }
+  cachePopulationSampleMask(data, sessionKey, mask)
+  debugPopulationPerformance('mask-build', `${selection.key}|${sessionKey}`, suspensionCacheNowMs() - started, data)
+  return mask
 }
 
-function filterRowsByActivity(rows: TableQueryRow[], data: VisualizationData) {
-  return rows.filter((row) => rowActiveAtTrigger(row, data))
+function cachePopulationSampleMask(data: VisualizationData, sessionKey: string, mask: Uint8Array | null) {
+  const cached = populationSampleMaskCache.get(data)
+  if (cached) {
+    cached.set(sessionKey, mask)
+  } else {
+    populationSampleMaskCache.set(data, new Map([[sessionKey, mask]]))
+  }
 }
 
 function rowActiveAtTrigger(row: TableQueryRow, data: VisualizationData) {
@@ -6053,7 +6739,7 @@ function rowActiveAtTrigger(row: TableQueryRow, data: VisualizationData) {
     return true
   }
   const index = nearestTimeIndex(times, triggerTimeS)
-  return index === null ? true : mask[index] ?? true
+  return index === null || index >= mask.length ? true : mask[index] !== 0
 }
 
 function nearestTimeIndex(times: number[], target: number) {
@@ -6129,19 +6815,6 @@ function typicalTimeStep(times: number[]) {
   return d3.median(diffs) ?? 0.02
 }
 
-function timeWindowIndexRange(times: number[], window: TimeWindow) {
-  if (times.length === 0) {
-    return { startIndex: 0, endIndex: 0 }
-  }
-  if (!monotonicFiniteTimeArray(times)) {
-    return linearTimeWindowIndexRange(times, window)
-  }
-  return {
-    startIndex: lowerBound(times, window.startS),
-    endIndex: upperBound(times, window.endS),
-  }
-}
-
 function monotonicFiniteTimeArray(values: number[]) {
   const cached = monotonicTimeArrayCache.get(values)
   if (cached !== undefined) {
@@ -6161,22 +6834,6 @@ function isMonotonicFinite(values: number[]) {
     previous = value
   }
   return true
-}
-
-function linearTimeWindowIndexRange(times: number[], window: TimeWindow) {
-  let startIndex = -1
-  let endIndex = -1
-  for (let index = 0; index < times.length; index += 1) {
-    const time = times[index]
-    if (!Number.isFinite(time) || time < window.startS || time > window.endS) {
-      continue
-    }
-    if (startIndex < 0) {
-      startIndex = index
-    }
-    endIndex = index + 1
-  }
-  return startIndex < 0 ? { startIndex: 0, endIndex: 0 } : { startIndex, endIndex }
 }
 
 function lowerBound(values: number[], target: number) {
@@ -6199,79 +6856,6 @@ function upperBound(values: number[], target: number) {
   while (low < high) {
     const mid = Math.floor((low + high) / 2)
     if (values[mid] <= target) {
-      low = mid + 1
-    } else {
-      high = mid
-    }
-  }
-  return low
-}
-
-function filterRowsByTimeWindows(
-  rows: TableQueryRow[],
-  data: VisualizationData,
-  timeWindows: TimeWindowsBySession,
-  windowedSessions: Set<string>,
-) {
-  const rowsBySession = rowsGroupedBySession(rows)
-  const filteredRows: TableQueryRow[] = []
-  for (const [sessionKey, sessionRows] of rowsBySession.entries()) {
-    if (!windowedSessions.has(sessionKey)) {
-      appendRows(filteredRows, sessionRows)
-      continue
-    }
-    appendRows(filteredRows, tableRowsInTimeWindow(sessionRows, data, timeWindows[sessionKey]))
-  }
-  return filteredRows
-}
-
-function tableRowsInTimeWindow(rows: TableQueryRow[], data: VisualizationData, window: TimeWindow | undefined) {
-  if (!window) {
-    return rows
-  }
-  const timedRows = timedRowsForTableRows(rows, data)
-  const startIndex = lowerBoundTimedRows(timedRows, window.startS)
-  const endIndex = upperBoundTimedRows(timedRows, window.endS)
-  return timedRows.slice(startIndex, endIndex).map((item) => item.row)
-}
-
-function timedRowsForTableRows(rows: TableQueryRow[], data: VisualizationData) {
-  const cached = rowTimeIndexCache.get(rows)
-  if (cached) {
-    return cached
-  }
-  const timedRows: TimedTableRow[] = []
-  for (const row of rows) {
-    const triggerTimeS = rowPrimaryTriggerTimeS(row, data)
-    if (triggerTimeS !== null) {
-      timedRows.push({ row, triggerTimeS })
-    }
-  }
-  timedRows.sort((a, b) => a.triggerTimeS - b.triggerTimeS)
-  rowTimeIndexCache.set(rows, timedRows)
-  return timedRows
-}
-
-function lowerBoundTimedRows(values: TimedTableRow[], target: number) {
-  let low = 0
-  let high = values.length
-  while (low < high) {
-    const mid = Math.floor((low + high) / 2)
-    if (values[mid].triggerTimeS < target) {
-      low = mid + 1
-    } else {
-      high = mid
-    }
-  }
-  return low
-}
-
-function upperBoundTimedRows(values: TimedTableRow[], target: number) {
-  let low = 0
-  let high = values.length
-  while (low < high) {
-    const mid = Math.floor((low + high) / 2)
-    if (values[mid].triggerTimeS <= target) {
       low = mid + 1
     } else {
       high = mid
@@ -6357,7 +6941,7 @@ function appendRows(target: TableQueryRow[], source: readonly TableQueryRow[]) {
 
 function entitySignalValues(entity: VisualizationEntity, data: VisualizationData, role: string) {
   if (entity.sessionRefs.length === 1) {
-    return data.signalsBySession[sessionRefId(entity.sessionRefs[0])]?.[role] ?? []
+    return sessionSignalValues(data, sessionRefId(entity.sessionRefs[0]), role)
   }
   const key = `${entityCacheKey(entity)}|${role}`
   const cached = entitySignalValuesCache.get(data)
@@ -6366,7 +6950,7 @@ function entitySignalValues(entity: VisualizationEntity, data: VisualizationData
   }
   const values: number[] = []
   for (const sessionRef of entity.sessionRefs) {
-    const sessionValues = data.signalsBySession[sessionRefId(sessionRef)]?.[role] ?? []
+    const sessionValues = sessionSignalValues(data, sessionRefId(sessionRef), role)
     appendNumbers(values, sessionValues)
   }
   const nextCache = cached ?? new Map<string, number[]>()
@@ -6375,6 +6959,32 @@ function entitySignalValues(entity: VisualizationEntity, data: VisualizationData
     entitySignalValuesCache.set(data, nextCache)
   }
   return values
+}
+
+function sessionSignalValues(data: VisualizationData, sessionKey: string, role: string) {
+  const values = data.signalsBySession[sessionKey]?.[role] ?? []
+  const mask = populationSampleMask(data, sessionKey)
+  if (!mask) {
+    return values
+  }
+  const key = `session|${sessionKey}|${role}`
+  const cached = entitySignalValuesCache.get(data)
+  if (cached?.has(key)) {
+    return cached.get(key) ?? []
+  }
+  const selected: number[] = []
+  const limit = Math.min(values.length, mask.length)
+  for (let index = 0; index < limit; index += 1) {
+    if (mask[index]) {
+      selected.push(values[index])
+    }
+  }
+  const nextCache = cached ?? new Map<string, number[]>()
+  nextCache.set(key, selected)
+  if (!cached) {
+    entitySignalValuesCache.set(data, nextCache)
+  }
+  return selected
 }
 
 function phasePointsForEntityEnd(
@@ -6408,6 +7018,7 @@ function phasePointsForEntityEnd(
     const signals = data.signalsBySession[key] ?? {}
     const displacement = signals[displacementRole] ?? []
     const velocity = signals[velocityRole] ?? []
+    const populationMask = populationSampleMask(data, key)
     const intervals = intervalsBySession?.get(key) ?? null
     const limit = Math.min(times.length, displacement.length, velocity.length)
     let previousIncludedIndex: number | null = null
@@ -6415,7 +7026,7 @@ function phasePointsForEntityEnd(
     for (let index = 0; index < limit; index += 1) {
       const x = displacement[index]
       const y = velocity[index]
-      if (!Number.isFinite(times[index]) || !Number.isFinite(x) || !Number.isFinite(y) || (intervals && !timeInSectorIntervals(times[index], intervals))) {
+      if ((populationMask && !populationMask[index]) || !Number.isFinite(times[index]) || !Number.isFinite(x) || !Number.isFinite(y) || (intervals && !timeInSectorIntervals(times[index], intervals))) {
         continue
       }
       const startsCompressionCycle = previousVelocity !== null && previousVelocity <= 0 && y > 0
@@ -7434,7 +8045,7 @@ function sectorValuesForSession(
     return cached.get(cacheKey) ?? []
   }
   const limit = Math.min(values.length, times.length)
-  const sectorValues = bestSectorValues(times, values, limit, interval, endInclusive)
+  const sectorValues = bestSectorValues(times, values, limit, interval, endInclusive, populationSampleMask(data, key))
   const nextCache = cached ?? new Map<string, number[]>()
   nextCache.set(cacheKey, sectorValues)
   if (!cached) {
@@ -7449,6 +8060,7 @@ function bestSectorValues(
   limit: number,
   interval: { startS: number; endS: number },
   endInclusive: boolean,
+  populationMask: Uint8Array | null,
 ) {
   const firstFiniteTime = times.find((time) => Number.isFinite(time))
   const rawOffset = typeof firstFiniteTime === 'number' && Number.isFinite(firstFiniteTime) ? firstFiniteTime : 0
@@ -7458,7 +8070,7 @@ function bestSectorValues(
   ])
   let best: number[] = []
   for (const candidate of candidates) {
-    const collected = collectSectorValues(times, values, limit, interval, endInclusive, candidate.scale, candidate.offsetS)
+    const collected = collectSectorValues(times, values, limit, interval, endInclusive, candidate.scale, candidate.offsetS, populationMask)
     if (collected.length > best.length) {
       best = collected
     }
@@ -7474,9 +8086,13 @@ function collectSectorValues(
   endInclusive: boolean,
   timeScale: number,
   timeOffsetS: number,
+  populationMask: Uint8Array | null,
 ) {
   const out: number[] = []
   for (let index = 0; index < limit; index += 1) {
+    if (populationMask && !populationMask[index]) {
+      continue
+    }
     const time = times[index]
     const value = values[index]
     if (!Number.isFinite(time) || !Number.isFinite(value)) {

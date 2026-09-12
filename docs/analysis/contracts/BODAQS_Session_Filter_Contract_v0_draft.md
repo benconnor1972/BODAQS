@@ -18,6 +18,11 @@ Persisted filters are **not** Study Set definitions. Applying a filter changes
 which sessions are visible or selectable. Adding sessions to a Study Set still
 writes explicit session references.
 
+Persisted filters are also not `bodaqs.scenario` definitions. A Scenario finds
+meaningful occurrences, called Episodes, within sessions using time- or
+distance-domain criteria. A session filter may define the candidate scope for
+a Scenario evaluation, but it does not carry Episode criteria or results.
+
 Ad-hoc table filters are also outside this contract. They are transient UI state
 owned by the Session Selector table headers. They may combine with persisted
 filters during browsing, but they are not saved as `bodaqs.session_filter`
@@ -179,8 +184,10 @@ Field notes:
   stream names exposed by the catalog.
 - `signals` evaluates over available signal names and semantic labels.
 
-Signal-content filters are not part of the initial catalog-only implementation.
-They should become API-backed predicates once signal summaries are available.
+Signal-summary predicates that classify a whole session are not part of the
+initial catalog-only implementation. Conditions intended to identify
+occurrences within a session belong to the Scenario and Episode contract rather
+than becoming session-filter predicates.
 
 ---
 
@@ -330,7 +337,7 @@ Deferred beyond the first persisted-filter contract:
 - full visual predicate builder
 - ad-hoc table-header filtering
 - saving an ad-hoc table filter as a persisted filter
-- API-backed signal-content predicates
+- API-backed whole-session signal-summary predicates
 - richer API-backed geospatial-section predicates beyond trackpoint crossings
 - importing/exporting filters across libraries roots
 - hosted/shared filter permissions

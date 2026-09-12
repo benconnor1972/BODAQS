@@ -393,6 +393,40 @@ def create_app(
         _assert_writable(app)
         return _current_adapter(app).delete_session_filter(filter_id)
 
+    @app.get("/api/v1/scenarios")
+    def list_root_scenarios() -> list[dict[str, Any]]:
+        return _current_adapter(app).list_scenarios()
+
+    @app.post("/api/v1/scenarios")
+    async def create_root_scenario(request: Request) -> dict[str, Any]:
+        _assert_writable(app)
+        payload = await request.json()
+        return _current_adapter(app).create_scenario(_scenario_payload(payload))
+
+    @app.get("/api/v1/scenarios/{scenario_id}")
+    def load_root_scenario(scenario_id: str) -> dict[str, Any]:
+        return _current_adapter(app).load_scenario(scenario_id)
+
+    @app.put("/api/v1/scenarios/{scenario_id}")
+    async def update_root_scenario(scenario_id: str, request: Request) -> dict[str, Any]:
+        _assert_writable(app)
+        payload = await request.json()
+        return _current_adapter(app).update_scenario(
+            scenario_id,
+            expected_revision=_expected_revision(payload),
+            payload=_scenario_payload(payload),
+        )
+
+    @app.delete("/api/v1/scenarios/{scenario_id}")
+    def delete_root_scenario(scenario_id: str) -> dict[str, Any]:
+        _assert_writable(app)
+        return _current_adapter(app).delete_scenario(scenario_id)
+
+    @app.post("/api/v1/scenario-evaluations")
+    async def evaluate_root_scenario(request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).evaluate_scenario(_json_object_payload(payload))
+
     @app.get("/api/v1/bookmarks")
     def list_root_bookmarks(
         library_id: str | None = None,
@@ -453,6 +487,11 @@ def create_app(
     async def get_multistream_timeseries_window(library_id: str, request: Request) -> dict[str, Any]:
         payload = await request.json()
         return _current_adapter(app).get_multistream_timeseries_window(library_id, payload)
+
+    @app.post("/api/v1/libraries/{library_id}/sessions/spatial-context/window")
+    async def get_spatial_context_window(library_id: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).get_spatial_context_window(library_id, _json_object_payload(payload))
 
     @app.post("/api/v1/libraries/{library_id}/signals/query")
     async def query_signals(library_id: str, request: Request) -> dict[str, Any]:
@@ -632,6 +671,16 @@ def _session_filter_payload(payload: Any) -> dict[str, Any]:
     return value
 
 
+def _scenario_payload(payload: Any) -> dict[str, Any]:
+    payload = _json_object_payload(payload)
+    value = payload.get("scenario", payload)
+    if not isinstance(value, dict):
+        from bodaqs_analysis.library_api.errors import InvalidRequestError
+
+        raise InvalidRequestError("Scenario request body must include a JSON object.")
+    return value
+
+
 def _bookmark_payload(payload: Any) -> dict[str, Any]:
     payload = _json_object_payload(payload)
     value = payload.get("bookmark", payload)
@@ -704,6 +753,7 @@ def _capabilities_response(app: FastAPI) -> dict[str, Any]:
         "query_trackpoint_matches",
         "cancel_trackpoint_match_queries",
         "write_filters",
+        "write_scenarios",
         "write_bookmarks",
     ):
         features[feature] = False

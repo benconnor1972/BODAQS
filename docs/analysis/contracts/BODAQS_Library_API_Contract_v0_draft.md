@@ -287,6 +287,12 @@ Optional derived-cache location:
 Session track matches are not canonical session artifacts. They can be
 recomputed from the referenced session, track, and policy.
 
+Exact matches use sequence-aware station projection and may return a
+`traversals` list containing qualifying directed endpoint-to-endpoint passes.
+This prevents crossings and close parallel geometry from being treated as a
+series of unrelated nearest-segment choices. The detailed traversal and
+matching fields are defined by the geospatial contract.
+
 ### 4.9 Trackpoint Match Query
 
 A trackpoint match query is a derived, root-scoped, asynchronous job/index used
@@ -503,8 +509,9 @@ The API-facing summary is:
 - tracks are root-scoped objects under the configured libraries root.
 - a track contains one and only one directed geospatial path.
 - trackpoints are named locations along that path, ordered by `station_m`.
-- optional `segment_aliases` name adjacent trackpoint-to-trackpoint intervals
-  for display, without creating a separate segment object.
+- optional `segment_aliases` name adjacent trackpoint-to-trackpoint sectors for
+  display, without creating a separate sector object. The field name is a v1
+  serialization compatibility name; UI wording uses `sector`.
 - default trackpoint cutlines are generated from policy.
 - trackpoints store only cutline overrides unless explicit geometry editing is
   introduced later.
@@ -568,13 +575,40 @@ Minimal API example:
       "display_name": "Opening chute"
     }
   ],
+  "geometry_edits": [
+    {
+      "operation": "replace_sector_with_connector",
+      "from_trackpoint_id": "loop-entry",
+      "to_trackpoint_id": "loop-exit",
+      "from_station_m": 410.2,
+      "to_station_m": 498.7,
+      "removed_length_m": 88.5,
+      "replacement_length_m": 2.1,
+      "applied_at_utc": "2026-09-04T03:30:00Z"
+    }
+  ],
   "source": {
     "kind": "session_gps",
     "library_id": "default-library",
     "session_ref_id": "default-library|||run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
     "session_key": "run_2026-05-25T13-57-10_LOCAL::2026-05-18_13-27-14",
     "run_id": "run_2026-05-25T13-57-10_LOCAL",
-    "session_id": "2026-05-18_13-27-14"
+    "session_id": "2026-05-18_13-27-14",
+    "gps_sampling": {
+      "mode": "full",
+      "source_points": 2038,
+      "returned_points": 2038,
+      "max_points": 25000,
+      "stride": 1
+    },
+    "geometry_denoising": {
+      "estimator": "local_polynomial",
+      "window_m": 20.0,
+      "polynomial_order": 2,
+      "fit_weighting": "tricube",
+      "robust_iterations": 2,
+      "robust_tuning_constant": 4.685
+    }
   },
   "provenance": {
     "created_at": "2026-05-28T03:00:00Z",
@@ -586,16 +620,38 @@ Minimal API example:
 Track `source` is optional. A track may be authored from a session GPS path,
 imported from GPX/GeoJSON in the future, or created manually.
 
-Track `segment_aliases` are optional labels for adjacent ordered trackpoint
-pairs. They should be ignored or dropped if either endpoint is missing, or if
+When the Workbench creates a track from session GPS, it requests the full
+available point set up to the API safety limit with
+`include_route_geometry: true`, and stores the returned canonical
+`route_geometry`. The Library API derives that geometry with the same Python
+route-geometry implementation used by spatial preprocessing; the browser does
+not reimplement the fit. Version 0 uses the `geometry_denoising` policy shown
+above. `station_m` and `path.length_m` are then measured along that stored
+geometry; a map-preview stride must not become canonical track geometry.
+The source also records the GPS sampling response so a safety-cap stride is
+detectable rather than silently treated as full-resolution evidence.
+
+Existing track documents are migrated explicitly rather than on read. A
+Workbench rebuild action may reload their recorded session-GPS source, replace
+the working geometry, and re-snap trackpoints; persistence still requires the
+ordinary revision-checked track update.
+
+Track `segment_aliases` are optional sector labels for adjacent ordered
+trackpoint pairs. They should be ignored or dropped if either endpoint is missing, or if
 the `to_trackpoint_id` is not the first trackpoint after `from_trackpoint_id`
 when ordered by `station_m`.
 
-Segment aliases may also carry optional segment display metadata. `timing_role`
-defaults to `timed`; `untimed` marks the segment for exclusion from lap-timing
-sector rows and timed totals. If an otherwise unnamed segment is retained for
+Sector aliases may also carry optional display metadata. `timing_role`
+defaults to `timed`; `untimed` marks the sector for exclusion from lap-timing
+sector rows and timed totals. If an otherwise unnamed sector is retained for
 `timing_role`, consumers should provide a default display name such as
-`Segment 1`.
+`Sector 1`.
+
+Track `geometry_edits` is optional audit provenance. The initial supported
+operation, `replace_sector_with_connector`, records a user-confirmed removal
+of the directed path between two adjacent ordered trackpoints and its direct
+replacement length. Editing remains local to the Workbench until the normal
+revision-checked track update is submitted.
 
 A study set may reference a whole track by `track_id`, or a track interval by
 `track_id + from_trackpoint_id + to_trackpoint_id`.
@@ -1447,16 +1503,48 @@ returns the `SessionGpsSummary` defined in
 `BODAQS_Geospatial_Contracts_v0_draft.md`.
 
 The GPS points endpoint accepts a session reference plus optional `source_id`,
-`max_points`, and `window` fields, and returns downsampled longitude/latitude
-points for offline browser preview. If `source_id` is omitted, the service uses
+`max_points`, `window`, and `include_route_geometry` fields, and returns sampled
+longitude/latitude points for offline browser preview. If `source_id` is omitted, the service uses
 the `SessionGpsSummary.preferred_source_id`. The session catalog remains
 summary-only; full GPS geometry is loaded on demand. If `window` is omitted, the
 service must default to the processed session's own primary `time_s` bounds
 rather than returning an entire auxiliary GPS/FIT stream.
 
+When `include_route_geometry` is true, the response additionally contains:
+
+```json
+{
+  "route_geometry": {
+    "status": "succeeded",
+    "coordinates": [[115.8571, -31.9523, 210.2]],
+    "point_count": 2038,
+    "length_m": 1420.5,
+    "geometry_denoising": {
+      "enabled": true,
+      "estimator": "local_polynomial",
+      "window_m": 20.0,
+      "polynomial_order": 2,
+      "fit_weighting": "tricube",
+      "robust_iterations": 2,
+      "robust_tuning_constant": 4.685
+    }
+  }
+}
+```
+
+The ordinary `points` remain the raw, timed source samples after request
+sampling, because timing and video consumers need their timestamps.
+`route_geometry.coordinates` is a separate denoised path intended for route
+stationing and track persistence. Its policy is service-owned and canonical;
+clients request it but do not supply fit parameters. If the selected point set
+is unavailable or insufficient, `route_geometry.status` reports that state and
+the coordinates may be empty.
+
 Track and policy endpoints are scoped to the configured libraries root, not to
 one processed library. Track match endpoints may return cached derived matches
 or compute new matches, depending on service capabilities.
+Exact computed matches may include sequence-matched traversal candidates;
+cache identity must change when the matching algorithm version changes.
 
 Trackpoint match query endpoints are for broad, potentially library-scale
 filtering. `POST` should return quickly with a queued/running/completed query
@@ -1555,12 +1643,41 @@ POST /api/v1/libraries/{library_id}/events/query
 POST /api/v1/libraries/{library_id}/metrics/query
 POST /api/v1/libraries/{library_id}/timeseries/window
 POST /api/v1/libraries/{library_id}/timeseries/multistream-window
+POST /api/v1/libraries/{library_id}/sessions/spatial-context/window
 ```
 
-The first implementation only needs `timeseries/window` plus whatever minimal
-signal/catalog support the frontend needs to choose valid signals. `events/query`
-and `metrics/query` may start as table-oriented endpoints after the catalog and
-window endpoint are working.
+Time-domain and distance-domain windows remain distinct even when a consumer
+displays them in the same view. Event and Metrics queries remain compact
+table-oriented endpoints.
+
+The spatial-context endpoint returns selected canonical distance-domain series,
+including mapped evidence such as `altitude_m` and derived metrics, on their
+native `distance_m` coordinate together with `representative_time_s`, validity
+diagnostics, and optional preprocessing provenance. It is separate from the
+time-series endpoint so clients do not mistake the coarser spatial grid for
+the full-resolution signal timebase.
+
+### 12.9 Scenarios And Episodes
+
+Root-scoped Scenario persistence and read-only synchronous evaluation use:
+
+```text
+GET    /api/v1/scenarios
+POST   /api/v1/scenarios
+GET    /api/v1/scenarios/{scenario_id}
+PUT    /api/v1/scenarios/{scenario_id}
+DELETE /api/v1/scenarios/{scenario_id}
+POST   /api/v1/scenario-evaluations
+```
+
+Scenario writes use revision checks. Evaluation accepts exactly one saved
+`scenario_ref` or embedded `scenario`, plus no more than 32 explicit session
+references. The evaluator supports up to four leaf criteria over `primary`,
+`spatial_context`, and registered materialised time-domain secondary streams,
+and caps a synchronous result at 10,000 Episodes. Secondary-stream criteria
+retain their native source-sample boundaries. Evaluation is read-only and
+continues to work when the service is in read-only mode; Scenario persistence
+does not.
 
 ---
 
@@ -1590,10 +1707,12 @@ library_not_found
 session_not_found
 study_set_not_found
 session_filter_not_found
+scenario_not_found
 track_not_found
 geospatial_policy_not_found
 track_match_not_found
 invalid_request
+invalid_scenario
 invalid_study_set
 invalid_session_filter
 invalid_track

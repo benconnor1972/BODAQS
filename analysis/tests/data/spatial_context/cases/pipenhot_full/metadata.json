@@ -1,0 +1,448 @@
+{
+  "channel_info": {
+    "active_mask_qc": {
+      "domain": null,
+      "end": null,
+      "inspection_visibility": "diagnostic",
+      "kind": "qc",
+      "notes": "qc flag/quality column",
+      "op_chain": [],
+      "quantity": null,
+      "sensor": "active",
+      "unit": null
+    },
+    "front_wheel_disp_dom_wheel [mm]": {
+      "derivation": {
+        "acceleration_lowpass_hz": 30.0,
+        "acceleration_lowpass_order": 4,
+        "acceleration_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 20,
+          "requested_window_ms": 40.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 21
+        },
+        "displacement_lowpass_hz": 80.0,
+        "displacement_lowpass_order": 4,
+        "method": "motion_derivation",
+        "source_col": "front_wheel_disp_dom_wheel [mm]",
+        "velocity_lowpass_hz": 60.0,
+        "velocity_lowpass_order": 4,
+        "velocity_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 10,
+          "requested_window_ms": 20.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 11
+        }
+      },
+      "domain": "wheel",
+      "end": "front",
+      "kind": "",
+      "motion_profile_id": "primary",
+      "motion_source_id": "front_wheel",
+      "op_chain": [
+        "Butterworth_80Hz_4Order"
+      ],
+      "origin": "analysis",
+      "processing_role": "primary_analysis",
+      "quantity": "disp",
+      "sensor": "front_wheel",
+      "source": [
+        "front_wheel_disp_dom_wheel [mm]"
+      ],
+      "source_columns": [
+        "front_wheel_disp_dom_wheel [mm]"
+      ],
+      "transform_chain": [
+        "front_fork_to_front_vertical_wheel_travel"
+      ],
+      "unit": "mm"
+    },
+    "rear_wheel_disp_dom_wheel [mm]": {
+      "derivation": {
+        "acceleration_lowpass_hz": 30.0,
+        "acceleration_lowpass_order": 4,
+        "acceleration_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 20,
+          "requested_window_ms": 40.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 21
+        },
+        "displacement_lowpass_hz": 80.0,
+        "displacement_lowpass_order": 4,
+        "method": "motion_derivation",
+        "source_col": "rear_wheel_disp_dom_wheel [mm]",
+        "velocity_lowpass_hz": 60.0,
+        "velocity_lowpass_order": 4,
+        "velocity_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 10,
+          "requested_window_ms": 20.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 11
+        }
+      },
+      "domain": "wheel",
+      "end": "rear",
+      "kind": "",
+      "motion_profile_id": "primary",
+      "motion_source_id": "rear_wheel",
+      "op_chain": [
+        "Butterworth_80Hz_4Order"
+      ],
+      "origin": "analysis",
+      "processing_role": "primary_analysis",
+      "quantity": "disp",
+      "sensor": "rear_wheel",
+      "source": [
+        "rear_wheel_disp_dom_wheel [mm]"
+      ],
+      "source_columns": [
+        "rear_wheel_disp_dom_wheel [mm]"
+      ],
+      "transform_chain": [
+        "top_link_to_rear_wheel_travel"
+      ],
+      "unit": "mm"
+    }
+  },
+  "corpus_provenance": {
+    "source_run_id": "ben-stevo-rc3001_260830_171848",
+    "source_session_id": "260830_112024_282b52292710",
+    "source_time_range_s": [
+      0.0,
+      408.25
+    ]
+  },
+  "gps_sources": {
+    "preferred_source": "gps_logger"
+  },
+  "secondary_streams": {
+    "gps_logger": {
+      "channel_info": {
+        "altitude_m": {
+          "analysis_variant": "reconstructed_observations",
+          "display_name": "GPS altitude (GPS snapshots)",
+          "domain": "world",
+          "inspection_visibility": "advanced",
+          "quantity": "altitude",
+          "sensor": "gps",
+          "source": "logger_gps",
+          "source_columns": [
+            "gps_altitude_dom_world [m]"
+          ],
+          "unit": "m"
+        },
+        "fresh": {
+          "kind": "qc",
+          "processing_role": "qc_metric",
+          "quantity": "fresh",
+          "semantic_selection_excluded": true,
+          "sensor": "gps",
+          "source": "logger_gps",
+          "source_columns": [
+            "gps_fresh_dom_world"
+          ],
+          "unit": ""
+        },
+        "horizontal_accuracy": {
+          "kind": "qc",
+          "processing_role": "qc_metric",
+          "quantity": "horizontal_accuracy",
+          "semantic_selection_excluded": true,
+          "sensor": "gps",
+          "source": "logger_gps",
+          "source_columns": [
+            "gps_horizontal_accuracy_dom_world [m]"
+          ],
+          "unit": ""
+        },
+        "latitude_deg": {
+          "analysis_variant": "reconstructed_observations",
+          "display_name": "GPS latitude (GPS snapshots)",
+          "domain": "world",
+          "inspection_visibility": "advanced",
+          "quantity": "position_latitude",
+          "sensor": "gps",
+          "source": "logger_gps",
+          "source_columns": [
+            "gps_position_latitude_dom_world [deg]"
+          ],
+          "unit": "deg"
+        },
+        "longitude_deg": {
+          "analysis_variant": "reconstructed_observations",
+          "display_name": "GPS longitude (GPS snapshots)",
+          "domain": "world",
+          "inspection_visibility": "advanced",
+          "quantity": "position_longitude",
+          "sensor": "gps",
+          "source": "logger_gps",
+          "source_columns": [
+            "gps_position_longitude_dom_world [deg]"
+          ],
+          "unit": "deg"
+        },
+        "seq": {
+          "kind": "qc",
+          "processing_role": "qc_metric",
+          "quantity": "seq",
+          "semantic_selection_excluded": true,
+          "sensor": "gps",
+          "source": "logger_gps",
+          "source_columns": [
+            "gps_seq_dom_world [count]"
+          ],
+          "unit": ""
+        },
+        "valid": {
+          "kind": "qc",
+          "processing_role": "qc_metric",
+          "quantity": "valid",
+          "semantic_selection_excluded": true,
+          "sensor": "gps",
+          "source": "logger_gps",
+          "source_columns": [
+            "gps_valid_dom_world"
+          ],
+          "unit": ""
+        }
+      },
+      "kind": "intermittent",
+      "position_columns": {
+        "latitude": "latitude_deg",
+        "longitude": "longitude_deg"
+      },
+      "sensor": "gps",
+      "signals": {
+        "altitude_m": {
+          "analysis_variant": "reconstructed_observations",
+          "display_name": "GPS altitude (GPS snapshots)",
+          "domain": "world",
+          "inspection_visibility": "advanced",
+          "quantity": "altitude",
+          "sensor": "gps",
+          "source": "logger_gps",
+          "source_columns": [
+            "gps_altitude_dom_world [m]"
+          ],
+          "unit": "m"
+        },
+        "fresh": {
+          "kind": "qc",
+          "processing_role": "qc_metric",
+          "quantity": "fresh",
+          "semantic_selection_excluded": true,
+          "sensor": "gps",
+          "source": "logger_gps",
+          "source_columns": [
+            "gps_fresh_dom_world"
+          ],
+          "unit": ""
+        },
+        "horizontal_accuracy": {
+          "kind": "qc",
+          "processing_role": "qc_metric",
+          "quantity": "horizontal_accuracy",
+          "semantic_selection_excluded": true,
+          "sensor": "gps",
+          "source": "logger_gps",
+          "source_columns": [
+            "gps_horizontal_accuracy_dom_world [m]"
+          ],
+          "unit": ""
+        },
+        "latitude_deg": {
+          "analysis_variant": "reconstructed_observations",
+          "display_name": "GPS latitude (GPS snapshots)",
+          "domain": "world",
+          "inspection_visibility": "advanced",
+          "quantity": "position_latitude",
+          "sensor": "gps",
+          "source": "logger_gps",
+          "source_columns": [
+            "gps_position_latitude_dom_world [deg]"
+          ],
+          "unit": "deg"
+        },
+        "longitude_deg": {
+          "analysis_variant": "reconstructed_observations",
+          "display_name": "GPS longitude (GPS snapshots)",
+          "domain": "world",
+          "inspection_visibility": "advanced",
+          "quantity": "position_longitude",
+          "sensor": "gps",
+          "source": "logger_gps",
+          "source_columns": [
+            "gps_position_longitude_dom_world [deg]"
+          ],
+          "unit": "deg"
+        },
+        "seq": {
+          "kind": "qc",
+          "processing_role": "qc_metric",
+          "quantity": "seq",
+          "semantic_selection_excluded": true,
+          "sensor": "gps",
+          "source": "logger_gps",
+          "source_columns": [
+            "gps_seq_dom_world [count]"
+          ],
+          "unit": ""
+        },
+        "valid": {
+          "kind": "qc",
+          "processing_role": "qc_metric",
+          "quantity": "valid",
+          "semantic_selection_excluded": true,
+          "sensor": "gps",
+          "source": "logger_gps",
+          "source_columns": [
+            "gps_valid_dom_world"
+          ],
+          "unit": ""
+        }
+      },
+      "source": "logger_gps",
+      "source_kind": "logger_sensor",
+      "stream_name": "gps_logger",
+      "time_col": "time_s"
+    }
+  },
+  "session_id": "pipenhot_full",
+  "signals": {
+    "active_mask_qc": {
+      "domain": null,
+      "end": null,
+      "inspection_visibility": "diagnostic",
+      "kind": "qc",
+      "notes": "qc flag/quality column",
+      "op_chain": [],
+      "quantity": null,
+      "sensor": "active",
+      "unit": null
+    },
+    "front_wheel_disp_dom_wheel [mm]": {
+      "derivation": {
+        "acceleration_lowpass_hz": 30.0,
+        "acceleration_lowpass_order": 4,
+        "acceleration_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 20,
+          "requested_window_ms": 40.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 21
+        },
+        "displacement_lowpass_hz": 80.0,
+        "displacement_lowpass_order": 4,
+        "method": "motion_derivation",
+        "source_col": "front_wheel_disp_dom_wheel [mm]",
+        "velocity_lowpass_hz": 60.0,
+        "velocity_lowpass_order": 4,
+        "velocity_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 10,
+          "requested_window_ms": 20.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 11
+        }
+      },
+      "domain": "wheel",
+      "end": "front",
+      "kind": "",
+      "motion_profile_id": "primary",
+      "motion_source_id": "front_wheel",
+      "op_chain": [
+        "Butterworth_80Hz_4Order"
+      ],
+      "origin": "analysis",
+      "processing_role": "primary_analysis",
+      "quantity": "disp",
+      "sensor": "front_wheel",
+      "source": [
+        "front_wheel_disp_dom_wheel [mm]"
+      ],
+      "source_columns": [
+        "front_wheel_disp_dom_wheel [mm]"
+      ],
+      "transform_chain": [
+        "front_fork_to_front_vertical_wheel_travel"
+      ],
+      "unit": "mm"
+    },
+    "rear_wheel_disp_dom_wheel [mm]": {
+      "derivation": {
+        "acceleration_lowpass_hz": 30.0,
+        "acceleration_lowpass_order": 4,
+        "acceleration_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 20,
+          "requested_window_ms": 40.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 21
+        },
+        "displacement_lowpass_hz": 80.0,
+        "displacement_lowpass_order": 4,
+        "method": "motion_derivation",
+        "source_col": "rear_wheel_disp_dom_wheel [mm]",
+        "velocity_lowpass_hz": 60.0,
+        "velocity_lowpass_order": 4,
+        "velocity_sg_window": {
+          "adjusted": true,
+          "poly_order": 3,
+          "requested_samples": 10,
+          "requested_window_ms": 20.0,
+          "warnings": [
+            "rounded window adjusted to odd sample count"
+          ],
+          "window_points": 11
+        }
+      },
+      "domain": "wheel",
+      "end": "rear",
+      "kind": "",
+      "motion_profile_id": "primary",
+      "motion_source_id": "rear_wheel",
+      "op_chain": [
+        "Butterworth_80Hz_4Order"
+      ],
+      "origin": "analysis",
+      "processing_role": "primary_analysis",
+      "quantity": "disp",
+      "sensor": "rear_wheel",
+      "source": [
+        "rear_wheel_disp_dom_wheel [mm]"
+      ],
+      "source_columns": [
+        "rear_wheel_disp_dom_wheel [mm]"
+      ],
+      "transform_chain": [
+        "top_link_to_rear_wheel_travel"
+      ],
+      "unit": "mm"
+    }
+  }
+}

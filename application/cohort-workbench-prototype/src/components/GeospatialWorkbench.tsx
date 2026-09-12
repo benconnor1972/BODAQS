@@ -8,7 +8,7 @@ import {
   trackMatchStatusLabel,
 } from '../domain/geospatial'
 import { candidateId, sessionByRef, sessionRefId, slugify, uniqueId } from '../domain/studySets'
-import { pointAtStationM, routeLengthM } from '../domain/trackGeometry'
+import { pointAtStationM } from '../domain/trackGeometry'
 import type {
   SessionRecord,
   StudySessionRef,
@@ -460,21 +460,27 @@ export function TrackManagerModal({
     setBusy(true)
     setMessage(`Creating ${displayName}...`)
     try {
-      const gpsPoints = await dataSource.loadSessionGpsPoints(primarySession, primarySession.gpsSummary.preferredSourceId)
-      if (gpsPoints.path.length < 2) {
-        setMessage('Primary session does not have enough GPS points to create a track.')
+      const gpsPoints = await dataSource.loadSessionGpsPoints(
+        primarySession,
+        primarySession.gpsSummary.preferredSourceId,
+        { maxPoints: 25_000, includeRouteGeometry: true },
+      )
+      const routeGeometry = gpsPoints.routeGeometry
+      if (routeGeometry.status !== 'succeeded' || routeGeometry.path.length < 2) {
+        setMessage('Primary session does not have enough canonical route geometry to create a track.')
         return
       }
-      const lengthM = routeLengthM(gpsPoints.path)
+      const trackPath = routeGeometry.path
+      const lengthM = routeGeometry.lengthM
       const savedTrack = await dataSource.saveTrack({
         id: '',
         name: displayName,
         description: trackDescription.trim(),
         revision: 0,
-        pointCount: gpsPoints.path.length,
+        pointCount: trackPath.length,
         distanceKm: lengthM / 1000,
         lengthM,
-        points: gpsPoints.path,
+        points: trackPath,
         defaultPolicyId: 'default-geospatial-policy',
         trackpoints: [],
         matchSummaries: [],
@@ -489,6 +495,16 @@ export function TrackManagerModal({
           gpsSourceKind: gpsPoints.sourceKind,
           gpsStreamName: gpsPoints.streamName,
           gpsSourceSelectionMethod: gpsPoints.sourceSelectionMethod,
+          gpsSampling: {
+            mode: gpsPoints.samplingMode,
+            sourcePoints: gpsPoints.sourcePoints,
+            returnedPoints: gpsPoints.returnedPoints,
+            maxPoints: gpsPoints.maxPoints,
+            stride: gpsPoints.stride,
+          },
+          ...(routeGeometry.geometryDenoising
+            ? { geometryDenoising: routeGeometry.geometryDenoising }
+            : {}),
         },
       })
       onTrackSaved(savedTrack)

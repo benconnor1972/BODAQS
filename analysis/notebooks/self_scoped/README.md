@@ -15,6 +15,7 @@ Current self-scoped notebooks:
 - `bodaqs_event_schema_test_harness_self_scoped.ipynb`
 - `bodaqs_batch_preprocessor_self_scoped.ipynb`
 - `bodaqs_one_step_suspension_metrics_self_scoped.ipynb`
+- `bodaqs_spatial_context_explorer_self_scoped.ipynb`
 
 Conventions:
 

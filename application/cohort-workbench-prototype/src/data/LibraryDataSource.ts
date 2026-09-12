@@ -7,10 +7,15 @@ import type {
   SessionBookmarkRecord,
   SessionNoteRecord,
   SessionRecord,
+  ScenarioEvaluationRequest,
+  ScenarioEvaluationResponse,
+  ScenarioRecord,
   SessionVideoAttachmentsRecord,
   SessionTrackMatchRecord,
   SignalQueryRequest,
   SignalQueryResponse,
+  SpatialContextWindowRequest,
+  SpatialContextWindowResponse,
   StudySessionRef,
   StudySet,
   TableQueryRequest,
@@ -36,6 +41,11 @@ export type WorkbenchBootstrapData = {
 export type CatalogRevision = {
   libraryId: string
   revision: number
+}
+
+export type SessionGpsPointLoadOptions = {
+  maxPoints?: number
+  includeRouteGeometry?: boolean
 }
 
 export type SignalSetDefinition = {
@@ -64,6 +74,10 @@ export interface LibraryDataSource {
   listAnalysisViews?(): Promise<AnalysisViewRecord[]>
   evaluateAnalysisAdequacy?(viewId: string, studySet: StudySet): Promise<AnalysisAdequacyResult>
   listSavedSessionFilters?(): Promise<SavedSessionFilterRecord[]>
+  listScenarios?(): Promise<ScenarioRecord[]>
+  saveScenario?(scenario: ScenarioRecord): Promise<ScenarioRecord>
+  deleteScenario?(scenarioId: string): Promise<void>
+  evaluateScenario?(request: ScenarioEvaluationRequest): Promise<ScenarioEvaluationResponse>
   saveStudySet(studySet: StudySet): Promise<StudySet>
   deleteStudySet?(studySetId: string): Promise<void>
   deleteSession?(
@@ -80,7 +94,11 @@ export interface LibraryDataSource {
   loadTrackpointMatchQuery?(queryId: string): Promise<TrackpointMatchQueryRecord>
   loadTrackpointMatchQueryResults?(queryId: string, cursor?: string | null, limit?: number): Promise<TrackpointMatchQueryResults>
   cancelTrackpointMatchQuery?(queryId: string): Promise<TrackpointMatchQueryRecord>
-  loadSessionGpsPoints?(session: SessionRecord, sourceId?: string | null): Promise<SessionGpsPointSet>
+  loadSessionGpsPoints?(
+    session: SessionRecord,
+    sourceId?: string | null,
+    options?: SessionGpsPointLoadOptions,
+  ): Promise<SessionGpsPointSet>
   loadSessionNote?(session: SessionRecord): Promise<SessionNoteRecord>
   saveSessionNote?(note: SessionNoteRecord): Promise<SessionNoteRecord>
   saveSessionNotes?(notes: SessionNoteRecord[]): Promise<SessionNoteSaveResult[]>
@@ -92,6 +110,7 @@ export interface LibraryDataSource {
   saveSessionBookmark(bookmark: SessionBookmarkRecord): Promise<SessionBookmarkRecord>
   deleteSessionBookmark(bookmarkId: string): Promise<void>
   loadTimeseriesWindow(libraryId: string, request: TimeseriesWindowRequest): Promise<TimeseriesWindowResponse>
+  loadSpatialContextWindow?(libraryId: string, request: SpatialContextWindowRequest): Promise<SpatialContextWindowResponse>
   querySignals(libraryId: string, request: SignalQueryRequest): Promise<SignalQueryResponse>
   queryEvents(libraryId: string, request: TableQueryRequest): Promise<TableQueryResponse>
   queryMetrics(libraryId: string, request: TableQueryRequest): Promise<TableQueryResponse>
