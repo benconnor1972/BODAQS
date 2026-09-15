@@ -273,6 +273,87 @@ def _write_catalog_fixture_session(
     return session_ref
 
 
+def test_event_browser_contracts_are_schema_aware_and_revision_safe(tmp_path: Path) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "event-library"
+    _make_library_definition(library_root, library_id="event-library", display_name="Event library")
+    session_ref = _write_catalog_fixture_session(library_root, library_id="event-library")
+    store = ArtifactStore(library_root)
+    event_path = store.path_events_df(session_ref["run_id"], session_ref["session_id"], "bottom_out")
+    schema_path = store.path_events_schema(session_ref["run_id"], session_ref["session_id"], "bottom_out")
+    pd.DataFrame({
+        "event_id": ["bottom_out:front:1"],
+        "schema_id": ["bottom_out"],
+        "schema_version": ["1"],
+        "event_name": ["Bottom out"],
+        "signal_col": ["front_wheel_disp_dom_wheel [mm]"],
+        "trigger_time_s": [1.0],
+        "bottom_start_time_s": [0.5],
+        "meta": [{"event_context": "front", "secondary_triggers": {"bottom_start": {"trigger_time_s": 0.5}}}],
+    }).to_parquet(event_path, index=False)
+    _write_json(schema_path, {
+        "version": "1",
+        "events": [{
+            "id": "bottom_out",
+            "label": "Bottom out",
+            "trigger": {"id": "bottom"},
+            "secondary_triggers": [{"id": "bottom_start"}],
+            "segment_defaults": {
+                "anchor": "trigger_time_s",
+                "window": {"pre_s": 0.5, "post_s": 0.5},
+                "roles": [{"role": "disp", "prefer": {"domain": "wheel", "quantity": "disp", "unit": "mm", "processing_role": "primary_analysis"}}],
+            },
+        }],
+    })
+    metrics_path = store.path_metrics_df(session_ref["run_id"], session_ref["session_id"], "bottom_out")
+    pd.DataFrame({"event_id": ["bottom_out:front:1"], "schema_id": ["bottom_out"], "m_peak": [20.0]}).to_parquet(metrics_path, index=False)
+
+    adapter = LibraryAdapter(libraries_root)
+    definitions = adapter.query_event_definitions({"sessions": [session_ref]})
+    definition = next(item for item in definitions["definitions"] if item["schema_id"] == "bottom_out")
+    assert definition["display_name"] == "Bottom out"
+    assert definition["primary_trigger"] == {"id": "bottom"}
+    assert definition["secondary_triggers"] == [{"id": "bottom_start"}]
+    assert definition["metric_fields"] == [{"column": "m_peak", "display_name": "Peak", "unit": ""}]
+    adequacy = adapter.get_analysis_view_adequacy("event-browser", {"sessions": [session_ref]})
+    assert adequacy["status"] == "ready"
+    assert adequacy["session_results"][0]["criteria"][0]["requirement_id"] == "detected_events"
+
+    event_ref = {**session_ref, "event_set_id": "bottom_out", "event_id": "bottom_out:front:1"}
+    segments = adapter.query_event_segments("event-library", {"events": [event_ref]})
+    segment = segments["segments"][0]
+    assert segment["event_ref"]["session_ref_id"] == session_ref["session_ref_id"]
+    assert segment["signals"][0]["role"] == "disp"
+    assert segment["signals"][0]["column"] == "front_wheel_disp_dom_wheel [mm]"
+    assert segment["triggers"] == [
+        {"id": "bottom", "kind": "primary", "time_rel_s": 0.0},
+        {"id": "bottom_start", "kind": "secondary", "time_rel_s": -0.5},
+    ]
+    assert segment["metrics"] == {"m_peak": 20.0}
+
+    client = TestClient(create_app(libraries_root))
+    assert client.post("/api/v1/event-definitions/query", json={"sessions": [session_ref]}).status_code == 200
+    assert client.post(
+        "/api/v1/libraries/event-library/event-segments/query",
+        json={"events": [event_ref]},
+    ).status_code == 200
+
+    schema_path.unlink()
+    historical = adapter.query_event_segments(
+        "event-library",
+        {"events": [event_ref], "window": {"pre_s": 0.5, "post_s": 0.5}},
+    )["segments"][0]
+    assert historical["signals"][0]["role"] == "primary"
+    assert historical["triggers"][1] == {"id": "bottom_start", "kind": "secondary", "time_rel_s": -0.5}
+
+    annotation = adapter.create_event_annotation({"event_ref": event_ref, "tags": ["Compare", "compare"]})
+    assert annotation["tags"] == ["Compare"]
+    updated = adapter.update_event_annotation(annotation["annotation_id"], expected_revision=1, payload={"tags": ["interesting"]})
+    assert updated["revision"] == 2
+    assert adapter.query_event_annotations({"sessions": [session_ref]})["annotations"] == [updated]
+    assert adapter.delete_event_annotation(annotation["annotation_id"])["deleted"] is True
+
+
 def _write_simple_suspension_fixture_session(
     library_root: Path,
     run_id: str,
@@ -1757,9 +1838,10 @@ def test_library_adapter_lists_analysis_views_and_evaluates_simple_suspension_ad
     assert views[0]["view_id"] == "simple-suspension"
     assert views[0]["requirements"]["required"][0]["id"] == "wheel_motion_data"
     assert views[0]["requirements"]["recommended"][0]["id"] == "both_ends"
-    assert [view["view_id"] for view in views] == ["simple-suspension", "suspension-phase-diagram", "track-analysis-lap-timing"]
+    assert [view["view_id"] for view in views] == ["simple-suspension", "suspension-phase-diagram", "event-browser", "track-analysis-lap-timing"]
     assert views[1]["requirements"]["required"][0]["id"] == "continuous_wheel_motion"
-    assert views[2]["requirements"]["required"][0]["id"] == "gps"
+    assert views[2]["requirements"]["required"][0]["id"] == "detected_events"
+    assert views[3]["requirements"]["required"][0]["id"] == "gps"
 
     ready = adapter.get_analysis_view_adequacy("simple-suspension", {"sessions": [ready_ref]})
     assert ready["status"] == "ready"

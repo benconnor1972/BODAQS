@@ -1,6 +1,6 @@
 import { Fragment, memo, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
 import * as d3 from 'd3'
-import { Activity, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, FileClock, Folder, ListFilter, Milestone, Route } from 'lucide-react'
+import { Activity, ChevronDown, ChevronUp, FileClock, Folder, ListFilter, Milestone, Route } from 'lucide-react'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
 import { scratchScenario } from '../domain/scenarios'
 import {
@@ -33,6 +33,7 @@ import type {
   TrackpointRecord,
 } from '../domain/types'
 import { InfoTip } from './Common'
+import { AnalysisControlDrawer, AnalysisEndPicker, AnalysisEntityPicker, AnalysisScenarioPicker } from './AnalysisControls'
 import { ScenarioEditorModal } from './ScenarioEditorModal'
 
 const FRONT_COLOR = '#008c95'
@@ -1004,28 +1005,13 @@ export function SuspensionVisualization({
       </header>
 
       <div className={`suspension-viz-workspace${controlsCollapsed ? ' controls-collapsed' : ''}`}>
-        <aside className={`viz-control-drawer${controlsCollapsed ? ' collapsed' : ''}`} aria-label="Select and filter">
-          {controlsCollapsed ? (
-            <button className="viz-control-drawer-rail" type="button" onClick={() => togglePanel('select-filter')}>
-              <ChevronRight size={15} />
-              <span>Select and filter</span>
-            </button>
-          ) : (
-            <section className="viz-control-panel">
-              <button className="viz-control-panel-header" type="button" onClick={() => togglePanel('select-filter')}>
-                <span>
-                  <strong>
-                    Select and Filter
-                    <InfoTip text="Choose which sessions, groups, ends, sectors, scope, layout, and time windows are shown in this analysis view. Study Set membership is not changed." />
-                  </strong>
-                  <small>
-                    {selectedEntityIds.length} sessions/groups, {selectedTrack ? '1 track' : 'no track'} · {analysisMode === 'session' ? 'Session view' : 'Track view'}
-                  </small>
-                </span>
-                <ChevronLeft size={16} />
-              </button>
-              <div className="viz-control-panel-body">
-                <VisualizationFilterChips
+        <AnalysisControlDrawer
+          collapsed={controlsCollapsed}
+          summary={`${selectedEntityIds.length} sessions/groups, ${selectedTrack ? '1 track' : 'no track'} · ${analysisMode === 'session' ? 'Session view' : 'Track view'}`}
+          infoText="Choose which sessions, groups, ends, sectors, scope, layout, and time windows are shown in this analysis view. Study Set membership is not changed."
+          onToggle={() => togglePanel('select-filter')}
+        >
+          <VisualizationFilterChips
                   entities={entities}
                   tracks={studySetTracks}
                   selectedEntityIds={selectedEntityIds}
@@ -1131,10 +1117,7 @@ export function SuspensionVisualization({
                   showVelocityStatsOnChart={showVelocityStatsOnChart}
                 />
                 )}
-              </div>
-            </section>
-          )}
-        </aside>
+        </AnalysisControlDrawer>
 
         <div className="suspension-viz-content">
           {loadState.status === 'loading' && <div className="viz-status">{loadState.message}</div>}
@@ -1502,17 +1485,11 @@ function AnalysisModeControl({ value, onChange, trackAvailable }: { value: Analy
 
 function EndSelectionControl({ selectedEnds, onToggleEnd }: { selectedEnds: SuspensionEnd[]; onToggleEnd: (end: SuspensionEnd) => void }) {
   return (
-    <section className="viz-mode-filter-control">
-      <strong>Ends</strong>
-      <div className="viz-entity-chips">
-        {(['front', 'rear'] as const).map((end) => (
-          <button className={`viz-entity-chip end-chip${selectedEnds.includes(end) ? ' selected' : ''}`} key={end} onClick={() => onToggleEnd(end)} type="button">
-            <span className="color-dot" style={{ backgroundColor: roleColor(end) }} />
-            <span>{formatRole(end)}</span>
-          </button>
-        ))}
-      </div>
-    </section>
+    <AnalysisEndPicker
+      ends={(['front', 'rear'] as const).map((end) => ({ id: end, label: formatRole(end), color: roleColor(end) }))}
+      selectedIds={selectedEnds}
+      onToggle={(end) => onToggleEnd(end as SuspensionEnd)}
+    />
   )
 }
 
@@ -1608,20 +1585,15 @@ function ScenarioControl({
         <ListFilter size={15} />
       </div>
       <div className="viz-scenario-control-row">
-        <div className="viz-scenario-picker" aria-label="Scenario populations">
-          <label className="viz-scenario-option">
-            <input aria-label="Include all qualifying data" checked={selectedKeys.includes(BASELINE_SCENARIO_KEY)} onChange={(event) => onChange(selectionWith(selectedKeys, BASELINE_SCENARIO_KEY, event.currentTarget.checked))} type="checkbox" />
-            <span>All qualifying data</span>
-          </label>
-          {scratch && <label className="viz-scenario-option">
-            <input aria-label={`Include Scratch: ${scratch.displayName}`} checked={selectedKeys.includes(SCRATCH_SCENARIO_KEY)} onChange={(event) => onChange(selectionWith(selectedKeys, SCRATCH_SCENARIO_KEY, event.currentTarget.checked))} type="checkbox" />
-            <span>Scratch: {scratch.displayName}</span>
-          </label>}
-          {scenarios.map((scenario) => scenario.id ? <label className="viz-scenario-option" key={scenario.id}>
-            <input aria-label={`Include ${scenario.displayName}`} checked={selectedKeys.includes(scenario.id)} disabled={loading} onChange={(event) => onChange(selectionWith(selectedKeys, scenario.id as string, event.currentTarget.checked))} type="checkbox" />
-            <span>{scenario.displayName} (r{scenario.revision})</span>
-          </label> : null)}
-        </div>
+        <AnalysisScenarioPicker
+          options={[
+            { id: BASELINE_SCENARIO_KEY, label: 'All qualifying data' },
+            ...(scratch ? [{ id: SCRATCH_SCENARIO_KEY, label: `Scratch: ${scratch.displayName}` }] : []),
+            ...scenarios.filter((scenario) => scenario.id).map((scenario) => ({ id: scenario.id as string, label: `${scenario.displayName} (r${scenario.revision})`, disabled: loading })),
+          ]}
+          selectedIds={selectedKeys}
+          onToggle={(key, checked) => onChange(selectionWith(selectedKeys, key, checked))}
+        />
         <button className="ghost-action" type="button" onClick={onEdit}>Create or edit</button>
       </div>
       {(updating || message) && <p className={`viz-scenario-status${warning || status === 'error' ? ' warning' : ''}`}>{updating ? 'Updating selection…' : message}</p>}
@@ -2490,30 +2462,17 @@ function VisualizationFilterChips({
       aria-label={`Analysis scope: ${selectedEntityIds.length} sessions/groups, ${selectedTrackId ? 'one track' : 'no track'}`}
     >
 
-      <div className="viz-filter-group">
-        <strong>Sessions and groups</strong>
-        <div className="viz-entity-chips">
-          {entities.map((entity) => {
-            const selected = selectedEntityIds.includes(entity.id)
-            return (
-              <button
-                className={`viz-entity-chip${selected ? ' selected' : ''}${entity.kind === 'grouping' ? ' grouping' : ''}`}
-                key={entity.id}
-                type="button"
-                onClick={() => onToggleEntity(entity.id)}
-                style={entity.color ? { borderColor: entity.color } : undefined}
-              >
-                {entity.color && <span className="color-dot" style={{ backgroundColor: entity.color }} />}
-                <EntityTypeGlyph
-                  type={entity.kind === 'grouping' ? 'group' : 'session'}
-                  detail={entity.kind === 'grouping' ? `${entity.sessionRefs.length} pooled sessions` : undefined}
-                />
-                <span className="viz-entity-chip-label">{entity.label}</span>
-              </button>
-            )
-          })}
-        </div>
-      </div>
+      <AnalysisEntityPicker
+        entities={entities.map((entity) => ({
+          id: entity.id,
+          kind: entity.kind,
+          label: entity.label,
+          color: entity.color,
+          memberCount: entity.sessionRefs.length,
+        }))}
+        selectedIds={selectedEntityIds}
+        onToggle={onToggleEntity}
+      />
 
       <div className="viz-filter-group">
         <strong className="inline-heading">Tracks <InfoTip text="Track view uses one enabled track as its coordinate and sector frame. Session view retains but ignores this choice." /></strong>

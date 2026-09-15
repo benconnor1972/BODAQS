@@ -10,6 +10,12 @@ import type {
   AnalysisRequirementRecord,
   AnalysisRequirementTier,
   AnalysisViewRecord,
+  EventAnnotationRecord,
+  EventDefinition,
+  EventDefinitionsResponse,
+  EventReference,
+  EventSegment,
+  EventSegmentsResponse,
   GeoPosition,
   GpsQuality,
   GpsSourceKind,
@@ -700,6 +706,70 @@ export class LocalApiDataSource implements LibraryDataSource {
       },
     )
     return mapTableQueryResponse(response)
+  }
+
+  async queryEventDefinitions(sessions: StudySessionRef[]): Promise<EventDefinitionsResponse> {
+    const response = await requestJson<ApiObject>(`${this.baseUrl}/api/v1/event-definitions/query`, {
+      method: 'POST',
+      body: JSON.stringify({ sessions: sessions.map(toApiStudySessionRef) }),
+    })
+    return {
+      definitions: arrayValue(response.definitions).filter(isObject).map(mapEventDefinition),
+      warnings: arrayValue(response.warnings).filter(isObject).map((warning) => ({ ...warning })),
+    }
+  }
+
+  async queryEventSegments(
+    libraryId: string,
+    request: { events: EventReference[]; window?: { preS: number; postS: number }; roles?: string[] },
+  ): Promise<EventSegmentsResponse> {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryId)}/event-segments/query`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          events: request.events.map(toApiEventReference),
+          ...(request.window ? { window: { pre_s: request.window.preS, post_s: request.window.postS } } : {}),
+          ...(request.roles?.length ? { roles: request.roles } : {}),
+        }),
+      },
+    )
+    return {
+      segments: arrayValue(response.segments).filter(isObject).map(mapEventSegment),
+      warnings: arrayValue(response.warnings).filter(isObject).map((warning) => ({ ...warning })),
+    }
+  }
+
+  async listEventAnnotations(sessions: StudySessionRef[]): Promise<EventAnnotationRecord[]> {
+    const response = await requestJson<ApiObject>(`${this.baseUrl}/api/v1/event-annotations/query`, {
+      method: 'POST',
+      body: JSON.stringify({ sessions: sessions.map(toApiStudySessionRef) }),
+    })
+    return arrayValue(response.annotations).filter(isObject).map(mapEventAnnotation)
+  }
+
+  async saveEventAnnotation(annotation: EventAnnotationRecord): Promise<EventAnnotationRecord> {
+    const updating = Boolean(annotation.id)
+    const response = await requestJson<ApiObject>(
+      updating
+        ? `${this.baseUrl}/api/v1/event-annotations/${encodeURIComponent(annotation.id)}`
+        : `${this.baseUrl}/api/v1/event-annotations`,
+      {
+        method: updating ? 'PUT' : 'POST',
+        body: JSON.stringify({
+          ...(updating ? { expected_revision: annotation.revision } : {}),
+          event_ref: toApiEventReference(annotation.eventRef),
+          tags: annotation.tags,
+        }),
+      },
+    )
+    return mapEventAnnotation(response)
+  }
+
+  async deleteEventAnnotation(annotationId: string): Promise<void> {
+    await requestJson<ApiObject>(`${this.baseUrl}/api/v1/event-annotations/${encodeURIComponent(annotationId)}`, {
+      method: 'DELETE',
+    })
   }
 }
 
@@ -1476,6 +1546,94 @@ function mapTableQueryRow(value: ApiObject): TableQueryRow {
   }
 }
 
+function mapEventDefinition(value: ApiObject): EventDefinition {
+  const defaultWindow = objectValue(value.default_window)
+  return {
+    definitionKey: textValue(value.definition_key),
+    schemaId: textValue(value.schema_id),
+    schemaVersion: textValue(value.schema_version),
+    schemaDigest: textValue(value.schema_digest),
+    displayName: textValue(value.display_name, textValue(value.schema_id, 'Event')),
+    schemaTags: arrayValue(value.schema_tags).map(String),
+    eventSetIds: arrayValue(value.event_set_ids).map(String),
+    availableEnds: arrayValue(value.available_ends).map(String),
+    primaryTrigger: { id: textValue(objectValue(value.primary_trigger).id, 'trigger') },
+    secondaryTriggers: arrayValue(value.secondary_triggers).filter(isObject).map((item) => ({ id: textValue(item.id) })),
+    defaultWindow: {
+      preS: numberValue(defaultWindow.pre_s),
+      postS: numberValue(defaultWindow.post_s),
+      anchor: textValue(defaultWindow.anchor, 'trigger_time_s'),
+    },
+    defaultRoles: arrayValue(value.default_roles).filter(isObject).map((item) => ({
+      role: textValue(item.role),
+      selector: objectRecordValue(item.selector),
+    })),
+    metricFields: arrayValue(value.metric_fields).filter(isObject).map((item) => ({
+      column: textValue(item.column),
+      displayName: textValue(item.display_name, textValue(item.column)),
+      unit: textValue(item.unit),
+    })),
+    eventCount: numberValue(value.event_count),
+    sessionRefIds: arrayValue(value.session_ref_ids).map(String),
+    sessionCount: numberValue(value.session_count),
+  }
+}
+
+function mapEventReference(value: ApiObject): EventReference {
+  const sessionRef = mapStudySessionRef(value)
+  return {
+    ...sessionRef,
+    eventSetId: textValue(value.event_set_id),
+    eventId: textValue(value.event_id),
+    schemaId: textValue(value.schema_id),
+    schemaVersion: textValue(value.schema_version),
+    schemaDigest: textValue(value.schema_digest),
+    paramsHash: textValue(value.params_hash),
+    triggerTimeS: nullableNumberValue(value.trigger_time_s),
+  }
+}
+
+function mapEventSegment(value: ApiObject): EventSegment {
+  const window = objectValue(value.window)
+  return {
+    eventRef: mapEventReference(objectValue(value.event_ref)),
+    window: {
+      returnedStartRelS: nullableNumberValue(window.returned_start_rel_s),
+      returnedEndRelS: nullableNumberValue(window.returned_end_rel_s),
+    },
+    timeRelS: arrayValue(value.time_rel_s).map(nullableNumberValue),
+    signals: arrayValue(value.signals).filter(isObject).map((signal) => ({
+      role: textValue(signal.role),
+      column: textValue(signal.column),
+      displayName: textValue(signal.display_name, textValue(signal.role)),
+      end: textValue(signal.end),
+      domain: textValue(signal.domain),
+      quantity: textValue(signal.quantity),
+      unit: textValue(signal.unit),
+      values: arrayValue(signal.values).map(nullableNumberValue),
+    })),
+    triggers: arrayValue(value.triggers).filter(isObject).map((trigger) => ({
+      id: textValue(trigger.id),
+      kind: trigger.kind === 'secondary' ? 'secondary' : 'primary',
+      timeRelS: numberValue(trigger.time_rel_s),
+    })),
+    metrics: objectRecordValue(value.metrics),
+    qc: objectRecordValue(value.qc),
+    warnings: arrayValue(value.warnings).filter(isObject).map((warning) => ({ ...warning })),
+  }
+}
+
+function mapEventAnnotation(value: ApiObject): EventAnnotationRecord {
+  return {
+    id: textValue(value.annotation_id),
+    revision: numberValue(value.revision),
+    eventRef: mapEventReference(objectValue(value.event_ref)),
+    tags: arrayValue(value.tags).map(String),
+    createdAtUtc: textValue(value.created_at_utc),
+    updatedAtUtc: textValue(value.updated_at_utc),
+  }
+}
+
 function mapScenarioPredicate(value: ApiObject): ScenarioPredicate {
   const op = textValue(value.op)
   if (op === 'and' || op === 'or') {
@@ -1953,6 +2111,19 @@ function toApiStudySessionRef(sessionRef: StudySessionRef) {
     run_id: sessionRef.runId,
     session_id: sessionRef.sessionId,
     label: sessionRef.label,
+  }
+}
+
+function toApiEventReference(eventRef: EventReference) {
+  return {
+    ...toApiStudySessionRef(eventRef),
+    event_set_id: eventRef.eventSetId,
+    event_id: eventRef.eventId,
+    schema_id: eventRef.schemaId,
+    schema_version: eventRef.schemaVersion,
+    schema_digest: eventRef.schemaDigest,
+    params_hash: eventRef.paramsHash,
+    trigger_time_s: eventRef.triggerTimeS,
   }
 }
 

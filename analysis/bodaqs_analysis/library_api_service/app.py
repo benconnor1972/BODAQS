@@ -468,6 +468,41 @@ def create_app(
     def list_analysis_views() -> list[dict[str, Any]]:
         return _current_adapter(app).list_analysis_views()
 
+    @app.post("/api/v1/event-definitions/query")
+    async def query_event_definitions(request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).query_event_definitions(_json_object_payload(payload))
+
+    @app.post("/api/v1/event-annotations/query")
+    async def query_event_annotations(request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).query_event_annotations(_json_object_payload(payload))
+
+    @app.post("/api/v1/event-annotations")
+    async def create_event_annotation(request: Request) -> dict[str, Any]:
+        _assert_writable(app)
+        payload = await request.json()
+        return _current_adapter(app).create_event_annotation(_event_annotation_payload(payload))
+
+    @app.get("/api/v1/event-annotations/{annotation_id}")
+    def load_event_annotation(annotation_id: str) -> dict[str, Any]:
+        return _current_adapter(app).load_event_annotation(annotation_id)
+
+    @app.put("/api/v1/event-annotations/{annotation_id}")
+    async def update_event_annotation(annotation_id: str, request: Request) -> dict[str, Any]:
+        _assert_writable(app)
+        payload = await request.json()
+        return _current_adapter(app).update_event_annotation(
+            annotation_id,
+            expected_revision=_expected_revision(payload),
+            payload=_event_annotation_payload(payload),
+        )
+
+    @app.delete("/api/v1/event-annotations/{annotation_id}")
+    def delete_event_annotation(annotation_id: str) -> dict[str, Any]:
+        _assert_writable(app)
+        return _current_adapter(app).delete_event_annotation(annotation_id)
+
     @app.post("/api/v1/analysis-views/{view_id}/adequacy")
     async def get_analysis_view_adequacy(view_id: str, request: Request) -> dict[str, Any]:
         payload = await request.json()
@@ -507,6 +542,11 @@ def create_app(
     async def query_metrics(library_id: str, request: Request) -> dict[str, Any]:
         payload = await request.json()
         return _current_adapter(app).query_metrics(library_id, _json_object_payload(payload))
+
+    @app.post("/api/v1/libraries/{library_id}/event-segments/query")
+    async def query_event_segments(library_id: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        return _current_adapter(app).query_event_segments(library_id, _json_object_payload(payload))
 
     @app.post("/api/v1/track-matches/query")
     async def query_track_matches(request: Request) -> dict[str, Any]:
@@ -691,6 +731,16 @@ def _bookmark_payload(payload: Any) -> dict[str, Any]:
     return value
 
 
+def _event_annotation_payload(payload: Any) -> dict[str, Any]:
+    payload = _json_object_payload(payload)
+    value = payload.get("event_annotation", payload.get("annotation", payload))
+    if not isinstance(value, dict):
+        from bodaqs_analysis.library_api.errors import InvalidRequestError
+
+        raise InvalidRequestError("Event annotation request body must include a JSON object.")
+    return value
+
+
 def _session_route_ref(library_id: str, run_id: str, session_id: str) -> dict[str, str]:
     from bodaqs_analysis.library_api.ids import make_session_key, make_session_ref_id
 
@@ -755,6 +805,7 @@ def _capabilities_response(app: FastAPI) -> dict[str, Any]:
         "write_filters",
         "write_scenarios",
         "write_bookmarks",
+        "write_event_annotations",
     ):
         features[feature] = False
     capabilities["features"] = features

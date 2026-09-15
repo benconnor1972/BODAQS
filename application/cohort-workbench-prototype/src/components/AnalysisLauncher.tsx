@@ -255,7 +255,7 @@ function AnalysisViewCard({ checked, item, onOpen, onSelectedChange }: {
 }
 
 function analysisViewIsSupported(viewId: string) {
-  return viewId === 'simple-suspension' || viewId === 'suspension-phase-diagram' || viewId === 'track-analysis-lap-timing'
+  return viewId === 'simple-suspension' || viewId === 'suspension-phase-diagram' || viewId === 'track-analysis-lap-timing' || viewId === 'event-browser'
 }
 
 function analysisViewCanOpen(item: AnalysisLauncherItem) {

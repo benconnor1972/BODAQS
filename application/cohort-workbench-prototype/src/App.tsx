@@ -44,6 +44,7 @@ import { SessionSignalPreview } from './components/SessionSignalPreview'
 import { SessionTable, type SessionColumnWidthId, type SessionColumnWidths, type SessionSelectionGesture } from './components/SessionTable'
 import { StudySessionTable } from './components/StudySessionTable'
 import { SuspensionVisualization } from './components/SuspensionVisualization'
+import { EventBrowser } from './components/EventBrowser'
 import { TrackAnalysisView } from './components/TrackAnalysisView'
 import { UnsavedChangesDialog } from './components/UnsavedChangesDialog'
 import { FixtureLibraryDataSource } from './data/FixtureLibraryDataSource'
@@ -1510,7 +1511,7 @@ function App() {
   }
 
   function openAnalysisView(viewId: string, studySet: StudySet) {
-    if (viewId === 'simple-suspension' || viewId === 'suspension-phase-diagram' || viewId === 'track-analysis-lap-timing') {
+    if (viewId === 'simple-suspension' || viewId === 'suspension-phase-diagram' || viewId === 'track-analysis-lap-timing' || viewId === 'event-browser') {
       const url = analysisRouteUrl(viewId, studySet)
       const opened = window.open(url, '_blank')
       if (!opened) {
@@ -3024,6 +3025,8 @@ function AnalysisRoutePage({
       ? 'Simple Suspension Analysis'
       : route.viewId === 'suspension-phase-diagram'
         ? 'Suspension Phase Diagram'
+      : route.viewId === 'event-browser'
+        ? 'Event Browser'
       : route.viewId === 'track-analysis-lap-timing'
         ? 'Track Analysis and Lap Timing'
         : route.viewId
@@ -3092,6 +3095,31 @@ function AnalysisRoutePage({
                 if (session) {
                   setRouteModal({ kind: 'signal-inspector', session, initialWindow: window })
                 }
+              }}
+            />
+          </RouteErrorBoundary>
+        </section>
+      ) : route.viewId === 'event-browser' ? (
+        <section className="analysis-route-content">
+          {scopeNotice && (
+            <div className={`analysis-route-notice ${scopeNotice.kind}`}>
+              <span>{scopeNotice.message}</span>
+              <div className="analysis-route-notice-actions">
+                {scopeNotice.refreshable && <button className="secondary-action compact" type="button" onClick={onRefreshScope}>Refresh analysis</button>}
+                <button className="secondary-action compact" type="button" onClick={onDismissScopeNotice}>Dismiss</button>
+              </div>
+            </div>
+          )}
+          <RouteErrorBoundary resetKey={analysisRouteErrorBoundaryKey(route, studySet)}>
+            <EventBrowser
+              key={`${studySet.id}:${studySet.revision}`}
+              studySet={studySet}
+              sessions={sessions}
+              dataSource={dataSource}
+              canWrite={canWrite}
+              onInspectSignals={(sessionRef, window) => {
+                const session = sessionByRef(sessionRef, sessions)
+                if (session) setRouteModal({ kind: 'signal-inspector', session, initialWindow: window })
               }}
             />
           </RouteErrorBoundary>
@@ -3243,6 +3271,9 @@ function browserTabTitle(route: AnalysisRouteState | null) {
   }
   if (route.viewId === 'suspension-phase-diagram') {
     return 'suspension phase diagram'
+  }
+  if (route.viewId === 'event-browser') {
+    return 'event browser'
   }
   if (route.viewId === 'track-analysis-lap-timing') {
     return 'track analysis and lap timing'
