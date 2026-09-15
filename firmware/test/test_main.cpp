@@ -31,6 +31,15 @@ int runBMI270ProfileTests();
 // Defined in test_bmi270_fifo.cpp
 int runBMI270FifoTests();
 
+// Defined in test_bdq_v2_format.cpp
+int runBdqV2FormatTests();
+
+// Defined in test_bdq_v2_writer.cpp
+int runBdqV2WriterTests();
+
+// Defined in test_rates.cpp
+int runRateTests();
+
 static int tests_passed = 0;
 static int tests_failed = 0;
 
@@ -295,6 +304,18 @@ int main() {
     printf("\nRunning BMI270 FIFO tests...\n\n");
     int bmi270_fifo_failed = runBMI270FifoTests();
     tests_failed += bmi270_fifo_failed;
+
+    printf("\nRunning BDQ v2 format tests...\n\n");
+    int bdq_v2_format_failed = runBdqV2FormatTests();
+    tests_failed += bdq_v2_format_failed;
+
+    printf("\nRunning BDQ v2 writer tests...\n\n");
+    int bdq_v2_writer_failed = runBdqV2WriterTests();
+    tests_failed += bdq_v2_writer_failed;
+
+    printf("\nRunning rate/cadence tests...\n\n");
+    int rate_failed = runRateTests();
+    tests_failed += rate_failed;
 
     printf("\n%d passed, %d failed\n", tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;

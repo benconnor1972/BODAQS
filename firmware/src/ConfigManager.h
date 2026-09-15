@@ -15,7 +15,8 @@ enum PotMode : uint8_t {
 
 enum class LogFormat : uint8_t {
   BodaqsStandard = 0,
-  BodaqsCompactBinary = 2  // Value 1 was the retired SynBikeRaw format.
+  BodaqsCompactBinary = 2,  // Value 1 was the retired SynBikeRaw format.
+  BodaqsMultiStreamBinary = 3
 };
 
 enum class WiFiMode : uint8_t {

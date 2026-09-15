@@ -11,14 +11,24 @@ namespace board { struct BoardProfile; }  // forward decl (your renamed namespac
 void StorageManager_begin(const board::BoardProfile& bp);
 void StorageManager_setSampleRate(unsigned int hz);
 void StorageManager_setBufferSize(size_t bytes);
-unsigned long StorageManager_getSampleIntervalMs();   // <-- NEW
+// Rounded-up compatibility view for legacy callers; new scheduling code uses us.
+unsigned long StorageManager_getSampleIntervalMs();
+uint32_t StorageManager_getSampleIntervalUs();
 unsigned int StorageManager_getSampleRateHz();
 bool StorageManager_startLog();
 void StorageManager_stopLog();
 void StorageManager_loop();
 void StorageManager_setCustomHeader(const char* csv);
 void StorageManager_logCsvDynamic(uint32_t sample_id, uint64_t ts_ms, const float* values, uint16_t n, bool mark);
-bool StorageManager_enqueueSample(uint32_t sample_id, uint64_t ts_ms, const float* values, uint16_t n, bool mark);
+bool StorageManager_enqueueSample(
+    uint32_t sample_id,
+    uint64_t ts_ms,
+    const float* values,
+    uint16_t n,
+    bool mark,
+    uint64_t hostMonotonicUs = 0,
+    uint64_t markHostMonotonicUs = 0);
+bool StorageManager_usesIndependentStreams();
 // Requires the logger sampler to be quiesced. Used during orderly shutdown so
 // final sensor FIFO rows cannot be lost behind a full storage queue.
 void StorageManager_drainQueuedSamples();

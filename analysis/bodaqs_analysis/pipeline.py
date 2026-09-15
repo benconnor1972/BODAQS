@@ -11,7 +11,14 @@ import re
 import time
 
 from .io_logger import load_logger_csv_with_log_metadata, parse_run_stats_footer
-from .io_bdq import bdq_to_dataframe, bdq_to_log_metadata, is_bdq_path, read_bdq
+from .io_bdq import (
+    bdq_primary_dataframe_from_streams,
+    bdq_to_dataframe,
+    bdq_to_log_metadata,
+    bdq_to_stream_dataframes,
+    is_bdq_path,
+    read_bdq,
+)
 from .io_fit import (
     FIT_DEFAULT_FIELDS,
     fit_stream_for_session,
@@ -915,7 +922,12 @@ def load_bdq_session(
     """Load a self-contained BDQ compact binary log into a v0 Session dict."""
     p = Path(bdq_path)
     info = read_bdq(p)
-    df_raw = bdq_to_dataframe(p)
+    native_frames: Dict[str, pd.DataFrame] = {}
+    if info.header.format_major == 2:
+        native_frames = bdq_to_stream_dataframes(p)
+        df_raw = bdq_primary_dataframe_from_streams(info, native_frames)
+    else:
+        df_raw = bdq_to_dataframe(p)
     log_metadata = bdq_to_log_metadata(info)
     session_meta = log_metadata.get("session") if isinstance(log_metadata.get("session"), Mapping) else {}
     session_id = _optional_nonempty_str(session_meta.get("session_id")) if isinstance(session_meta, Mapping) else None
@@ -941,6 +953,40 @@ def load_bdq_session(
         parse["bdq_detected_errors"] = list(info.detected_errors)
         for error in info.detected_errors:
             _append_qc_warning(session, f"bdq_parser_warning:{error}")
+    if info.header.format_major == 2:
+        native_frames.pop("primary", None)
+        session["stream_dfs"] = native_frames
+        secondary = log_metadata.get("secondary_streams")
+        if isinstance(secondary, Mapping):
+            session.setdefault("meta", {})["secondary_streams"] = copy.deepcopy(dict(secondary))
+        session.setdefault("meta", {})["bdq_events"] = [dict(event) for event in info.events]
+        timing_observations: Dict[str, Any] = {}
+        catalog_streams = info.stream_catalog.get("streams")
+        if isinstance(catalog_streams, list):
+            for descriptor in catalog_streams:
+                if not isinstance(descriptor, Mapping):
+                    continue
+                stream_id = descriptor.get("stream_id")
+                stream_key = descriptor.get("stream_key")
+                if not isinstance(stream_id, int) or not isinstance(stream_key, str):
+                    continue
+                timing_observations[stream_key] = [
+                    {
+                        "native_tick": observation.native_tick,
+                        "related_sequence": observation.related_sequence,
+                        "host_min_us": observation.host_min_us,
+                        "host_max_us": observation.host_max_us,
+                        "kind": observation.kind,
+                        "flags": observation.flags,
+                    }
+                    for chunk in info.stream_data_chunks
+                    if chunk.stream_id == stream_id
+                    for observation in chunk.observations
+                ]
+        session.setdefault("meta", {})["bdq_timing_observations"] = timing_observations
+        parse["bdq_stream_count"] = info.stream_count
+        parse["bdq_event_count"] = len(info.events)
+        return session
     return build_imu_streams(session, strict=False)
 
 

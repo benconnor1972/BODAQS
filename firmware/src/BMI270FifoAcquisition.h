@@ -26,6 +26,9 @@ static_assert(static_cast<uint8_t>(BMI270RecoveryReason::SessionStartValidation)
 static_assert(static_cast<uint8_t>(BMI270RecoveryReason::NoSampleProgress) == 3);
 
 struct BMI270FifoDiagnostics {
+  uint16_t nativeRateHz = 0;
+  uint16_t outputRateHz = 0;
+  uint16_t fifoPollRateHz = 0;
   uint64_t drainCalls = 0;
   uint64_t drainPasses = 0;
   uint64_t emptyPasses = 0;
@@ -120,15 +123,14 @@ class BMI270FifoAcquisition : public I2CAsyncClient {
 public:
   static constexpr size_t kQueueCapacity = 512;
   static constexpr size_t kRawBufferBytes = BMI270FifoReadPlan::kMaximumReadBytes;
-  static constexpr size_t kMaximumBatchSamples = 160;
-  static constexpr uint16_t kTargetRateHz = 200;
+  static constexpr size_t kMaximumBatchSamples =
+      (kRawBufferBytes / BMI270FifoParser::kCombinedFrameBytes) + 1;
+  static constexpr uint16_t kDefaultFifoPollRateHz = 200;
   static constexpr uint16_t kTemperatureRateHz = 10;
   static constexpr uint32_t kTemperaturePeriodUs = 1000000u / kTemperatureRateHz;
   static constexpr uint32_t kTemperatureFreshnessUs = 250000u;
   static constexpr uint32_t kNoSampleProgressTimeoutUs = 250000u;
   static constexpr uint8_t kMaximumConsecutiveRecoveryFailures = 3;
-  static constexpr uint32_t kQueueCoverageMs =
-      static_cast<uint32_t>((kQueueCapacity * 1000u) / kTargetRateHz);
 
   BMI270FifoAcquisition(uint8_t busIndex, uint8_t address, const char* name = nullptr);
   ~BMI270FifoAcquisition() override;
@@ -139,11 +141,20 @@ public:
   // Initializes and configures the device, then leaves sensing suspended.
   bool begin();
   void shutdown();
+  bool setNativeRateHz(uint16_t rateHz);
   bool setOutputRateHz(uint16_t rateHz);
+  bool setFifoPollRateHz(uint16_t rateHz);
   bool setGyroBiasMode(BMI270GyroBiasMode mode);
   void setIocDiagnosticsEnabled(bool enabled) { iocDiagnosticsEnabled_ = enabled; }
+  uint16_t nativeRateHz() const { return nativeRateHz_; }
   uint16_t outputRateHz() const { return outputRateHz_; }
   uint16_t outputDecimationFactor() const { return outputDecimationFactor_; }
+  uint16_t fifoPollRateHz() const { return fifoPollRateHz_; }
+  uint32_t queueCoverageMs() const {
+    return nativeRateHz_
+        ? static_cast<uint32_t>((kQueueCapacity * 1000u) / nativeRateHz_)
+        : 0;
+  }
   BMI270GyroBiasMode gyroBiasMode() const { return gyroBiasMode_; }
 
   // These calls require the I2C scheduler to be stopped. stopSession() stops
@@ -174,7 +185,7 @@ public:
   const char* asyncClientKind() const override { return "bmi270_imu_i2c"; }
   uint8_t asyncI2CBusIndex() const override { return device_.busIndex(); }
   uint8_t asyncI2CAddress() const override { return device_.address(); }
-  uint16_t asyncTargetRateHz() const override { return kTargetRateHz; }
+  uint16_t asyncTargetRateHz() const override { return fifoPollRateHz_; }
   uint32_t asyncMaximumLowPriorityGapUs() const override { return 50000u; }
   bool asyncMuted() const override {
     return !sessionActive() || terminalFault_.load(std::memory_order_acquire);
@@ -217,8 +228,7 @@ private:
       bool temperatureFresh,
       uint64_t acquisitionStartUs,
       uint64_t acquisitionEndUs,
-      size_t bytesRead,
-      uint32_t acquisitionSpanUs);
+      size_t bytesRead);
   void maybeCaptureIocOffsetSnapshot_(uint64_t nowUs);
   void addCounter_(uint64_t& counter, uint64_t amount = 1);
 
@@ -234,6 +244,7 @@ private:
   BMI270FifoParsedSample parsed_[kMaximumBatchSamples] {};
 
   uint32_t nextSequence_ = 0;
+  uint32_t nextAcquisitionBatchId_ = 0;
   uint16_t pendingStatus_ = 0;
   uint16_t preSessionBoundaryStatus_ = 0;
   uint32_t pendingSkippedFrames_ = 0;
@@ -245,8 +256,10 @@ private:
   BMI270StartupObservation startupObservation_;
   BMI270AgeHistogram ageHistogram_;
   BMI270RunningStats temperatureStats_;
-  uint16_t outputRateHz_ = kTargetRateHz;
+  uint16_t nativeRateHz_ = BMI270Profile::kOdrHz;
+  uint16_t outputRateHz_ = BMI270Profile::kOdrHz;
   uint16_t outputDecimationFactor_ = 1;
+  uint16_t fifoPollRateHz_ = kDefaultFifoPollRateHz;
   BMI270GyroBiasMode gyroBiasMode_ = BMI270GyroBiasMode::Off;
   bool iocDiagnosticsEnabled_ = false;
   uint64_t nextIocOffsetReadUs_ = 0;

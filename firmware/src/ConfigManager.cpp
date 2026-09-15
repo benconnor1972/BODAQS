@@ -464,6 +464,7 @@ static String minutesStringFromMs_(uint32_t ms) {
 
 const char* ConfigManager::logFormatKey(LogFormat format) {
   switch (format) {
+    case LogFormat::BodaqsMultiStreamBinary: return "bodaqs_multi_stream_binary";
     case LogFormat::BodaqsCompactBinary: return "bodaqs_compact_binary";
     case LogFormat::BodaqsStandard:
     default: return "bodaqs_standard";
@@ -472,6 +473,7 @@ const char* ConfigManager::logFormatKey(LogFormat format) {
 
 const char* ConfigManager::logFormatLabel(LogFormat format) {
   switch (format) {
+    case LogFormat::BodaqsMultiStreamBinary: return "BODAQS multi-stream binary";
     case LogFormat::BodaqsCompactBinary: return "BODAQS compact binary";
     case LogFormat::BodaqsStandard:
     default: return "BODAQS CSV";
@@ -502,6 +504,13 @@ bool ConfigManager::parseLogFormat(const char* text, LogFormat& out) {
       keyEquals(text, "bdq") ||
       keyEquals(text, "binary")) {
     out = LogFormat::BodaqsCompactBinary;
+    return true;
+  }
+  if (keyEquals(text, "bodaqs_multi_stream_binary") ||
+      keyEquals(text, "bodaqs_multistream_binary") ||
+      keyEquals(text, "multi_stream_binary") ||
+      keyEquals(text, "bdq_v2")) {
+    out = LogFormat::BodaqsMultiStreamBinary;
     return true;
   }
   return false;

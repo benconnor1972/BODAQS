@@ -3,6 +3,10 @@
 #include "ConfigManager.h"
 #include "SensorManager.h"
 #include "BdqLogWriter.h"
+#include "BdqV2Catalog.h"
+#include "BdqV2FileSink.h"
+#include "BdqV2PrimaryStream.h"
+#include "BdqV2Writer.h"
 #include "LogMetadataWriter.h"
 #include "ZipArchiveWriter.h"
 #include "LoggingManager.h"
@@ -16,6 +20,9 @@
 #include "LoggerLimits.h"
 #include "AnalogInputManager.h"
 #include "I2CBusScheduler.h"
+#include "FixedSpscQueue.h"
+#include "Rates.h"
+#include "esp_timer.h"
 #include <math.h>
 #include <new>
 #include <time.h>
@@ -40,12 +47,27 @@ static char s_lastStatus[48] = "not initialized";
 constexpr size_t kMinWriteBufferBytes = 1024;
 constexpr uint32_t kDefaultBdqTargetChunkBytes = 16384UL;
 constexpr uint32_t kStorageWriteStallThresholdUs = 10000UL;
+// The BDQ v2 primary row excludes native-stream IMUs, so a large fixed-width
+// row queue only competes with the four IMU FIFO queues for heap. At the
+// expected <=200 Hz auxiliary-sensor rate, 32 rows retain about 160 ms of
+// buffering while native IMU queues retain their full capacity.
+constexpr uint16_t kBdqV2PrimaryQueueDepth = 32;
 
 static inline bool isSdmmcBackend() {
   return s_storage && (s_storage->type == board::StorageType::SDMMC);
 }
 
 static File logFileMMC;
+static BdqV2FileSink s_bdqV2FileSink(logFileMMC);
+static BdqV2Writer s_bdqV2Writer;
+static BdqV2PrimaryStreamSchema s_bdqV2PrimarySchema;
+static BdqV2StreamDescriptor
+    s_bdqV2Descriptors[BdqV2Writer::kMaximumStreams];
+static uint16_t s_bdqV2DescriptorCount = 0;
+static uint8_t* s_bdqV2Workspace = nullptr;
+static size_t s_bdqV2WorkspaceBytes = 0;
+static uint32_t s_bdqV2EventId = 0;
+static uint32_t s_bdqV2MarkEventsDropped = 0;
 
 static char* buffer = nullptr;
 static size_t bufferSize = 0;
@@ -53,7 +75,7 @@ static size_t bufferIndex = 0;
 static size_t s_configuredBufferSize = 0;
 
 static unsigned int sampleRateHz = 1;
-static unsigned long sampleIntervalMs = 1000;
+static uint32_t sampleIntervalUs = 1000000;
 
 static bool loggingActive = false;
 
@@ -86,12 +108,22 @@ static char* s_csvRowBuffer = nullptr;
 struct SampleRow {
   uint32_t sample_id = 0;
   uint64_t ts_ms = 0;
+  uint64_t hostMonotonicUs = 0;
+  uint64_t markHostMonotonicUs = 0;
   uint16_t nValues = 0;
+  uint16_t streamStatusFlags = 0;
   bool     mark = false;
   // 0 = unavailable/free or producer-owned, 1 = ready, 2 = consumer-owned.
   volatile uint8_t ready = 0;
   float    values[SM_MAX_DYNAMIC_COLS];
 };
+
+struct BdqV2PendingMark {
+  uint64_t hostMonotonicUs = 0;
+  uint32_t primarySequence = 0;
+};
+
+static FixedSpscQueue<BdqV2PendingMark, 8> s_bdqV2Marks;
 
 
 #if defined(ESP32)
@@ -103,6 +135,7 @@ static uint16_t  s_qTail  = 0;
 static uint16_t  s_qCount = 0;
 static uint16_t  s_qMax   = 0;
 static uint32_t  s_samplesDropped = 0;
+static uint16_t  s_primaryPendingStatus = 0;
 
 static SampleRow* s_rows = nullptr;
 static uint16_t   s_qCap = 0;
@@ -111,6 +144,7 @@ static inline bool queueEmpty() { return s_qCount == 0; }
 static inline bool queueFull()  { return (s_qCap != 0) && (s_qCount >= s_qCap); }
 static void refreshValueColumnTypes_();
 static bool mountSdmmc_();
+static bool isBdqV2Format_();
 
 static void setStatus_(const char* status) {
   if (!status) status = "";
@@ -143,8 +177,16 @@ static bool isCompactBinaryFormat_() {
   return s_activeLogFormat == LogFormat::BodaqsCompactBinary;
 }
 
+static bool isBdqV2Format_() {
+  return s_activeLogFormat == LogFormat::BodaqsMultiStreamBinary;
+}
+
+static bool isBinaryFormat_() {
+  return isCompactBinaryFormat_() || isBdqV2Format_();
+}
+
 static const char* activeLogExtension_() {
-  return isCompactBinaryFormat_() ? ".bdq" : ".CSV";
+  return isBinaryFormat_() ? ".bdq" : ".CSV";
 }
 
 static String isoUtcFromEpoch_(time_t epoch) {
@@ -507,6 +549,19 @@ static void createSessionArchive_(const String& csvPath, const String& metadataP
 static void resetQueueState_() {
   s_qHead = s_qTail = s_qCount = 0;
   s_qMax = 0;
+  s_primaryPendingStatus = 0;
+}
+
+static void releaseBdqV2Session_() {
+  s_bdqV2Writer.abort();
+  s_bdqV2Writer.clearStreams();
+  delete[] s_bdqV2Workspace;
+  s_bdqV2Workspace = nullptr;
+  s_bdqV2WorkspaceBytes = 0;
+  s_bdqV2DescriptorCount = 0;
+  s_bdqV2EventId = 0;
+  s_bdqV2MarkEventsDropped = 0;
+  s_bdqV2Marks.clear();
 }
 
 static void releaseQueue_() {
@@ -588,19 +643,25 @@ static bool allocWriteBuffer_(size_t bytes) {
 }
 
 static void releaseLogSessionBuffers_() {
+  releaseBdqV2Session_();
   releaseCsvRowBuffer_();
   releaseWriteBuffer_();
   releaseQueue_();
 }
 
 static bool prepareLogSessionBuffers_() {
-  const uint16_t queueDepth = s_perf ? s_perf->queue_depth : 64;
+  uint16_t queueDepth = s_perf ? s_perf->queue_depth : 64;
+  if (isBdqV2Format_() && queueDepth > kBdqV2PrimaryQueueDepth) {
+    queueDepth = kBdqV2PrimaryQueueDepth;
+    STOR_LOGI("BDQ v2 primary queue depth capped at %u rows\n",
+              (unsigned)queueDepth);
+  }
   if (!allocQueue_(queueDepth)) {
     setStatus_("sample queue OOM");
     return false;
   }
 
-  if (isCompactBinaryFormat_()) {
+  if (isBinaryFormat_()) {
     releaseCsvRowBuffer_();
     releaseWriteBuffer_();
     return true;
@@ -708,10 +769,16 @@ static bool mountSdmmc_() {
 }
 
 
-bool StorageManager_enqueueSample(uint32_t sample_id, uint64_t ts_ms,
-                                  const float* values, uint16_t nValues, bool mark) {
+bool StorageManager_enqueueSample(
+    uint32_t sample_id,
+    uint64_t ts_ms,
+    const float* values,
+    uint16_t nValues,
+    bool mark,
+    uint64_t hostMonotonicUs,
+    uint64_t markHostMonotonicUs) {
   if (!loggingActive) return false;
-  if (!values || nValues == 0) return false;
+  if ((!values && nValues != 0) || (nValues == 0 && !isBdqV2Format_())) return false;
   if (nValues > SM_MAX_DYNAMIC_COLS) nValues = SM_MAX_DYNAMIC_COLS;
 
   uint16_t idx;
@@ -722,6 +789,12 @@ bool StorageManager_enqueueSample(uint32_t sample_id, uint64_t ts_ms,
 
   if (s_qCap == 0 || s_rows == nullptr || s_qCount >= s_qCap) {
     ++s_samplesDropped;
+    if (isBdqV2Format_()) {
+      s_primaryPendingStatus = static_cast<uint16_t>(
+          s_primaryPendingStatus |
+          BdqV2Format::DiscontinuityBefore |
+          BdqV2Format::ProducerQueueDropBefore);
+    }
 #if defined(ESP32)
     portEXIT_CRITICAL(&s_qMux);
 #endif
@@ -742,9 +815,11 @@ bool StorageManager_enqueueSample(uint32_t sample_id, uint64_t ts_ms,
   SampleRow &row = s_rows[idx];
   row.sample_id = sample_id;
   row.ts_ms     = ts_ms;
+  row.hostMonotonicUs = hostMonotonicUs;
+  row.markHostMonotonicUs = markHostMonotonicUs;
   row.nValues   = nValues;
   row.mark      = mark;
-  memcpy(row.values, values, nValues * sizeof(float));
+  if (nValues != 0) memcpy(row.values, values, nValues * sizeof(float));
   // Optional hygiene:
   // for (uint16_t i=nValues; i<SM_MAX_DYNAMIC_COLS; ++i) row.values[i]=0;
 
@@ -753,6 +828,8 @@ bool StorageManager_enqueueSample(uint32_t sample_id, uint64_t ts_ms,
   portENTER_CRITICAL(&s_qMux);
 #endif
 
+  row.streamStatusFlags = s_primaryPendingStatus;
+  s_primaryPendingStatus = 0;
   row.ready = 1;
   ++s_qCount;
   if (s_qCount > s_qMax) s_qMax = s_qCount;
@@ -850,6 +927,51 @@ static bool dequeueSample(SampleRow &out) {
 #endif
 
   return true;
+}
+
+static size_t pendingBdqV2PrimaryRecords_(const void*) {
+#if defined(ESP32)
+  portENTER_CRITICAL(&s_qMux);
+#endif
+  const size_t pending = s_qCount;
+#if defined(ESP32)
+  portEXIT_CRITICAL(&s_qMux);
+#endif
+  return pending;
+}
+
+static size_t pendingBdqV2PrimaryObservations_(const void*) {
+  return 0;
+}
+
+static bool popBdqV2PrimaryRecord_(
+    void*,
+    uint8_t* destination,
+    size_t capacity) {
+  SampleRow row;
+  if (!dequeueSample(row)) return false;
+  if (row.mark) {
+    BdqV2PendingMark mark;
+    mark.hostMonotonicUs = row.markHostMonotonicUs != 0
+        ? row.markHostMonotonicUs
+        : row.hostMonotonicUs;
+    mark.primarySequence = row.sample_id;
+    if (!s_bdqV2Marks.push(mark)) ++s_bdqV2MarkEventsDropped;
+  }
+  return s_bdqV2PrimarySchema.encodeRecord(
+      row.sample_id,
+      static_cast<uint32_t>(row.hostMonotonicUs),
+      row.streamStatusFlags,
+      row.values,
+      row.nValues,
+      destination,
+      capacity);
+}
+
+static bool popBdqV2PrimaryObservation_(
+    void*,
+    BdqV2Format::TimeObservation&) {
+  return false;
 }
 
 static uint16_t queueDepthSnapshot_() {
@@ -1043,15 +1165,24 @@ void StorageManager_begin(const board::BoardProfile& bp) {
 void StorageManager_setSampleRate(unsigned int hz) {
     if (hz == 0) hz = 1;
     sampleRateHz = hz;
-    sampleIntervalMs = 1000UL / sampleRateHz;
+    sampleIntervalUs = Rates::periodUs(static_cast<uint16_t>(sampleRateHz));
+    if (sampleIntervalUs == 0) sampleIntervalUs = 1;
 }
 
 unsigned long StorageManager_getSampleIntervalMs() {
-    return sampleIntervalMs;
+    return (sampleIntervalUs + 999UL) / 1000UL;
+}
+
+uint32_t StorageManager_getSampleIntervalUs() {
+    return sampleIntervalUs;
 }
 
 unsigned int StorageManager_getSampleRateHz() {
     return sampleRateHz;
+}
+
+bool StorageManager_usesIndependentStreams() {
+  return loggingActive && isBdqV2Format_();
 }
 
 // Set buffer size
@@ -1137,6 +1268,317 @@ static bool openNewLogFile_SDMMC(const String& longName, const char* extension, 
   return openNumberedLogFile_SDMMC_(extension);
 }
 
+static bool allocateBdqV2Workspace_(size_t requestedBytes) {
+  delete[] s_bdqV2Workspace;
+  s_bdqV2Workspace = nullptr;
+  s_bdqV2WorkspaceBytes = 0;
+  if (requestedBytes < 1024) requestedBytes = 1024;
+  if (requestedBytes > 65535) requestedBytes = 65535;
+  for (size_t attempt = requestedBytes; attempt >= 1024; attempt /= 2) {
+    s_bdqV2Workspace = new (std::nothrow) uint8_t[attempt];
+    if (!s_bdqV2Workspace) continue;
+    s_bdqV2WorkspaceBytes = attempt;
+    if (attempt != requestedBytes) {
+      STOR_LOGW("BDQ v2 workspace reduced to %u bytes\n", (unsigned)attempt);
+    }
+    return true;
+  }
+  return false;
+}
+
+static bool beginBdqV2_(const BdqLogSessionInfo& info) {
+  releaseBdqV2Session_();
+
+  const uint16_t primaryColumnCount =
+      SensorManager::describeSensorColumns(nullptr, 0, true);
+  SensorColumnDescriptor* primaryColumns = nullptr;
+  if (primaryColumnCount != 0) {
+    primaryColumns = new (std::nothrow)
+        SensorColumnDescriptor[primaryColumnCount];
+    if (!primaryColumns ||
+        SensorManager::describeSensorColumns(
+            primaryColumns, primaryColumnCount, true) != primaryColumnCount) {
+      delete[] primaryColumns;
+      return false;
+    }
+  }
+
+  BdqV2StreamSource primarySource;
+  primarySource.streamId = BdqV2PrimaryStreamSchema::kStreamId;
+  primarySource.nativeTickModulus = uint64_t{1} << 32;
+  primarySource.context = &s_bdqV2PrimarySchema;
+  primarySource.pendingRecords = &pendingBdqV2PrimaryRecords_;
+  primarySource.pendingObservations = &pendingBdqV2PrimaryObservations_;
+  primarySource.popRecord = &popBdqV2PrimaryRecord_;
+  primarySource.popObservation = &popBdqV2PrimaryObservation_;
+  if (!s_bdqV2PrimarySchema.configure(
+          primaryColumns,
+          primaryColumnCount,
+          info.sampleRateHz,
+          primarySource)) {
+    delete[] primaryColumns;
+    return false;
+  }
+
+  s_bdqV2Descriptors[0] = s_bdqV2PrimarySchema.descriptor();
+  const uint16_t nativeStreamCount =
+      SensorManager::describeBdqV2Streams(nullptr, 0, 2);
+  if (nativeStreamCount >= BdqV2Writer::kMaximumStreams) {
+    delete[] primaryColumns;
+    STOR_LOGE("BDQ v2 stream count exceeds maximum\n");
+    return false;
+  }
+  const uint16_t describedNativeCount = SensorManager::describeBdqV2Streams(
+      s_bdqV2Descriptors + 1,
+      static_cast<uint16_t>(BdqV2Writer::kMaximumStreams - 1),
+      2);
+  if (describedNativeCount != nativeStreamCount) {
+    delete[] primaryColumns;
+    return false;
+  }
+  s_bdqV2DescriptorCount = static_cast<uint16_t>(nativeStreamCount + 1u);
+
+  s_bdqV2Writer.clearStreams();
+  for (uint16_t index = 0; index < s_bdqV2DescriptorCount; ++index) {
+    if (!s_bdqV2Writer.addStream(s_bdqV2Descriptors[index].source)) {
+      delete[] primaryColumns;
+      releaseBdqV2Session_();
+      return false;
+    }
+  }
+
+  const String loggerIdText = info.config
+      ? ConfigManager::loggerId(*info.config)
+      : String("unknown");
+  const size_t catalogLength = BdqV2Catalog::measure(
+      loggerIdText.c_str(), s_bdqV2Descriptors, s_bdqV2DescriptorCount);
+  char* catalog = catalogLength != 0
+      ? new (std::nothrow) char[catalogLength + 1u]
+      : nullptr;
+  size_t writtenCatalogLength = 0;
+  const bool catalogOk = catalog && BdqV2Catalog::write(
+      loggerIdText.c_str(),
+      s_bdqV2Descriptors,
+      s_bdqV2DescriptorCount,
+      catalog,
+      catalogLength + 1u,
+      writtenCatalogLength);
+
+  String metadata;
+  const bool metadataOk = BdqLogWriter::buildV2SessionMetadataJson(
+      info, s_bdqV2DescriptorCount, metadata);
+  delete[] primaryColumns;
+
+  const size_t workspaceBytes = info.targetChunkBytes != 0
+      ? info.targetChunkBytes
+      : kDefaultBdqTargetChunkBytes;
+  const bool workspaceOk = allocateBdqV2Workspace_(workspaceBytes);
+  bool writerOk = false;
+  if (catalogOk && metadataOk && workspaceOk) {
+    writerOk = s_bdqV2Writer.begin(
+        s_bdqV2FileSink,
+        s_bdqV2Workspace,
+        s_bdqV2WorkspaceBytes,
+        info.createdUnixUs,
+        metadata.c_str(),
+        metadata.length(),
+        catalog,
+        writtenCatalogLength);
+  }
+  delete[] catalog;
+  if (!writerOk) {
+    releaseBdqV2Session_();
+    return false;
+  }
+
+  STOR_LOGI(
+      "BDQ v2 begin streams=%u primaryColumns=%u primaryRecord=%u workspace=%u\n",
+      (unsigned)s_bdqV2DescriptorCount,
+      (unsigned)primaryColumnCount,
+      (unsigned)s_bdqV2PrimarySchema.recordSizeBytes(),
+      (unsigned)s_bdqV2WorkspaceBytes);
+  return true;
+}
+
+static bool writePendingBdqV2Marks_() {
+  BdqV2PendingMark mark;
+  while (s_bdqV2Marks.pop(mark)) {
+    char eventJson[320];
+    const int length = snprintf(
+        eventJson,
+        sizeof(eventJson),
+        "{\"event_format\":\"bdq.events.v1\",\"events\":[{"
+        "\"event_id\":%lu,\"event_type\":\"user_mark\","
+        "\"host_monotonic_us\":%llu,\"unix_us\":null,"
+        "\"stream_id\":null,\"payload\":{"
+        "\"related_primary_sequence\":%lu}}]}",
+        (unsigned long)s_bdqV2EventId++,
+        (unsigned long long)mark.hostMonotonicUs,
+        (unsigned long)mark.primarySequence);
+    if (length <= 0 || static_cast<size_t>(length) >= sizeof(eventJson) ||
+        !s_bdqV2Writer.writeEventJson(eventJson, static_cast<size_t>(length))) {
+      ++s_storageWriteFailures;
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool drainOneBdqV2Chunk_() {
+  if (!s_bdqV2Writer.hasPendingData()) return writePendingBdqV2Marks_();
+  if (!s_bdqV2Writer.drainNextChunk()) {
+    ++s_storageWriteFailures;
+    return false;
+  }
+  return writePendingBdqV2Marks_();
+}
+
+static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
+  JsonDocument document;
+  document["summary_format"] = "bdq.final_summary.v2";
+  document["session_id"] = s_currentSessionId;
+  document["path"] = s_currentLogPath;
+  document["clean_shutdown"] = true;
+  const BdqV2WriterStats& totals = s_bdqV2Writer.stats();
+  document["chunks_written_before_summary"] = totals.chunksWritten;
+  document["stream_data_chunks_written"] = totals.streamDataChunksWritten;
+  document["records_written"] = totals.recordsWritten;
+  document["timing_observations_written"] = totals.observationsWritten;
+  document["bytes_written_before_summary"] = totals.bytesWritten;
+  document["primary_samples_dropped"] = endInfo.samplesDropped;
+  document["primary_queue_capacity"] = endInfo.queueDepth;
+  document["primary_queue_high_water"] = endInfo.queueMax;
+  document["user_mark_events_dropped"] = s_bdqV2MarkEventsDropped;
+  document["sampler_late_ticks"] = endInfo.samplerLateTicks;
+  document["sampler_late_max_lag_us"] = endInfo.samplerLateMaxLagUs;
+  document["sampler_wakeups"] = endInfo.samplerWakeups;
+  document["sampler_late_over_10_percent"] =
+      endInfo.samplerLateOverTenPercent;
+  document["missed_sample_slots"] = endInfo.missedSampleSlots;
+  if (endInfo.samplerWakeLagUs) {
+    JsonObject lag = document["sampler_wake_lag_us"].to<JsonObject>();
+    lag["count"] = endInfo.samplerWakeLagUs->count;
+    lag["minimum_us"] = endInfo.samplerWakeLagUs->minUs;
+    lag["average_us"] = TimingStats_avgUs(*endInfo.samplerWakeLagUs);
+    lag["maximum_us"] = endInfo.samplerWakeLagUs->maxUs;
+  }
+
+  if (endInfo.i2cSchedulerTiming) {
+    const I2CBusSchedulerTimingStats& timing = *endInfo.i2cSchedulerTiming;
+    JsonObject scheduler = document["i2c_scheduler"].to<JsonObject>();
+    scheduler["session_duration_us"] = timing.sessionDurationUs;
+    JsonArray buses = scheduler["buses"].to<JsonArray>();
+    for (uint8_t busIndex = 0;
+         busIndex < I2CBusSchedulerTimingStats::kMaxBuses;
+         ++busIndex) {
+      const auto& busStats = timing.bus[busIndex];
+      if (!busStats.present && busStats.clientCount == 0 &&
+          busStats.acquireLoopUs.count == 0) {
+        continue;
+      }
+      JsonObject bus = buses.add<JsonObject>();
+      bus["bus"] = busIndex;
+      bus["clock_hz"] = busStats.hz;
+      bus["client_count"] = busStats.clientCount;
+      bus["service_calls"] = busStats.acquireLoopUs.count;
+      bus["service_time_total_us"] = busStats.acquireLoopUs.totalUs;
+      bus["service_time_maximum_us"] = busStats.acquireLoopUs.maxUs;
+      bus["measured_occupancy_percent"] = timing.sessionDurationUs
+          ? 100.0 * static_cast<double>(busStats.acquireLoopUs.totalUs) /
+                static_cast<double>(timing.sessionDurationUs)
+          : 0.0;
+    }
+    JsonArray clients = scheduler["clients"].to<JsonArray>();
+    for (uint8_t clientIndex = 0;
+         clientIndex < I2CBusSchedulerTimingStats::kMaxClients;
+         ++clientIndex) {
+      const auto& clientStats = timing.client[clientIndex];
+      if (!clientStats.present && clientStats.acquireUs.count == 0) continue;
+      JsonObject client = clients.add<JsonObject>();
+      client["name"] = clientStats.name;
+      client["kind"] = clientStats.kind;
+      client["bus"] = clientStats.busIndex;
+      client["address"] = clientStats.address;
+      client["target_rate_hz"] = clientStats.targetRateHz;
+      client["achieved_service_rate_hz"] = timing.sessionDurationUs
+          ? static_cast<double>(clientStats.acquireOk + clientStats.acquireFail) *
+                1000000.0 / static_cast<double>(timing.sessionDurationUs)
+          : 0.0;
+      client["acquire_ok"] = clientStats.acquireOk;
+      client["acquire_fail"] = clientStats.acquireFail;
+      client["service_deadline_misses"] =
+          clientStats.serviceDeadlineMisses;
+      client["missed_service_slots"] = clientStats.missedServiceSlots;
+      client["maximum_start_lateness_us"] =
+          clientStats.maximumStartLatenessUs;
+      client["acquire_average_us"] = TimingStats_avgUs(clientStats.acquireUs);
+      client["acquire_maximum_us"] = clientStats.acquireUs.maxUs;
+    }
+  }
+
+  JsonArray streams = document["streams"].to<JsonArray>();
+  for (uint16_t index = 0; index < s_bdqV2DescriptorCount; ++index) {
+    const BdqV2StreamDescriptor& descriptor = s_bdqV2Descriptors[index];
+    const BdqV2WriterStreamStats* stats =
+        s_bdqV2Writer.streamStats(descriptor.source.streamId);
+    JsonObject stream = streams.add<JsonObject>();
+    stream["stream_id"] = descriptor.source.streamId;
+    stream["stream_key"] = descriptor.streamKey;
+    stream["records_written"] = stats ? stats->recordsWritten : 0;
+    stream["data_chunks_written"] = stats ? stats->dataChunksWritten : 0;
+    stream["timing_observation_count"] =
+        stats ? stats->observationsWritten : 0;
+    stream["has_sequence"] = stats && stats->hasSequence;
+    if (stats && stats->hasSequence) {
+      stream["first_sequence"] = stats->firstSequence;
+      stream["last_sequence"] = stats->lastSequence;
+    }
+    stream["loss_count_known"] = true;
+
+    if (descriptor.source.streamId == BdqV2PrimaryStreamSchema::kStreamId) {
+      stream["producer_drop_count"] = endInfo.samplesDropped;
+      stream["producer_queue_capacity"] = endInfo.queueDepth;
+      stream["producer_queue_high_water"] = endInfo.queueMax;
+      continue;
+    }
+
+    for (uint8_t sensorIndex = 0; sensorIndex < MAX_SENSORS; ++sensorIndex) {
+      SensorRuntimeDiagnostics diagnostics;
+      if (!SensorManager::describeRuntimeDiagnosticsAt(
+              sensorIndex, diagnostics) ||
+          strcasecmp(diagnostics.sensorName, descriptor.sensorId) != 0) {
+        continue;
+      }
+      stream["producer_drop_count"] = diagnostics.imuQueueDrops;
+      stream["producer_queue_capacity"] = diagnostics.imuQueueCapacity;
+      stream["producer_queue_high_water"] = diagnostics.imuQueueHighWater;
+      stream["native_rate_hz"] = diagnostics.imuNativeRateHz;
+      stream["output_rate_hz"] = diagnostics.imuOutputRateHz;
+      stream["fifo_poll_rate_hz"] = diagnostics.imuFifoPollRateHz;
+      stream["queue_coverage_ms"] = diagnostics.imuQueueCoverageMs;
+      stream["fifo_bytes_read"] = diagnostics.imuFifoBytesRead;
+      stream["fifo_frames_parsed"] = diagnostics.imuFifoFramesParsed;
+      if (endInfo.i2cSchedulerTiming &&
+          endInfo.i2cSchedulerTiming->sessionDurationUs != 0) {
+        stream["achieved_record_rate_hz"] =
+            static_cast<double>(stats ? stats->recordsWritten : 0) * 1000000.0 /
+            static_cast<double>(endInfo.i2cSchedulerTiming->sessionDurationUs);
+      }
+      stream["timing_observation_drop_count"] =
+          diagnostics.imuBdqV2TimingObservationDrops;
+      stream["fifo_overflow_events"] = diagnostics.imuFifoOverflowEvents;
+      stream["hardware_skipped_frames"] = diagnostics.imuHardwareSkippedFrames;
+      stream["source_recovery_count"] = diagnostics.imuRecoveryAttempts;
+      break;
+    }
+  }
+
+  String output;
+  if (document.overflowed()) return output;
+  serializeJson(document, output);
+  return output;
+}
+
 // Start new log file
 static void startLog() {
   if (loggingActive) return;
@@ -1159,7 +1601,8 @@ static void startLog() {
   s_logStartedAtLocal = "";
   s_activeLogFormat = ConfigManager::get().logFormat;
 
-  const uint16_t columnCount = SensorManager::describeSensorColumns(nullptr, 0);
+  const uint16_t columnCount = SensorManager::describeSensorColumns(
+      nullptr, 0, isBdqV2Format_());
   if (columnCount > SM_MAX_DYNAMIC_COLS) {
     setStatus_("too many sensor columns");
     STOR_LOGE("startLog: configured columns=%u exceeds maximum=%u\n",
@@ -1240,7 +1683,7 @@ static void startLog() {
   uint32_t flushMs = 0;
   uint32_t headerMs = 0;
 
-  if (isCompactBinaryFormat_()) {
+  if (isBinaryFormat_()) {
     BdqLogSessionInfo info;
     info.config = &ConfigManager::get();
     info.logPath = s_currentLogPath.c_str();
@@ -1254,8 +1697,23 @@ static void startLog() {
     info.targetChunkBytes = (s_perf && s_perf->bdq_chunk_bytes)
                               ? s_perf->bdq_chunk_bytes
                               : kDefaultBdqTargetChunkBytes;
+    const uint64_t hostBeforeUs = static_cast<uint64_t>(esp_timer_get_time());
+    const uint64_t wallUnixUs = RTCManager_hasValidTime()
+        ? RTCManager_getEpochMs() * 1000ULL
+        : 0;
+    const uint64_t hostAfterUs = static_cast<uint64_t>(esp_timer_get_time());
+    info.hostMonotonicUs = hostBeforeUs + ((hostAfterUs - hostBeforeUs) / 2u);
+    info.wallClockUnixUs = wallUnixUs;
+    const uint64_t measuredUncertaintyUs =
+        ((hostAfterUs - hostBeforeUs) / 2u) + 1000u;
+    info.wallClockUncertaintyUs = measuredUncertaintyUs > UINT32_MAX
+        ? UINT32_MAX
+        : static_cast<uint32_t>(measuredUncertaintyUs);
 
-    if (!BdqLogWriter::begin(logFileMMC, info)) {
+    const bool writerStarted = isBdqV2Format_()
+        ? beginBdqV2_(info)
+        : BdqLogWriter::begin(logFileMMC, info);
+    if (!writerStarted) {
       STOR_LOGE("BDQ writer begin failed\n");
       logFileMMC.close();
       s_currentLogPath = "";
@@ -1346,6 +1804,16 @@ static void StorageManager_logSampleRow_(const SampleRow& row) {
 
 void StorageManager_drainQueuedSamples() {
   if (!loggingActive) return;
+  if (isBdqV2Format_()) {
+    while (s_bdqV2Writer.hasPendingData()) {
+      if (!drainOneBdqV2Chunk_()) break;
+    }
+    (void)writePendingBdqV2Marks_();
+    const BdqV2WriterStreamStats* primary =
+        s_bdqV2Writer.streamStats(BdqV2PrimaryStreamSchema::kStreamId);
+    s_rowsWritten = primary ? primary->recordsWritten : 0;
+    return;
+  }
   SampleRow row;
   while (dequeueSample(row)) {
     StorageManager_logSampleRow_(row);
@@ -1431,7 +1899,7 @@ void StorageManager_stopLog() {
   // Drain any remaining queued samples into the staging buffer
   StorageManager_drainQueuedSamples();
 
-  if (!isCompactBinaryFormat_() && bufferIndex > 0) {
+  if (!isBinaryFormat_() && bufferIndex > 0) {
     logWriteInternal(buffer, bufferIndex);
     bufferIndex = 0;
   }
@@ -1447,7 +1915,11 @@ void StorageManager_stopLog() {
     endInfo.flushTotalMs = s_flushTotalMs;
     endInfo.samplerLateTicks = stats.samplerLateTicks;
     endInfo.samplerLateMaxLagMs = stats.samplerLateMaxLagMs;
+    endInfo.samplerLateMaxLagUs = stats.samplerLateMaxLagUs;
+    endInfo.samplerWakeups = stats.samplerWakeups;
+    endInfo.samplerLateOverTenPercent = stats.samplerLateOverTenPercent;
     endInfo.missedSampleSlots = stats.missedSampleSlots;
+    endInfo.samplerWakeLagUs = &stats.samplerWakeLagUs;
     endInfo.sampleOnceUs = &stats.sampleOnceUs;
     endInfo.sensorSampleUs = &stats.sensorSampleUs;
     endInfo.enqueueUs = &stats.enqueueUs;
@@ -1459,11 +1931,40 @@ void StorageManager_stopLog() {
     if (!BdqLogWriter::end(endInfo)) {
       STOR_LOGW("BDQ writer end failed for %s\n", s_currentLogPath.c_str());
     }
+  } else if (isBdqV2Format_()) {
+    const LoggingManager::RuntimeStats stats = LoggingManager::runtimeStats();
+    BdqLogEndInfo endInfo;
+    endInfo.samplesDropped = s_samplesDropped;
+    endInfo.queueMax = s_qMax;
+    endInfo.queueDepth = s_qCap;
+    endInfo.flushCount = s_flushCount;
+    endInfo.flushMaxMs = s_flushMaxMs;
+    endInfo.flushTotalMs = s_flushTotalMs;
+    endInfo.samplerLateTicks = stats.samplerLateTicks;
+    endInfo.samplerLateMaxLagMs = stats.samplerLateMaxLagMs;
+    endInfo.samplerLateMaxLagUs = stats.samplerLateMaxLagUs;
+    endInfo.samplerWakeups = stats.samplerWakeups;
+    endInfo.samplerLateOverTenPercent = stats.samplerLateOverTenPercent;
+    endInfo.missedSampleSlots = stats.missedSampleSlots;
+    endInfo.samplerWakeLagUs = &stats.samplerWakeLagUs;
+    endInfo.sampleOnceUs = &stats.sampleOnceUs;
+    endInfo.sensorSampleUs = &stats.sensorSampleUs;
+    endInfo.enqueueUs = &stats.enqueueUs;
+    endInfo.storageTiming = &s_storageTiming;
+    endInfo.externalAdcTiming = &AnalogInputManager::timingStats();
+    endInfo.sensorTiming = &SensorManager::timingStats();
+    endInfo.i2cSchedulerTiming = &I2CBusScheduler::timingStats();
+    endInfo.boardProfile = board::gBoard;
+    const String summary = buildBdqV2FinalSummary_(endInfo);
+    if (!summary.length() ||
+        !s_bdqV2Writer.end(summary.c_str(), summary.length())) {
+      STOR_LOGW("BDQ v2 writer end failed for %s\n", s_currentLogPath.c_str());
+    }
   }
 
   logFileMMC.close();
 
-  if (!isCompactBinaryFormat_() && s_currentLogPath.length() && !ConfigManager::get().omitMetadata) {
+  if (!isBinaryFormat_() && s_currentLogPath.length() && !ConfigManager::get().omitMetadata) {
     const String generatedAtLocal = isoLocalFromEpoch_(RTCManager_getEpoch());
     const LoggingManager::RuntimeStats stats = LoggingManager::runtimeStats();
     LogMetadataContext metaCtx;
@@ -1488,7 +1989,11 @@ void StorageManager_stopLog() {
     metaCtx.bufferSize = bufferSize;
     metaCtx.samplerLateTicks = stats.samplerLateTicks;
     metaCtx.samplerLateMaxLagMs = stats.samplerLateMaxLagMs;
+    metaCtx.samplerLateMaxLagUs = stats.samplerLateMaxLagUs;
+    metaCtx.samplerWakeups = stats.samplerWakeups;
+    metaCtx.samplerLateOverTenPercent = stats.samplerLateOverTenPercent;
     metaCtx.missedSampleSlots = stats.missedSampleSlots;
+    metaCtx.samplerWakeLagUs = &stats.samplerWakeLagUs;
     metaCtx.sampleOnceUs = &stats.sampleOnceUs;
     metaCtx.sensorSampleUs = &stats.sensorSampleUs;
     metaCtx.enqueueUs = &stats.enqueueUs;
@@ -1505,7 +2010,7 @@ void StorageManager_stopLog() {
     } else {
       STOR_LOGW("Failed to write complete log metadata for %s\n", s_currentLogPath.c_str());
     }
-  } else if (!isCompactBinaryFormat_() && s_currentLogPath.length()) {
+  } else if (!isBinaryFormat_() && s_currentLogPath.length()) {
     STOR_LOGI("Log metadata omitted by config\n");
   }
 
@@ -1749,7 +2254,40 @@ void StorageManager_loop() {
     }
   }
 
-  // 1) Drain queued samples into the CSV staging buffer (backlog-aware)
+  if (loggingActive && isBdqV2Format_()) {
+    const uint32_t drainStartUs = micros();
+    uint16_t chunksWritten = 0;
+    while (s_bdqV2Writer.hasPendingData()) {
+      if (!drainOneBdqV2Chunk_()) break;
+      ++chunksWritten;
+      if ((uint32_t)(micros() - drainStartUs) >= 5000u) break;
+    }
+#if BODAQS_TIMING_INSTRUMENTATION
+    if (chunksWritten != 0) {
+      ++s_storageTiming.drainLoops;
+      s_storageTiming.drainRows += chunksWritten;
+      TimingStats_record(
+          s_storageTiming.drainLoopUs,
+          static_cast<uint32_t>(micros() - drainStartUs));
+    }
+#endif
+    if (now - lastFlush >= 5000) {
+      const uint32_t flushStartMs = millis();
+      if (g_sdTrackEnabled) g_sdWriteSinceLastSample = true;
+      if (s_bdqV2Writer.flush()) {
+        const uint32_t durationMs = millis() - flushStartMs;
+        ++s_flushCount;
+        s_flushTotalMs += durationMs;
+        if (durationMs > s_flushMaxMs) s_flushMaxMs = durationMs;
+      } else {
+        ++s_storageWriteFailures;
+      }
+      lastFlush = now;
+    }
+    return;
+  }
+
+  // 1) Drain queued samples into the CSV/v1 staging buffer (backlog-aware)
   if (loggingActive) {
     // Drain until queue empty OR we spend our time budget this loop.
     // This makes the consumer much more resilient if the main loop hiccups.

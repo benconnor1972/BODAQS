@@ -130,12 +130,16 @@ struct I2CBusSchedulerTimingStats {
     uint32_t rowReused = 0;
     uint32_t rowNoSample = 0;
     uint32_t acquireFailStreakMax = 0;
+    uint32_t serviceDeadlineMisses = 0;
+    uint32_t missedServiceSlots = 0;
+    uint32_t maximumStartLatenessUs = 0;
     uint32_t rowReuseStreakMax = 0;
     uint32_t rowNoSampleStreakMax = 0;
     TimingSummary acquireUs;
     TimingSummary rowAgeUs;
   };
 
+  uint64_t sessionDurationUs = 0;
   uint8_t clientCount = 0;
   BusStats bus[kMaxBuses];
   ClientStats client[kMaxClients];

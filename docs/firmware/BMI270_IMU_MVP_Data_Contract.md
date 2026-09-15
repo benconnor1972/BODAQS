@@ -1,8 +1,9 @@
 # BMI270 IMU MVP Data Contract
 
 - Status: Accepted
-- Contract ID: bodaqs.bmi270_imu_mvp.v3
-- Scope: Normative data contract for the accepted BMI270 IMU MVP plan
+- Contract ID: bodaqs.bmi270_imu_mvp.v4
+- Scope: Normative data contract for the accepted BMI270 IMU MVP plan and its
+  high-rate I2C characterization extension
 - Related plan: [BMI270 IMU MVP Implementation Plan](BMI270_IMU_MVP_Implementation_Plan.md)
 
 ## 1. Purpose
@@ -10,6 +11,10 @@
 This contract fixes the externally observable data and configuration semantics needed before BMI270 acquisition is implemented. Phase 2 and later code may change internal structures, but must not change these meanings without revising the contract ID and recording the revision in session metadata.
 
 The MVP stores sensor-native evidence. Mounting transforms, scaling, calibration, and orientation are derived operations; they do not replace the raw log.
+
+Revision v4 retains the v3 `orientation_200` semantics and adds named 400, 800,
+and 1600 sample/s profiles plus an independently configurable FIFO service
+rate. Files carrying v1-v3 contract IDs retain their original interpretation.
 
 ## 2. Reference implementation
 
@@ -40,7 +45,7 @@ Raw columns remain in BMI270 sensor-native axes. The transform is stored as meta
 
 For a frame-mounted IMU, `body_local` coincides with the bicycle body frame. For steering and unsprung installations, a static installation transform does not account for steering or suspension articulation; transforming those values into `bike_body` requires additional post-processing evidence.
 
-## 4. orientation_200 profile
+## 4. Native acquisition profiles
 
 The named orientation_200 profile expands to:
 
@@ -75,6 +80,21 @@ reason. Invalid configuration remains a start-blocking error.
 
 The initial gyroscope noise-performance choice follows the Bosch example default and is deliberately recorded. Bench data may justify a revised named profile; it must not silently alter orientation_200.
 
+The v4 high-rate profiles change only the accelerometer and gyroscope ODR from
+the table above:
+
+| Profile | Accel ODR | Gyro ODR | Sensor ticks/sample |
+|---|---:|---:|---:|
+| `orientation_200` | 200 Hz | 200 Hz | 128 |
+| `orientation_400` | 400 Hz | 400 Hz | 64 |
+| `orientation_800` | 800 Hz | 800 Hz | 32 |
+| `orientation_1600` | 1600 Hz | 1600 Hz | 16 |
+
+`fifo_poll_rate_hz` independently selects FIFO service at 25, 50, 100, 200,
+or 400 Hz; it does not change native sampling. Higher-rate profiles are
+experimental until the target wiring has been characterized using the
+[high-rate I2C test plan](BMI270_High_Rate_I2C_Testing.md).
+
 ## 5. Scale contract
 
 Raw accelerometer and gyroscope values are signed 16-bit counts.
@@ -101,19 +121,21 @@ The Phase 3 implementation reads die temperature independently at 10 Hz and hold
 
 ## 6. Row and channel contract
 
-The IMU native rate is 200 Hz. Full native output uses a 500 Hz logger row
-rate. A user selects `max_output_rate_hz`, the maximum acceptable stored IMU
+The IMU native rate is selected by its named profile. BDQ v2 stores each IMU in
+an independent stream at that full native rate. In legacy CSV and BDQ v1, a
+user selects `max_output_rate_hz`, the maximum acceptable stored sparse-row IMU
 rate, rather than an exact rate. At log start the firmware resolves the highest
 supported output rate at or below that maximum for the **effective** logger
 rate (after analogue-channel throttling). A session may therefore retain every
 Nth native frame without refusing a valid low-rate log. The current sparse-row
-adapter requires at least twice the emitted IMU rate (and 500 Hz for the full
-200 Hz stream); this is an adapter limit, not a future native-stream limit.
+adapter requires at least twice the emitted IMU rate (and 500 Hz for a full
+200 Hz `orientation_200` stream); this is an adapter limit, not an IMU limit.
 
 - Each successfully queued output sample is emitted into exactly one logger row.
 - In full-output mode every native sample is queued. In decimated-output mode,
   parsing, FIFO timing, temperature observation, and startup observation remain
-  at 200 Hz, while only every declared Nth native sample is queued.
+  at the selected native rate, while only every declared Nth native sample is
+  queued.
 - sample_valid is 1 only when that row contains a new native IMU sample.
 - No IMU sample is repeated to fill later rows.
 - An invalid row contains the placeholders specified below.
@@ -211,7 +233,7 @@ BMI270 sensor time is a 24-bit counter with a nominal 39.0625 microsecond tick a
 Firmware:
 
 1. stores an estimated low-24-bit BMI270 tick for every valid sample when an anchor or valid continuation is available;
-2. treats the FIFO sensor-time control frame as a raw observation taken when the FIFO empties, then aligns sample ticks to the 200 Hz grid at 128-tick intervals;
+2. treats the FIFO sensor-time control frame as a raw observation taken when the FIFO empties, then aligns sample ticks to the configured native grid (128, 64, 32, or 16 ticks/sample at 200, 400, 800, or 1600 Hz);
 3. marks back-filled/interpolated values with SENSOR_TIME_ESTIMATED;
 4. correlates the raw sensor-time observation with the sensor-time frame's byte position within the host-observed FIFO transfer;
 5. estimates sample_age_us as:
@@ -225,7 +247,7 @@ The host:
 1. filters valid rows;
 2. unwraps sensor_time_u24 and seq_u24 modulo 2^24;
 3. checks both for gaps, duplicates, reversals, and inconsistent increments;
-4. reconstructs the nominal 200 Hz native timeline from sensor ticks;
+4. reconstructs the configured nominal native timeline from sensor ticks;
 5. fits the native timeline to acquisition-age-corrected logger observations for each continuous sensor-clock epoch;
 6. uses the fitted logger-clock timeline as canonical analysis time while preserving the nominal native timeline;
 7. treats the logger row time as an emission observation, not the sample time.

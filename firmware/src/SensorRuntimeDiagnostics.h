@@ -97,6 +97,10 @@ struct SensorRuntimeDiagnostics {
   SensorRuntimeEvent events[kMaxEvents];
 
   bool hasImuSession = false;
+  uint16_t imuNativeRateHz = 0;
+  uint16_t imuOutputRateHz = 0;
+  uint16_t imuFifoPollRateHz = 0;
+  uint32_t imuQueueCoverageMs = 0;
   uint64_t imuDrainCalls = 0;
   uint64_t imuDrainPasses = 0;
   uint64_t imuEmptyPasses = 0;
@@ -126,6 +130,7 @@ struct SensorRuntimeDiagnostics {
   uint64_t imuIocOffsetReadAttempts = 0;
   uint64_t imuIocOffsetReadFailures = 0;
   uint64_t imuIocOffsetSnapshotDrops = 0;
+  uint64_t imuBdqV2TimingObservationDrops = 0;
   uint64_t imuOperationalValidationAttempts = 0;
   uint64_t imuOperationalValidationFailures = 0;
   uint64_t imuSessionStartValidationAttempts = 0;

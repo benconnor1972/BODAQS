@@ -734,7 +734,10 @@ void registerConfigRoutes(WebServer& srv) {
     html += dis; html += F("> BODAQS CSV</label> ");
     html += F("<label><input type='radio' name='log_format' value='bodaqs_compact_binary'");
     if (cfg.logFormat == LogFormat::BodaqsCompactBinary) html += F(" checked");
-    html += dis; html += F("> BODAQS compact binary</label><br>");
+    html += dis; html += F("> BODAQS compact binary</label> ");
+    html += F("<label><input type='radio' name='log_format' value='bodaqs_multi_stream_binary'");
+    if (cfg.logFormat == LogFormat::BodaqsMultiStreamBinary) html += F(" checked");
+    html += dis; html += F("> BODAQS multi-stream binary (experimental)</label><br>");
 
     html += F("<label><input type='checkbox' name='omit_metadata' value='true'");
     if (cfg.omitMetadata) html += F(" checked");

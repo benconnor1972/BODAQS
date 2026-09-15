@@ -11,6 +11,7 @@
 #include "I2CBusScheduler.h"
 #include "BMI270ImuSensor.h"
 #include "BMI270Profile.h"
+#include "BdqV2Catalog.h"
 #include "LoggerLimits.h"
 #include <cstring>
 #include "BoardSelect.h"
@@ -94,10 +95,11 @@ namespace {
     out += token;
   }
 
-  static uint16_t countColumns() {
+  static uint16_t countColumns(bool excludeBdqV2NativeStreams = false) {
     uint16_t total = 0;
     for (auto* s : s_list) {
       if (!s || s->muted()) continue;
+      if (excludeBdqV2NativeStreams && s->usesBdqV2NativeStream()) continue;
       total += s->columnCount();
     }
     return total;
@@ -443,7 +445,8 @@ bool validateLoggingStart(
       ++liveBmi270Count;
     }
   }
-  if (liveBmi270Count > 1) {
+  if (liveBmi270Count > 1 &&
+      cfg.logFormat != LogFormat::BodaqsMultiStreamBinary) {
     if (error && errorCapacity) {
       snprintf(error, errorCapacity, "the MVP supports one active BMI270 IMU");
     }
@@ -455,7 +458,9 @@ bool validateLoggingStart(
     if (!sensor->prepareLoggingStart(cfg, effectiveRateHz, error, errorCapacity)) return false;
     if (!sensor->validateLoggingStart(cfg, effectiveRateHz, error, errorCapacity)) return false;
   }
-  const uint16_t columnCount = dynamicColumnCount();
+  const bool excludeNativeStreams =
+      cfg.logFormat == LogFormat::BodaqsMultiStreamBinary;
+  const uint16_t columnCount = dynamicColumnCount(excludeNativeStreams);
   if (columnCount > LoggerLimits::kMaxDynamicColumns) {
     if (error && errorCapacity) {
       snprintf(error, errorCapacity,
@@ -574,8 +579,8 @@ uint8_t activeCount() {
   return active;
 }
 
-uint16_t dynamicColumnCount() {
-  return countColumns();
+uint16_t dynamicColumnCount(bool excludeBdqV2NativeStreams) {
+  return countColumns(excludeBdqV2NativeStreams);
 }
 
 uint16_t synchronousMaxSampleRateHz() {
@@ -623,7 +628,11 @@ String buildHeaderString(bool humanTs) {
   return out;
 }
 
-void sampleValues(float* out, uint16_t cap, uint16_t& written) {
+void sampleValues(
+    float* out,
+    uint16_t cap,
+    uint16_t& written,
+    bool excludeBdqV2NativeStreams) {
     written = 0;
     if (!out || cap == 0) return;
     AnalogInputManager::beginSample();
@@ -633,6 +642,7 @@ void sampleValues(float* out, uint16_t cap, uint16_t& written) {
     for (uint8_t sensorIndex = 0; sensorIndex < MAX_SENSORS; ++sensorIndex) {
         auto* s = s_list[sensorIndex];
         if (!s || s->muted()) continue;
+        if (excludeBdqV2NativeStreams && s->usesBdqV2NativeStream()) continue;
 
         const uint8_t need = s->columnCount();
         if (!need) continue;
@@ -718,12 +728,16 @@ uint16_t readSuspensionPreview(PreviewMode mode, PreviewValue* out, uint16_t max
   return total;
 }
 
-uint16_t describeSensorColumns(SensorColumnDescriptor* out, uint16_t maxOut) {
+uint16_t describeSensorColumns(
+    SensorColumnDescriptor* out,
+    uint16_t maxOut,
+    bool excludeBdqV2NativeStreams) {
   uint16_t total = 0;
   uint16_t written = 0;
 
   for (auto* s : s_list) {
     if (!s || s->muted()) continue;
+    if (excludeBdqV2NativeStreams && s->usesBdqV2NativeStream()) continue;
 
     const uint8_t cols = s->columnCount();
     for (uint8_t i = 0; i < cols; ++i) {
@@ -741,11 +755,15 @@ uint16_t describeSensorColumns(SensorColumnDescriptor* out, uint16_t maxOut) {
   return total;
 }
 
-bool describeSensorColumnAt(uint16_t columnIndex, SensorColumnDescriptor& out) {
+bool describeSensorColumnAt(
+    uint16_t columnIndex,
+    SensorColumnDescriptor& out,
+    bool excludeBdqV2NativeStreams) {
   uint16_t logicalIndex = 0;
 
   for (auto* s : s_list) {
     if (!s || s->muted()) continue;
+    if (excludeBdqV2NativeStreams && s->usesBdqV2NativeStream()) continue;
 
     const uint8_t cols = s->columnCount();
     for (uint8_t i = 0; i < cols; ++i) {
@@ -805,6 +823,29 @@ bool describeRuntimeDiagnosticsAt(uint8_t sensorIndex, SensorRuntimeDiagnostics&
   out = SensorRuntimeDiagnostics{};
   Sensor* sensor = get(sensorIndex);
   return sensor && sensor->describeRuntimeDiagnostics(out);
+}
+
+uint16_t describeBdqV2Streams(
+    BdqV2StreamDescriptor* out,
+    uint16_t maxOut,
+    uint16_t firstStreamId) {
+  if (firstStreamId == 0) return 0;
+  uint16_t total = 0;
+  uint16_t written = 0;
+  uint32_t nextStreamId = firstStreamId;
+
+  for (auto* sensor : s_list) {
+    if (!sensor || sensor->muted() || nextStreamId > UINT16_MAX) continue;
+    BdqV2StreamDescriptor descriptor;
+    if (!sensor->describeBdqV2Stream(
+            static_cast<uint16_t>(nextStreamId), descriptor)) {
+      continue;
+    }
+    if (out && written < maxOut) out[written++] = descriptor;
+    ++total;
+    ++nextStreamId;
+  }
+  return total;
 }
 
 uint16_t describeSensorColumnRawFlags(bool* out, uint16_t maxOut) {

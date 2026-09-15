@@ -42,6 +42,20 @@ int runBMI270ProfileTests() {
     check(!BMI270Profile::matchesOrientation200(config), "gyroscope noise mode mismatch rejected");
 
     check(BMI270Profile::kOdrHz == 200, "native ODR remains 200 Hz");
+    check(BMI270Profile::find("orientation_200") != nullptr &&
+              BMI270Profile::find("orientation_200")->odrHz == 200,
+          "legacy orientation profile remains the default");
+    check(BMI270Profile::find("orientation_1600") != nullptr &&
+              BMI270Profile::find("orientation_1600")->odrCode == 0x0C,
+          "1600 Hz native profile resolves to the Bosch ODR code");
+    check(BMI270Profile::find("orientation_3200") == nullptr,
+          "unsupported combined accel/gyro profile is rejected");
+    check(BMI270Profile::sensorTimeTicksPerSample(400) == 64 &&
+              BMI270Profile::sensorTimeTicksPerSample(800) == 32 &&
+              BMI270Profile::sensorTimeTicksPerSample(1600) == 16,
+          "native profiles divide the 25.6 kHz sensor clock exactly");
+    check(BMI270Profile::matches(BMI270Profile::expected(800), 800),
+          "rate-specific expected configuration validates");
     check(BMI270Profile::kLoggerRateHz == 500, "logger rate remains 500 Hz");
     check(BMI270Profile::kInitializationAttempts == 5, "initialization retry count remains bounded");
     check(BMI270Profile::minimumSparseRowLoggerRateHz(200) == 500,
@@ -62,6 +76,9 @@ int runBMI270ProfileTests() {
           "500 Hz logger resolves full 200 Hz IMU output");
     check(BMI270Profile::resolveSparseRowOutputRateHz(50, 100) == 50,
           "user maximum output rate constrains the resolved rate");
+    check(BMI270Profile::resolveSparseRowOutputRateHz(1600, 200, 500) == 200 &&
+              BMI270Profile::outputDecimationFactor(1600, 200) == 8,
+          "legacy rows can decimate a high-rate native profile explicitly");
 
     BMI270MountTransform mount;
     check(BMI270Mount::parseTransform("+x", "+y", "+z", mount),

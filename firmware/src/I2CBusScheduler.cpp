@@ -54,6 +54,9 @@ struct ClientSlot {
   uint32_t rowNoSample = 0;
   uint32_t acquireFailStreak = 0;
   uint32_t acquireFailStreakMax = 0;
+  uint32_t serviceDeadlineMisses = 0;
+  uint32_t missedServiceSlots = 0;
+  uint32_t maximumStartLatenessUs = 0;
   uint32_t rowReuseStreak = 0;
   uint32_t rowReuseStreakMax = 0;
   uint32_t rowNoSampleStreak = 0;
@@ -64,6 +67,8 @@ ClientSlot s_clients[kMaxClients];
 std::atomic<uint32_t> s_lastSuccessfulAcquireEndUs[kMaxClients];
 TimingSummary s_busAcquireUs[kMaxBuses];
 I2CBusSchedulerTimingStats s_timingSnapshot;
+uint64_t s_sessionStartUs = 0;
+uint64_t s_sessionEndUs = 0;
 
 #if defined(ESP32)
 TaskHandle_t s_tasks[kMaxBuses] = { nullptr, nullptr };
@@ -121,6 +126,12 @@ void buildTimingSnapshot_() {
   // large. Callers only invoke it while scheduler tasks are inactive.
   memset(&s_timingSnapshot, 0, sizeof(s_timingSnapshot));
   I2CBusSchedulerTimingStats& snapshot = s_timingSnapshot;
+  const uint64_t snapshotEndUs = s_sessionEndUs != 0
+      ? s_sessionEndUs
+      : static_cast<uint64_t>(esp_timer_get_time());
+  if (s_sessionStartUs != 0 && snapshotEndUs >= s_sessionStartUs) {
+    snapshot.sessionDurationUs = snapshotEndUs - s_sessionStartUs;
+  }
   for (uint8_t bus = 0; bus < kMaxBuses; ++bus) {
     auto& b = snapshot.bus[bus];
     const board::I2CProfile* profile = I2CManager::profile(bus);
@@ -156,6 +167,9 @@ void buildTimingSnapshot_() {
     stats.rowReused = slot.rowReused;
     stats.rowNoSample = slot.rowNoSample;
     stats.acquireFailStreakMax = slot.acquireFailStreakMax;
+    stats.serviceDeadlineMisses = slot.serviceDeadlineMisses;
+    stats.missedServiceSlots = slot.missedServiceSlots;
+    stats.maximumStartLatenessUs = slot.maximumStartLatenessUs;
     stats.rowReuseStreakMax = slot.rowReuseStreakMax;
     stats.rowNoSampleStreakMax = slot.rowNoSampleStreakMax;
     if (stats.busIndex < kMaxBuses) ++snapshot.bus[stats.busIndex].clientCount;
@@ -179,6 +193,9 @@ void resetRuntimeStats_() {
     slot.rowNoSample = 0;
     slot.acquireFailStreak = 0;
     slot.acquireFailStreakMax = 0;
+    slot.serviceDeadlineMisses = 0;
+    slot.missedServiceSlots = 0;
+    slot.maximumStartLatenessUs = 0;
     slot.rowReuseStreak = 0;
     slot.rowReuseStreakMax = 0;
     slot.rowNoSampleStreak = 0;
@@ -186,6 +203,8 @@ void resetRuntimeStats_() {
     s_lastSuccessfulAcquireEndUs[i].store(0, std::memory_order_release);
   }
   s_timingSnapshot = I2CBusSchedulerTimingStats{};
+  s_sessionStartUs = 0;
+  s_sessionEndUs = 0;
 }
 
 bool busHasActiveClients_(uint8_t bus) {
@@ -267,6 +286,22 @@ void taskFn_(void* arg) {
 
     I2CAsyncClient* client = slot->client;
     const uint32_t periodUs = periodUsFor_(client);
+    const uint64_t scheduledUs = slot->nextDueUs;
+    const uint64_t acquireStartUs = static_cast<uint64_t>(esp_timer_get_time());
+    const uint64_t startLatenessUs = acquireStartUs > scheduledUs
+        ? acquireStartUs - scheduledUs
+        : 0;
+#if BODAQS_TIMING_INSTRUMENTATION
+    const uint32_t boundedStartLatenessUs = startLatenessUs > UINT32_MAX
+        ? UINT32_MAX
+        : static_cast<uint32_t>(startLatenessUs);
+    if (boundedStartLatenessUs > slot->maximumStartLatenessUs) {
+      slot->maximumStartLatenessUs = boundedStartLatenessUs;
+    }
+    if (periodUs != 0 && startLatenessUs >= periodUs) {
+      ++slot->serviceDeadlineMisses;
+    }
+#endif
     const uint32_t t0 = micros();
     const bool ok = client->asyncAcquire();
     const uint32_t acquireUs = (uint32_t)(micros() - t0);
@@ -300,6 +335,10 @@ void taskFn_(void* arg) {
     const uint64_t afterUs = (uint64_t)esp_timer_get_time();
     if (periodUs > 0 && nextDue <= afterUs) {
       const uint64_t missed = ((afterUs - nextDue) / periodUs) + 1ULL;
+#if BODAQS_TIMING_INSTRUMENTATION
+      const uint64_t room = UINT32_MAX - slot->missedServiceSlots;
+      slot->missedServiceSlots += static_cast<uint32_t>(missed > room ? room : missed);
+#endif
       nextDue += missed * (uint64_t)periodUs;
     }
     slot->nextDueUs = nextDue;
@@ -371,6 +410,10 @@ const I2CBusSchedulerTimingStats& timingStats() {
 
 void start() {
 #if defined(ESP32)
+  if (!schedulerTasksActive_()) {
+    s_sessionStartUs = static_cast<uint64_t>(esp_timer_get_time());
+    s_sessionEndUs = 0;
+  }
   for (uint8_t bus = 0; bus < kMaxBuses; ++bus) {
     if (s_tasks[bus]) continue;
     if (!busHasActiveClients_(bus)) continue;
@@ -414,6 +457,7 @@ void stop() {
   }
 
   if (!schedulerTasksActive_()) {
+    s_sessionEndUs = static_cast<uint64_t>(esp_timer_get_time());
     buildTimingSnapshot_();
   } else {
     I2CSCHED_LOGW("scheduler task did not stop within %lu ms; retaining last coherent timing snapshot\n",

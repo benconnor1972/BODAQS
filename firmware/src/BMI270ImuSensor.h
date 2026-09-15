@@ -4,6 +4,8 @@
 #include <stdint.h>
 
 #include "BMI270FifoAcquisition.h"
+#include "BMI270BdqV2.h"
+#include "BdqV2Catalog.h"
 #include "Sensor.h"
 #include "SensorParams.h"
 
@@ -27,6 +29,9 @@ public:
     // User intent: the highest rate that may be materialised into the current
     // sparse primary-row log.  The effective rate is resolved at log start.
     uint16_t maximumOutputRateHz = 200;
+    // FIFO service cadence is independent of the sensor ODR. Lower rates
+    // amortize I2C transaction overhead by reading larger FIFO batches.
+    uint16_t fifoPollRateHz = 200;
     BMI270GyroBiasMode gyroBiasMode = BMI270GyroBiasMode::Off;
     bool iocDiagnostics = false;
     char calibrationRef[32] = "";
@@ -64,6 +69,10 @@ public:
   bool startLoggingSession(char* error, size_t errorCapacity) override;
   void onLoggingStop() override;
   size_t pendingLoggingRows() const override;
+  bool describeBdqV2Stream(
+      uint16_t streamId,
+      BdqV2StreamDescriptor& out) override;
+  bool usesBdqV2NativeStream() const override { return true; }
   bool supportsImuOrientationCalibration() const override { return true; }
   bool captureImuOrientation(
       ImuInstallationPlane plane,
@@ -83,6 +92,16 @@ public:
 private:
   static bool loadParams_(Params& out, const char* instanceName, const ParamPack& params);
   bool ensureInitialized_(char* error, size_t errorCapacity);
+  bool popBdqV2Record_(uint8_t* destination, size_t capacity);
+  static size_t pendingBdqV2Records_(const void* context);
+  static size_t pendingBdqV2Observations_(const void* context);
+  static bool popBdqV2RecordThunk_(
+      void* context,
+      uint8_t* destination,
+      size_t capacity);
+  static bool popBdqV2ObservationThunk_(
+      void* context,
+      BdqV2Format::TimeObservation& observation);
 
   Params params_;
   BMI270FifoAcquisition acquisition_;
@@ -90,4 +109,7 @@ private:
   bool initialized_ = false;
   bool sessionAvailable_ = false;
   uint32_t lastInitializationAttemptUptimeMs_ = 0;
+  BMI270BdqV2::TimingObservationSampler bdqV2TimingSampler_;
+  FixedSpscQueue<BdqV2Format::TimeObservation, 8> bdqV2Observations_;
+  uint32_t bdqV2TimingObservationDrops_ = 0;
 };

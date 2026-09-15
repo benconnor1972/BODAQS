@@ -57,10 +57,18 @@ struct BMI270ImuSample {
   uint32_t sequence = 0;
 
   // Best estimate of the native sample time in the ESP monotonic clock
-  // domain. FIFO batches are anchored at the I2C acquisition midpoint and
-  // older samples are projected backwards using the 24-bit sensor clock.
+  // domain. FIFO batches are anchored where the sensor-time frame occurs in
+  // the I2C transfer and older samples are projected backwards using the
+  // 24-bit sensor clock.
   uint64_t acquisitionAnchorUs = 0;
-  uint32_t acquisitionSpanUs = 0;
+  // Conservative asymmetric bounds around acquisitionAnchorUs. Keeping each
+  // side separately preserves the actual transfer window when the FIFO's
+  // sensor-time frame is not centred in the I2C transaction.
+  uint16_t acquisitionBeforeUs = 0;
+  uint16_t acquisitionAfterUs = 0;
+  // Identifies samples parsed from the same FIFO transfer. This is internal
+  // acquisition evidence used to select sparse BDQ v2 timing observations.
+  uint32_t acquisitionBatchId = 0;
 };
 
 static_assert(BMI270ImuStatus::kFifoDiscontinuityBefore == 0x0001);

@@ -28,7 +28,11 @@ struct LogMetadataContext {
   uint32_t bufferSize = 0;
   uint32_t samplerLateTicks = 0;
   uint32_t samplerLateMaxLagMs = 0;
+  uint32_t samplerLateMaxLagUs = 0;
+  uint32_t samplerWakeups = 0;
+  uint32_t samplerLateOverTenPercent = 0;
   uint32_t missedSampleSlots = 0;
+  const TimingSummary* samplerWakeLagUs = nullptr;
   const TimingSummary* sampleOnceUs = nullptr;
   const TimingSummary* sensorSampleUs = nullptr;
   const TimingSummary* enqueueUs = nullptr;

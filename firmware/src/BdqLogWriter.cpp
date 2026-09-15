@@ -1,5 +1,6 @@
 #include "BdqLogWriter.h"
 
+#include <limits.h>
 #include <math.h>
 #include <string.h>
 #include <stdlib.h>
@@ -238,6 +239,19 @@ private:
 
   uint8_t buffer_[1024];
   size_t used_ = 0;
+};
+
+class StringJsonOutput final : public JsonOutput {
+public:
+  explicit StringJsonOutput(String& output) : output_(output) {}
+
+  bool append(const char* text, size_t length) override {
+    if (!text || length > UINT_MAX) return false;
+    return output_.concat(text, static_cast<unsigned int>(length));
+  }
+
+private:
+  String& output_;
 };
 
 void appendJsonEscaped_(JsonOutput& out, const char* text) {
@@ -643,6 +657,7 @@ void appendI2CSchedulerTiming_(JsonOutput& out,
   appendKey_(out, depth, "i2c_scheduler_timing");
   out += F("{\n");
   appendKeyUInt_(out, depth + 1, "client_count", stats.clientCount);
+  appendKeyUInt_(out, depth + 1, "session_duration_us", stats.sessionDurationUs);
 
   appendKey_(out, depth + 1, "buses");
   out += F("{\n");
@@ -660,6 +675,14 @@ void appendI2CSchedulerTiming_(JsonOutput& out,
     appendKeyBool_(out, depth + 3, "running", b.running);
     appendKeyUInt_(out, depth + 3, "client_count", b.clientCount);
     appendKeyUInt_(out, depth + 3, "hz", b.hz);
+    appendKeyFloat_(
+        out,
+        depth + 3,
+        "measured_bus_occupancy_percent",
+        stats.sessionDurationUs
+            ? static_cast<float>(100.0 * static_cast<double>(b.acquireLoopUs.totalUs) /
+                                 static_cast<double>(stats.sessionDurationUs))
+            : 0.0f);
     appendTimingSummary_(out, depth + 3, "acquire_loop_us", b.acquireLoopUs, false);
     appendIndent_(out, depth + 2);
     out += F("}");
@@ -690,6 +713,18 @@ void appendI2CSchedulerTiming_(JsonOutput& out,
     appendKeyUInt_(out, depth + 3, "period_us", c.periodUs);
     appendKeyUInt_(out, depth + 3, "acquire_ok", c.acquireOk);
     appendKeyUInt_(out, depth + 3, "acquire_fail", c.acquireFail);
+    appendKeyFloat_(
+        out,
+        depth + 3,
+        "achieved_service_rate_hz",
+        stats.sessionDurationUs
+            ? static_cast<float>(
+                  static_cast<double>(c.acquireOk + c.acquireFail) * 1000000.0 /
+                  static_cast<double>(stats.sessionDurationUs))
+            : 0.0f);
+    appendKeyUInt_(out, depth + 3, "service_deadline_misses", c.serviceDeadlineMisses);
+    appendKeyUInt_(out, depth + 3, "missed_service_slots", c.missedServiceSlots);
+    appendKeyUInt_(out, depth + 3, "maximum_start_lateness_us", c.maximumStartLatenessUs);
     appendKeyUInt_(out, depth + 3, "row_uses", c.rowUses);
     appendKeyUInt_(out, depth + 3, "row_fresh", c.rowFresh);
     appendKeyUInt_(out, depth + 3, "row_reused", c.rowReused);
@@ -878,6 +913,10 @@ void appendRuntimeDiagnostics_(JsonOutput& out, uint8_t depth, bool comma = true
     if (diagnostics.hasImuSession) {
       appendKey_(out, depth + 3, "imu_session");
       out += F("{\n");
+      appendKeyUInt_(out, depth + 4, "native_rate_hz", diagnostics.imuNativeRateHz);
+      appendKeyUInt_(out, depth + 4, "output_rate_hz", diagnostics.imuOutputRateHz);
+      appendKeyUInt_(out, depth + 4, "fifo_poll_rate_hz", diagnostics.imuFifoPollRateHz);
+      appendKeyUInt_(out, depth + 4, "queue_coverage_ms", diagnostics.imuQueueCoverageMs);
       appendKeyUInt_(out, depth + 4, "drain_calls", diagnostics.imuDrainCalls);
       appendKeyUInt_(out, depth + 4, "drain_passes", diagnostics.imuDrainPasses);
       appendKeyUInt_(out, depth + 4, "empty_passes", diagnostics.imuEmptyPasses);
@@ -906,6 +945,7 @@ void appendRuntimeDiagnostics_(JsonOutput& out, uint8_t depth, bool comma = true
       appendKeyUInt_(out, depth + 4, "explicit_queue_discards", diagnostics.imuExplicitQueueDiscards);
       appendKeyUInt_(out, depth + 4, "temperature_reads", diagnostics.imuTemperatureReads);
       appendKeyUInt_(out, depth + 4, "temperature_read_failures", diagnostics.imuTemperatureReadFailures);
+      appendKeyUInt_(out, depth + 4, "bdq_v2_timing_observation_drops", diagnostics.imuBdqV2TimingObservationDrops);
       appendKeyUInt_(out, depth + 4, "operational_validation_attempts", diagnostics.imuOperationalValidationAttempts);
       appendKeyUInt_(out, depth + 4, "operational_validation_failures", diagnostics.imuOperationalValidationFailures);
       appendKeyUInt_(out, depth + 4, "session_start_validation_attempts", diagnostics.imuSessionStartValidationAttempts);
@@ -1427,14 +1467,18 @@ bool buildColumnLayout_() {
   return s_frameSize > 6;
 }
 
-bool serializeMetadataJson_(JsonOutput& out, const BdqLogSessionInfo& info) {
+bool serializeMetadataJson_(
+    JsonOutput& out,
+    const BdqLogSessionInfo& info,
+    bool multiStream = false,
+    uint16_t streamCount = 0) {
   const LoggerConfig* cfg = info.config;
   const String loggerIdText = cfg ? ConfigManager::loggerId(*cfg) : String("unknown");
   const char* loggerId = loggerIdText.c_str();
 
   out += F("{\n");
-  appendKeyString_(out, 1, "format", "bdq.v1");
-  appendKeyString_(out, 1, "format_name", "BDQLOG v1");
+  appendKeyString_(out, 1, "format", multiStream ? "bdq.v2" : "bdq.v1");
+  appendKeyString_(out, 1, "format_name", multiStream ? "BDQLOG v2" : "BDQLOG v1");
   appendKeyString_(out, 1, "device_id", loggerId && *loggerId ? loggerId : "unknown");
   appendKeyString_(out, 1, "firmware_name", FirmwareInfo::name());
   appendKeyString_(out, 1, "firmware_version", FirmwareInfo::version());
@@ -1451,6 +1495,27 @@ bool serializeMetadataJson_(JsonOutput& out, const BdqLogSessionInfo& info) {
   appendSensors_(out);
   appendDeviceConfigs_(out);
   appendImuConfigs_(out);
+  if (multiStream) {
+    appendKeyString_(out, 1, "native_stream_contract", "bodaqs.native_stream.v1");
+    appendKeyUInt_(out, 1, "stream_count", streamCount);
+    appendKey_(out, 1, "logger_monotonic_clock");
+    out += F("{\n");
+    appendKeyString_(out, 2, "clock_id", "logger_monotonic");
+    appendKeyString_(out, 2, "unit", "us");
+    appendKeyBool_(out, 2, "nondecreasing", true, false);
+    out += F("  },\n");
+    appendKey_(out, 1, "wall_clock_anchor");
+    out += F("{\n");
+    const bool wallClockAvailable =
+        info.wallClockUnixUs != 0 && info.hostMonotonicUs != 0;
+    appendKeyBool_(out, 2, "available", wallClockAvailable);
+    appendKeyUInt_(out, 2, "host_monotonic_us", info.hostMonotonicUs);
+    appendKeyUInt_(out, 2, "unix_us", info.wallClockUnixUs);
+    appendKeyUInt_(
+        out, 2, "uncertainty_us", info.wallClockUncertaintyUs);
+    appendKeyString_(out, 2, "source", wallClockAvailable ? "rtc" : "unavailable", false);
+    out += F("  },\n");
+  }
   appendKeyString_(out, 1, "log_format", cfg ? ConfigManager::logFormatKey(cfg->logFormat) : "bodaqs_compact_binary", false);
   out += F("}\n");
   return out.ok();
@@ -1856,7 +1921,12 @@ bool serializeFinalSummaryJson_(JsonOutput& out, const BdqLogEndInfo& info) {
 #if BODAQS_TIMING_INSTRUMENTATION
   appendKeyUInt_(out, 1, "sampler_late_ticks", info.samplerLateTicks);
   appendKeyUInt_(out, 1, "sampler_late_max_lag_ms", info.samplerLateMaxLagMs);
+  appendKeyUInt_(out, 1, "sampler_late_max_lag_us", info.samplerLateMaxLagUs);
+  appendKeyUInt_(out, 1, "sampler_wakeups", info.samplerWakeups);
+  appendKeyUInt_(out, 1, "sampler_late_over_10_percent", info.samplerLateOverTenPercent);
   appendKeyUInt_(out, 1, "missed_sample_slots", info.missedSampleSlots);
+
+  appendTimingSummary_(out, 1, "sampler_wake_lag_us", info.samplerWakeLagUs ? *info.samplerWakeLagUs : emptyTimingSummary_());
   const StorageTimingStats& storageTiming = info.storageTiming ? *info.storageTiming : emptyStorageTiming_();
   appendTimingSummary_(out, 1, "sample_once_us", info.sampleOnceUs ? *info.sampleOnceUs : emptyTimingSummary_());
   appendTimingSummary_(out, 1, "sensor_sample_us", info.sensorSampleUs ? *info.sensorSampleUs : emptyTimingSummary_());
@@ -1879,6 +1949,16 @@ bool serializeFinalSummaryJson_(JsonOutput& out, const BdqLogEndInfo& info) {
 } // namespace
 
 namespace BdqLogWriter {
+
+bool buildV2SessionMetadataJson(
+    const BdqLogSessionInfo& info,
+    uint16_t streamCount,
+    String& output) {
+  output = "";
+  if (streamCount == 0 || !output.reserve(4096)) return false;
+  StringJsonOutput writer(output);
+  return serializeMetadataJson_(writer, info, true, streamCount) && writer.ok();
+}
 
 bool begin(File& file, const BdqLogSessionInfo& info) {
   reset();

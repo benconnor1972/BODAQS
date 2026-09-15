@@ -43,6 +43,38 @@ const char* const kColumnSuffix[BMI270ImuSensor::kMaximumColumnCount] = {
   "gyro_ioc_offset_valid",
 };
 
+const BdqV2CatalogChannel kBdqV2Channels[] = {
+    {"sequence", "sample_sequence", "count", "uint32", 0, "diagnostic"},
+    {"native_tick", "sensor_time", "tick", "uint32", 4, "diagnostic"},
+    {"status_flags", "status", "bitfield", "uint16", 8, "diagnostic"},
+    {"accel_x_raw", "linear_acceleration_raw", "count", "int16", 12,
+     "signal", "x", "sensor_native", "accel_raw"},
+    {"accel_y_raw", "linear_acceleration_raw", "count", "int16", 14,
+     "signal", "y", "sensor_native", "accel_raw"},
+    {"accel_z_raw", "linear_acceleration_raw", "count", "int16", 16,
+     "signal", "z", "sensor_native", "accel_raw"},
+    {"gyro_x_raw", "angular_velocity_raw", "count", "int16", 18,
+     "signal", "x", "sensor_native", "gyro_raw"},
+    {"gyro_y_raw", "angular_velocity_raw", "count", "int16", 20,
+     "signal", "y", "sensor_native", "gyro_raw"},
+    {"gyro_z_raw", "angular_velocity_raw", "count", "int16", 22,
+     "signal", "z", "sensor_native", "gyro_raw"},
+    {"temperature_raw", "temperature_raw", "count", "int16", 24,
+     "diagnostic"},
+};
+
+const BdqV2CatalogStatusFlag kBdqV2StatusFlags[] = {
+    {"discontinuity_before", BMI270ImuStatus::kFifoDiscontinuityBefore},
+    {"producer_queue_drop_before", BMI270ImuStatus::kQueueDropBefore},
+    {"source_recovery_before", BMI270ImuStatus::kSensorRecoveryBefore},
+    {"timing_degraded", BMI270ImuStatus::kTimingDegraded},
+    {"native_tick_estimated", BMI270ImuStatus::kSensorTimeEstimated},
+    {"temperature_stale", BMI270ImuStatus::kTemperatureStale},
+    {"accel_near_rail", BMI270ImuStatus::kAccelNearRail},
+    {"gyro_near_rail", BMI270ImuStatus::kGyroNearRail},
+    {"output_decimated", BMI270ImuStatus::kOutputDecimated},
+};
+
 void copyField_(char* destination, size_t capacity, const char* source) {
   if (!destination || capacity == 0) return;
   if (!source) source = "";
@@ -263,7 +295,11 @@ SensorColumnStorageType storageFor_(uint8_t index) {
 BMI270ImuSensor::BMI270ImuSensor(const Params& params)
     : params_(params),
       acquisition_(params.busIndex, params.address, params.name) {
+  const BMI270Profile::NativeProfile* profile =
+      BMI270Profile::find(params_.profile);
+  if (profile) (void)acquisition_.setNativeRateHz(profile->odrHz);
   (void)acquisition_.setOutputRateHz(params_.maximumOutputRateHz);
+  (void)acquisition_.setFifoPollRateHz(params_.fifoPollRateHz);
   (void)acquisition_.setGyroBiasMode(params_.gyroBiasMode);
   acquisition_.setIocDiagnosticsEnabled(params_.iocDiagnostics);
 }
@@ -293,6 +329,7 @@ bool BMI270ImuSensor::reconfigureFromSpec(const SensorSpec& spec) {
 
   const bool reinitialize = updated.gyroBiasMode != params_.gyroBiasMode;
   if (!reinitialize) {
+    if (!acquisition_.setFifoPollRateHz(updated.fifoPollRateHz)) return false;
     params_ = updated;
     return true;
   }
@@ -303,6 +340,7 @@ bool BMI270ImuSensor::reconfigureFromSpec(const SensorSpec& spec) {
     return false;
   }
   acquisition_.setIocDiagnosticsEnabled(updated.iocDiagnostics);
+  if (!acquisition_.setFifoPollRateHz(updated.fifoPollRateHz)) return false;
   params_ = updated;
   const bool initialized = ensureInitialized_(nullptr, 0);
   if (initialized) {
@@ -479,12 +517,12 @@ bool BMI270ImuSensor::describeSensorMetadata(SensorMetadataDescriptor& out) cons
   const board::I2CProfile* busProfile = I2CManager::profile(params_.busIndex);
   imu.i2cClockHz = busProfile ? busProfile->hz : 0;
   imu.loggerRateHz = StorageManager_getSampleRateHz();
-  imu.imuRateHz = BMI270Profile::kOdrHz;
+  imu.imuRateHz = acquisition_.nativeRateHz();
   imu.maximumOutputRateHz = params_.maximumOutputRateHz;
   imu.outputRateHz = acquisition_.outputRateHz();
   imu.outputDecimationFactor = acquisition_.outputDecimationFactor();
   copyField_(imu.outputSelection, sizeof(imu.outputSelection),
-             acquisition_.outputRateHz() == BMI270Profile::kOdrHz
+             acquisition_.outputRateHz() == acquisition_.nativeRateHz()
                  ? "all_native_samples"
                  : "every_nth_native_sample");
   copyField_(imu.gyroBiasMode, sizeof(imu.gyroBiasMode),
@@ -492,7 +530,7 @@ bool BMI270ImuSensor::describeSensorMetadata(SensorMetadataDescriptor& out) cons
   imu.gyroHardwareOffsetApplied =
       params_.gyroBiasMode == BMI270GyroBiasMode::InUseOffsetCorrection;
   imu.iocDiagnosticsEnabled = params_.iocDiagnostics;
-  imu.fifoPollRateHz = BMI270FifoAcquisition::kTargetRateHz;
+  imu.fifoPollRateHz = acquisition_.fifoPollRateHz();
   imu.temperatureRateHz = BMI270FifoAcquisition::kTemperatureRateHz;
   imu.temperatureFreshnessUs = BMI270FifoAcquisition::kTemperatureFreshnessUs;
   imu.startupBiasCaptureSeconds = params_.startupBiasCaptureSeconds;
@@ -557,6 +595,10 @@ bool BMI270ImuSensor::describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out) 
   out.lastFailure = runtimeFailure_(transport.lastFailure);
 
   out.hasImuSession = true;
+  out.imuNativeRateHz = acquisition_.nativeRateHz();
+  out.imuOutputRateHz = acquisition_.outputRateHz();
+  out.imuFifoPollRateHz = acquisition_.fifoPollRateHz();
+  out.imuQueueCoverageMs = acquisition_.queueCoverageMs();
   out.imuDrainCalls = fifo.drainCalls;
   out.imuDrainPasses = fifo.drainPasses;
   out.imuEmptyPasses = fifo.emptyPasses;
@@ -586,6 +628,7 @@ bool BMI270ImuSensor::describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out) 
   out.imuIocOffsetReadAttempts = fifo.iocOffsetReadAttempts;
   out.imuIocOffsetReadFailures = fifo.iocOffsetReadFailures;
   out.imuIocOffsetSnapshotDrops = fifo.iocOffsetSnapshotDrops;
+  out.imuBdqV2TimingObservationDrops = bdqV2TimingObservationDrops_;
   out.imuOperationalValidationAttempts = fifo.operationalValidationAttempts;
   out.imuOperationalValidationFailures = fifo.operationalValidationFailures;
   out.imuSessionStartValidationAttempts = fifo.sessionStartValidationAttempts;
@@ -707,6 +750,7 @@ bool BMI270ImuSensor::validateLoggingStart(
       !orientationsEqual_(configured.orientation, params_.orientation) ||
       configured.startupBiasCaptureSeconds != params_.startupBiasCaptureSeconds ||
       configured.maximumOutputRateHz != params_.maximumOutputRateHz ||
+      configured.fifoPollRateHz != params_.fifoPollRateHz ||
       configured.gyroBiasMode != params_.gyroBiasMode ||
       configured.iocDiagnostics != params_.iocDiagnostics ||
       strcmp(configured.calibrationRef, params_.calibrationRef) != 0) {
@@ -714,8 +758,13 @@ bool BMI270ImuSensor::validateLoggingStart(
                  "%s BMI270 configuration changed; restart required",
                  params_.name);
   }
-  const uint16_t resolvedOutputRate = BMI270Profile::resolveSparseRowOutputRateHz(
-      params_.maximumOutputRateHz, effectiveRateHz);
+  const uint16_t resolvedOutputRate =
+      config.logFormat == LogFormat::BodaqsMultiStreamBinary
+      ? acquisition_.nativeRateHz()
+      : BMI270Profile::resolveSparseRowOutputRateHz(
+            acquisition_.nativeRateHz(),
+            params_.maximumOutputRateHz,
+            effectiveRateHz);
   if (resolvedOutputRate == 0 || acquisition_.outputRateHz() != resolvedOutputRate) {
     return fail_(error, errorCapacity,
                  "%s could not resolve a safe IMU output rate for effective logger rate %u Hz",
@@ -733,18 +782,28 @@ bool BMI270ImuSensor::validateLoggingStart(
 }
 
 bool BMI270ImuSensor::prepareLoggingStart(
-    const LoggerConfig&,
+    const LoggerConfig& config,
     uint16_t effectiveRateHz,
     char* error,
     size_t errorCapacity) {
   if (muted_) return true;
   sessionAvailable_ = false;
-  const uint16_t resolvedOutputRate = BMI270Profile::resolveSparseRowOutputRateHz(
-      params_.maximumOutputRateHz, effectiveRateHz);
+  const uint16_t resolvedOutputRate =
+      config.logFormat == LogFormat::BodaqsMultiStreamBinary
+      ? acquisition_.nativeRateHz()
+      : BMI270Profile::resolveSparseRowOutputRateHz(
+            acquisition_.nativeRateHz(),
+            params_.maximumOutputRateHz,
+            effectiveRateHz);
   if (resolvedOutputRate == 0) {
     return fail_(error, errorCapacity,
                  "%s has no safe sparse-row IMU output at logger rate %u Hz",
                  params_.name, (unsigned)effectiveRateHz);
+  }
+  if (!acquisition_.setFifoPollRateHz(params_.fifoPollRateHz)) {
+    return fail_(error, errorCapacity,
+                 "%s could not select %u Hz FIFO service rate",
+                 params_.name, (unsigned)params_.fifoPollRateHz);
   }
   if (!acquisition_.setOutputRateHz(resolvedOutputRate)) {
     return fail_(error, errorCapacity,
@@ -762,8 +821,11 @@ bool BMI270ImuSensor::prepareLoggingStart(
   }
   sessionAvailable_ = true;
   BMI270_SENSOR_LOGI(
-      "logging rate plan sensor=%s max_output_rate_hz=%u effective_output_rate_hz=%u logger_rate_hz=%u\n",
+      "logging rate plan sensor=%s profile=%s native_rate_hz=%u fifo_poll_rate_hz=%u max_output_rate_hz=%u effective_output_rate_hz=%u logger_rate_hz=%u\n",
       params_.name,
+      params_.profile,
+      (unsigned)acquisition_.nativeRateHz(),
+      (unsigned)acquisition_.fifoPollRateHz(),
       (unsigned)params_.maximumOutputRateHz,
       (unsigned)resolvedOutputRate,
       (unsigned)effectiveRateHz);
@@ -773,6 +835,9 @@ bool BMI270ImuSensor::prepareLoggingStart(
 bool BMI270ImuSensor::startLoggingSession(char* error, size_t errorCapacity) {
   if (muted_) return true;
   if (!sessionAvailable_ || !initialized_) return true;
+  bdqV2TimingSampler_.reset();
+  bdqV2Observations_.clear();
+  bdqV2TimingObservationDrops_ = 0;
   if (!acquisition_.startSession(params_.startupBiasCaptureSeconds)) {
     initialized_ = false;
     sessionAvailable_ = false;
@@ -796,6 +861,85 @@ void BMI270ImuSensor::onLoggingStop() {
 
 size_t BMI270ImuSensor::pendingLoggingRows() const {
   return (muted_ || !sessionAvailable_) ? 0 : acquisition_.queuedSamples();
+}
+
+bool BMI270ImuSensor::describeBdqV2Stream(
+    uint16_t streamId,
+    BdqV2StreamDescriptor& out) {
+  if (muted_ || streamId == 0) return false;
+  out = BdqV2StreamDescriptor{};
+  out.source.streamId = streamId;
+  out.source.recordSizeBytes = BMI270BdqV2::kRecordSizeBytes;
+  out.source.nativeTickModulus = BMI270BdqV2::kNativeTickModulus;
+  out.source.context = this;
+  out.source.pendingRecords = &BMI270ImuSensor::pendingBdqV2Records_;
+  out.source.pendingObservations = &BMI270ImuSensor::pendingBdqV2Observations_;
+  out.source.popRecord = &BMI270ImuSensor::popBdqV2RecordThunk_;
+  out.source.popObservation = &BMI270ImuSensor::popBdqV2ObservationThunk_;
+
+  copyField_(out.streamKey, sizeof(out.streamKey), params_.imuId);
+  copyField_(out.sensorId, sizeof(out.sensorId), params_.name);
+  copyField_(out.transport, sizeof(out.transport), "i2c_direct");
+  snprintf(out.clockId, sizeof(out.clockId), "bmi270:%s", params_.imuId);
+  copyField_(out.requestedProfile, sizeof(out.requestedProfile), params_.profile);
+  copyField_(out.domain, sizeof(out.domain), params_.domain);
+  copyField_(out.end, sizeof(out.end), params_.end);
+  copyField_(out.mountPoint, sizeof(out.mountPoint), params_.mountPoint);
+  copyField_(out.calibrationRef, sizeof(out.calibrationRef), params_.calibrationRef);
+  out.nativeTickBits = 24;
+  out.nominalTickPeriodNumeratorUs = 625;
+  out.nominalTickPeriodDenominator = 16;
+  out.nominalSampleRateNumeratorHz = acquisition_.outputRateHz();
+  out.nominalSampleRateDenominator = 1;
+  out.expectedSequenceStep = acquisition_.outputDecimationFactor();
+  out.effectiveAccelRateHz = acquisition_.nativeRateHz();
+  out.effectiveGyroRateHz = acquisition_.nativeRateHz();
+  out.channels = kBdqV2Channels;
+  out.channelCount = sizeof(kBdqV2Channels) / sizeof(kBdqV2Channels[0]);
+  out.statusFlags = kBdqV2StatusFlags;
+  out.statusFlagCount = sizeof(kBdqV2StatusFlags) / sizeof(kBdqV2StatusFlags[0]);
+  return out.valid();
+}
+
+bool BMI270ImuSensor::popBdqV2Record_(
+    uint8_t* destination,
+    size_t capacity) {
+  if (!destination || capacity < BMI270BdqV2::kRecordSizeBytes) return false;
+  BMI270ImuSample sample;
+  if (!acquisition_.pop(sample)) return false;
+
+  BdqV2Format::TimeObservation observation;
+  if (bdqV2TimingSampler_.observe(sample, observation) &&
+      !bdqV2Observations_.push(observation)) {
+    ++bdqV2TimingObservationDrops_;
+    sample.statusFlags |= BMI270ImuStatus::kTimingDegraded;
+  }
+  return BMI270BdqV2::encodeRecord(sample, destination, capacity);
+}
+
+size_t BMI270ImuSensor::pendingBdqV2Records_(const void* context) {
+  const auto* sensor = static_cast<const BMI270ImuSensor*>(context);
+  return sensor ? sensor->acquisition_.queuedSamples() : 0;
+}
+
+size_t BMI270ImuSensor::pendingBdqV2Observations_(const void* context) {
+  const auto* sensor = static_cast<const BMI270ImuSensor*>(context);
+  return sensor ? sensor->bdqV2Observations_.size() : 0;
+}
+
+bool BMI270ImuSensor::popBdqV2RecordThunk_(
+    void* context,
+    uint8_t* destination,
+    size_t capacity) {
+  auto* sensor = static_cast<BMI270ImuSensor*>(context);
+  return sensor && sensor->popBdqV2Record_(destination, capacity);
+}
+
+bool BMI270ImuSensor::popBdqV2ObservationThunk_(
+    void* context,
+    BdqV2Format::TimeObservation& observation) {
+  auto* sensor = static_cast<BMI270ImuSensor*>(context);
+  return sensor && sensor->bdqV2Observations_.pop(observation);
 }
 
 bool BMI270ImuSensor::captureImuOrientation(
@@ -1068,6 +1212,9 @@ bool BMI270ImuSensor::loadParams_(
   } else if (params.getInt("output_rate_hz", value) && value >= 0 && value <= 65535) {
     out.maximumOutputRateHz = static_cast<uint16_t>(value);
   }
+  if (params.getInt("fifo_poll_rate_hz", value) && value >= 0 && value <= 65535) {
+    out.fifoPollRateHz = static_cast<uint16_t>(value);
+  }
   String gyroBiasMode;
   if (params.get("gyro_bias_mode", gyroBiasMode)) {
     gyroBiasMode.trim();
@@ -1104,6 +1251,13 @@ bool BMI270ImuSensor::validateSpec(
                  "%s max_output_rate_hz must be one of 5, 10, 20, 25, 40, 50, 100, 200",
                  params.name);
   }
+  if (params.fifoPollRateHz != 25 && params.fifoPollRateHz != 50 &&
+      params.fifoPollRateHz != 100 && params.fifoPollRateHz != 200 &&
+      params.fifoPollRateHz != 400) {
+    return fail_(error, errorCapacity,
+                 "%s fifo_poll_rate_hz must be one of 25, 50, 100, 200, 400",
+                 params.name);
+  }
   String gyroBiasMode;
   if (spec.params.get("gyro_bias_mode", gyroBiasMode)) {
     gyroBiasMode.trim();
@@ -1125,7 +1279,7 @@ bool BMI270ImuSensor::validateSpec(
                  "%s requires domain=unsprung with front/rear, domain=steering with front, or domain=frame with none/front/rear",
                  params.name);
   }
-  if (strcmp(params.profile, BMI270Profile::kProfileName) != 0) {
+  if (!BMI270Profile::find(params.profile)) {
     return fail_(error, errorCapacity, "%s uses unsupported profile '%s'",
                  params.name, params.profile);
   }
@@ -1158,9 +1312,10 @@ const ParamDef* BMI270ImuSensor::paramDefs(size_t& count) {
     {"mount_point", ParamType::String, "", nullptr, nullptr, nullptr, "Optional descriptive mounting point"},
     {"i2c_bus", ParamType::Enum, "1", nullptr, nullptr, "0,1", "Board I2C bus index"},
     {"i2c_addr", ParamType::Enum, "104", nullptr, nullptr, "104,105", "BMI270 I2C address (0x68 or 0x69)"},
-    {"profile", ParamType::Enum, "orientation_200", nullptr, nullptr, "orientation_200", "Named acquisition profile"},
+    {"profile", ParamType::Enum, "orientation_200", nullptr, nullptr, "orientation_200,orientation_400,orientation_800,orientation_1600", "Named native accel/gyro acquisition profile"},
     {"startup_bias_capture_s", ParamType::Int, "5", "0", "60", nullptr, "Startup stationary-observation window; records bias evidence without modifying raw samples"},
-    {"max_output_rate_hz", ParamType::Enum, "200", nullptr, nullptr, "5,10,20,25,40,50,100,200", "Maximum stored IMU rate; effective output is selected safely at log start while FIFO acquisition remains 200 Hz"},
+    {"max_output_rate_hz", ParamType::Enum, "200", nullptr, nullptr, "5,10,20,25,40,50,100,200", "Legacy CSV/BDQ v1 maximum stored IMU rate; BDQ v2 stores the selected profile's full native rate"},
+    {"fifo_poll_rate_hz", ParamType::Enum, "200", nullptr, nullptr, "25,50,100,200,400", "FIFO service rate; lower values reduce transaction overhead but increase batch size and latency"},
     {"gyro_bias_mode", ParamType::Enum, "off", nullptr, nullptr, "off,ioc", "Gyro hardware bias mode; IOC makes logged gyro counts hardware-offset-compensated"},
     {"ioc_diagnostics", ParamType::Bool, "false", nullptr, nullptr, nullptr, "Experimental 1 Hz BMI270 IOC offset-register trace; requires gyro_bias_mode=ioc", true},
     {"calibration_ref", ParamType::String, "", nullptr, nullptr, nullptr, "Optional host calibration reference"},
@@ -1193,7 +1348,10 @@ Sensor* BMI270ImuSensor::create(
   Params parsed;
   loadParams_(parsed, instanceName, params);
   if (!BMI270Profile::isSupportedAddress(parsed.address) ||
-      strcmp(parsed.profile, BMI270Profile::kProfileName) != 0 ||
+      !BMI270Profile::find(parsed.profile) ||
+      (parsed.fifoPollRateHz != 25 && parsed.fifoPollRateHz != 50 &&
+       parsed.fifoPollRateHz != 100 && parsed.fifoPollRateHz != 200 &&
+       parsed.fifoPollRateHz != 400) ||
       !validMountSemantics_(parsed) ||
       (parsed.orientation.accepted &&
        !ImuOrientation::validateMatrix(parsed.orientation.matrix))) {

@@ -192,6 +192,15 @@ int runBMI270FifoTests() {
               "inconsistent consecutive anchors mark a discontinuity");
         check(discontinuous[0].sensorTimeDiscontinuityBefore,
               "native-clock discontinuities remain separately countable");
+
+        BMI270FifoParsedSample highRate[2] {};
+        havePrevious = false;
+        previous = 0;
+        const bool highRateAssigned = BMI270FifoParser::assignSensorTimes(
+            highRate, 2, true, 0x000045, 16, havePrevious, previous);
+        check(highRateAssigned && highRate[0].sensorTime == 0x000030 &&
+                  highRate[1].sensorTime == 0x000040,
+              "1600 Hz samples are backfilled on the 16-tick native grid");
     }
 
     {
@@ -441,6 +450,9 @@ int runBMI270FifoTests() {
               "small FIFO burst includes in-flight frames and sensor time");
         check(BMI270FifoReadPlan::bytesToRead(2048) == 2221,
               "full FIFO burst remains within the configured Wire buffer");
+        check(BMI270FifoReadPlan::bytesToRead(2048, 1600) ==
+                  BMI270FifoReadPlan::kMaximumReadBytes,
+              "high-rate full-FIFO recovery uses a bounded multi-pass burst");
         check(BMI270FifoReadPlan::bytesToRead(0) == 0 &&
               BMI270FifoReadPlan::bytesToRead(2049) == 0,
               "FIFO read planning rejects empty and invalid lengths");

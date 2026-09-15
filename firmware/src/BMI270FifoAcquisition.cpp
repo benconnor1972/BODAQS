@@ -39,6 +39,11 @@ bool nearRail_(int16_t value) {
   return value <= -kNearRailThreshold || value >= kNearRailThreshold;
 }
 
+bool supportedFifoPollRate_(uint16_t rateHz) {
+  return rateHz == 25 || rateHz == 50 || rateHz == 100 ||
+         rateHz == 200 || rateHz == 400;
+}
+
 static_assert(BMI270FifoAcquisition::kRawBufferBytes >=
               BMI270FifoReadPlan::bytesToRead(2048));
 static_assert(BMI270I2CTransport::kMaximumReadBytes >=
@@ -91,19 +96,48 @@ BMI270FifoAcquisition::BMI270FifoAcquisition(
     : device_(busIndex, address) {
   copyName_(name_, sizeof(name_), name);
   diagnostics_.queueCapacity = static_cast<uint16_t>(kQueueCapacity);
+  diagnostics_.nativeRateHz = nativeRateHz_;
+  diagnostics_.outputRateHz = outputRateHz_;
+  diagnostics_.fifoPollRateHz = fifoPollRateHz_;
 }
 
 BMI270FifoAcquisition::~BMI270FifoAcquisition() {
   shutdown();
 }
 
+bool BMI270FifoAcquisition::setNativeRateHz(uint16_t rateHz) {
+  if (sessionActive() || initialized_ ||
+      !BMI270Profile::isSupportedNativeRate(rateHz) ||
+      !device_.setNativeRateHz(rateHz)) {
+    return false;
+  }
+  nativeRateHz_ = rateHz;
+  outputDecimationFactor_ =
+      BMI270Profile::outputDecimationFactor(nativeRateHz_, outputRateHz_);
+  diagnostics_.nativeRateHz = nativeRateHz_;
+  diagnostics_.outputRateHz = outputRateHz_;
+  return outputDecimationFactor_ != 0;
+}
+
 bool BMI270FifoAcquisition::setOutputRateHz(uint16_t rateHz) {
   // Output selection is a software row-materialisation choice.  It can be
-  // changed between sessions without resetting the physical 200 Hz FIFO.
-  if (sessionActive() || !BMI270Profile::isSupportedOutputRate(rateHz)) return false;
+  // changed between sessions without resetting the physical FIFO profile.
+  if (sessionActive() ||
+      BMI270Profile::outputDecimationFactor(nativeRateHz_, rateHz) == 0) {
+    return false;
+  }
   outputRateHz_ = rateHz;
-  outputDecimationFactor_ = BMI270Profile::outputDecimationFactor(rateHz);
+  outputDecimationFactor_ =
+      BMI270Profile::outputDecimationFactor(nativeRateHz_, rateHz);
+  diagnostics_.outputRateHz = outputRateHz_;
   return outputDecimationFactor_ != 0;
+}
+
+bool BMI270FifoAcquisition::setFifoPollRateHz(uint16_t rateHz) {
+  if (sessionActive() || !supportedFifoPollRate_(rateHz)) return false;
+  fifoPollRateHz_ = rateHz;
+  diagnostics_.fifoPollRateHz = fifoPollRateHz_;
+  return true;
 }
 
 bool BMI270FifoAcquisition::setGyroBiasMode(BMI270GyroBiasMode mode) {
@@ -141,13 +175,17 @@ bool BMI270FifoAcquisition::begin() {
   }
 
   initialized_ = true;
+  const BMI270Profile::NativeProfile* profile =
+      BMI270Profile::find(nativeRateHz_);
   BMI270_FIFO_LOGI(
-      "initialized name=%s bus=%u addr=0x%02X queue=%u profile=%s\n",
+      "initialized name=%s bus=%u addr=0x%02X native=%uHz poll=%uHz queue=%u profile=%s\n",
       name_,
       (unsigned)device_.busIndex(),
       (unsigned)device_.address(),
+      (unsigned)nativeRateHz_,
+      (unsigned)fifoPollRateHz_,
       (unsigned)kQueueCapacity,
-      BMI270Profile::kProfileName);
+      profile ? profile->name : "invalid");
   return true;
 }
 
@@ -179,7 +217,7 @@ bool BMI270FifoAcquisition::startSession(uint16_t startupObservationSeconds) {
   // Keep the observer disabled until validation/recovery and the final FIFO
   // flush have completed. Those operations belong to the session boundary,
   // not to the stationary measurement window.
-  startupObservation_.begin(0, kTargetRateHz);
+  startupObservation_.begin(0, nativeRateHz_);
   device_.resetTransportDiagnostics();
 
   addCounter_(diagnostics_.sessionStartValidationAttempts);
@@ -200,7 +238,7 @@ bool BMI270FifoAcquisition::startSession(uint16_t startupObservationSeconds) {
   // known pre-session boundary status.
   preSessionBoundaryStatus_ = pendingStatus_ & kCarryStatusMask;
   pendingStatus_ &= static_cast<uint16_t>(~kCarryStatusMask);
-  startupObservation_.begin(startupObservationSeconds, kTargetRateHz);
+  startupObservation_.begin(startupObservationSeconds, nativeRateHz_);
 
   progressWatchdog_.arm(micros());
   sessionActive_.store(true, std::memory_order_release);
@@ -479,7 +517,8 @@ BMI270FifoAcquisition::DrainPassResult BMI270FifoAcquisition::drainOnePass_(
   }
   if (fifoLength == 2048) addCounter_(diagnostics_.fifoFullObservations);
 
-  const size_t bytesToRead = BMI270FifoReadPlan::bytesToRead(fifoLength);
+  const size_t bytesToRead =
+      BMI270FifoReadPlan::bytesToRead(fifoLength, nativeRateHz_);
   if (bytesToRead == 0 || bytesToRead > sizeof(rawBuffer_)) {
     device_.endBusTransaction();
     diagnostics_.lastApiResult = BMI2_E_INVALID_STATUS;
@@ -546,10 +585,6 @@ BMI270FifoAcquisition::DrainPassResult BMI270FifoAcquisition::drainOnePass_(
   const bool temperatureFresh = haveTemperature_ &&
       acquisitionEndUs - lastTemperatureHostUs_ <= kTemperatureFreshnessUs;
 
-  const uint64_t span64 = acquisitionEndUs - acquisitionStartUs;
-  const uint32_t spanUs = span64 > UINT32_MAX
-      ? UINT32_MAX
-      : static_cast<uint32_t>(span64);
   enqueueParsed_(
       parsed,
       parsed.samplesWritten,
@@ -557,8 +592,7 @@ BMI270FifoAcquisition::DrainPassResult BMI270FifoAcquisition::drainOnePass_(
       temperatureFresh,
       acquisitionStartUs,
       acquisitionEndUs,
-      bytesToRead,
-      spanUs);
+      bytesToRead);
   maybeCaptureIocOffsetSnapshot_(acquisitionEndUs);
   return DrainPassResult::Data;
 }
@@ -641,6 +675,9 @@ void BMI270FifoAcquisition::resetSessionState_(uint64_t preSessionDiscards) {
   const uint8_t effectiveGyroFiltered = diagnostics_.effectiveGyroFiltered;
   const bool fifoConfigured = diagnostics_.fifoConfigured;
   diagnostics_ = BMI270FifoDiagnostics{};
+  diagnostics_.nativeRateHz = nativeRateHz_;
+  diagnostics_.outputRateHz = outputRateHz_;
+  diagnostics_.fifoPollRateHz = fifoPollRateHz_;
   diagnostics_.queueCapacity = static_cast<uint16_t>(kQueueCapacity);
   diagnostics_.effectiveFifoConfig = effectiveFifoConfig;
   diagnostics_.effectiveFifoWatermark = effectiveFifoWatermark;
@@ -651,6 +688,7 @@ void BMI270FifoAcquisition::resetSessionState_(uint64_t preSessionDiscards) {
   diagnostics_.fifoConfigured = fifoConfigured;
   diagnostics_.preSessionQueueDiscards = preSessionDiscards;
   nextSequence_ = 0;
+  nextAcquisitionBatchId_ = 0;
   pendingStatus_ = 0;
   preSessionBoundaryStatus_ = 0;
   pendingSkippedFrames_ = 0;
@@ -697,14 +735,15 @@ void BMI270FifoAcquisition::enqueueParsed_(
     bool temperatureFresh,
     uint64_t acquisitionStartUs,
     uint64_t acquisitionEndUs,
-    size_t bytesRead,
-    uint32_t acquisitionSpanUs) {
+    size_t bytesRead) {
+  const uint32_t acquisitionBatchId = nextAcquisitionBatchId_++;
   const bool hadPreviousSensorTime = havePreviousSensorTime_;
-  const bool haveSensorTimeReference = BMI270FifoParser::assignSensorTimes200Hz(
+  const bool haveSensorTimeReference = BMI270FifoParser::assignSensorTimes(
       parsed_,
       count,
       parsed.sensorTimePresent,
       parsed.sensorTime,
+      BMI270Profile::sensorTimeTicksPerSample(nativeRateHz_),
       havePreviousSensorTime_,
       previousSensorTime_);
 
@@ -722,6 +761,16 @@ void BMI270FifoAcquisition::enqueueParsed_(
     referenceHostUs = acquisitionStartUs +
         ((acquisitionEndUs - acquisitionStartUs) / 2u);
   }
+  const uint64_t acquisitionBeforeUs = referenceHostUs != 0 &&
+      referenceHostUs >= acquisitionStartUs
+      ? referenceHostUs - acquisitionStartUs
+      : 0;
+  const uint64_t acquisitionAfterUs = referenceHostUs != 0 &&
+      acquisitionEndUs >= referenceHostUs
+      ? acquisitionEndUs - referenceHostUs
+      : 0;
+  const bool acquisitionBoundsClipped =
+      acquisitionBeforeUs > UINT16_MAX || acquisitionAfterUs > UINT16_MAX;
 
   // Parser events after the last retained sample belong to a future sample.
   // Keep them separate while queue-full events are propagated through this
@@ -772,7 +821,18 @@ void BMI270FifoAcquisition::enqueueParsed_(
         estimatedHostUs)
         ? estimatedHostUs
         : 0;
-    sample.acquisitionSpanUs = acquisitionSpanUs;
+    // A clipped interval would no longer be a conservative bound. Suppress
+    // the observation instead; the status bit still records the degradation.
+    sample.acquisitionBeforeUs = acquisitionBoundsClipped
+        ? 0
+        : static_cast<uint16_t>(acquisitionBeforeUs);
+    sample.acquisitionAfterUs = acquisitionBoundsClipped
+        ? 0
+        : static_cast<uint16_t>(acquisitionAfterUs);
+    sample.acquisitionBatchId = acquisitionBatchId;
+    if (acquisitionBoundsClipped) {
+      sample.statusFlags |= BMI270ImuStatus::kTimingDegraded;
+    }
 
     nextSequence_ += parsed_[index].skippedFramesBefore;
     sample.sequence = nextSequence_++;

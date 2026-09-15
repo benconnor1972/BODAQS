@@ -199,13 +199,29 @@ Purpose: support measurements whose useful bandwidth exceeds the MVP profile.
 Candidate deliverables:
 
 - microsecond or rational global cadence instead of integer milliseconds;
-- evaluated 400 Hz BMI270 profile;
+- evaluated 400, 800, and 1600 Hz BMI270 profiles;
 - measured digital-filter bandwidth and group delay;
 - interrupt-assisted FIFO service if polling jitter is limiting;
 - higher-g accelerometer decision for unsprung locations;
 - timing anchor quality and drift characterization.
 
-Decision gate: proceed only if ride spectra show useful energy or clipping beyond the MVP capability.
+Implementation status (2026-09-14): the logger cadence now remains in
+microseconds, and named 200, 400, 800, and 1600 sample/s BMI270 profiles are
+available for bench characterization. FIFO service cadence is independently
+configurable at 25, 50, 100, 200, or 400 Hz. The default remains
+`orientation_200` with 200 Hz FIFO service. Session metadata records achieved
+service rate, bus occupancy, service deadline misses, queue pressure, FIFO
+throughput, and logger wake lateness. These profiles do not establish usable
+measurement bandwidth: the BMI270 filter response and phase delay still need to
+be measured, and 1600 sample/s has an 800 Hz Nyquist limit.
+
+The executable bench sequence and required evidence are defined in the
+[BMI270 high-rate I2C test plan](BMI270_High_Rate_I2C_Testing.md).
+
+Decision gate: passed for architecture work because the target analysis now
+includes acceleration content up to 1 kHz. The BMI270 remains useful for I2C
+transport characterization, but its 1600 sample/s ceiling cannot meet that
+measurement bandwidth; production IMU selection remains a separate decision.
 
 ### Milestone 5 — Multiple IMUs
 
@@ -213,7 +229,8 @@ Purpose: analyse transmission from unsprung to sprung bicycle structures.
 
 Required architectural work:
 
-- native per-stream sample storage rather than sparse columns in a global row;
+- native per-stream sample storage rather than sparse columns in a global row,
+  following the accepted [BDQ v2 Multi-Stream Data Contract](BDQ_v2_Multi_Stream_Contract.md);
 - clock offset and drift estimation between IMUs;
 - per-unit mounting, calibration, identity, domain/end, optional mount point, and health metadata;
 - phase-preserving gap and resampling rules;
@@ -269,6 +286,7 @@ Use a named profile to keep the common configuration short. Proposed logical fie
     sensorN.i2c_bus=1
     sensorN.i2c_addr=104
     sensorN.profile=orientation_200
+    sensorN.fifo_poll_rate_hz=200
     sensorN.startup_bias_capture_s=5
     sensorN.calibration_ref=
 

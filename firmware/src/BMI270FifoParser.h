@@ -59,4 +59,13 @@ bool assignSensorTimes200Hz(
     bool& havePreviousSensorTime,
     uint32_t& previousSensorTime);
 
+bool assignSensorTimes(
+    BMI270FifoParsedSample* parsed,
+    size_t count,
+    bool anchorPresent,
+    uint32_t anchorSensorTime,
+    uint32_t ticksPerSample,
+    bool& havePreviousSensorTime,
+    uint32_t& previousSensorTime);
+
 } // namespace BMI270FifoParser

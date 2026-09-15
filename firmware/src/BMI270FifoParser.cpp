@@ -153,31 +153,35 @@ BMI270FifoParseResult BMI270FifoParser::parseHeaderMode(
   return result;
 }
 
-bool BMI270FifoParser::assignSensorTimes200Hz(
+bool BMI270FifoParser::assignSensorTimes(
     BMI270FifoParsedSample* parsed,
     size_t count,
     bool anchorPresent,
     uint32_t anchorSensorTime,
+    uint32_t ticksPerSample,
     bool& havePreviousSensorTime,
     uint32_t& previousSensorTime) {
-  if (!parsed || count == 0) return false;
+  if (!parsed || count == 0 || ticksPerSample == 0 ||
+      (ticksPerSample & (ticksPerSample - 1u)) != 0) {
+    return false;
+  }
 
   if (anchorPresent) {
     const bool hadPreviousSensorTime = havePreviousSensorTime;
     const uint32_t priorSensorTime = previousSensorTime;
     uint32_t cursor =
-        (anchorSensorTime & kSensorTimeMask) & ~(kTicksPerSample200Hz - 1u);
+        (anchorSensorTime & kSensorTimeMask) & ~(ticksPerSample - 1u);
     for (size_t reverse = count; reverse > 0; --reverse) {
       const size_t index = reverse - 1;
       parsed[index].sensorTime = cursor;
       parsed[index].statusBefore |= BMI270ImuStatus::kSensorTimeEstimated;
       const uint32_t intervals = 1u + parsed[index].skippedFramesBefore;
-      cursor = (cursor - intervals * kTicksPerSample200Hz) & kSensorTimeMask;
+      cursor = (cursor - intervals * ticksPerSample) & kSensorTimeMask;
     }
     if (hadPreviousSensorTime) {
       const uint32_t expected =
           (priorSensorTime +
-           (1u + parsed[0].skippedFramesBefore) * kTicksPerSample200Hz) &
+           (1u + parsed[0].skippedFramesBefore) * ticksPerSample) &
           kSensorTimeMask;
       if (parsed[0].sensorTime != expected) {
         parsed[0].statusBefore |= BMI270ImuStatus::kFifoDiscontinuityBefore |
@@ -202,10 +206,27 @@ bool BMI270FifoParser::assignSensorTimes200Hz(
   for (size_t index = 0; index < count; ++index) {
     const uint32_t intervals = 1u + parsed[index].skippedFramesBefore;
     previousSensorTime =
-        (previousSensorTime + intervals * kTicksPerSample200Hz) & kSensorTimeMask;
+        (previousSensorTime + intervals * ticksPerSample) & kSensorTimeMask;
     parsed[index].sensorTime = previousSensorTime;
     parsed[index].statusBefore |= BMI270ImuStatus::kSensorTimeEstimated |
                                   BMI270ImuStatus::kTimingDegraded;
   }
   return true;
+}
+
+bool BMI270FifoParser::assignSensorTimes200Hz(
+    BMI270FifoParsedSample* parsed,
+    size_t count,
+    bool anchorPresent,
+    uint32_t anchorSensorTime,
+    bool& havePreviousSensorTime,
+    uint32_t& previousSensorTime) {
+  return assignSensorTimes(
+      parsed,
+      count,
+      anchorPresent,
+      anchorSensorTime,
+      kTicksPerSample200Hz,
+      havePreviousSensorTime,
+      previousSensorTime);
 }
