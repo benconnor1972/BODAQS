@@ -734,6 +734,74 @@ export type TableQueryResponse = {
   warnings: Array<Record<string, unknown>>
 }
 
+export type EventDefinition = {
+  definitionKey: string
+  schemaId: string
+  schemaVersion: string
+  schemaDigest: string
+  displayName: string
+  schemaTags: string[]
+  eventSetIds: string[]
+  availableEnds: string[]
+  primaryTrigger: { id: string }
+  secondaryTriggers: Array<{ id: string }>
+  defaultWindow: { preS: number; postS: number; anchor: string }
+  defaultRoles: Array<{ role: string; selector: Record<string, unknown> }>
+  metricFields: Array<{ column: string; displayName: string; unit: string }>
+  eventCount: number
+  sessionRefIds: string[]
+  sessionCount: number
+}
+
+export type EventDefinitionsResponse = {
+  definitions: EventDefinition[]
+  warnings: Array<Record<string, unknown>>
+}
+
+export type EventReference = StudySessionRef & {
+  eventSetId: string
+  eventId: string
+  schemaId?: string
+  schemaVersion?: string
+  schemaDigest?: string
+  paramsHash?: string
+  triggerTimeS?: number | null
+}
+
+export type EventSegment = {
+  eventRef: EventReference
+  window: { returnedStartRelS: number | null; returnedEndRelS: number | null }
+  timeRelS: Array<number | null>
+  signals: Array<{
+    role: string
+    column: string
+    displayName: string
+    end: string
+    domain: string
+    quantity: string
+    unit: string
+    values: Array<number | null>
+  }>
+  triggers: Array<{ id: string; kind: 'primary' | 'secondary'; timeRelS: number }>
+  metrics: Record<string, unknown>
+  qc: Record<string, unknown>
+  warnings: Array<Record<string, unknown>>
+}
+
+export type EventSegmentsResponse = {
+  segments: EventSegment[]
+  warnings: Array<Record<string, unknown>>
+}
+
+export type EventAnnotationRecord = {
+  id: string
+  revision: number
+  eventRef: EventReference
+  tags: string[]
+  createdAtUtc: string
+  updatedAtUtc: string
+}
+
 export type ColumnId =
   | 'name'
   | 'runName'

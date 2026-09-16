@@ -83,6 +83,12 @@ class BookmarkNotFoundError(LibraryApiError):
     default_message = "Bookmark was not found."
 
 
+class EventAnnotationNotFoundError(LibraryApiError):
+    code = "event_annotation_not_found"
+    status_code = 404
+    default_message = "Event annotation was not found."
+
+
 class TrackNotFoundError(LibraryApiError):
     code = "track_not_found"
     status_code = 404
@@ -141,6 +147,12 @@ class InvalidBookmarkError(LibraryApiError):
     code = "invalid_bookmark"
     status_code = 400
     default_message = "Bookmark is invalid."
+
+
+class InvalidEventAnnotationError(LibraryApiError):
+    code = "invalid_event_annotation"
+    status_code = 400
+    default_message = "Event annotation is invalid."
 
 
 class InvalidTrackError(LibraryApiError):

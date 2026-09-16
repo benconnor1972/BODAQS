@@ -1,6 +1,10 @@
 import type {
   AnalysisAdequacyResult,
   AnalysisViewRecord,
+  EventAnnotationRecord,
+  EventDefinitionsResponse,
+  EventReference,
+  EventSegmentsResponse,
   LibraryRecord,
   LocalVideoFileSelection,
   SessionGpsPointSet,
@@ -114,4 +118,12 @@ export interface LibraryDataSource {
   querySignals(libraryId: string, request: SignalQueryRequest): Promise<SignalQueryResponse>
   queryEvents(libraryId: string, request: TableQueryRequest): Promise<TableQueryResponse>
   queryMetrics(libraryId: string, request: TableQueryRequest): Promise<TableQueryResponse>
+  queryEventDefinitions?(sessions: StudySessionRef[]): Promise<EventDefinitionsResponse>
+  queryEventSegments?(
+    libraryId: string,
+    request: { events: EventReference[]; window?: { preS: number; postS: number }; roles?: string[] },
+  ): Promise<EventSegmentsResponse>
+  listEventAnnotations?(sessions: StudySessionRef[]): Promise<EventAnnotationRecord[]>
+  saveEventAnnotation?(annotation: EventAnnotationRecord): Promise<EventAnnotationRecord>
+  deleteEventAnnotation?(annotationId: string): Promise<void>
 }

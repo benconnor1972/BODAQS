@@ -16,6 +16,7 @@ ANALYSIS_ADEQUACY_POLICY_VERSION = 2
 SIMPLE_SUSPENSION_VIEW_ID = "simple-suspension"
 SUSPENSION_PHASE_DIAGRAM_VIEW_ID = "suspension-phase-diagram"
 TRACK_ANALYSIS_VIEW_ID = "track-analysis-lap-timing"
+EVENT_BROWSER_VIEW_ID = "event-browser"
 _SUSPENSION_ENDS = ("front", "rear")
 _REQUIRED_EVENT_TYPES = ("compressions_all", "rebounds_all")
 _REQUIRED_METRIC_COLUMNS = (
@@ -29,7 +30,7 @@ _REQUIRED_METRIC_COLUMNS = (
 def list_analysis_views() -> list[dict[str, Any]]:
     """Return supported analysis view descriptors."""
 
-    return [_simple_suspension_view_descriptor(), _suspension_phase_diagram_view_descriptor(), _track_analysis_view_descriptor()]
+    return [_simple_suspension_view_descriptor(), _suspension_phase_diagram_view_descriptor(), _event_browser_view_descriptor(), _track_analysis_view_descriptor()]
 
 
 def get_analysis_view(view_id: str) -> dict[str, Any]:
@@ -67,6 +68,8 @@ def evaluate_analysis_view_adequacy(
         return _suspension_phase_diagram_adequacy(view, scope=scope, session_rows=session_rows)
     if view["view_id"] == TRACK_ANALYSIS_VIEW_ID:
         return _track_analysis_adequacy(view, scope=scope, session_rows=session_rows)
+    if view["view_id"] == EVENT_BROWSER_VIEW_ID:
+        return _event_browser_adequacy(view, scope=scope, session_rows=session_rows)
     raise AnalysisViewNotFoundError(
         "Analysis view was not found.",
         details={"view_id": str(view_id or "").strip()},
@@ -116,6 +119,41 @@ def _simple_suspension_view_descriptor() -> dict[str, Any]:
                     "description": "GPS data is available for track-sector filtering.",
                 }
             ],
+        },
+    }
+
+
+def _event_browser_view_descriptor() -> dict[str, Any]:
+    return {
+        "schema": "bodaqs.analysis_view",
+        "version": 1,
+        "view_id": EVENT_BROWSER_VIEW_ID,
+        "display_name": "Event Browser",
+        "category": "Events",
+        "description": "Inspect detected Event instances, trigger-aligned signal windows, metrics, tags, and comparisons.",
+        "route": "/analysis/event-browser",
+        "scope_kinds": ["study_set", "session_refs"],
+        "adequacy_policy": "partial",
+        "requirements": {
+            "required": [{
+                "id": "detected_events",
+                "label": "Detected Events",
+                "applies_to": "session",
+                "minimum": "at_least_one_session",
+                "description": "At least one selected session must contain a detected Event table.",
+            }],
+            "recommended": [{
+                "id": "event_metrics",
+                "label": "Event metrics",
+                "applies_to": "session",
+                "description": "Event metrics are available for display and filtering.",
+            }],
+            "optional": [{
+                "id": "frozen_event_schema",
+                "label": "Frozen Event schema",
+                "applies_to": "session",
+                "description": "Frozen schema metadata defines semantic signals, windows, and secondary triggers.",
+            }],
         },
     }
 
@@ -368,6 +406,51 @@ def _track_analysis_adequacy(
     })
 
 
+def _event_browser_adequacy(
+    view: Mapping[str, Any],
+    *,
+    scope: Mapping[str, Any],
+    session_rows: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    session_results = [_event_browser_session_result(row) for row in session_rows]
+    usable_sessions = [result for result in session_results if bool(result["usable"])]
+    blocked_sessions = [result for result in session_results if not bool(result["usable"])]
+    if not usable_sessions:
+        scope_status = "blocked"
+    elif blocked_sessions:
+        scope_status = "partial"
+    elif any(result["status"] != "ready" for result in session_results):
+        scope_status = "warning"
+    else:
+        scope_status = "ready"
+    usable_units = [
+        {"session_ref_id": result["session_ref_id"], "library_id": result["library_id"], "session_key": result["session_key"], "run_id": result["run_id"], "session_id": result["session_id"], "unit_kind": "session"}
+        for result in usable_sessions
+    ]
+    excluded_units = [
+        {"session_ref_id": result["session_ref_id"], "library_id": result["library_id"], "session_key": result["session_key"], "run_id": result["run_id"], "session_id": result["session_id"], "unit_kind": "session", "missing_required": ["detected_events"], "reason": "Session has no detected Events."}
+        for result in blocked_sessions
+    ]
+    return _with_criterion_results(view, {
+        "schema": ANALYSIS_ADEQUACY_SCHEMA,
+        "version": ANALYSIS_ADEQUACY_VERSION,
+        "view_id": view["view_id"],
+        "display_name": view["display_name"],
+        "policy": view["adequacy_policy"],
+        "status": scope_status,
+        "summary": f"{len(usable_sessions)} of {len(session_results)} sessions contain detected Events.",
+        "scope": dict(scope),
+        "requirements": view["requirements"],
+        "total_session_count": len(session_results),
+        "usable_session_count": len(usable_sessions),
+        "blocked_session_count": len(blocked_sessions),
+        "usable_units": usable_units,
+        "excluded_units": excluded_units,
+        "messages": [] if scope_status == "ready" else [{"severity": "warning" if usable_sessions else "error", "code": "event_availability", "message": f"{len(blocked_sessions)} session(s) have no detected Events."}],
+        "session_results": session_results,
+    })
+
+
 def _with_criterion_results(view: Mapping[str, Any], adequacy: dict[str, Any]) -> dict[str, Any]:
     """Add stable requirement-ID results for generic adequacy clients."""
 
@@ -386,6 +469,8 @@ def _with_criterion_results(view: Mapping[str, Any], adequacy: dict[str, Any]) -
             result["criteria"] = _suspension_phase_diagram_criteria(result)
         elif view_id == TRACK_ANALYSIS_VIEW_ID:
             result["criteria"] = _track_analysis_criteria(result)
+        elif view_id == EVENT_BROWSER_VIEW_ID:
+            result["criteria"] = _event_browser_criteria(result)
 
     if view_id == TRACK_ANALYSIS_VIEW_ID:
         adequacy["scope_criteria"] = _track_analysis_scope_criteria(adequacy)
@@ -475,6 +560,14 @@ def _track_analysis_criteria(result: Mapping[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _event_browser_criteria(result: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [
+        _criterion("detected_events", bool(result.get("usable")), f"{int(result.get('event_count') or 0)} detected Event(s) are available."),
+        _criterion("event_metrics", bool(result.get("has_metrics")), "Event metrics are available." if result.get("has_metrics") else "No Event metrics are available."),
+        _criterion("frozen_event_schema", bool(result.get("has_event_schema")), "Frozen Event schema metadata is available." if result.get("has_event_schema") else "Frozen Event schema metadata is unavailable."),
+    ]
+
+
 def _track_analysis_scope_criteria(adequacy: Mapping[str, Any]) -> list[dict[str, Any]]:
     session_results = adequacy.get("session_results") if isinstance(adequacy.get("session_results"), list) else []
     all_sessions_usable = bool(session_results) and all(
@@ -486,6 +579,34 @@ def _track_analysis_scope_criteria(adequacy: Mapping[str, Any]) -> list[dict[str
         _criterion("all_sessions_gps", all_sessions_usable, "All selected sessions have usable GPS for timing comparison."),
         _criterion("track_scope", track_count > 0, f"{track_count} track(s) are in scope."),
     ]
+
+
+def _event_browser_session_result(row: Mapping[str, Any]) -> dict[str, Any]:
+    event_summary = row.get("event_summary") if isinstance(row.get("event_summary"), Mapping) else {}
+    metric_summary = row.get("metric_summary") if isinstance(row.get("metric_summary"), Mapping) else {}
+    event_schema = row.get("event_schema") if isinstance(row.get("event_schema"), Mapping) else {}
+    event_count = int(event_summary.get("total_count") or 0)
+    has_metrics = int(metric_summary.get("event_count_with_metrics") or 0) > 0
+    has_event_schema = bool(event_schema.get("schema_ids") or event_schema.get("schema_id"))
+    usable = event_count > 0
+    status = "blocked" if not usable else "ready" if has_metrics and has_event_schema else "warning"
+    return {
+        "session_ref_id": row.get("session_ref_id"),
+        "library_id": row.get("library_id"),
+        "session_key": row.get("session_key"),
+        "run_id": row.get("run_id"),
+        "session_id": row.get("session_id"),
+        "label": _session_label(row),
+        "status": status,
+        "usable": usable,
+        "event_count": event_count,
+        "has_metrics": has_metrics,
+        "has_event_schema": has_event_schema,
+        "missing_required": [] if usable else ["detected_events"],
+        "missing_recommended": [] if has_metrics else ["event_metrics"],
+        "missing_optional": [] if has_event_schema else ["frozen_event_schema"],
+        "messages": [],
+    }
 
 
 def _track_analysis_session_result(row: Mapping[str, Any]) -> dict[str, Any]:
