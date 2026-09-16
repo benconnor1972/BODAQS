@@ -28,7 +28,7 @@ public:
     bool includeRawColumn = true;
     bool includeAngleColumn = false;
     bool includeDiagColumns = false;
-    uint32_t diagnosticIntervalMs = 250;
+    uint32_t diagnosticIntervalMs = 1000;
     char semanticEnd[16] = "";
     char primaryDomain[24] = "";
     char primaryQuantity[24] = "ang_disp";
@@ -134,6 +134,7 @@ private:
   void applyParams(const Params& p);
   bool probe_() const;
   bool readRegBytesLocked_(uint8_t reg, uint8_t* out, uint8_t len) const;
+  bool readRawAngleBytesLocked_(uint8_t* out) const;
   bool writeRegBytesLocked_(uint8_t reg, const uint8_t* data, uint8_t len) const;
   bool readOutputBlock_(OutputSample& out) const;
   bool readAngleRegister_(uint16_t& out) const;
@@ -186,7 +187,7 @@ private:
   float m_installedRange = 0.0f;
   int8_t m_slowFilterCode = -1;
   uint16_t m_asyncRateHz = 0;
-  uint32_t m_diagnosticIntervalMs = 250;
+  uint32_t m_diagnosticIntervalMs = 1000;
   bool m_muted = false;
   CalMask m_allowedMask = CAL_ZERO;
   bool m_includeAngleColumn = false;
@@ -210,6 +211,8 @@ private:
   mutable bool m_lastReadReused = false;
   mutable uint32_t m_rawReadFailures = 0;
   mutable uint32_t m_diagnosticReadFailures = 0;
+  mutable bool m_rawAnglePointerPrimed = false;
+  mutable uint64_t m_lastRawAcquiredUs = 0;
   mutable bool m_configWriteAttempted = false;
   mutable bool m_configWriteOk = false;
   mutable uint32_t m_nextConfigWriteMs = 0;

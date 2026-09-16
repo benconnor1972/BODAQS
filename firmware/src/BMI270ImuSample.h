@@ -38,6 +38,9 @@ struct BMI270ImuSample {
   int16_t gyroZ = 0;
   int16_t temperatureRaw = 0;
   uint16_t statusFlags = 0;
+  // Mixed-rate profiles emit one record per accelerometer sample. A value of
+  // false means the gyro fields are placeholders, not a repeated measurement.
+  bool gyroValid = true;
 
   uint16_t measurementStatusFlags() const {
     const uint16_t boundaryFlags =

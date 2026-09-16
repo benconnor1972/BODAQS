@@ -15,6 +15,10 @@ public:
 struct BdqV2WriterConfig {
   uint16_t maximumRecordsPerChunk = 128;
   uint16_t maximumObservationsPerChunk = 16;
+  // Normal live draining waits for either this many records or the latency
+  // bound below. Forced drains at shutdown ignore both thresholds.
+  uint16_t minimumRecordsPerChunk = 1;
+  uint32_t maximumChunkLatencyUs = 0;
 };
 
 struct BdqV2WriterStreamStats {
@@ -60,7 +64,10 @@ public:
       const BdqV2WriterConfig& config = {});
 
   bool writeEventJson(const char* eventJson, size_t length);
+  // Immediate/forced drain retained for shutdown and deterministic tests.
   bool drainNextChunk();
+  // Live drain which batches sparse arrivals but guarantees a bounded age.
+  bool drainNextReadyChunk(uint64_t nowUs);
   size_t drain(size_t maximumChunks);
   bool flush();
 
@@ -80,10 +87,14 @@ private:
   struct RegisteredStream {
     BdqV2StreamSource source;
     BdqV2WriterStreamStats stats;
+    uint64_t pendingSinceUs = 0;
+    bool pendingAgeTracked = false;
   };
 
   bool writeChunk_(BdqV2Format::ChunkType type, const uint8_t* payload, size_t length);
   bool stageAndWriteStream_(size_t streamIndex);
+  bool streamReady_(RegisteredStream& stream, uint64_t nowUs);
+  void updatePendingAgeAfterWrite_(RegisteredStream& stream, uint64_t nowUs);
   bool fail_();
   void resetSession_();
 

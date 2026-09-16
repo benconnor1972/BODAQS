@@ -120,6 +120,12 @@ This document summarizes the major modules in the project, what each one is resp
   CSV JSON metadata contains the corresponding compact sensor-health summary;
   these diagnostics do not add sample columns or successful-path I2C
   transactions.
+- AS5600 I2C logging uses the device's persistent `RAW_ANGLE` pointer after
+  the first addressed read. Normal samples therefore need only the two-byte
+  read transaction; diagnostic/configuration access invalidates the pointer
+  and the next sample safely re-primes it. Runtime summaries report fast-read
+  attempts/successes/fallbacks and raw-read duration. The default magnetic
+  diagnostic cadence is 1 Hz (`diag_interval_ms=1000`).
 
 **Notes**
 - `ZERO` calibration captures the installed zero point and then asks for a small positive movement so the firmware can set `direction`.
@@ -178,6 +184,12 @@ appended after them.
   +/-16 g, +/-2000 deg/s, and filter/performance settings. The higher-rate
   profiles are experimental until their achieved rates, filtering, loss, and
   timing have been measured on the target wiring.
+- `accel_1600_gyro_200` is an experimental BDQ-v2-only mixed-rate profile.
+  It emits 1600 records/s on the accelerometer time grid and declares
+  `gyro_sample_valid` at offset 26; gyro axis values are fresh only when that
+  field is 1. The stream catalog separately reports effective accel and gyro
+  rates. CSV and BDQ v1 reject this profile rather than imply that held or
+  placeholder gyro values are native 1600 Hz measurements.
 - `fifo_poll_rate_hz` independently selects FIFO service at 25, 50, 100, 200,
   or 400 Hz. Session diagnostics record the selected native/output/poll rates,
   queue coverage and pressure, FIFO throughput, I2C occupancy, achieved service
@@ -472,7 +484,7 @@ void DBG_IMPL(DebugLevel lvl, const char* fmt, ...);
 - `debounce_ms`
 - Button pins: `web_button_pin`, `log_button_pin`, `mark_button_pin`, `nav_up_pin`, `nav_down_pin`, `nav_left_pin`, `nav_right_pin`, `nav_enter_pin`
 - Network/time: `wifi_ssid`, `wifi_password`, `ntp_servers`, `time_check_url`
-- UI: `ui_target`, `ui_serial_level`, `ui_oled_level`, `oled_brightness`, `oled_idle_dim_ms`
+- UI: `ui_target`, `ui_serial_level`, `ui_oled_level`, `oled_brightness`, `oled_idle_dim_ms`, `oled_logging_policy` (`auto`, `freeze`, or `prefer_active`)
 - RTC: `use_external_rtc`
 
 Sensor sections follow the pattern:

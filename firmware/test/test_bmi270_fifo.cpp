@@ -1,10 +1,13 @@
 #include <cstdio>
+#include <cstring>
 
 #include "BMI270FifoParser.h"
 #include "BMI270FifoReadPlan.h"
 #include "BMI270ImuTiming.h"
+#include "BMI270QueuePlan.h"
 #include "BMI270ProgressWatchdog.h"
 #include "BMI270SessionQuality.h"
+#include "DynamicSpscQueue.h"
 #include "FixedSpscQueue.h"
 #include "I2CLowPriorityWindow.h"
 
@@ -33,6 +36,20 @@ void putCombined_(
     putI16_(&destination[11], az);
 }
 
+void putAccel_(uint8_t* destination, int16_t x, int16_t y, int16_t z) {
+    destination[0] = 0x84;
+    putI16_(&destination[1], x);
+    putI16_(&destination[3], y);
+    putI16_(&destination[5], z);
+}
+
+void putGyro_(uint8_t* destination, int16_t x, int16_t y, int16_t z) {
+    destination[0] = 0x88;
+    putI16_(&destination[1], x);
+    putI16_(&destination[3], y);
+    putI16_(&destination[5], z);
+}
+
 } // namespace
 
 int runBMI270FifoTests() {
@@ -47,6 +64,46 @@ int runBMI270FifoTests() {
             ++failed;
         }
     };
+
+    {
+        check(BMI270FifoReadPlan::expectedBytesPerPoll(400, 50) == 104 &&
+              BMI270FifoReadPlan::adaptiveFollowupThresholdBytes(400, 50) == 208,
+              "adaptive FIFO follow-up allows two ordinary poll periods");
+        check(!BMI270FifoReadPlan::needsAdaptiveFollowup(208, 400, 50) &&
+              BMI270FifoReadPlan::needsAdaptiveFollowup(209, 400, 50),
+              "adaptive FIFO follow-up starts only beyond the backlog threshold");
+        check(BMI270FifoReadPlan::adaptiveFollowupThresholdBytes(1600, 25) == 1024,
+              "adaptive FIFO backlog threshold is bounded at half capacity");
+
+        check(BMI270QueuePlan::capacityForRate(200) == 1024 &&
+              BMI270QueuePlan::capacityForRate(400) == 2048 &&
+              BMI270QueuePlan::capacityForRate(800) == 4096 &&
+              BMI270QueuePlan::capacityForRate(1600) == 8192,
+              "IMU queue capacity preserves at least 5.12 seconds at every native ODR");
+        check(BMI270QueuePlan::coverageMs(8192, 1600) == 5120,
+              "IMU queue coverage is reported from runtime capacity");
+
+        DynamicSpscQueue<uint32_t> queue;
+        check(queue.allocate(8), "dynamic SPSC queue allocates power-of-two capacity");
+        for (uint32_t value = 0; value < 8; ++value) {
+            check(queue.push(value), "dynamic SPSC queue accepts records to capacity");
+        }
+        check(!queue.push(8), "dynamic SPSC queue rejects overflow");
+        for (uint32_t expected = 0; expected < 8; ++expected) {
+            uint32_t actual = UINT32_MAX;
+            check(queue.pop(actual) && actual == expected,
+                  "dynamic SPSC queue preserves FIFO order");
+        }
+
+        DynamicSpscRecordQueue records;
+        const uint8_t first[] = {1, 2, 3, 4};
+        uint8_t output[4] {};
+        check(records.allocate(sizeof(first), 4) &&
+              records.push(first, sizeof(first)) &&
+              records.pop(output, sizeof(output)) &&
+              memcmp(first, output, sizeof(first)) == 0,
+              "dynamic record queue retains compact encoded records");
+    }
 
     {
         uint8_t data[17] {};
@@ -69,6 +126,113 @@ int runBMI270FifoTests() {
               "24-bit sensor-time frame parsed");
         check(result.sensorTimeAnchorByteOffset == 13,
               "sensor-time capture byte position is retained for host correlation");
+    }
+
+    {
+        uint8_t data[67] {};
+        for (uint8_t index = 0; index < 7; ++index) {
+            putAccel_(&data[index * 7], index, index + 1, index + 2);
+        }
+        putGyro_(&data[49], 101, 102, 103);
+        putAccel_(&data[56], 7, 8, 9);
+        data[63] = 0x44;
+        data[64] = 0x85;
+        data[65] = 0x10;
+        data[66] = 0x00;
+        BMI270FifoParsedSample output[10] {};
+        BMI270FifoParseResult result = BMI270FifoParser::parseHeaderMode(
+            data, sizeof(data), output, 10, 0, 0, true);
+        bool havePreviousAccel = false;
+        bool havePreviousGyro = false;
+        uint32_t previousAccel = 0;
+        uint32_t previousGyro = 0;
+        check(result.samplesWritten == 8 && result.accelFrames == 8 &&
+                  result.gyroFrames == 1 && result.unpairedFrames == 0,
+              "mixed-rate FIFO retains expected single-sensor frames");
+        check(BMI270FifoParser::assignSensorTimesMixed(
+                  output,
+                  result.samplesWritten,
+                  result.sensorTimePresent,
+                  result.sensorTime,
+                  16,
+                  128,
+                  havePreviousAccel,
+                  previousAccel,
+                  havePreviousGyro,
+                  previousGyro),
+              "mixed-rate FIFO reconstructs independent sensor-time grids");
+        const size_t merged = BMI270FifoParser::mergeMixedRateFrames(
+            output, result.samplesWritten);
+        check(merged == 8 && output[0].sensorTime == 0x1010 &&
+                  output[7].sensorTime == 0x1080,
+              "mixed-rate FIFO emits one record on each accelerometer tick");
+        check(!output[6].gyroValid && output[7].gyroValid &&
+                  output[7].gyroX == 101 && output[7].gyroZ == 103,
+              "mixed-rate FIFO marks only fresh gyro samples as valid");
+    }
+
+    {
+        uint8_t data[67] {};
+        for (uint8_t index = 0; index < 7; ++index) {
+            putAccel_(&data[index * 7], index, index + 1, index + 2);
+        }
+        putGyro_(&data[49], 101, 102, 103);
+        putAccel_(&data[56], 7, 8, 9);
+        data[63] = 0x44;
+        data[64] = 0x05;
+        data[65] = 0x11;
+        data[66] = 0x00;
+        BMI270FifoParsedSample output[10] {};
+        const BMI270FifoParseResult result = BMI270FifoParser::parseHeaderMode(
+            data, sizeof(data), output, 10, 0, 0, true);
+        bool havePreviousAccel = false;
+        bool havePreviousGyro = false;
+        uint32_t previousAccel = 0;
+        uint32_t previousGyro = 0;
+        check(BMI270FifoParser::assignSensorTimesMixed(
+                  output, result.samplesWritten, result.sensorTimePresent,
+                  result.sensorTime, 32, 128, havePreviousAccel,
+                  previousAccel, havePreviousGyro, previousGyro),
+              "800/200 profile reconstructs both native sensor-time grids");
+        const size_t merged = BMI270FifoParser::mergeMixedRateFrames(
+            output, result.samplesWritten);
+        check(merged == 8 && output[0].sensorTime == 0x1020 &&
+                  output[7].sensorTime == 0x1100 &&
+                  !output[6].gyroValid && output[7].gyroValid,
+              "800/200 profile retains all accel slots and the fresh gyro slot");
+    }
+
+    {
+        BMI270FifoParsedSample output[9] {};
+        output[0].gyroValid = true;
+        output[0].gyroX = 55;
+        for (size_t index = 1; index < 9; ++index) {
+            output[index].accelValid = true;
+        }
+        bool havePreviousAccel = true;
+        bool havePreviousGyro = true;
+        uint32_t previousAccel = 0x1000;
+        uint32_t previousGyro = 0x0F80;
+        check(BMI270FifoParser::assignSensorTimesMixed(
+                  output, 9, true, 0x1085, 16, 128,
+                  havePreviousAccel, previousAccel,
+                  havePreviousGyro, previousGyro) &&
+              output[0].sensorTime == 0x1000,
+              "an orphan gyro frame is not moved onto a newer accel slot");
+        const size_t merged = BMI270FifoParser::mergeMixedRateFrames(output, 9);
+        bool anyGyroValid = false;
+        bool degraded = false;
+        for (size_t index = 0; index < merged; ++index) {
+            anyGyroValid = anyGyroValid || output[index].gyroValid;
+            degraded = degraded ||
+                (output[index].statusBefore & BMI270ImuStatus::kTimingDegraded) != 0;
+        }
+        check(merged == 8 && !anyGyroValid && degraded,
+              "an unpairable cross-batch gyro is dropped explicitly as degraded");
+        check(output[0].gyroAssociationFallback &&
+                  output[0].gyroTimingDegraded &&
+                  !output[0].accelTimingDegraded,
+              "unpairable gyro remains distinguishable from accel timing loss");
     }
 
     {
@@ -192,6 +356,9 @@ int runBMI270FifoTests() {
               "inconsistent consecutive anchors mark a discontinuity");
         check(discontinuous[0].sensorTimeDiscontinuityBefore,
               "native-clock discontinuities remain separately countable");
+        check(discontinuous[0].accelTimeDiscontinuityBefore &&
+                  discontinuous[0].accelTimingDegraded,
+              "native-time discontinuity is attributed to the accel grid");
 
         BMI270FifoParsedSample highRate[2] {};
         havePrevious = false;
@@ -456,6 +623,10 @@ int runBMI270FifoTests() {
         check(BMI270FifoReadPlan::bytesToRead(0) == 0 &&
               BMI270FifoReadPlan::bytesToRead(2049) == 0,
               "FIFO read planning rejects empty and invalid lengths");
+        check(BMI270FifoReadPlan::expectedBytesPerPoll(1600, 200, 200) == 63 &&
+                  BMI270FifoReadPlan::bytesToRead(63, 1600, 200) <
+                      BMI270FifoReadPlan::bytesToRead(104, 1600),
+              "mixed-rate FIFO planner uses the reduced gyro payload");
 
         const uint64_t frameHostUs = BMI270ImuTiming::interpolateTransferTimeUs(
             1000, 2000, 75, 100);

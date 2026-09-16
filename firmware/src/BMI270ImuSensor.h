@@ -108,6 +108,7 @@ private:
   bool muted_ = false;
   bool initialized_ = false;
   bool sessionAvailable_ = false;
+  bool captureClockObservations_ = false;
   uint32_t lastInitializationAttemptUptimeMs_ = 0;
   BMI270BdqV2::TimingObservationSampler bdqV2TimingSampler_;
   FixedSpscQueue<BdqV2Format::TimeObservation, 8> bdqV2Observations_;

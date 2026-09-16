@@ -11,9 +11,12 @@ BMI270 for a 1 kHz measurement bandwidth.
 
 ## Configuration controls
 
-- `profile`: `orientation_200`, `orientation_400`, `orientation_800`, or
-  `orientation_1600`. Accel and gyro use the same native ODR. Range and current
-  filter/performance selections remain unchanged from `orientation_200`.
+- `profile`: `orientation_200`, `orientation_400`, `orientation_800`,
+  `orientation_1600`, or the BDQ-v2-only `accel_800_gyro_200` and
+  `accel_1600_gyro_200`. The orientation profiles use equal accel/gyro ODRs;
+  the mixed profiles use 800 or 1600 Hz accel and 200 Hz gyro. Range and
+  current filter/performance selections remain unchanged from
+  `orientation_200`.
 - `fifo_poll_rate_hz`: 25, 50, 100, 200, or 400 Hz. This controls how often the
   FIFO is serviced, not the IMU sample rate.
 - `max_output_rate_hz`: legacy CSV/BDQ-v1 row materialisation only. Use BDQ v2
@@ -29,6 +32,13 @@ at the four supported rates. The scheduler's conservative 400 kbit/s model
 allows about 40 kB/s per bus (10 wire bits per transferred byte). Consequently,
 two 800 sample/s IMUs consume roughly 52% of a bus before overhead, while two
 1600 sample/s IMUs require 41.6 kB/s and cannot be sustained by that model.
+
+The 1600/200 mixed profile produces at most about 12.6 kB/s per IMU under the
+planner's conservative accounting (single-sensor headers counted separately),
+versus 20.8 kB/s for `orientation_1600`. The 800/200 profile is a lower-load
+comparison point. Two 1600/200 IMUs remain an intentional ceiling experiment
+at 400 kbit/s, but are materially more plausible than two full six-axis
+1600 Hz streams.
 
 This calculation is an expected boundary, not a substitute for the cable test.
 
@@ -59,7 +69,11 @@ and oscilloscope captures for marginal electrical cases. Review at minimum:
 - I2C bus occupancy, transaction duration/failure counts, service deadline
   misses, missed slots, and maximum start lateness;
 - FIFO full/skip events, queue high-water marks and drops, parser drops, stream
-  sequence gaps, and timing-degraded samples;
+  sequence gaps, and timing-degraded samples split by accel, gyro, and other
+  causes; accel/gyro native-time discontinuities and gyro association fallback;
+- short sensor-time register-read attempts, failures, drops, duration, and the
+  resulting host-time observation windows; these 10 Hz reads add bus load and
+  should be included when comparing runs;
 - primary logger wake lateness, missed slots, queue drops, and storage timing;
 - supply droop and SDA/SCL rise time at the furthest node.
 

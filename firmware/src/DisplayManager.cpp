@@ -4,6 +4,7 @@
 #include "UI.h"
 #include "SensorManager.h"
 #include "LoggingManager.h"
+#include "StorageManager.h"
 #include "UploadModeManager.h"
 #include "I2CManager.h"
 #include "I2CBusScheduler.h"
@@ -32,6 +33,9 @@ static String   s_footer       = "";      // <-- new: bottom row text
 static String   s_toast        = "";
 static uint8_t  s_toastSize    = 2;
 static uint32_t s_toastUntilMs = 0;
+static String   s_followupToast = "";
+static uint16_t s_followupToastMs = 0;
+static uint8_t  s_followupToastSize = 1;
 static uint32_t s_lastActivity = 0;
 static uint16_t s_idleDimMs    = 30000;
 static uint8_t  s_brightness   = 200; // 0..255
@@ -52,16 +56,227 @@ static std::atomic<uint32_t> s_deferredRefreshesScheduled { 0 };
 namespace {
   const LoggerConfig* s_cfg = nullptr;
 
+  enum class LoggingDisplayState : uint8_t {
+    Normal = 0,
+    Throttled = 1,
+    Frozen = 2,
+  };
+
+  enum class SuppressionReason : uint8_t {
+    None = 0,
+    Warmup,
+    Policy,
+    Load,
+    RecentMiss,
+    Interval,
+    Window,
+  };
+
+  OledLoggingPolicy s_loggingPolicy = OledLoggingPolicy::Auto;
+  LoggingDisplayState s_loggingState = LoggingDisplayState::Normal;
+  SuppressionReason s_freezeReason = SuppressionReason::None;
+  bool s_loggingPolicySessionActive = false;
+  uint32_t s_loggingPolicySessionStartMs = 0;
+  uint32_t s_loggingStateEnteredMs = 0;
+  uint32_t s_healthySinceMs = 0;
+  uint32_t s_lastSuppressionCountMs = 0;
+  uint32_t s_lastLoadWindowSequence = 0;
+  DisplayManager::Diagnostics s_loggingDiagnostics;
+
   // Idle HUD throttling + caching so we don’t spam the OLED
   unsigned long s_lastHudMs = 0;
   uint16_t      s_lastRate  = 0;
   uint8_t       s_lastActive= 0;
   static uint8_t       s_lastBlinkPhase= 255;     // force first draw
 
-  static constexpr uint16_t BLINK_MS = 1000;       // one-second phases
   static constexpr uint32_t LOGGING_PRESENT_INTERVAL_MS = 1000;
+  static constexpr uint32_t LOGGING_THROTTLED_PRESENT_INTERVAL_MS = 5000;
+  static constexpr uint32_t LOGGING_WARMUP_MS = 1000;
+  static constexpr uint32_t LOGGING_RECENT_MISS_US = 5000000UL;
+  static constexpr uint32_t LOGGING_RECOVERY_HOLD_MS = 10000;
+  static constexpr uint16_t LOGGING_THROTTLE_LOAD_PERMILLE = 600;
+  static constexpr uint16_t LOGGING_FREEZE_LOAD_PERMILLE = 750;
+  static constexpr uint16_t LOGGING_FROZEN_RECOVERY_PERMILLE = 650;
+  static constexpr uint16_t LOGGING_NORMAL_RECOVERY_PERMILLE = 500;
   static constexpr uint32_t OLED_TRANSFER_BUDGET_US = 30000;
   static constexpr uint32_t OLED_TRANSFER_GUARD_US = 5000;
+
+  void addStateDuration_(LoggingDisplayState state, uint32_t durationMs) {
+    switch (state) {
+      case LoggingDisplayState::Normal:
+        s_loggingDiagnostics.loggingNormalMs += durationMs;
+        break;
+      case LoggingDisplayState::Throttled:
+        s_loggingDiagnostics.loggingThrottledMs += durationMs;
+        break;
+      case LoggingDisplayState::Frozen:
+        s_loggingDiagnostics.loggingFrozenMs += durationMs;
+        break;
+    }
+  }
+
+  void transitionLoggingState_(
+      LoggingDisplayState next,
+      uint32_t nowMs,
+      SuppressionReason reason = SuppressionReason::None) {
+    if (next != s_loggingState) {
+      addStateDuration_(
+          s_loggingState,
+          static_cast<uint32_t>(nowMs - s_loggingStateEnteredMs));
+      s_loggingState = next;
+      s_loggingStateEnteredMs = nowMs;
+      s_healthySinceMs = 0;
+    }
+    s_freezeReason = next == LoggingDisplayState::Frozen
+        ? reason
+        : SuppressionReason::None;
+  }
+
+  void beginLoggingPolicySession_(uint32_t nowMs) {
+    s_loggingDiagnostics = DisplayManager::Diagnostics{};
+    s_loggingDiagnostics.loggingPolicy =
+        static_cast<uint8_t>(s_loggingPolicy);
+    s_loggingPolicySessionActive = true;
+    s_loggingPolicySessionStartMs = nowMs;
+    s_loggingStateEnteredMs = nowMs;
+    s_healthySinceMs = 0;
+    s_lastSuppressionCountMs = 0;
+    s_lastLoadWindowSequence = 0;
+    if (s_loggingPolicy == OledLoggingPolicy::PreferActive) {
+      s_loggingState = LoggingDisplayState::Normal;
+      s_freezeReason = SuppressionReason::None;
+    } else {
+      s_loggingState = LoggingDisplayState::Frozen;
+      s_freezeReason = s_loggingPolicy == OledLoggingPolicy::Freeze
+          ? SuppressionReason::Policy
+          : SuppressionReason::Warmup;
+    }
+  }
+
+  void endLoggingPolicySession_(uint32_t nowMs) {
+    if (!s_loggingPolicySessionActive) return;
+    addStateDuration_(
+        s_loggingState,
+        static_cast<uint32_t>(nowMs - s_loggingStateEnteredMs));
+    s_loggingDiagnostics.loggingState =
+        static_cast<uint8_t>(s_loggingState);
+    s_loggingPolicySessionActive = false;
+    s_loggingState = LoggingDisplayState::Normal;
+    s_freezeReason = SuppressionReason::None;
+    s_healthySinceMs = 0;
+  }
+
+  void updateLoggingPolicy_() {
+    const uint32_t nowMs = millis();
+    const bool logging = LoggingManager::isRunning();
+    if (logging && !s_loggingPolicySessionActive) {
+      beginLoggingPolicySession_(nowMs);
+    } else if (!logging && s_loggingPolicySessionActive) {
+      endLoggingPolicySession_(nowMs);
+      return;
+    }
+    if (!logging) return;
+
+    I2CBusScheduler::LiveBusLoad load;
+    I2CBusScheduler::liveBusLoad(s_busIndex, load);
+    if (load.valid && load.windowSequence != s_lastLoadWindowSequence) {
+      s_lastLoadWindowSequence = load.windowSequence;
+      ++s_loggingDiagnostics.loggingLoadSamples;
+      s_loggingDiagnostics.loggingLoadTotalPermille += load.loadPermille;
+      if (load.loadPermille >
+          s_loggingDiagnostics.loggingLoadMaximumPermille) {
+        s_loggingDiagnostics.loggingLoadMaximumPermille = load.loadPermille;
+      }
+    }
+
+    if (s_loggingPolicy == OledLoggingPolicy::Freeze) {
+      transitionLoggingState_(
+          LoggingDisplayState::Frozen, nowMs, SuppressionReason::Policy);
+      return;
+    }
+    if (s_loggingPolicy == OledLoggingPolicy::PreferActive) {
+      transitionLoggingState_(LoggingDisplayState::Normal, nowMs);
+      return;
+    }
+    if (static_cast<uint32_t>(nowMs - s_loggingPolicySessionStartMs) <
+        LOGGING_WARMUP_MS) {
+      transitionLoggingState_(
+          LoggingDisplayState::Frozen, nowMs, SuppressionReason::Warmup);
+      return;
+    }
+
+    const bool recentMiss = load.recentMissAgeUs <= LOGGING_RECENT_MISS_US;
+    if (recentMiss) {
+      transitionLoggingState_(
+          LoggingDisplayState::Frozen, nowMs, SuppressionReason::RecentMiss);
+      return;
+    }
+    if (!load.valid || load.loadPermille >= LOGGING_FREEZE_LOAD_PERMILLE) {
+      transitionLoggingState_(
+          LoggingDisplayState::Frozen, nowMs, SuppressionReason::Load);
+      return;
+    }
+
+    if (s_loggingState == LoggingDisplayState::Frozen) {
+      if (load.loadPermille < LOGGING_FROZEN_RECOVERY_PERMILLE) {
+        if (s_healthySinceMs == 0) s_healthySinceMs = nowMs;
+        if (static_cast<uint32_t>(nowMs - s_healthySinceMs) >=
+            LOGGING_RECOVERY_HOLD_MS) {
+          transitionLoggingState_(LoggingDisplayState::Throttled, nowMs);
+        }
+      } else {
+        s_healthySinceMs = 0;
+      }
+      return;
+    }
+
+    if (s_loggingState == LoggingDisplayState::Normal) {
+      if (load.loadPermille >= LOGGING_THROTTLE_LOAD_PERMILLE) {
+        transitionLoggingState_(LoggingDisplayState::Throttled, nowMs);
+      }
+      return;
+    }
+
+    if (load.loadPermille < LOGGING_NORMAL_RECOVERY_PERMILLE) {
+      if (s_healthySinceMs == 0) s_healthySinceMs = nowMs;
+      if (static_cast<uint32_t>(nowMs - s_healthySinceMs) >=
+          LOGGING_RECOVERY_HOLD_MS) {
+        transitionLoggingState_(LoggingDisplayState::Normal, nowMs);
+      }
+    } else {
+      s_healthySinceMs = 0;
+    }
+  }
+
+  void noteSuppression_(SuppressionReason reason, uint32_t nowMs) {
+    if (s_lastSuppressionCountMs != 0 &&
+        static_cast<uint32_t>(nowMs - s_lastSuppressionCountMs) < 1000) {
+      return;
+    }
+    s_lastSuppressionCountMs = nowMs;
+    switch (reason) {
+      case SuppressionReason::Warmup:
+        ++s_loggingDiagnostics.loggingSuppressionsWarmup;
+        break;
+      case SuppressionReason::Policy:
+        ++s_loggingDiagnostics.loggingSuppressionsPolicy;
+        break;
+      case SuppressionReason::Load:
+        ++s_loggingDiagnostics.loggingSuppressionsLoad;
+        break;
+      case SuppressionReason::RecentMiss:
+        ++s_loggingDiagnostics.loggingSuppressionsRecentMiss;
+        break;
+      case SuppressionReason::Interval:
+        ++s_loggingDiagnostics.loggingSuppressionsInterval;
+        break;
+      case SuppressionReason::Window:
+        ++s_loggingDiagnostics.loggingSuppressionsWindow;
+        break;
+      default:
+        break;
+    }
+  }
 
 
   static void renderStatus_() {
@@ -89,20 +304,38 @@ namespace {
     s_oled->print(s_footer);
   }
 
+  void renderLoggingHud_(uint16_t hz, uint8_t activeSensors) {
+    DisplayManager::clear();
+    renderStatus_();
+    renderFooter_();
+    DisplayManager::drawText(0, 14, "RECORDING", 2);
+    DisplayManager::drawText(
+        0, 35,
+        String(hz) + " Hz  " + String(activeSensors) + " sensors", 1);
+    const LogFormat format = ConfigManager::get().logFormat;
+    DisplayManager::drawText(
+        0, 46,
+        format == LogFormat::BodaqsMultiStreamBinary ? "BDQ v2" :
+        format == LogFormat::BodaqsCompactBinary ? "BDQ v1" : "CSV", 1);
+  }
+
   void drawIdleHud_() {
     if (!s_cfg) return;
     if (UI::isModal() || MenuSystem::isActive()) return;  // <- extra belt-and-braces
 
-    const uint16_t hz  = ConfigManager::get().sampleRateHz;   // ← live read
-    const uint8_t  act= SensorManager::activeCount();      // live active count
     const bool logging = LoggingManager::isRunning();
+    const uint16_t hz = logging
+        ? static_cast<uint16_t>(StorageManager_getSampleRateHz())
+        : ConfigManager::get().sampleRateHz;
+    const uint8_t act = SensorManager::activeCount();
     const bool uploadMode = UploadModeManager::isActive();
 
 
     // Throttle to ~5 Hz and avoid redraws if nothing changed
     unsigned long now = millis();
-    const uint8_t blinkPhase = logging ? ((now / BLINK_MS) & 0x1) : 0;  // 0/1
-    const uint8_t displayPhase = uploadMode ? 2 : blinkPhase;
+    const uint8_t displayPhase = uploadMode ? 2 : (logging ? 1 : 0);
+    if (logging && s_lastHudMs != 0 && hz == s_lastRate &&
+        act == s_lastActive && displayPhase == s_lastBlinkPhase) return;
     if (now - s_lastHudMs < 200 && hz == s_lastRate && act == s_lastActive && displayPhase == s_lastBlinkPhase) return;
     s_lastHudMs  = now;
     s_lastRate   = hz;
@@ -113,12 +346,12 @@ namespace {
     DisplayManager::clear();
     renderStatus_();
     renderFooter_();
-    const bool showMain = !logging || (blinkPhase == 0);
-
     if (uploadMode) {
       DisplayManager::drawText(0, 16, "UPLOAD", 2);
       DisplayManager::drawText(0, 34, "MODE", 2);
-    } else if (showMain) {
+    } else if (logging) {
+      renderLoggingHud_(hz, act);
+    } else {
       DisplayManager::drawText(0, 16, String(hz) + " Hz", 2);
       DisplayManager::drawText(
         0, 34,
@@ -186,6 +419,9 @@ bool DisplayManager::begin(const LoggerConfig& cfg,
                            const board::DisplayProfile& disp,
                            TwoWire* wire) {
   s_cfg = &cfg;
+  s_loggingPolicy = cfg.oledLoggingPolicy;
+  s_loggingPolicySessionActive = false;
+  s_loggingDiagnostics = Diagnostics{};
   s_wire = wire;
   s_busIndex = disp.bus_index;
   const board::I2CProfile* busProfile = I2CManager::profile(s_busIndex);
@@ -295,6 +531,7 @@ bool DisplayManager::begin(const LoggerConfig& cfg,
   // Reset UI state (unchanged)
   s_status        = "OLED ready";
   s_toast.clear();
+  s_followupToast.clear();
   s_toastSize     = 2;
   s_toastUntilMs  = 0;
   s_lastActivity  = millis();
@@ -318,6 +555,7 @@ bool DisplayManager::begin(const LoggerConfig& cfg,
 }
 
 void DisplayManager::loop() {
+  updateLoggingPolicy_();
   if (UI::isModal() || MenuSystem::isActive()) return;   // <- do nothing while menu owns the OLED
   if (!s_present) return;
   if (s_toast.length() == 0) {
@@ -328,13 +566,21 @@ void DisplayManager::loop() {
 
   // Toast expiry
   if (s_toast.length() && now >= s_toastUntilMs) {
-    s_toast = "";
-    s_toastSize = 2;
-    drawAll();
+    if (s_followupToast.length()) {
+      const String next = s_followupToast;
+      const uint16_t durationMs = s_followupToastMs;
+      const uint8_t textSize = s_followupToastSize;
+      s_followupToast.clear();
+      DisplayManager::toast(next, durationMs, textSize);
+    } else {
+      s_toast = "";
+      s_toastSize = 2;
+      drawAll();
+    }
   }
 
   // Idle dim/power-save
-  if (s_idleDimMs > 0) {
+  if (!LoggingManager::isRunning() && s_idleDimMs > 0) {
     uint32_t idle = now - s_lastActivity;
     if (!s_dimmed && idle >= s_idleDimMs) {
       s_dimmed = true;
@@ -367,12 +613,44 @@ void DisplayManager::setFooterLine(const String& line) {
 
 void DisplayManager::toast(const String& text, uint16_t durationMs, uint8_t textSize) {
   if (!s_present) return;
+  s_followupToast.clear();
   s_toast = text;
   s_toastSize = textSize ? textSize : 1;
   s_lastActivity = millis();
   s_toastUntilMs = s_lastActivity + durationMs;
   if (s_dimmed) { s_dimmed = false; setContrast(s_nominal); }
   drawAll();
+}
+
+void DisplayManager::toastSequence(
+    const String& first,
+    const String& second,
+    uint16_t durationMs,
+    uint8_t firstSize,
+    uint8_t secondSize) {
+  toast(first, durationMs, firstSize);
+  s_followupToast = second;
+  s_followupToastMs = durationMs;
+  s_followupToastSize = secondSize;
+}
+
+void DisplayManager::prepareLoggingScreen(
+    uint16_t loggerRateHz, uint8_t activeSensors) {
+  if (!s_present) return;
+  s_toast.clear();
+  s_followupToast.clear();
+  s_status = "Logging";
+  s_lastActivity = millis();
+  if (s_dimmed) {
+    s_dimmed = false;
+    setContrast(s_nominal);
+  }
+  renderLoggingHud_(loggerRateHz, activeSensors);
+  s_lastHudMs = millis();
+  s_lastRate = loggerRateHz;
+  s_lastActive = activeSensors;
+  s_lastBlinkPhase = 1;
+  present();
 }
 
 bool DisplayManager::available() { return s_present; }
@@ -397,20 +675,40 @@ void DisplayManager::setBrightness(uint8_t b) {
   if (!s_dimmed) setContrast(s_nominal);
 }
 
+void DisplayManager::setLoggingPolicy(OledLoggingPolicy policy) {
+  s_loggingPolicy = policy;
+  if (s_loggingPolicySessionActive) {
+    const uint32_t nowMs = millis();
+    endLoggingPolicySession_(nowMs);
+    beginLoggingPolicySession_(nowMs);
+  }
+}
+
 void DisplayManager::present() {
   if (!available()) return;
+  updateLoggingPolicy_();
+  const bool logging = LoggingManager::isRunning();
+  const uint32_t nowMs = millis();
+  if (logging && s_loggingState == LoggingDisplayState::Frozen) {
+    noteSuppression_(s_freezeReason, nowMs);
+    s_presentPending.store(true, std::memory_order_release);
+    return;
+  }
   if (s_transferDeferralDepth.load(std::memory_order_acquire) != 0) {
     s_deferredPresentRequests.fetch_add(1, std::memory_order_relaxed);
     s_presentPending.store(true, std::memory_order_release);
     return;
   }
-  const bool logging = LoggingManager::isRunning();
   const bool schedulerRunning = I2CBusScheduler::isRunning();
-  const uint32_t nowMs = millis();
   if (logging) {
+    const uint32_t intervalMs =
+        s_loggingState == LoggingDisplayState::Throttled
+            ? LOGGING_THROTTLED_PRESENT_INTERVAL_MS
+            : LOGGING_PRESENT_INTERVAL_MS;
     if (s_lastPresentMs != 0 &&
         static_cast<uint32_t>(nowMs - s_lastPresentMs) <
-            LOGGING_PRESENT_INTERVAL_MS) {
+            intervalMs) {
+      noteSuppression_(SuppressionReason::Interval, nowMs);
       s_presentPending = true;
       return;
     }
@@ -421,6 +719,7 @@ void DisplayManager::present() {
           OLED_TRANSFER_BUDGET_US,
           OLED_TRANSFER_GUARD_US)) {
     s_schedulerWindowDeferrals.fetch_add(1, std::memory_order_relaxed);
+    if (logging) noteSuppression_(SuppressionReason::Window, nowMs);
     s_presentPending.store(true, std::memory_order_release);
     return;
   }
@@ -441,6 +740,7 @@ void DisplayManager::present() {
           OLED_TRANSFER_GUARD_US)) {
     I2CManager::unlock(s_wire);
     s_schedulerWindowDeferrals.fetch_add(1, std::memory_order_relaxed);
+    if (logging) noteSuppression_(SuppressionReason::Window, nowMs);
     s_presentPending.store(true, std::memory_order_release);
     return;
   }
@@ -448,6 +748,7 @@ void DisplayManager::present() {
   s_oled->display();
   I2CManager::unlock(s_wire);
   s_lastPresentMs = millis();
+  if (logging) ++s_loggingDiagnostics.loggingTransfersCompleted;
   s_presentPending.store(false, std::memory_order_release);
 }
 
@@ -476,7 +777,19 @@ void DisplayManager::resumeTransfersForBus(uint8_t busIndex) {
 }
 
 DisplayManager::Diagnostics DisplayManager::diagnostics() {
-  Diagnostics out;
+  updateLoggingPolicy_();
+  Diagnostics out = s_loggingDiagnostics;
+  if (s_loggingPolicySessionActive) {
+    addStateDuration_(
+        s_loggingState,
+        static_cast<uint32_t>(millis() - s_loggingStateEnteredMs));
+    s_loggingStateEnteredMs = millis();
+    out = s_loggingDiagnostics;
+  }
+  out.loggingPolicy = static_cast<uint8_t>(s_loggingPolicy);
+  if (s_loggingPolicySessionActive) {
+    out.loggingState = static_cast<uint8_t>(s_loggingState);
+  }
   out.deferredPresentRequests = s_deferredPresentRequests.load(std::memory_order_relaxed);
   out.mutexDeferrals = s_mutexDeferrals.load(std::memory_order_relaxed);
   out.schedulerWindowDeferrals = s_schedulerWindowDeferrals.load(std::memory_order_relaxed);

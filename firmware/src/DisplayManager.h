@@ -4,6 +4,7 @@
 #include "BoardProfile.h" 
 
 struct LoggerConfig; // fwd declare
+enum class OledLoggingPolicy : uint8_t;
 
 namespace DisplayManager {
   struct Diagnostics {
@@ -11,6 +12,21 @@ namespace DisplayManager {
     uint32_t mutexDeferrals = 0;
     uint32_t schedulerWindowDeferrals = 0;
     uint32_t deferredRefreshesScheduled = 0;
+    uint32_t loggingTransfersCompleted = 0;
+    uint32_t loggingSuppressionsWarmup = 0;
+    uint32_t loggingSuppressionsPolicy = 0;
+    uint32_t loggingSuppressionsLoad = 0;
+    uint32_t loggingSuppressionsRecentMiss = 0;
+    uint32_t loggingSuppressionsInterval = 0;
+    uint32_t loggingSuppressionsWindow = 0;
+    uint32_t loggingNormalMs = 0;
+    uint32_t loggingThrottledMs = 0;
+    uint32_t loggingFrozenMs = 0;
+    uint32_t loggingLoadSamples = 0;
+    uint32_t loggingLoadTotalPermille = 0;
+    uint16_t loggingLoadMaximumPermille = 0;
+    uint8_t loggingPolicy = 0;
+    uint8_t loggingState = 0;
     uint8_t transferDeferralDepth = 0;
   };
 
@@ -27,12 +43,17 @@ namespace DisplayManager {
 
   // Transient message (bottom of screen), auto-expires
   void toast(const String& text, uint16_t durationMs = 1500, uint8_t textSize = 2);
+  void toastSequence(const String& first, const String& second,
+                     uint16_t durationMs = 1500, uint8_t firstSize = 2,
+                     uint8_t secondSize = 1);
+  void prepareLoggingScreen(uint16_t loggerRateHz, uint8_t activeSensors);
 
   // Optional helpers
   bool available();
   void clear();
   void drawText(int16_t x, int16_t y, const String& s, uint8_t size = 1);
   void setBrightness(uint8_t b); // 0..255 (mapped to contrast)
+  void setLoggingPolicy(OledLoggingPolicy policy);
   void present();
 
   // Temporarily defer physical OLED transfers while another device performs a

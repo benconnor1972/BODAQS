@@ -25,6 +25,15 @@ public:
 };
 
 namespace I2CBusScheduler {
+  struct LiveBusLoad {
+    bool valid = false;
+    bool running = false;
+    uint16_t loadPermille = 0;
+    uint16_t maximumLoadPermille = 0;
+    uint32_t windowSequence = 0;
+    uint32_t recentMissAgeUs = UINT32_MAX;
+  };
+
   bool registerClient(I2CAsyncClient* client);
   void unregisterClient(I2CAsyncClient* client);
 
@@ -34,6 +43,7 @@ namespace I2CBusScheduler {
   void start();
   void stop();
   bool isRunning();
+  bool liveBusLoad(uint8_t busIndex, LiveBusLoad& out);
 
   // True when every participating active client on the bus was serviced
   // recently enough to tolerate the proposed non-preemptible transfer.

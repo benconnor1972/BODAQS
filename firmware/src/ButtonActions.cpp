@@ -299,11 +299,18 @@ void ButtonActions::onToggleLogging(ButtonEvent event) {
     if (LoggingManager::start()) {
       ButtonManager_setPollingEnabled(false);   // suspend nav polling
       UI::println("Logging started with RTC time.", "", UI::TARGET_SERIAL, UI::LVL_INFO);
-      UI::toast("Log start", 1500, 2);
       UI::status("Logging");
     } else {
       UI::println("Failed to start logging.", "", UI::TARGET_SERIAL, UI::LVL_ERROR);
-      UI::toast("Log start\nfailed", 1500, 2);
+      const LoggingManager::StartFailureHint hint =
+          LoggingManager::startFailureHint();
+      if (hint == LoggingManager::StartFailureHint::RestartNow) {
+        UI::toastSequence("Log start\nfailed", "restart now", 1500, 2, 1);
+      } else if (hint == LoggingManager::StartFailureHint::UseBdqV2) {
+        UI::toastSequence("Log start\nfailed", "use BDQv2", 1500, 2, 1);
+      } else {
+        UI::toast("Log start\nfailed", 1500, 2);
+      }
       UI::status("Ready");
     }
   } else {

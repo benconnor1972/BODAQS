@@ -1,7 +1,7 @@
 # BMI270 IMU MVP Data Contract
 
 - Status: Accepted
-- Contract ID: bodaqs.bmi270_imu_mvp.v4
+- Contract ID: bodaqs.bmi270_imu_mvp.v5
 - Scope: Normative data contract for the accepted BMI270 IMU MVP plan and its
   high-rate I2C characterization extension
 - Related plan: [BMI270 IMU MVP Implementation Plan](BMI270_IMU_MVP_Implementation_Plan.md)
@@ -12,9 +12,9 @@ This contract fixes the externally observable data and configuration semantics n
 
 The MVP stores sensor-native evidence. Mounting transforms, scaling, calibration, and orientation are derived operations; they do not replace the raw log.
 
-Revision v4 retains the v3 `orientation_200` semantics and adds named 400, 800,
-and 1600 sample/s profiles plus an independently configurable FIFO service
-rate. Files carrying v1-v3 contract IDs retain their original interpretation.
+Revision v5 retains all v4 profile and record semantics and adds the mixed-rate
+`accel_1600_gyro_200` profile with an explicit per-record gyro-valid channel.
+Files carrying v1-v4 contract IDs retain their original interpretation.
 
 ## 2. Reference implementation
 
@@ -80,7 +80,7 @@ reason. Invalid configuration remains a start-blocking error.
 
 The initial gyroscope noise-performance choice follows the Bosch example default and is deliberately recorded. Bench data may justify a revised named profile; it must not silently alter orientation_200.
 
-The v4 high-rate profiles change only the accelerometer and gyroscope ODR from
+The named rate profiles change only the accelerometer and gyroscope ODR from
 the table above:
 
 | Profile | Accel ODR | Gyro ODR | Sensor ticks/sample |
@@ -89,6 +89,13 @@ the table above:
 | `orientation_400` | 400 Hz | 400 Hz | 64 |
 | `orientation_800` | 800 Hz | 800 Hz | 32 |
 | `orientation_1600` | 1600 Hz | 1600 Hz | 16 |
+| `accel_800_gyro_200` | 800 Hz | 200 Hz | 32 accel / 128 gyro |
+| `accel_1600_gyro_200` | 1600 Hz | 200 Hz | 16 accel / 128 gyro |
+
+The mixed profiles are available only in BDQ v2. Each stream is sequenced at
+its accelerometer rate. The 200 Hz gyro frames are associated by their
+independently reconstructed sensor-time grid; no gyro sample is repeated to
+fill intervening acceleration records.
 
 `fifo_poll_rate_hz` independently selects FIFO service at 25, 50, 100, 200,
 or 400 Hz; it does not change native sampling. Higher-rate profiles are
@@ -130,6 +137,13 @@ rate (after analogue-channel throttling). A session may therefore retain every
 Nth native frame without refusing a valid low-rate log. The current sparse-row
 adapter requires at least twice the emitted IMU rate (and 500 Hz for a full
 200 Hz `orientation_200` stream); this is an adapter limit, not an IMU limit.
+
+For either mixed profile, the otherwise unused uint16 at byte offset 26 of the
+28-byte BDQ v2 record is catalogued as `gyro_sample_valid`. It is 1 only when
+the three gyro fields contain a fresh 200 Hz measurement, and 0 when they are
+zero placeholders. Consumers must filter this channel before interpreting
+gyro values. Existing equal-rate profiles retain their v4 catalog and write
+zero padding at bytes 26-27.
 
 - Each successfully queued output sample is emitted into exactly one logger row.
 - In full-output mode every native sample is queued. In decimated-output mode,
@@ -233,9 +247,11 @@ BMI270 sensor time is a 24-bit counter with a nominal 39.0625 microsecond tick a
 Firmware:
 
 1. stores an estimated low-24-bit BMI270 tick for every valid sample when an anchor or valid continuation is available;
-2. treats the FIFO sensor-time control frame as a raw observation taken when the FIFO empties, then aligns sample ticks to the configured native grid (128, 64, 32, or 16 ticks/sample at 200, 400, 800, or 1600 Hz);
+2. treats the FIFO sensor-time control frame as a raw observation taken when the FIFO empties, then aligns sample ticks to the configured native grid (128, 64, 32, or 16 ticks/sample at 200, 400, 800, or 1600 Hz); mixed profiles reconstruct the accel and gyro grids independently;
 3. marks back-filled/interpolated values with SENSOR_TIME_ESTIMATED;
 4. correlates the raw sensor-time observation with the sensor-time frame's byte position within the host-observed FIFO transfer;
+   during logging it also reads the three-byte sensor-time register about every
+   100 ms and records a BDQ v2 `CLOCK_SYNC_WINDOW` bounded by that I2C transfer;
 5. estimates sample_age_us as:
 
        logger_row_monotonic_us - estimated_native_sample_monotonic_us
@@ -377,9 +393,13 @@ The final summary must contain, per IMU:
 - I2C failure and recovery counts;
 - I2C operation count, maximum failure streak, last failure detail, and failure counts by transport stage;
 - I2C bus-lock attempt and timeout counts, cumulative lock wait, and maximum lock wait;
-- timing-degraded sample count;
+- timing-degraded sample count, split into accel, gyro and other diagnostic
+  categories (these categories may overlap when both sensor grids are affected);
+- short sensor-time register-read attempts, successes, failures, observation
+  drops and duration;
 - acquisition-age minimum, median, 95th percentile, 99th percentile, and maximum where feasible;
-- discontinuities between emitted sequence values and native-time-anchor discontinuity counts;
+- discontinuities between emitted sequence values, accel/gyro native-time
+  discontinuities, accel tick gaps, and gyro-association fallbacks;
 - near-rail counts per accelerometer and gyro axis;
 - temperature minimum and maximum;
 - pre-session discard and stop-drain failure counts;

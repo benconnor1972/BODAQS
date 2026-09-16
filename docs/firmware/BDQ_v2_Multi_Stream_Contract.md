@@ -546,6 +546,10 @@ For a direct BMI270 stream:
 - FIFO samples retain their source sequences and reconstructed ticks;
 - an observation normally spans the host transaction interval in which the
   sensor-time frame was read; and
+- a periodic direct read of the three-byte sensor-time register produces a
+  `CLOCK_SYNC_WINDOW` observation bounded by that I2C transaction. Its
+  `related_sequence` is the latest emitted sample, not an assertion that the
+  register was latched on that sample boundary; and
 - the corresponding record and observation carry the estimated/degraded flags
   when the tick was inferred or the anchor failed validation.
 

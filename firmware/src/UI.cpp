@@ -263,6 +263,16 @@ void UI::toast(const String& oledText, uint16_t durationMs, uint8_t textSize) {
   }
 }
 
+void UI::toastSequence(const String& first, const String& second,
+                       uint16_t durationMs, uint8_t firstSize,
+                       uint8_t secondSize) {
+  if (UI::isModal()) return;
+  if (DisplayManager::available() && first.length()) {
+    DisplayManager::toastSequence(
+        first, second, durationMs, firstSize, secondSize);
+  }
+}
+
 void UI::toastModal(const String& text, uint16_t durationMs, uint8_t textSize) {
   if (DisplayManager::available() && text.length()) {
     DisplayManager::toast(text, durationMs, textSize);

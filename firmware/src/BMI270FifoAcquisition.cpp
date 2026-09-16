@@ -34,9 +34,20 @@ constexpr uint16_t kCarryStatusMask =
     BMI270ImuStatus::kSensorRecoveryBefore |
     BMI270ImuStatus::kTimingDegraded;
 constexpr int16_t kNearRailThreshold = 32760;
+constexpr uint8_t kSensorTimeRegister = 0x18;
 
 bool nearRail_(int16_t value) {
   return value <= -kNearRailThreshold || value >= kNearRailThreshold;
+}
+
+uint32_t elapsedUs_(uint64_t startedUs) {
+  const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
+  const uint64_t elapsed = nowUs >= startedUs ? nowUs - startedUs : 0;
+  return elapsed > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(elapsed);
+}
+
+uint32_t saturatingAddUs_(uint32_t first, uint32_t second) {
+  return second > UINT32_MAX - first ? UINT32_MAX : first + second;
 }
 
 bool supportedFifoPollRate_(uint16_t rateHz) {
@@ -95,10 +106,16 @@ BMI270FifoAcquisition::BMI270FifoAcquisition(
     const char* name)
     : device_(busIndex, address) {
   copyName_(name_, sizeof(name_), name);
-  diagnostics_.queueCapacity = static_cast<uint16_t>(kQueueCapacity);
-  diagnostics_.nativeRateHz = nativeRateHz_;
+  (void)queue_.allocate(BMI270QueuePlan::capacityForRate(accelRateHz()));
+  diagnostics_.queueCapacity = static_cast<uint16_t>(queue_.capacity());
+  diagnostics_.nativeRateHz = accelRateHz();
+  diagnostics_.accelRateHz = accelRateHz();
+  diagnostics_.gyroRateHz = gyroRateHz();
   diagnostics_.outputRateHz = outputRateHz_;
   diagnostics_.fifoPollRateHz = fifoPollRateHz_;
+  diagnostics_.adaptiveFollowupThresholdBytes = static_cast<uint16_t>(
+      BMI270FifoReadPlan::adaptiveFollowupThresholdBytes(
+          accelRateHz(), gyroRateHz(), fifoPollRateHz_));
 }
 
 BMI270FifoAcquisition::~BMI270FifoAcquisition() {
@@ -106,16 +123,35 @@ BMI270FifoAcquisition::~BMI270FifoAcquisition() {
 }
 
 bool BMI270FifoAcquisition::setNativeRateHz(uint16_t rateHz) {
-  if (sessionActive() || initialized_ ||
-      !BMI270Profile::isSupportedNativeRate(rateHz) ||
-      !device_.setNativeRateHz(rateHz)) {
+  const BMI270Profile::NativeProfile* profile = BMI270Profile::find(rateHz);
+  return profile && setProfile(*profile);
+}
+
+bool BMI270FifoAcquisition::setProfile(
+    const BMI270Profile::NativeProfile& profile) {
+  if (sessionActive() || initialized_) return false;
+  const BMI270Profile::NativeProfile* supported =
+      BMI270Profile::find(profile.name);
+  if (!supported || supported->accelOdrHz != profile.accelOdrHz ||
+      supported->gyroOdrHz != profile.gyroOdrHz) {
     return false;
   }
-  nativeRateHz_ = rateHz;
+  const size_t queueCapacity =
+      BMI270QueuePlan::capacityForRate(supported->accelOdrHz);
+  if (!queue_.allocate(queueCapacity) || !device_.setProfile(*supported)) {
+    return false;
+  }
+  profile_ = supported;
   outputDecimationFactor_ =
-      BMI270Profile::outputDecimationFactor(nativeRateHz_, outputRateHz_);
-  diagnostics_.nativeRateHz = nativeRateHz_;
+      BMI270Profile::outputDecimationFactor(accelRateHz(), outputRateHz_);
+  diagnostics_.nativeRateHz = accelRateHz();
+  diagnostics_.accelRateHz = accelRateHz();
+  diagnostics_.gyroRateHz = gyroRateHz();
   diagnostics_.outputRateHz = outputRateHz_;
+  diagnostics_.adaptiveFollowupThresholdBytes = static_cast<uint16_t>(
+      BMI270FifoReadPlan::adaptiveFollowupThresholdBytes(
+          accelRateHz(), gyroRateHz(), fifoPollRateHz_));
+  diagnostics_.queueCapacity = static_cast<uint16_t>(queue_.capacity());
   return outputDecimationFactor_ != 0;
 }
 
@@ -123,12 +159,12 @@ bool BMI270FifoAcquisition::setOutputRateHz(uint16_t rateHz) {
   // Output selection is a software row-materialisation choice.  It can be
   // changed between sessions without resetting the physical FIFO profile.
   if (sessionActive() ||
-      BMI270Profile::outputDecimationFactor(nativeRateHz_, rateHz) == 0) {
+      BMI270Profile::outputDecimationFactor(accelRateHz(), rateHz) == 0) {
     return false;
   }
   outputRateHz_ = rateHz;
   outputDecimationFactor_ =
-      BMI270Profile::outputDecimationFactor(nativeRateHz_, rateHz);
+      BMI270Profile::outputDecimationFactor(accelRateHz(), rateHz);
   diagnostics_.outputRateHz = outputRateHz_;
   return outputDecimationFactor_ != 0;
 }
@@ -137,6 +173,9 @@ bool BMI270FifoAcquisition::setFifoPollRateHz(uint16_t rateHz) {
   if (sessionActive() || !supportedFifoPollRate_(rateHz)) return false;
   fifoPollRateHz_ = rateHz;
   diagnostics_.fifoPollRateHz = fifoPollRateHz_;
+  diagnostics_.adaptiveFollowupThresholdBytes = static_cast<uint16_t>(
+      BMI270FifoReadPlan::adaptiveFollowupThresholdBytes(
+          accelRateHz(), gyroRateHz(), fifoPollRateHz_));
   return true;
 }
 
@@ -151,6 +190,11 @@ bool BMI270FifoAcquisition::begin() {
   ScopedOledTransferDeferral deferOled(device_.busIndex());
   sessionActive_.store(false, std::memory_order_release);
 
+  if (queue_.capacity() == 0) {
+    BMI270_FIFO_LOGW("unable to allocate sample queue name=%s native=%uHz\n",
+                     name_, (unsigned)accelRateHz());
+    return false;
+  }
   if (!I2CManager::ensureBufferCapacity(device_.busIndex(), kRawBufferBytes) ||
       !I2CManager::setTransactionTimeout(device_.busIndex(), 100)) {
     BMI270_FIFO_LOGW("unable to configure I2C burst capacity name=%s\n", name_);
@@ -175,17 +219,16 @@ bool BMI270FifoAcquisition::begin() {
   }
 
   initialized_ = true;
-  const BMI270Profile::NativeProfile* profile =
-      BMI270Profile::find(nativeRateHz_);
   BMI270_FIFO_LOGI(
-      "initialized name=%s bus=%u addr=0x%02X native=%uHz poll=%uHz queue=%u profile=%s\n",
+      "initialized name=%s bus=%u addr=0x%02X accel=%uHz gyro=%uHz poll=%uHz queue=%u profile=%s\n",
       name_,
       (unsigned)device_.busIndex(),
       (unsigned)device_.address(),
-      (unsigned)nativeRateHz_,
+      (unsigned)accelRateHz(),
+      (unsigned)gyroRateHz(),
       (unsigned)fifoPollRateHz_,
-      (unsigned)kQueueCapacity,
-      profile ? profile->name : "invalid");
+      (unsigned)queue_.capacity(),
+      profile_->name);
   return true;
 }
 
@@ -201,7 +244,9 @@ void BMI270FifoAcquisition::shutdown() {
   initialized_ = false;
 }
 
-bool BMI270FifoAcquisition::startSession(uint16_t startupObservationSeconds) {
+bool BMI270FifoAcquisition::startSession(
+    uint16_t startupObservationSeconds,
+    bool captureClockObservations) {
   // Session preparation may validate registers, flush the FIFO, or recover the
   // device. Do not interleave a full OLED transfer with that sequence when the
   // panel and IMU share a bus.
@@ -214,10 +259,11 @@ bool BMI270FifoAcquisition::startSession(uint16_t startupObservationSeconds) {
   const uint64_t preSessionDiscards = static_cast<uint64_t>(queue_.size());
   queue_.clear();
   resetSessionState_(preSessionDiscards);
+  captureClockObservations_ = captureClockObservations;
   // Keep the observer disabled until validation/recovery and the final FIFO
   // flush have completed. Those operations belong to the session boundary,
   // not to the stationary measurement window.
-  startupObservation_.begin(0, nativeRateHz_);
+  startupObservation_.begin(0, gyroRateHz());
   device_.resetTransportDiagnostics();
 
   addCounter_(diagnostics_.sessionStartValidationAttempts);
@@ -238,7 +284,7 @@ bool BMI270FifoAcquisition::startSession(uint16_t startupObservationSeconds) {
   // known pre-session boundary status.
   preSessionBoundaryStatus_ = pendingStatus_ & kCarryStatusMask;
   pendingStatus_ &= static_cast<uint16_t>(~kCarryStatusMask);
-  startupObservation_.begin(startupObservationSeconds, nativeRateHz_);
+  startupObservation_.begin(startupObservationSeconds, gyroRateHz());
 
   progressWatchdog_.arm(micros());
   sessionActive_.store(true, std::memory_order_release);
@@ -301,6 +347,7 @@ bool BMI270FifoAcquisition::asyncAcquire() {
   const uint32_t startedUs = micros();
   const bool ok = drainAllAvailable_(kNormalDrainPasses, true);
   const uint32_t durationUs = static_cast<uint32_t>(micros() - startedUs);
+  TimingStats_record(diagnostics_.drainCallUs, durationUs);
   if (durationUs > diagnostics_.maximumDrainDurationUs) {
     diagnostics_.maximumDrainDurationUs = durationUs;
   }
@@ -311,6 +358,7 @@ bool BMI270FifoAcquisition::asyncAcquire() {
     if (progressWatchdog_.expired(nowUs)) {
       return handleNoSampleProgress_(nowUs);
     }
+    maybeReadSensorTime_(static_cast<uint64_t>(esp_timer_get_time()));
     return true;
   }
 
@@ -329,6 +377,46 @@ bool BMI270FifoAcquisition::asyncAcquire() {
   consecutiveDrainFailures_ = 0;
   (void)recovered;
   return false;
+}
+
+void BMI270FifoAcquisition::maybeReadSensorTime_(uint64_t nowUs) {
+  if (!captureClockObservations_) return;
+  if (nowUs < nextSensorTimeReadUs_) return;
+  // Schedule from the actual service time; a late FIFO service never causes
+  // a burst of catch-up register reads on an already busy bus.
+  nextSensorTimeReadUs_ = nowUs + kSensorTimeObservationPeriodUs;
+  addCounter_(diagnostics_.sensorTimeReadAttempts);
+  const uint64_t startedUs = static_cast<uint64_t>(esp_timer_get_time());
+  if (!device_.beginBusTransaction(kSensorTimeRegister, 3)) {
+    addCounter_(diagnostics_.sensorTimeReadFailures);
+    TimingStats_record(diagnostics_.sensorTimeReadUs, elapsedUs_(startedUs));
+    return;
+  }
+  uint8_t bytes[3] {};
+  struct bmi2_dev& native = device_.nativeDevice();
+  const BMI2_INTF_RETURN_TYPE result =
+      native.read(kSensorTimeRegister, bytes, sizeof(bytes), native.intf_ptr);
+  const BMI270I2CReadTiming timing = device_.lastReadTiming();
+  device_.endBusTransaction();
+  TimingStats_record(diagnostics_.sensorTimeReadUs, elapsedUs_(startedUs));
+  if (result != BMI2_INTF_RET_SUCCESS || !timing.valid ||
+      timing.registerAddress != kSensorTimeRegister || timing.bytes != 3 ||
+      timing.transferEndUs < timing.transferStartUs) {
+    addCounter_(diagnostics_.sensorTimeReadFailures);
+    return;
+  }
+
+  BMI270ClockObservation observation;
+  observation.nativeTick = static_cast<uint32_t>(bytes[0]) |
+      (static_cast<uint32_t>(bytes[1]) << 8) |
+      (static_cast<uint32_t>(bytes[2]) << 16);
+  observation.relatedSequence = nextSequence_ == 0 ? UINT32_MAX : nextSequence_ - 1u;
+  observation.hostMinUs = timing.transferStartUs;
+  observation.hostMaxUs = timing.transferEndUs;
+  addCounter_(diagnostics_.sensorTimeReadSuccesses);
+  if (!clockObservations_.push(observation)) {
+    addCounter_(diagnostics_.sensorTimeObservationDrops);
+  }
 }
 
 bool BMI270FifoAcquisition::configureFifo_() {
@@ -476,23 +564,53 @@ bool BMI270FifoAcquisition::drainAllAvailable_(
     bool readTemperature,
     bool requireEmpty) {
   for (uint8_t pass = 0; pass < maximumPasses; ++pass) {
-    const DrainPassResult result = drainOnePass_(readTemperature);
+    const uint64_t passStartedUs = static_cast<uint64_t>(esp_timer_get_time());
+    uint16_t fifoLengthObserved = 0;
+    const DrainPassResult result =
+        drainOnePass_(readTemperature, &fifoLengthObserved);
+    const uint32_t passDurationUs = elapsedUs_(passStartedUs);
+    if (pass == 0) {
+      TimingStats_record(diagnostics_.firstDrainPassUs, passDurationUs);
+    } else if (pass == 1) {
+      TimingStats_record(diagnostics_.secondDrainPassUs, passDurationUs);
+    }
     if (result == DrainPassResult::Failure) return false;
     if (result == DrainPassResult::Empty) return true;
+    if (!requireEmpty && pass == 0 && maximumPasses > 1) {
+      if (!BMI270FifoReadPlan::needsAdaptiveFollowup(
+              fifoLengthObserved,
+              accelRateHz(),
+              gyroRateHz(),
+              fifoPollRateHz_)) {
+        addCounter_(diagnostics_.adaptiveFollowupSkips);
+        return true;
+      }
+      addCounter_(diagnostics_.adaptiveFollowupPasses);
+    }
   }
   addCounter_(diagnostics_.drainPassLimitHits);
   return !requireEmpty;
 }
 
 BMI270FifoAcquisition::DrainPassResult BMI270FifoAcquisition::drainOnePass_(
-    bool readTemperature) {
+    bool readTemperature,
+    uint16_t* fifoLengthObserved) {
   struct bmi2_dev& native = device_.nativeDevice();
+  const uint64_t fifoLengthStartedUs =
+      static_cast<uint64_t>(esp_timer_get_time());
   if (!device_.beginBusTransaction(BMI2_FIFO_LENGTH_0_ADDR, 2)) {
+    TimingStats_record(
+        diagnostics_.fifoLengthReadUs,
+        elapsedUs_(fifoLengthStartedUs));
     diagnostics_.lastApiResult = BMI2_E_COM_FAIL;
     return DrainPassResult::Failure;
   }
   uint16_t fifoLength = 0;
   int8_t result = bmi2_get_fifo_length(&fifoLength, &native);
+  if (fifoLengthObserved) *fifoLengthObserved = fifoLength;
+  TimingStats_record(
+      diagnostics_.fifoLengthReadUs,
+      elapsedUs_(fifoLengthStartedUs));
   diagnostics_.lastApiResult = result;
   if (result != BMI2_OK) {
     device_.endBusTransaction();
@@ -518,17 +636,23 @@ BMI270FifoAcquisition::DrainPassResult BMI270FifoAcquisition::drainOnePass_(
   if (fifoLength == 2048) addCounter_(diagnostics_.fifoFullObservations);
 
   const size_t bytesToRead =
-      BMI270FifoReadPlan::bytesToRead(fifoLength, nativeRateHz_);
+      BMI270FifoReadPlan::bytesToRead(
+          fifoLength, accelRateHz(), gyroRateHz());
   if (bytesToRead == 0 || bytesToRead > sizeof(rawBuffer_)) {
     device_.endBusTransaction();
     diagnostics_.lastApiResult = BMI2_E_INVALID_STATUS;
     return DrainPassResult::Failure;
   }
+  const uint64_t fifoDataStartedUs =
+      static_cast<uint64_t>(esp_timer_get_time());
   native.intf_rslt = native.read(
       BMI2_FIFO_DATA_ADDR,
       rawBuffer_,
       static_cast<uint32_t>(bytesToRead),
       native.intf_ptr);
+  TimingStats_record(
+      diagnostics_.fifoDataTransferUs,
+      elapsedUs_(fifoDataStartedUs));
   const BMI270I2CReadTiming transferTiming = device_.lastReadTiming();
   device_.endBusTransaction();
   if (native.intf_rslt != BMI2_INTF_RET_SUCCESS) {
@@ -546,13 +670,15 @@ BMI270FifoAcquisition::DrainPassResult BMI270FifoAcquisition::drainOnePass_(
   const uint64_t acquisitionEndUs = transferTiming.transferEndUs;
   addCounter_(diagnostics_.fifoBytesRead, bytesToRead);
 
+  const uint64_t parseStartedUs = static_cast<uint64_t>(esp_timer_get_time());
   const BMI270FifoParseResult parsed = BMI270FifoParser::parseHeaderMode(
       rawBuffer_,
       bytesToRead,
       parsed_,
       kMaximumBatchSamples,
       pendingStatus_,
-      pendingSkippedFrames_);
+      pendingSkippedFrames_,
+      mixedRate());
   pendingStatus_ = parsed.pendingStatus;
   pendingSkippedFrames_ = parsed.pendingSkippedFrames;
   accumulateParseDiagnostics_(parsed);
@@ -562,14 +688,23 @@ BMI270FifoAcquisition::DrainPassResult BMI270FifoAcquisition::drainOnePass_(
     diagnostics_.recoveryAttemptsWithoutProgress = 0;
   }
 
-  if (parsed.samplesWritten == 0) return DrainPassResult::Data;
+  uint32_t parseEnqueueDurationUs = elapsedUs_(parseStartedUs);
+  if (parsed.samplesWritten == 0) {
+    TimingStats_record(diagnostics_.parseEnqueueUs, parseEnqueueDurationUs);
+    return DrainPassResult::Data;
+  }
   if (!parsed.sensorTimePresent) addCounter_(diagnostics_.missingSensorTimeBatches);
 
   int16_t temperatureRaw = lastTemperatureRaw_;
   if (readTemperature &&
       (!haveTemperature_ || acquisitionEndUs >= nextTemperatureReadUs_)) {
     addCounter_(diagnostics_.temperatureReads);
+    const uint64_t temperatureStartedUs =
+        static_cast<uint64_t>(esp_timer_get_time());
     result = bmi2_get_temperature_data(&temperatureRaw, &native);
+    TimingStats_record(
+        diagnostics_.temperatureReadUs,
+        elapsedUs_(temperatureStartedUs));
     if (result == BMI2_OK) {
       lastTemperatureRaw_ = temperatureRaw;
       haveTemperature_ = true;
@@ -585,6 +720,8 @@ BMI270FifoAcquisition::DrainPassResult BMI270FifoAcquisition::drainOnePass_(
   const bool temperatureFresh = haveTemperature_ &&
       acquisitionEndUs - lastTemperatureHostUs_ <= kTemperatureFreshnessUs;
 
+  const uint64_t enqueueStartedUs =
+      static_cast<uint64_t>(esp_timer_get_time());
   enqueueParsed_(
       parsed,
       parsed.samplesWritten,
@@ -593,6 +730,10 @@ BMI270FifoAcquisition::DrainPassResult BMI270FifoAcquisition::drainOnePass_(
       acquisitionStartUs,
       acquisitionEndUs,
       bytesToRead);
+  parseEnqueueDurationUs = saturatingAddUs_(
+      parseEnqueueDurationUs,
+      elapsedUs_(enqueueStartedUs));
+  TimingStats_record(diagnostics_.parseEnqueueUs, parseEnqueueDurationUs);
   maybeCaptureIocOffsetSnapshot_(acquisitionEndUs);
   return DrainPassResult::Data;
 }
@@ -675,10 +816,15 @@ void BMI270FifoAcquisition::resetSessionState_(uint64_t preSessionDiscards) {
   const uint8_t effectiveGyroFiltered = diagnostics_.effectiveGyroFiltered;
   const bool fifoConfigured = diagnostics_.fifoConfigured;
   diagnostics_ = BMI270FifoDiagnostics{};
-  diagnostics_.nativeRateHz = nativeRateHz_;
+  diagnostics_.nativeRateHz = accelRateHz();
+  diagnostics_.accelRateHz = accelRateHz();
+  diagnostics_.gyroRateHz = gyroRateHz();
   diagnostics_.outputRateHz = outputRateHz_;
   diagnostics_.fifoPollRateHz = fifoPollRateHz_;
-  diagnostics_.queueCapacity = static_cast<uint16_t>(kQueueCapacity);
+  diagnostics_.adaptiveFollowupThresholdBytes = static_cast<uint16_t>(
+      BMI270FifoReadPlan::adaptiveFollowupThresholdBytes(
+          accelRateHz(), gyroRateHz(), fifoPollRateHz_));
+  diagnostics_.queueCapacity = static_cast<uint16_t>(queue_.capacity());
   diagnostics_.effectiveFifoConfig = effectiveFifoConfig;
   diagnostics_.effectiveFifoWatermark = effectiveFifoWatermark;
   diagnostics_.effectiveAccelDownsample = effectiveAccelDownsample;
@@ -688,6 +834,7 @@ void BMI270FifoAcquisition::resetSessionState_(uint64_t preSessionDiscards) {
   diagnostics_.fifoConfigured = fifoConfigured;
   diagnostics_.preSessionQueueDiscards = preSessionDiscards;
   nextSequence_ = 0;
+  nextStartupObservationSequence_ = 0;
   nextAcquisitionBatchId_ = 0;
   pendingStatus_ = 0;
   preSessionBoundaryStatus_ = 0;
@@ -700,12 +847,18 @@ void BMI270FifoAcquisition::resetSessionState_(uint64_t preSessionDiscards) {
   progressWatchdog_.disarm();
   havePreviousSensorTime_ = false;
   previousSensorTime_ = 0;
+  havePreviousGyroSensorTime_ = false;
+  previousGyroSensorTime_ = 0;
+  havePreviousEmittedAccelTick_ = false;
+  previousEmittedAccelTick_ = 0;
   haveTemperature_ = false;
   lastTemperatureRaw_ = 0;
   lastTemperatureHostUs_ = 0;
   nextTemperatureReadUs_ = 0;
   nextIocOffsetReadUs_ = 0;
+  nextSensorTimeReadUs_ = 0;
   iocOffsetSnapshots_.clear();
+  clockObservations_.clear();
   ageHistogram_.reset();
   temperatureStats_.reset();
   havePreviousDequeuedSequence_ = false;
@@ -738,14 +891,34 @@ void BMI270FifoAcquisition::enqueueParsed_(
     size_t bytesRead) {
   const uint32_t acquisitionBatchId = nextAcquisitionBatchId_++;
   const bool hadPreviousSensorTime = havePreviousSensorTime_;
-  const bool haveSensorTimeReference = BMI270FifoParser::assignSensorTimes(
-      parsed_,
-      count,
-      parsed.sensorTimePresent,
-      parsed.sensorTime,
-      BMI270Profile::sensorTimeTicksPerSample(nativeRateHz_),
-      havePreviousSensorTime_,
-      previousSensorTime_);
+  bool haveSensorTimeReference = false;
+  if (mixedRate()) {
+    haveSensorTimeReference = BMI270FifoParser::assignSensorTimesMixed(
+        parsed_,
+        count,
+        parsed.sensorTimePresent,
+        parsed.sensorTime,
+        BMI270Profile::sensorTimeTicksPerSample(accelRateHz()),
+        BMI270Profile::sensorTimeTicksPerSample(gyroRateHz()),
+        havePreviousSensorTime_,
+        previousSensorTime_,
+        havePreviousGyroSensorTime_,
+        previousGyroSensorTime_);
+    count = BMI270FifoParser::mergeMixedRateFrames(parsed_, count);
+  } else {
+    haveSensorTimeReference = BMI270FifoParser::assignSensorTimes(
+        parsed_,
+        count,
+        parsed.sensorTimePresent,
+        parsed.sensorTime,
+        BMI270Profile::sensorTimeTicksPerSample(accelRateHz()),
+        havePreviousSensorTime_,
+        previousSensorTime_);
+  }
+  if (count == 0) {
+    pendingStatus_ |= parsed.pendingStatus;
+    return;
+  }
 
   uint32_t referenceSensorTime = 0;
   uint64_t referenceHostUs = 0;
@@ -785,6 +958,7 @@ void BMI270FifoAcquisition::enqueueParsed_(
     sample.gyroX = parsed_[index].gyroX;
     sample.gyroY = parsed_[index].gyroY;
     sample.gyroZ = parsed_[index].gyroZ;
+    sample.gyroValid = parsed_[index].gyroValid;
     sample.temperatureRaw = temperatureRaw;
     sample.statusFlags = parsed_[index].statusBefore;
     sample.sensorTime = parsed_[index].sensorTime;
@@ -801,15 +975,15 @@ void BMI270FifoAcquisition::enqueueParsed_(
       sample.statusFlags |= BMI270ImuStatus::kAccelNearRail;
       addCounter_(diagnostics_.accelNearRail[2]);
     }
-    if (nearRail_(sample.gyroX)) {
+    if (sample.gyroValid && nearRail_(sample.gyroX)) {
       sample.statusFlags |= BMI270ImuStatus::kGyroNearRail;
       addCounter_(diagnostics_.gyroNearRail[0]);
     }
-    if (nearRail_(sample.gyroY)) {
+    if (sample.gyroValid && nearRail_(sample.gyroY)) {
       sample.statusFlags |= BMI270ImuStatus::kGyroNearRail;
       addCounter_(diagnostics_.gyroNearRail[1]);
     }
-    if (nearRail_(sample.gyroZ)) {
+    if (sample.gyroValid && nearRail_(sample.gyroZ)) {
       sample.statusFlags |= BMI270ImuStatus::kGyroNearRail;
       addCounter_(diagnostics_.gyroNearRail[2]);
     }
@@ -844,23 +1018,53 @@ void BMI270FifoAcquisition::enqueueParsed_(
     if (parsed_[index].sensorTimeDiscontinuityBefore) {
       addCounter_(diagnostics_.nativeTimeDiscontinuityEvents);
     }
+    if (parsed_[index].accelTimeDiscontinuityBefore) {
+      addCounter_(diagnostics_.accelNativeTimeDiscontinuityEvents);
+    }
+    if (parsed_[index].gyroTimeDiscontinuityBefore) {
+      addCounter_(diagnostics_.gyroNativeTimeDiscontinuityEvents);
+    }
+    if (parsed_[index].gyroAssociationFallback) {
+      addCounter_(diagnostics_.gyroAssociationFallbackEvents);
+    }
+    const uint32_t expectedAccelStep =
+        BMI270Profile::sensorTimeTicksPerSample(accelRateHz());
+    if (havePreviousEmittedAccelTick_ &&
+        ((sample.sensorTime - previousEmittedAccelTick_) &
+         BMI270FifoParser::kSensorTimeMask) != expectedAccelStep) {
+      addCounter_(diagnostics_.accelNativeTickGapEvents);
+    }
+    previousEmittedAccelTick_ = sample.sensorTime;
+    havePreviousEmittedAccelTick_ = true;
     if (sample.statusFlags & BMI270ImuStatus::kTimingDegraded) {
       addCounter_(diagnostics_.timingDegradedSamples);
+      if (parsed_[index].accelTimingDegraded) {
+        addCounter_(diagnostics_.accelTimingDegradedSamples);
+      }
+      if (parsed_[index].gyroTimingDegraded) {
+        addCounter_(diagnostics_.gyroTimingDegradedSamples);
+      }
+      if (!parsed_[index].accelTimingDegraded &&
+          !parsed_[index].gyroTimingDegraded) {
+        addCounter_(diagnostics_.otherTimingDegradedSamples);
+      }
     }
     if (temperatureFresh) {
       temperatureStats_.add(static_cast<double>(temperatureRaw) / 512.0 + 23.0);
     }
-    startupObservation_.observe(
-        sample.sequence,
-        sample.accelX,
-        sample.accelY,
-        sample.accelZ,
-        sample.gyroX,
-        sample.gyroY,
-        sample.gyroZ,
-        sample.temperatureRaw,
-        temperatureFresh,
-        sample.measurementStatusFlags());
+    if (sample.gyroValid) {
+      startupObservation_.observe(
+          nextStartupObservationSequence_++,
+          sample.accelX,
+          sample.accelY,
+          sample.accelZ,
+          sample.gyroX,
+          sample.gyroY,
+          sample.gyroZ,
+          sample.temperatureRaw,
+          temperatureFresh,
+          sample.measurementStatusFlags());
+    }
     const bool retainForOutput =
         outputDecimationFactor_ == 1 ||
         (sample.sequence % outputDecimationFactor_) == (outputDecimationFactor_ - 1u);

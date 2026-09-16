@@ -15,12 +15,22 @@ struct BMI270FifoParsedSample {
   uint16_t statusBefore = 0;
   uint32_t skippedFramesBefore = 0;
   uint32_t sensorTime = 0;
+  bool accelValid = false;
+  bool gyroValid = false;
   bool sensorTimeDiscontinuityBefore = false;
+  bool accelTimeDiscontinuityBefore = false;
+  bool gyroTimeDiscontinuityBefore = false;
+  bool accelTimingDegraded = false;
+  bool gyroTimingDegraded = false;
+  bool gyroAssociationFallback = false;
 };
 
 struct BMI270FifoParseResult {
   size_t samplesWritten = 0;
   uint32_t sampleFrames = 0;
+  uint32_t accelFrames = 0;
+  uint32_t gyroFrames = 0;
+  uint32_t combinedFrames = 0;
   uint32_t outputDrops = 0;
   uint32_t skippedFrames = 0;
   uint32_t skipControlFrames = 0;
@@ -49,7 +59,8 @@ BMI270FifoParseResult parseHeaderMode(
     BMI270FifoParsedSample* output,
     size_t outputCapacity,
     uint16_t initialStatus = 0,
-    uint32_t initialSkippedFrames = 0);
+    uint32_t initialSkippedFrames = 0,
+    bool retainUnpairedFrames = false);
 
 bool assignSensorTimes200Hz(
     BMI270FifoParsedSample* parsed,
@@ -67,5 +78,24 @@ bool assignSensorTimes(
     uint32_t ticksPerSample,
     bool& havePreviousSensorTime,
     uint32_t& previousSensorTime);
+
+bool assignSensorTimesMixed(
+    BMI270FifoParsedSample* parsed,
+    size_t count,
+    bool anchorPresent,
+    uint32_t anchorSensorTime,
+    uint32_t accelTicksPerSample,
+    uint32_t gyroTicksPerSample,
+    bool& havePreviousAccelSensorTime,
+    uint32_t& previousAccelSensorTime,
+    bool& havePreviousGyroSensorTime,
+    uint32_t& previousGyroSensorTime);
+
+// Associates the sparse gyro frames in a mixed-ODR FIFO with accelerometer
+// frames carrying the same reconstructed sensor tick, then compacts the array
+// to one output record per accelerometer sample.
+size_t mergeMixedRateFrames(
+    BMI270FifoParsedSample* parsed,
+    size_t count);
 
 } // namespace BMI270FifoParser

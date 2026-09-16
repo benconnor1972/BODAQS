@@ -56,7 +56,9 @@ bool BdqV2Writer::begin(
       !metadataJson || metadataLength == 0 ||
       !streamCatalogJson || streamCatalogLength == 0 ||
       config.maximumRecordsPerChunk == 0 ||
-      config.maximumObservationsPerChunk == 0) {
+      config.maximumObservationsPerChunk == 0 ||
+      config.minimumRecordsPerChunk == 0 ||
+      config.minimumRecordsPerChunk > config.maximumRecordsPerChunk) {
     return false;
   }
 
@@ -66,6 +68,8 @@ bool BdqV2Writer::begin(
     if (recordSize > largestRecord) largestRecord = recordSize;
     streams_[index].stats = {};
     streams_[index].stats.streamId = streams_[index].source.streamId;
+    streams_[index].pendingSinceUs = 0;
+    streams_[index].pendingAgeTracked = false;
   }
   const size_t minimumWorkspace = BdqV2Format::kStreamDataHeaderBytes +
                                   largestRecord +
@@ -116,10 +120,58 @@ bool BdqV2Writer::drainNextChunk() {
     const size_t index = (nextStreamIndex_ + offset) % streamCount_;
     if (!pending_(streams_[index].source)) continue;
     if (!stageAndWriteStream_(index)) return false;
+    updatePendingAgeAfterWrite_(streams_[index], 0);
     nextStreamIndex_ = (index + 1) % streamCount_;
     return true;
   }
   return false;
+}
+
+bool BdqV2Writer::drainNextReadyChunk(uint64_t nowUs) {
+  if (!isActive() || streamCount_ == 0) return false;
+  for (size_t offset = 0; offset < streamCount_; ++offset) {
+    const size_t index = (nextStreamIndex_ + offset) % streamCount_;
+    RegisteredStream& stream = streams_[index];
+    if (!streamReady_(stream, nowUs)) continue;
+    if (!stageAndWriteStream_(index)) return false;
+    updatePendingAgeAfterWrite_(stream, nowUs);
+    nextStreamIndex_ = (index + 1) % streamCount_;
+    return true;
+  }
+  return false;
+}
+
+bool BdqV2Writer::streamReady_(RegisteredStream& stream, uint64_t nowUs) {
+  const size_t records = stream.source.pendingRecords(stream.source.context);
+  const size_t observations =
+      stream.source.pendingObservations(stream.source.context);
+  if (records == 0 && observations == 0) {
+    stream.pendingAgeTracked = false;
+    stream.pendingSinceUs = 0;
+    return false;
+  }
+  if (!stream.pendingAgeTracked) {
+    stream.pendingAgeTracked = true;
+    stream.pendingSinceUs = nowUs;
+  }
+  if (records >= config_.minimumRecordsPerChunk ||
+      observations >= config_.maximumObservationsPerChunk ||
+      config_.maximumChunkLatencyUs == 0) {
+    return true;
+  }
+  return nowUs - stream.pendingSinceUs >= config_.maximumChunkLatencyUs;
+}
+
+void BdqV2Writer::updatePendingAgeAfterWrite_(
+    RegisteredStream& stream,
+    uint64_t nowUs) {
+  if (pending_(stream.source)) {
+    stream.pendingAgeTracked = true;
+    stream.pendingSinceUs = nowUs;
+  } else {
+    stream.pendingAgeTracked = false;
+    stream.pendingSinceUs = 0;
+  }
 }
 
 size_t BdqV2Writer::drain(size_t maximumChunks) {

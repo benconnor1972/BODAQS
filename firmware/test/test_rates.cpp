@@ -1,6 +1,7 @@
 #include <cstdio>
 
 #include "Rates.h"
+#include "I2CSchedulePlan.h"
 
 int runRateTests() {
     int passed = 0;
@@ -25,6 +26,14 @@ int runRateTests() {
               Rates::missedSlots(1000, 1000) == 1 &&
               Rates::missedSlots(2501, 1000) == 2,
           "missed slots use the configured microsecond period");
+    check(I2CSchedulePlan::staggerOffsetUs(20000, 0, 2) == 0 &&
+              I2CSchedulePlan::staggerOffsetUs(20000, 1, 2) == 10000,
+          "equal-rate I2C clients are staggered across their shared period");
+    check(I2CSchedulePlan::staggerOffsetUs(10000, 2, 4) == 5000,
+          "I2C phase staggering scales to more than two peers");
+    check(I2CSchedulePlan::nextTieCursor(5, 8) == 6 &&
+              I2CSchedulePlan::nextTieCursor(7, 8) == 0,
+          "I2C overdue-tie selection rotates through the client table");
 
     std::printf("Rates: %d passed, %d failed\n", passed, failed);
     return failed;

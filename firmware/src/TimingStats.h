@@ -111,6 +111,9 @@ struct I2CBusSchedulerTimingStats {
     bool running = false;
     uint8_t clientCount = 0;
     uint32_t hz = 0;
+    uint16_t rollingLoadAveragePermille = 0;
+    uint16_t rollingLoadMaximumPermille = 0;
+    uint32_t rollingLoadWindows = 0;
     TimingSummary acquireLoopUs;
   };
 

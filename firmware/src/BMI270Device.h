@@ -107,8 +107,12 @@ public:
   BMI270Device& operator=(const BMI270Device&) = delete;
 
   bool begin();
+  bool setProfile(const BMI270Profile::NativeProfile& profile);
   bool setNativeRateHz(uint16_t rateHz);
-  uint16_t nativeRateHz() const { return nativeRateHz_; }
+  uint16_t nativeRateHz() const { return profile_->accelOdrHz; }
+  uint16_t accelRateHz() const { return profile_->accelOdrHz; }
+  uint16_t gyroRateHz() const { return profile_->gyroOdrHz; }
+  const BMI270Profile::NativeProfile& profile() const { return *profile_; }
   bool setGyroBiasMode(BMI270GyroBiasMode mode);
   BMI270GyroBiasMode gyroBiasMode() const { return gyroBiasMode_; }
   bool suspend();
@@ -159,6 +163,6 @@ private:
   struct bmi2_dev device_ {};
   BMI270Profile::EffectiveConfig effectiveConfig_;
   BMI270DeviceDiagnostics diagnostics_;
-  uint16_t nativeRateHz_ = BMI270Profile::kOdrHz;
+  const BMI270Profile::NativeProfile* profile_ = &BMI270Profile::kNativeProfiles[0];
   BMI270GyroBiasMode gyroBiasMode_ = BMI270GyroBiasMode::Off;
 };

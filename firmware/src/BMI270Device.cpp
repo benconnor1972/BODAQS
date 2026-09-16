@@ -64,11 +64,18 @@ bool BMI270Device::setGyroBiasMode(BMI270GyroBiasMode mode) {
 }
 
 bool BMI270Device::setNativeRateHz(uint16_t rateHz) {
-  if (diagnostics_.state != BMI270DeviceState::Uninitialized ||
-      !BMI270Profile::isSupportedNativeRate(rateHz)) {
+  const BMI270Profile::NativeProfile* profile = BMI270Profile::find(rateHz);
+  return profile && setProfile(*profile);
+}
+
+bool BMI270Device::setProfile(const BMI270Profile::NativeProfile& profile) {
+  if (diagnostics_.state != BMI270DeviceState::Uninitialized) return false;
+  const BMI270Profile::NativeProfile* supported = BMI270Profile::find(profile.name);
+  if (!supported || supported->accelOdrHz != profile.accelOdrHz ||
+      supported->gyroOdrHz != profile.gyroOdrHz) {
     return false;
   }
-  nativeRateHz_ = rateHz;
+  profile_ = supported;
   return true;
 }
 
@@ -87,14 +94,14 @@ bool BMI270Device::begin() {
     ++diagnostics_.initializationAttempts;
     if (initializeOnce_()) {
       setState_(BMI270DeviceState::Ready);
-      const BMI270Profile::NativeProfile* profile =
-          BMI270Profile::find(nativeRateHz_);
       BMI270_LOGI(
-          "ready bus=%u addr=0x%02X chip=0x%02X profile=%s\n",
+          "ready bus=%u addr=0x%02X chip=0x%02X profile=%s accel_hz=%u gyro_hz=%u\n",
           (unsigned)busIndex(),
           (unsigned)address(),
           (unsigned)diagnostics_.chipId,
-          profile ? profile->name : "invalid");
+          profile_->name,
+          (unsigned)profile_->accelOdrHz,
+          (unsigned)profile_->gyroOdrHz);
       return true;
     }
 
@@ -186,7 +193,7 @@ bool BMI270Device::validateOperationalState(
     out.lastApiResult = result;
   } else {
     copyEffectiveConfig_(config, out.effectiveConfig);
-    if (!BMI270Profile::matches(out.effectiveConfig, nativeRateHz_)) {
+    if (!BMI270Profile::matches(out.effectiveConfig, *profile_)) {
       out.issues |= BMI270OperationalIssue::kProfileMismatch;
       out.lastApiResult = BMI2_E_INVALID_STATUS;
     }
@@ -296,12 +303,12 @@ bool BMI270Device::configureOrientationProfile_() {
     return false;
   }
 
-  config[0].cfg.acc.odr = BMI270Profile::odrCodeForRate(nativeRateHz_);
+  config[0].cfg.acc.odr = profile_->accelOdrCode;
   config[0].cfg.acc.range = BMI2_ACC_RANGE_16G;
   config[0].cfg.acc.bwp = BMI2_ACC_NORMAL_AVG4;
   config[0].cfg.acc.filter_perf = BMI2_PERF_OPT_MODE;
 
-  config[1].cfg.gyr.odr = BMI270Profile::odrCodeForRate(nativeRateHz_);
+  config[1].cfg.gyr.odr = profile_->gyroOdrCode;
   config[1].cfg.gyr.range = BMI2_GYR_RANGE_2000;
   config[1].cfg.gyr.bwp = BMI2_GYR_NORMAL_MODE;
   config[1].cfg.gyr.noise_perf = BMI2_POWER_OPT_MODE;
@@ -334,7 +341,7 @@ bool BMI270Device::configureOrientationProfile_() {
   diagnostics_.configurationReadOk = true;
   copyEffectiveConfig_(effective, effectiveConfig_);
   diagnostics_.configurationMatched =
-      BMI270Profile::matches(effectiveConfig_, nativeRateHz_);
+      BMI270Profile::matches(effectiveConfig_, *profile_);
   if (!diagnostics_.configurationMatched) {
     fail_(BMI270DeviceStep::VerifyConfiguration, BMI2_E_INVALID_STATUS);
     return false;

@@ -155,8 +155,19 @@ int runBdqV2WriterTests() {
               "BMI270 record preserves public status and masks internal evidence");
         check(static_cast<int16_t>(BdqV2Format::getU16(encoded + 12)) == -123 &&
               static_cast<int16_t>(BdqV2Format::getU16(encoded + 14)) == 456 &&
-              static_cast<int16_t>(BdqV2Format::getU16(encoded + 22)) == -789,
-              "BMI270 record preserves signed sensor values");
+              static_cast<int16_t>(BdqV2Format::getU16(encoded + 22)) == -789 &&
+              BdqV2Format::getU16(encoded + 26) == 0,
+              "BMI270 legacy record preserves sensor values and zero padding");
+        sample.gyroValid = true;
+        check(BMI270BdqV2::encodeRecord(
+                  sample, encoded, sizeof(encoded), true) &&
+              BdqV2Format::getU16(encoded + 26) == 1,
+              "BMI270 mixed-rate record marks a fresh gyro sample");
+        sample.gyroValid = false;
+        check(BMI270BdqV2::encodeRecord(
+                  sample, encoded, sizeof(encoded), true) &&
+              BdqV2Format::getU16(encoded + 26) == 0,
+              "BMI270 mixed-rate record marks gyro placeholders invalid");
 
         BMI270BdqV2::TimingObservationSampler sampler;
         sample.acquisitionBatchId = 1;
@@ -374,6 +385,54 @@ int runBdqV2WriterTests() {
               imuStats->observationsWritten == 1 && imuStats->firstSequence == 10 &&
               imuStats->lastSequence == 11,
               "writer retains per-stream persistence diagnostics");
+    }
+
+    {
+        BdqV2StreamQueue<16, 16, 2> stream(1, uint64_t{1} << 32);
+        uint8_t record[16];
+        for (uint32_t sequence = 0; sequence < 3; ++sequence) {
+            makeRecord(record, sizeof(record), sequence, 100 + sequence, 0,
+                       static_cast<int16_t>(sequence));
+            check(stream.enqueueRecord(record, sizeof(record)),
+                  "latency-batched record enqueues");
+        }
+
+        MemorySink sink;
+        uint8_t workspace[256];
+        BdqV2Writer writer;
+        check(writer.addStream(stream.source()),
+              "latency-batched stream registers");
+        BdqV2WriterConfig config;
+        config.maximumRecordsPerChunk = 8;
+        config.maximumObservationsPerChunk = 2;
+        config.minimumRecordsPerChunk = 4;
+        config.maximumChunkLatencyUs = 1000;
+        const char metadata[] = "{\"format\":\"bdq.v2\"}";
+        const char catalog[] = "{\"schema_format\":\"bdq.stream_catalog.v1\"}";
+        check(writer.begin(
+                  sink, workspace, sizeof(workspace), 1,
+                  metadata, sizeof(metadata) - 1,
+                  catalog, sizeof(catalog) - 1, config),
+              "latency-batched writer begins");
+        check(!writer.drainNextReadyChunk(10000) &&
+              !writer.drainNextReadyChunk(10999),
+              "partial chunk waits below its age bound");
+        check(writer.drainNextReadyChunk(11000) &&
+              writer.stats().recordsWritten == 3,
+              "partial chunk drains when its age bound expires");
+
+        for (uint32_t sequence = 3; sequence < 7; ++sequence) {
+            makeRecord(record, sizeof(record), sequence, 100 + sequence, 0,
+                       static_cast<int16_t>(sequence));
+            check(stream.enqueueRecord(record, sizeof(record)),
+                  "threshold-batched record enqueues");
+        }
+        check(writer.drainNextReadyChunk(11001) &&
+              writer.stats().recordsWritten == 7,
+              "full minimum batch drains without waiting");
+        const char summary[] = "{\"summary_format\":\"bdq.final_summary.v2\"}";
+        check(writer.end(summary, sizeof(summary) - 1),
+              "latency-batched writer closes cleanly");
     }
 
     std::printf("BDQ v2 writer: %d passed, %d failed\n", passed, failed);

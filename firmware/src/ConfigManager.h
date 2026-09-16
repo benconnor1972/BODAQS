@@ -24,6 +24,12 @@ enum class WiFiMode : uint8_t {
   AccessPoint = 1
 };
 
+enum class OledLoggingPolicy : uint8_t {
+  Auto = 0,
+  Freeze = 1,
+  PreferActive = 2
+};
+
 struct SensorSpec; 
 
 // ----------------- Button + binding config -----------------
@@ -99,6 +105,7 @@ struct LoggerConfig {
   uint8_t uiOledLevel    = 3;
   uint8_t oledBrightness = 200;
   uint16_t oledIdleDimMs = 30000;
+  OledLoggingPolicy oledLoggingPolicy = OledLoggingPolicy::Auto;
 
   //Methods
   uint8_t sensorCount() const;
@@ -175,6 +182,11 @@ class ConfigManager {
     static const char* wifiModeKey(WiFiMode mode);
     static const char* wifiModeLabel(WiFiMode mode);
     static bool parseWifiMode(const char* text, WiFiMode& out);
+    static const char* oledLoggingPolicyKey(OledLoggingPolicy policy);
+    static const char* oledLoggingPolicyLabel(OledLoggingPolicy policy);
+    static bool parseOledLoggingPolicy(
+        const char* text,
+        OledLoggingPolicy& out);
 
     // line parser (public so tests or tooling can reuse)
     static bool parseLine(char* line, LoggerConfig& cfg);

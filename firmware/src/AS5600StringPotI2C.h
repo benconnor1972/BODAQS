@@ -15,7 +15,7 @@ public:
     uint16_t asyncRateHz = 0; // 0 = follow logger sample rate
     bool includeAngleColumn = false;
     bool includeDiagColumns = false;
-    uint32_t diagnosticIntervalMs = 250;
+    uint32_t diagnosticIntervalMs = 1000;
   };
 
   explicit AS5600StringPotI2C(const Params& p);
@@ -75,6 +75,7 @@ private:
 
   bool probe_() const;
   bool readRegBytesLocked_(uint8_t reg, uint8_t* out, uint8_t len) const;
+  bool readRawAngleBytesLocked_(uint8_t* out) const;
   bool writeRegBytesLocked_(uint8_t reg, const uint8_t* data, uint8_t len) const;
   bool readReg16_(uint8_t reg, uint16_t& value) const;
   bool readAngleRegister_(uint16_t& value) const;
@@ -106,7 +107,7 @@ private:
   uint8_t  m_i2cAddr = 0x36;
   int8_t m_slowFilterCode = -1;
   uint16_t m_asyncRateHz = 0;
-  uint32_t m_diagnosticIntervalMs = 250;
+  uint32_t m_diagnosticIntervalMs = 1000;
   bool m_includeAngleColumn = false;
   bool m_includeDiagColumns = false;
   mutable TwoWire* m_wire = nullptr;
@@ -125,6 +126,8 @@ private:
   mutable bool m_lastReadReused = false;
   mutable uint32_t m_readFailures = 0;
   mutable uint32_t m_diagnosticReadFailures = 0;
+  mutable bool m_rawAnglePointerPrimed = false;
+  mutable uint64_t m_lastRawAcquiredUs = 0;
   mutable uint32_t m_nextReadAttemptMs = 0;
   mutable uint32_t m_nextDiagnosticReadMs = 0;
   mutable bool m_configWriteAttempted = false;

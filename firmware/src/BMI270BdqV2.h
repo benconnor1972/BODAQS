@@ -17,7 +17,8 @@ inline constexpr uint32_t kDefaultObservationPeriodUs = 100000;
 inline bool encodeRecord(
     const BMI270ImuSample& sample,
     uint8_t* destination,
-    size_t capacity) {
+    size_t capacity,
+    bool encodeGyroValidity = false) {
   if (!destination || capacity < kRecordSizeBytes) return false;
   memset(destination, 0, kRecordSizeBytes);
 
@@ -37,6 +38,9 @@ inline bool encodeRecord(
   BdqV2Format::putU16(destination + 22, static_cast<uint16_t>(sample.gyroZ));
   BdqV2Format::putU16(
       destination + 24, static_cast<uint16_t>(sample.temperatureRaw));
+  if (encodeGyroValidity) {
+    BdqV2Format::putU16(destination + 26, sample.gyroValid ? 1u : 0u);
+  }
   return true;
 }
 

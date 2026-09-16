@@ -6,7 +6,7 @@
 
 namespace BMI270Profile {
 
-inline constexpr const char* kContractId = "bodaqs.bmi270_imu_mvp.v4";
+inline constexpr const char* kContractId = "bodaqs.bmi270_imu_mvp.v5";
 inline constexpr const char* kProfileName = "orientation_200";
 inline constexpr const char* kDriverRevision = "41129fcfe39c583ee5462d79195741945d51c1fe";
 
@@ -29,15 +29,21 @@ inline constexpr uint8_t kPerformanceOptimizedCode = 0x01;
 
 struct NativeProfile {
   const char* name = nullptr;
-  uint16_t odrHz = 0;
-  uint8_t odrCode = 0;
+  uint16_t accelOdrHz = 0;
+  uint16_t gyroOdrHz = 0;
+  uint8_t accelOdrCode = 0;
+  uint8_t gyroOdrCode = 0;
+
+  constexpr bool isMixedRate() const { return accelOdrHz != gyroOdrHz; }
 };
 
 inline constexpr NativeProfile kNativeProfiles[] = {
-    {"orientation_200", 200, 0x09},
-    {"orientation_400", 400, 0x0A},
-    {"orientation_800", 800, 0x0B},
-    {"orientation_1600", 1600, 0x0C},
+    {"orientation_200", 200, 200, 0x09, 0x09},
+    {"orientation_400", 400, 400, 0x0A, 0x0A},
+    {"orientation_800", 800, 800, 0x0B, 0x0B},
+    {"orientation_1600", 1600, 1600, 0x0C, 0x0C},
+    {"accel_800_gyro_200", 800, 200, 0x0B, 0x09},
+    {"accel_1600_gyro_200", 1600, 200, 0x0C, 0x09},
 };
 inline constexpr size_t kNativeProfileCount =
     sizeof(kNativeProfiles) / sizeof(kNativeProfiles[0]);
@@ -92,39 +98,72 @@ inline const NativeProfile* find(const char* name) {
 
 inline const NativeProfile* find(uint16_t odrHz) {
   for (size_t index = 0; index < kNativeProfileCount; ++index) {
-    if (odrHz == kNativeProfiles[index].odrHz) return &kNativeProfiles[index];
+    if (odrHz == kNativeProfiles[index].accelOdrHz &&
+        odrHz == kNativeProfiles[index].gyroOdrHz) {
+      return &kNativeProfiles[index];
+    }
+  }
+  return nullptr;
+}
+
+inline const NativeProfile* find(uint16_t accelOdrHz, uint16_t gyroOdrHz) {
+  for (size_t index = 0; index < kNativeProfileCount; ++index) {
+    if (accelOdrHz == kNativeProfiles[index].accelOdrHz &&
+        gyroOdrHz == kNativeProfiles[index].gyroOdrHz) {
+      return &kNativeProfiles[index];
+    }
   }
   return nullptr;
 }
 
 constexpr bool matches(
     const EffectiveConfig& config,
-    uint16_t nativeRateHz) {
-  const uint8_t odrCode = odrCodeForRate(nativeRateHz);
-  return odrCode != 0 && config.accelOdr == odrCode &&
+    const NativeProfile& profile) {
+  return profile.accelOdrCode != 0 && profile.gyroOdrCode != 0 &&
+         config.accelOdr == profile.accelOdrCode &&
          config.accelRange == kAccelRange16GCode &&
          config.accelBandwidth == kAccelNormalAvg4Code &&
          config.accelFilterPerformance == kPerformanceOptimizedCode &&
-         config.gyroOdr == odrCode &&
+         config.gyroOdr == profile.gyroOdrCode &&
          config.gyroRange == kGyroRange2000DpsCode &&
          config.gyroBandwidth == kGyroNormalModeCode &&
          config.gyroNoisePerformance == kPowerOptimizedCode &&
          config.gyroFilterPerformance == kPerformanceOptimizedCode;
 }
 
-constexpr EffectiveConfig expected(uint16_t nativeRateHz) {
-  const uint8_t odrCode = odrCodeForRate(nativeRateHz);
+constexpr bool matches(
+    const EffectiveConfig& config,
+    uint16_t nativeRateHz) {
+  const NativeProfile profile = {
+      nullptr,
+      nativeRateHz,
+      nativeRateHz,
+      odrCodeForRate(nativeRateHz),
+      odrCodeForRate(nativeRateHz)};
+  return matches(config, profile);
+}
+
+constexpr EffectiveConfig expected(const NativeProfile& profile) {
   return EffectiveConfig{
-    odrCode,
+    profile.accelOdrCode,
     kAccelRange16GCode,
     kAccelNormalAvg4Code,
     kPerformanceOptimizedCode,
-    odrCode,
+    profile.gyroOdrCode,
     kGyroRange2000DpsCode,
     kGyroNormalModeCode,
     kPowerOptimizedCode,
     kPerformanceOptimizedCode,
   };
+}
+
+constexpr EffectiveConfig expected(uint16_t nativeRateHz) {
+  return expected(NativeProfile{
+      nullptr,
+      nativeRateHz,
+      nativeRateHz,
+      odrCodeForRate(nativeRateHz),
+      odrCodeForRate(nativeRateHz)});
 }
 
 constexpr bool matchesOrientation200(const EffectiveConfig& config) {
@@ -160,7 +199,7 @@ constexpr uint16_t outputDecimationFactor(
     uint16_t nativeRateHz,
     uint16_t outputRateHz) {
   return isSupportedNativeRate(nativeRateHz) &&
-         isSupportedOutputRate(outputRateHz) &&
+         (isSupportedOutputRate(outputRateHz) || outputRateHz == nativeRateHz) &&
          outputRateHz <= nativeRateHz &&
          nativeRateHz % outputRateHz == 0
       ? nativeRateHz / outputRateHz
@@ -204,6 +243,9 @@ static_assert(isSupportedAddress(kSecondaryAddress));
 static_assert(!isSupportedAddress(0x67));
 static_assert(matchesOrientation200(orientation200Expected()));
 static_assert(matches(expected(1600), 1600));
+static_assert(matches(
+    expected(kNativeProfiles[4]),
+    kNativeProfiles[4]));
 static_assert(sensorTimeTicksPerSample(200) == 128);
 static_assert(sensorTimeTicksPerSample(1600) == 16);
 static_assert(isSupportedOutputRate(10));

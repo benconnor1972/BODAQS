@@ -550,6 +550,43 @@ bool ConfigManager::parseWifiMode(const char* text, WiFiMode& out) {
   return false;
 }
 
+const char* ConfigManager::oledLoggingPolicyKey(OledLoggingPolicy policy) {
+  switch (policy) {
+    case OledLoggingPolicy::Freeze: return "freeze";
+    case OledLoggingPolicy::PreferActive: return "prefer_active";
+    case OledLoggingPolicy::Auto:
+    default: return "auto";
+  }
+}
+
+const char* ConfigManager::oledLoggingPolicyLabel(OledLoggingPolicy policy) {
+  switch (policy) {
+    case OledLoggingPolicy::Freeze: return "Freeze while logging";
+    case OledLoggingPolicy::PreferActive: return "Prefer active";
+    case OledLoggingPolicy::Auto:
+    default: return "Automatic";
+  }
+}
+
+bool ConfigManager::parseOledLoggingPolicy(
+    const char* text,
+    OledLoggingPolicy& out) {
+  if (!text || !*text) return false;
+  if (keyEquals(text, "auto") || keyEquals(text, "automatic")) {
+    out = OledLoggingPolicy::Auto;
+    return true;
+  }
+  if (keyEquals(text, "freeze") || keyEquals(text, "off")) {
+    out = OledLoggingPolicy::Freeze;
+    return true;
+  }
+  if (keyEquals(text, "prefer_active") || keyEquals(text, "active")) {
+    out = OledLoggingPolicy::PreferActive;
+    return true;
+  }
+  return false;
+}
+
 
 void ConfigManager::setSampleRateHz(uint16_t hz, bool persist) {
   hz = Rates::nearest(hz);
@@ -762,6 +799,13 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
   if (keyEquals(key, "ui_oled_level"))  { long v=strtol(val,nullptr,10); if (v<1) v=1; if (v>4) v=4; cfg.uiOledLevel=(uint8_t)v; return true; }
   if (keyEquals(key, "oled_brightness")){ long v=strtol(val,nullptr,10); if (v<0) v=0; if (v>255) v=255; cfg.oledBrightness=(uint8_t)v; return true; }
   if (keyEquals(key, "oled_idle_dim_ms")){long v=strtol(val,nullptr,10); if (v<0) v=0; if (v>65535) v=65535; cfg.oledIdleDimMs=(uint16_t)v; return true; }
+  if (keyEquals(key, "oled_logging_policy")) {
+    OledLoggingPolicy policy;
+    if (ConfigManager::parseOledLoggingPolicy(val, policy)) {
+      cfg.oledLoggingPolicy = policy;
+    }
+    return true;
+  }
 
   // --- buttonN.* : DEPRECATED (hardware buttons are defined by BoardProfile) ---
   if (!strncasecmp(key, "button", 6) && isdigit((unsigned char)key[6])) {
@@ -1153,6 +1197,7 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
   kv_u("ui_oled_level", (unsigned)cfg.uiOledLevel);
   kv_u("oled_brightness", (unsigned)cfg.oledBrightness);
   kv_u("oled_idle_dim_ms", (unsigned)cfg.oledIdleDimMs);
+  kv("oled_logging_policy", ConfigManager::oledLoggingPolicyKey(cfg.oledLoggingPolicy));
   line("");
 
 
@@ -1211,6 +1256,8 @@ void ConfigManager::print(const LoggerConfig& cfg) {
   LOGI("debounceMs=%u\n", cfg.debounceMs);
   LOGI("autoSleepIdleMs=%lu\n", (unsigned long)cfg.autoSleepIdleMs);
   LOGI("wifiIdleTimeoutMs=%lu\n", (unsigned long)cfg.wifiIdleTimeoutMs);
+  LOGI("oledLoggingPolicy=%s\n",
+       ConfigManager::oledLoggingPolicyKey(cfg.oledLoggingPolicy));
   LOGI("logLevel=%s\n", (cfg.logLevelOverride == 0xFF) ? "default" : Log_levelName((LogLevel)cfg.logLevelOverride));
 
   LOGI("wifiMode=%s\n", ConfigManager::wifiModeKey(cfg.wifiMode));

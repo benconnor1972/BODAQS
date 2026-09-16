@@ -448,7 +448,8 @@ bool validateLoggingStart(
   if (liveBmi270Count > 1 &&
       cfg.logFormat != LogFormat::BodaqsMultiStreamBinary) {
     if (error && errorCapacity) {
-      snprintf(error, errorCapacity, "the MVP supports one active BMI270 IMU");
+      snprintf(error, errorCapacity,
+               "multiple BMI270 IMUs need BDQ v2 logging");
     }
     return false;
   }
@@ -476,8 +477,10 @@ bool validateLoggingStart(
 bool onLoggingStart(char* error, size_t errorCapacity) {
 #if BODAQS_TIMING_INSTRUMENTATION
   resetTimingStats_();
-  I2CBusScheduler::resetTimingStats();
 #endif
+  // Live scheduler load also drives the OLED logging policy, so reset it even
+  // when the optional detailed timing summaries are compiled out.
+  I2CBusScheduler::resetTimingStats();
   if (error && errorCapacity) error[0] = '\0';
   for (auto* s : s_list) {
     if (!s) continue;

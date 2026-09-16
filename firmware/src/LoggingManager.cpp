@@ -4,6 +4,7 @@
 #include "RTCManager.h"
 #include "WebServerManager.h"
 #include "UI.h"
+#include "DisplayManager.h"
 #include "AnalogPotSensor.h"
 #include "SensorManager.h"
 #include "Rates.h"
@@ -17,6 +18,7 @@
 #include "DebugLog.h"
 #include "LoggerLimits.h"
 #include <atomic>
+#include <string.h>
 
 #define LOGGING_LOGE(...) LOGE_TAG("Logging", __VA_ARGS__)
 #define LOGGING_LOGW(...) LOGW_TAG("Logging", __VA_ARGS__)
@@ -38,6 +40,17 @@ namespace {
 
   // Run-state
   volatile bool   s_running       = false;
+  LoggingManager::StartFailureHint s_startFailureHint =
+      LoggingManager::StartFailureHint::None;
+
+  void classifyStartFailure_(const char* error) {
+    if (!error) return;
+    if (strstr(error, "restart required")) {
+      s_startFailureHint = LoggingManager::StartFailureHint::RestartNow;
+    } else if (strstr(error, "BDQ v2")) {
+      s_startFailureHint = LoggingManager::StartFailureHint::UseBdqV2;
+    }
+  }
   uint32_t        s_intervalUs    = 1000000;
   uint64_t        s_t0UnixUs      = 0;
   uint32_t        s_sampleCount   = 0;
@@ -296,6 +309,7 @@ void LoggingManager::begin(const LoggerConfig* cfg) {
 }
 
 bool LoggingManager::start() {
+  s_startFailureHint = StartFailureHint::None;
   if (!s_cfg) return false;
   TRACE("enter start()");
   const uint32_t startT0 = millis();
@@ -336,6 +350,7 @@ bool LoggingManager::start() {
   const uint16_t effectiveRateHz = AnalogInputManager::configureFromConfig(*s_cfg, requestedHz);
   char sensorError[128] = {0};
   if (!SensorManager::validateLoggingStart(*s_cfg, effectiveRateHz, sensorError, sizeof(sensorError))) {
+    classifyStartFailure_(sensorError);
     UI::toast("Sensor config", 1800, 1);
     UI::status("Sensor config");
     LOGGING_LOGW("start refused: %s\n", sensorError[0] ? sensorError : "sensor validation failed");
@@ -389,8 +404,13 @@ bool LoggingManager::start() {
   TRACE("storagemanager_startlog complete");
 
   const uint32_t sensorStartT0 = millis();
+  // Paint the durable recording frame while the OLED is still allowed to
+  // transfer. Auto/freeze policies may suppress every later refresh.
+  DisplayManager::prepareLoggingScreen(
+      effectiveRateHz, SensorManager::activeCount());
   AnalogInputManager::onLoggingStart();
   if (!SensorManager::onLoggingStart(sensorError, sizeof(sensorError))) {
+    classifyStartFailure_(sensorError);
     AnalogInputManager::onLoggingStop();
     SensorManager::onLoggingStop();
     StorageManager_stopLog();
@@ -436,6 +456,10 @@ bool LoggingManager::start() {
   TRACE("exit start()");
 
   return true;
+}
+
+LoggingManager::StartFailureHint LoggingManager::startFailureHint() {
+  return s_startFailureHint;
 }
 
 void LoggingManager::setSampleRateHz(uint16_t hz) {

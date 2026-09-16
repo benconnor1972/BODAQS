@@ -9,6 +9,7 @@
 #include "SensorManager.h"
 #include "DebugLog.h"
 #include "LoggerLimits.h"
+#include "BMI270Profile.h"
 
 #define BDQ_LOGE(...) LOGE_TAG("BDQ", __VA_ARGS__)
 #define BDQ_LOGW(...) LOGW_TAG("BDQ", __VA_ARGS__)
@@ -417,8 +418,15 @@ void appendImuQualityDiagnostics_(
   out += F("},\n");
 
   appendKeyUInt_(out, depth, "timing_degraded_samples", diagnostics.imuTimingDegradedSamples);
+  appendKeyUInt_(out, depth, "accel_timing_degraded_samples", diagnostics.imuAccelTimingDegradedSamples);
+  appendKeyUInt_(out, depth, "gyro_timing_degraded_samples", diagnostics.imuGyroTimingDegradedSamples);
+  appendKeyUInt_(out, depth, "other_timing_degraded_samples", diagnostics.imuOtherTimingDegradedSamples);
   appendKeyUInt_(out, depth, "sequence_discontinuity_events", diagnostics.imuSequenceDiscontinuityEvents);
   appendKeyUInt_(out, depth, "native_time_discontinuity_events", diagnostics.imuNativeTimeDiscontinuityEvents);
+  appendKeyUInt_(out, depth, "accel_native_time_discontinuity_events", diagnostics.imuAccelNativeTimeDiscontinuityEvents);
+  appendKeyUInt_(out, depth, "gyro_native_time_discontinuity_events", diagnostics.imuGyroNativeTimeDiscontinuityEvents);
+  appendKeyUInt_(out, depth, "accel_native_tick_gap_events", diagnostics.imuAccelNativeTickGapEvents);
+  appendKeyUInt_(out, depth, "gyro_association_fallback_events", diagnostics.imuGyroAssociationFallbackEvents);
 
   appendKey_(out, depth, "acquisition_age_us");
   out += F("{\n");
@@ -896,6 +904,14 @@ void appendRuntimeDiagnostics_(JsonOutput& out, uint8_t depth, bool comma = true
     out += F("{\n");
     appendKeyUInt_(out, depth + 4, "raw_read_failures", diagnostics.rawReadFailures);
     appendKeyUInt_(out, depth + 4, "diagnostic_read_failures", diagnostics.diagnosticReadFailures);
+    appendKeyUInt_(out, depth + 4, "fast_read_attempts", diagnostics.fastReadAttempts);
+    appendKeyUInt_(out, depth + 4, "fast_read_successes", diagnostics.fastReadSuccesses);
+    appendKeyUInt_(out, depth + 4, "fast_read_fallbacks", diagnostics.fastReadFallbacks);
+    appendKeyUInt_(out, depth + 4, "raw_pointer_primes", diagnostics.rawPointerPrimes);
+    appendKeyUInt_(out, depth + 4, "raw_read_duration_count", diagnostics.rawReadUs.count);
+    appendKeyUInt_(out, depth + 4, "raw_read_duration_min_us", diagnostics.rawReadUs.minimumUs);
+    appendKeyUInt_(out, depth + 4, "raw_read_duration_max_us", diagnostics.rawReadUs.maximumUs);
+    appendKeyUInt_(out, depth + 4, "raw_read_duration_total_us", diagnostics.rawReadUs.totalUs);
     appendKeyUInt_(out, depth + 4, "read_failure_streak_max", diagnostics.readFailureStreakMax);
     appendKeyUInt_(out, depth + 4, "read_recoveries", diagnostics.readRecoveries);
     appendKeyBool_(out, depth + 4, "have_last_good_raw", diagnostics.haveLastGoodRaw);
@@ -914,6 +930,8 @@ void appendRuntimeDiagnostics_(JsonOutput& out, uint8_t depth, bool comma = true
       appendKey_(out, depth + 3, "imu_session");
       out += F("{\n");
       appendKeyUInt_(out, depth + 4, "native_rate_hz", diagnostics.imuNativeRateHz);
+      appendKeyUInt_(out, depth + 4, "accel_rate_hz", diagnostics.imuAccelRateHz);
+      appendKeyUInt_(out, depth + 4, "gyro_rate_hz", diagnostics.imuGyroRateHz);
       appendKeyUInt_(out, depth + 4, "output_rate_hz", diagnostics.imuOutputRateHz);
       appendKeyUInt_(out, depth + 4, "fifo_poll_rate_hz", diagnostics.imuFifoPollRateHz);
       appendKeyUInt_(out, depth + 4, "queue_coverage_ms", diagnostics.imuQueueCoverageMs);
@@ -945,6 +963,10 @@ void appendRuntimeDiagnostics_(JsonOutput& out, uint8_t depth, bool comma = true
       appendKeyUInt_(out, depth + 4, "explicit_queue_discards", diagnostics.imuExplicitQueueDiscards);
       appendKeyUInt_(out, depth + 4, "temperature_reads", diagnostics.imuTemperatureReads);
       appendKeyUInt_(out, depth + 4, "temperature_read_failures", diagnostics.imuTemperatureReadFailures);
+      appendKeyUInt_(out, depth + 4, "sensor_time_register_read_attempts", diagnostics.imuSensorTimeReadAttempts);
+      appendKeyUInt_(out, depth + 4, "sensor_time_register_read_successes", diagnostics.imuSensorTimeReadSuccesses);
+      appendKeyUInt_(out, depth + 4, "sensor_time_register_read_failures", diagnostics.imuSensorTimeReadFailures);
+      appendKeyUInt_(out, depth + 4, "sensor_time_register_observation_drops", diagnostics.imuSensorTimeObservationDrops);
       appendKeyUInt_(out, depth + 4, "bdq_v2_timing_observation_drops", diagnostics.imuBdqV2TimingObservationDrops);
       appendKeyUInt_(out, depth + 4, "operational_validation_attempts", diagnostics.imuOperationalValidationAttempts);
       appendKeyUInt_(out, depth + 4, "operational_validation_failures", diagnostics.imuOperationalValidationFailures);
@@ -1270,11 +1292,13 @@ void appendImuConfigObject_(
   appendKeyBool_(out, depth + 2, "matched", imu.effectiveConfigMatched);
   appendKeyUInt_(out, depth + 2, "config_file_major", imu.configFileMajor);
   appendKeyUInt_(out, depth + 2, "config_file_minor", imu.configFileMinor);
-  appendKeyUInt_(out, depth + 2, "accel_odr_hz", 200);
+  appendKeyUInt_(out, depth + 2, "accel_odr_hz",
+                 BMI270Profile::nativeRateForOdrCode(imu.accelOdr));
   appendKeyUInt_(out, depth + 2, "accel_range_g", 16);
   appendKeyString_(out, depth + 2, "accel_bandwidth", "normal_avg4");
   appendKeyString_(out, depth + 2, "accel_filter_performance", "performance_optimized");
-  appendKeyUInt_(out, depth + 2, "gyro_odr_hz", 200);
+  appendKeyUInt_(out, depth + 2, "gyro_odr_hz",
+                 BMI270Profile::nativeRateForOdrCode(imu.gyroOdr));
   appendKeyUInt_(out, depth + 2, "gyro_range_dps", 2000);
   appendKeyString_(out, depth + 2, "gyro_bandwidth", "normal");
   appendKeyString_(out, depth + 2, "gyro_noise_performance", "power_optimized");

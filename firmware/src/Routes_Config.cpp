@@ -17,6 +17,7 @@
 #include "UploadModeManager.h"
 #include "StorageManager.h"
 #include "ButtonManager.h"
+#include "DisplayManager.h"
 #include "BoardSelect.h" 
 #include "HttpFileSender.h"
 #include "DebugLog.h"
@@ -753,6 +754,15 @@ void registerConfigRoutes(WebServer& srv) {
     html += F("<label>Timezone (tz rule): </label><input type='text' name='tz' value='");
     html += htmlEscape(String(cfg.tz));
     html += F("'"); html += dis; html += F("><br>");
+
+    html += F("<label>OLED while logging: </label><select name='oled_logging_policy'");
+    html += dis; html += F("><option value='auto'");
+    if (cfg.oledLoggingPolicy == OledLoggingPolicy::Auto) html += F(" selected");
+    html += F(">Automatic</option><option value='freeze'");
+    if (cfg.oledLoggingPolicy == OledLoggingPolicy::Freeze) html += F(" selected");
+    html += F(">Freeze</option><option value='prefer_active'");
+    if (cfg.oledLoggingPolicy == OledLoggingPolicy::PreferActive) html += F(" selected");
+    html += F(">Prefer active</option></select><br>");
     
     html += F("<label>Auto-sleep idle (min): </label><input type='number' name='auto_sleep_idle_min' min='0' step='0.1' value='");
     html += minutesStringFromMs_(cfg.autoSleepIdleMs);
@@ -1455,6 +1465,15 @@ void registerConfigRoutes(WebServer& srv) {
       if (tz.length() < (int)sizeof(tmp.tz)) tz.toCharArray(tmp.tz, sizeof(tmp.tz));
     }
 
+    if (srv.hasArg("oled_logging_policy")) {
+      OledLoggingPolicy policy;
+      String value = srv.arg("oled_logging_policy");
+      value.trim();
+      if (ConfigManager::parseOledLoggingPolicy(value.c_str(), policy)) {
+        tmp.oledLoggingPolicy = policy;
+      }
+    }
+
     if (srv.hasArg("ntp_servers")) {
       String ntpServers = srv.arg("ntp_servers"); ntpServers.trim();
       if (ntpServers.length() < (int)sizeof(tmp.ntpServers)) {
@@ -1665,6 +1684,7 @@ void registerConfigRoutes(WebServer& srv) {
     RTCManager_setHumanReadable(liveCfg.timestampHuman);
     RTCManager_setTimezone(liveCfg.tz);
     applyLogSettingsLive_(liveCfg);
+    DisplayManager::setLoggingPolicy(liveCfg.oledLoggingPolicy);
     ButtonManager_setDebounceAll(liveCfg.debounceMs);
     //ConfigManager::debugDumpConfigFile();
 

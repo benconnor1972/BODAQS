@@ -6,6 +6,12 @@
 class AnalogPotSensor; // fwd
 
 namespace LoggingManager {
+  enum class StartFailureHint : uint8_t {
+    None = 0,
+    RestartNow,
+    UseBdqV2,
+  };
+
   struct RuntimeStats {
     uint32_t samplerLateTicks = 0;
     uint32_t samplerLateMaxLagMs = 0;
@@ -21,6 +27,7 @@ namespace LoggingManager {
 
   void begin(const LoggerConfig* cfg);
   bool start();
+  StartFailureHint startFailureHint();
   void stop();
   bool isRunning();
   void loop();
