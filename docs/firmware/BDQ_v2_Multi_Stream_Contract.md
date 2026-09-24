@@ -394,6 +394,27 @@ The numeric bandwidth values in this example describe the selected BMI270
 filter profile; they are not a promise that all streams have known bandwidth.
 Unknown bandwidth or group delay must be represented as `null`, not zero.
 
+An AS5600 angle sensor may additionally publish a 20-byte native stream whose
+clock is `logger_monotonic`. Its `native_tick` is the low 32 bits of the
+microsecond acquisition midpoint, so it shares the primary stream's clock and
+does not require clock-fit observations. The payload after the common prefix is:
+
+| Offset | Size | Type | Field |
+|---:|---:|---|---|
+| 12 | 2 | uint16 | `raw_angle` |
+| 14 | 1 | uint8 | `sensor_status` |
+| 15 | 1 | uint8 | `agc` |
+| 16 | 2 | uint16 | `magnitude` |
+| 18 | 1 | uint8 | `read_ok` |
+| 19 | 1 | uint8 | `reused` |
+
+AS5600 stream-specific status bits are `READ_FAILED` (`0x0020`),
+`REUSED_PREVIOUS` (`0x0040`), `DIAGNOSTICS_STALE` (`0x0080`),
+`MAGNET_NOT_DETECTED` (`0x0100`), `MAGNET_TOO_WEAK` (`0x0200`) and
+`MAGNET_TOO_STRONG` (`0x0400`). The sensor's existing primary-stream columns
+remain present for compatibility; consumers needing acquisition-time fidelity
+should use the native stream.
+
 ### 7.1 Required record prefix
 
 Every v2.0 stream record starts with the same 12-byte prefix:
@@ -576,9 +597,10 @@ not sufficient evidence for tight cross-node phase alignment.
 For each `clock_id`, a consumer must:
 
 1. order records by sequence within continuity segments;
-2. unwrap native ticks using the declared modulus;
-3. split segments at reset and discontinuity boundaries;
-4. fit native clock time to logger monotonic time using eligible timing
+2. unwrap native ticks using the declared modulus across ordinary sequence or
+   queue discontinuities;
+3. establish a new clock epoch only when the native clock actually resets;
+4. fit each clock epoch independently to logger monotonic time using eligible timing
    observations and their intervals;
 5. retain fit residuals, drift and uncertainty as derived quality evidence;
 6. map to Unix time only through the session wall-clock anchor when available;
@@ -636,7 +658,14 @@ assigned to whichever stream happened to produce the next sample.
 
 On clean shutdown the writer emits `summary_format="bdq.final_summary.v2"`.
 The summary contains existing recorder/storage diagnostics plus a per-stream
-array. Each stream entry should include:
+array. The top-level `stop` object records the explicit stop `reason`, the
+triggering event, logger uptime, SD-detect availability and state, and the
+analog-rail fault state. Known reasons include `user_request`,
+`analog_rail_fault`, `sleep_request`, `sd_card_removed` and `start_failure`.
+This object describes an orderly close; a reset or power loss may prevent the
+summary from being written at all.
+
+Each stream entry should include:
 
 - `stream_id` and `stream_key`;
 - `records_written` and `data_chunks_written`;

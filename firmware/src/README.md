@@ -191,7 +191,8 @@ appended after them.
   rates. CSV and BDQ v1 reject this profile rather than imply that held or
   placeholder gyro values are native 1600 Hz measurements.
 - `fifo_poll_rate_hz` independently selects FIFO service at 25, 50, 100, 200,
-  or 400 Hz. Session diagnostics record the selected native/output/poll rates,
+  or 400 Hz. Experimental 10 Hz service is restricted to
+  `accel_800_gyro_200`. Session diagnostics record the selected native/output/poll rates,
   queue coverage and pressure, FIFO throughput, I2C occupancy, achieved service
   rates, missed service slots, and scheduler lateness.
 - A 1600 sample/s stream has an 800 Hz Nyquist limit; it cannot preserve a

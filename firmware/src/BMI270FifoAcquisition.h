@@ -162,9 +162,10 @@ public:
   static constexpr size_t kMaximumBatchSamples =
       (kRawBufferBytes / BMI270FifoReadPlan::kSingleSensorFrameBytes) + 1;
   static constexpr uint16_t kDefaultFifoPollRateHz = 200;
-  static constexpr uint16_t kTemperatureRateHz = 10;
+  static constexpr uint16_t kTemperatureRateHz = 2;
   static constexpr uint32_t kTemperaturePeriodUs = 1000000u / kTemperatureRateHz;
-  static constexpr uint32_t kTemperatureFreshnessUs = 250000u;
+  static constexpr uint32_t kTemperatureFreshnessUs =
+      (kTemperaturePeriodUs * 5u) / 2u;
   static constexpr uint32_t kSensorTimeObservationPeriodUs = 100000u;
   static constexpr uint32_t kNoSampleProgressTimeoutUs = 250000u;
   static constexpr uint8_t kMaximumConsecutiveRecoveryFailures = 3;
@@ -232,7 +233,15 @@ public:
   uint8_t asyncI2CBusIndex() const override { return device_.busIndex(); }
   uint8_t asyncI2CAddress() const override { return device_.address(); }
   uint16_t asyncTargetRateHz() const override { return fifoPollRateHz_; }
-  uint32_t asyncMaximumLowPriorityGapUs() const override { return 50000u; }
+  uint32_t asyncEstimatedAcquireUs() const override {
+    return BMI270FifoReadPlan::estimatedSchedulerAcquireUs(
+        accelRateHz(), gyroRateHz(), fifoPollRateHz_);
+  }
+  uint32_t asyncMaximumLowPriorityGapUs() const override {
+    return BMI270FifoReadPlan::maximumPriorityServiceGapUs(
+        accelRateHz(), gyroRateHz(), fifoPollRateHz_);
+  }
+  uint8_t asyncMaximumLatencySensitiveYields() const override { return 2; }
   bool asyncMuted() const override {
     return !sessionActive() || terminalFault_.load(std::memory_order_acquire);
   }
@@ -300,6 +309,8 @@ private:
   uint16_t preSessionBoundaryStatus_ = 0;
   uint32_t pendingSkippedFrames_ = 0;
   uint32_t consecutiveDrainFailures_ = 0;
+  uint32_t busRecoveryGeneration_ = 0;
+  bool transportFailureDuringDrain_ = false;
   uint8_t consecutiveRecoveryFailures_ = 0;
   uint16_t recoveryBackoffPolls_ = 0;
   BMI270ProgressWatchdog progressWatchdog_ { kNoSampleProgressTimeoutUs };

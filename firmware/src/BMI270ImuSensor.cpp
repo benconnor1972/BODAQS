@@ -168,9 +168,9 @@ bool readString_(const ParamPack& params, const char* key, char* out, size_t cap
 bool orientationsEqual_(
     const ImuOrientationCalibration& left,
     const ImuOrientationCalibration& right) {
+  if (left.plane != right.plane || left.normalSign != right.normalSign) return false;
   if (left.accepted != right.accepted) return false;
   if (!left.accepted) return true;
-  if (left.plane != right.plane || left.normalSign != right.normalSign) return false;
   for (uint8_t row = 0; row < 3; ++row) {
     for (uint8_t column = 0; column < 3; ++column) {
       if (fabsf(left.matrix[row][column] - right.matrix[row][column]) > 0.00001f) {
@@ -384,8 +384,34 @@ bool BMI270ImuSensor::reconfigureFromSpec(const SensorSpec& spec) {
   return initialized;
 }
 
+bool BMI270ImuSensor::initializationHealthy_() const {
+  const BMI270DeviceDiagnostics& diagnostics =
+      acquisition_.device().diagnostics();
+  const bool validState =
+      diagnostics.state == BMI270DeviceState::Ready ||
+      diagnostics.state == BMI270DeviceState::Suspended;
+  return initialized_ && validState && diagnostics.chipIdRead &&
+      diagnostics.chipIdMatched && diagnostics.driverInitialized &&
+      diagnostics.configurationReadOk && diagnostics.configurationMatched;
+}
+
 bool BMI270ImuSensor::ensureInitialized_(char* error, size_t errorCapacity) {
-  if (initialized_) return true;
+  if (initializationHealthy_()) return true;
+  if (initialized_ ||
+      acquisition_.device().state() != BMI270DeviceState::Uninitialized) {
+    const BMI270DeviceDiagnostics& stale =
+        acquisition_.device().diagnostics();
+    BMI270_SENSOR_LOGW(
+        "discarding stale initialization sensor=%s state=%u chip_read=%u chip=0x%02X chip_match=%u config_match=%u\n",
+        params_.name,
+        (unsigned)stale.state,
+        stale.chipIdRead ? 1u : 0u,
+        (unsigned)stale.chipId,
+        stale.chipIdMatched ? 1u : 0u,
+        stale.configurationMatched ? 1u : 0u);
+    acquisition_.shutdown();
+    initialized_ = false;
+  }
   lastInitializationAttemptUptimeMs_ = millis();
   initialized_ = acquisition_.begin();
   if (initialized_) {
@@ -569,7 +595,7 @@ bool BMI270ImuSensor::describeSensorMetadata(SensorMetadataDescriptor& out) cons
   const BMI270DeviceDiagnostics& device = acquisition_.device().diagnostics();
   const BMI270FifoDiagnostics& fifo = acquisition_.diagnostics();
   const BMI270Profile::EffectiveConfig& effective = acquisition_.device().effectiveConfig();
-  imu.initializationOk = initialized_;
+  imu.initializationOk = initializationHealthy_();
   imu.chipId = device.chipId;
   imu.configFileMajor = device.configFileMajor;
   imu.configFileMinor = device.configFileMinor;
@@ -906,7 +932,7 @@ bool BMI270ImuSensor::prepareLoggingStart(
 
 bool BMI270ImuSensor::startLoggingSession(char* error, size_t errorCapacity) {
   if (muted_) return true;
-  if (!sessionAvailable_ || !initialized_) return true;
+  if (!sessionAvailable_ || !initializationHealthy_()) return true;
   bdqV2TimingSampler_.reset();
   bdqV2Observations_.clear();
   bdqV2TimingObservationDrops_ = 0;
@@ -929,6 +955,7 @@ void BMI270ImuSensor::onLoggingStop() {
   if (acquisition_.sessionActive() && !acquisition_.stopSession()) {
     BMI270_SENSOR_LOGW("final FIFO drain failed sensor=%s\n", params_.name);
   }
+  initialized_ = initializationHealthy_();
   sessionAvailable_ = false;
 }
 
@@ -1343,11 +1370,26 @@ bool BMI270ImuSensor::validateSpec(
                  "%s max_output_rate_hz must be one of 5, 10, 20, 25, 40, 50, 100, 200",
                  params.name);
   }
-  if (params.fifoPollRateHz != 25 && params.fifoPollRateHz != 50 &&
+  if (params.fifoPollRateHz != 10 && params.fifoPollRateHz != 25 &&
+      params.fifoPollRateHz != 50 &&
       params.fifoPollRateHz != 100 && params.fifoPollRateHz != 200 &&
       params.fifoPollRateHz != 400) {
     return fail_(error, errorCapacity,
-                 "%s fifo_poll_rate_hz must be one of 25, 50, 100, 200, 400",
+                 "%s fifo_poll_rate_hz must be one of 10, 25, 50, 100, 200, 400",
+                 params.name);
+  }
+  const BMI270Profile::NativeProfile* nativeProfile =
+      BMI270Profile::find(params.profile);
+  if (!nativeProfile) {
+    return fail_(error, errorCapacity, "%s uses unsupported profile '%s'",
+                 params.name, params.profile);
+  }
+  if (!BMI270FifoReadPlan::isSupportedFifoPollRate(
+          nativeProfile->accelOdrHz,
+          nativeProfile->gyroOdrHz,
+          params.fifoPollRateHz)) {
+    return fail_(error, errorCapacity,
+                 "%s 10 Hz FIFO service requires profile accel_800_gyro_200",
                  params.name);
   }
   String gyroBiasMode;
@@ -1370,10 +1412,6 @@ bool BMI270ImuSensor::validateSpec(
     return fail_(error, errorCapacity,
                  "%s requires domain=unsprung with front/rear, domain=steering with front, or domain=frame with none/front/rear",
                  params.name);
-  }
-  if (!BMI270Profile::find(params.profile)) {
-    return fail_(error, errorCapacity, "%s uses unsupported profile '%s'",
-                 params.name, params.profile);
   }
   if (!BMI270Profile::isSupportedAddress(params.address)) {
     return fail_(error, errorCapacity, "%s uses unsupported BMI270 address 0x%02X",
@@ -1407,7 +1445,7 @@ const ParamDef* BMI270ImuSensor::paramDefs(size_t& count) {
     {"profile", ParamType::Enum, "orientation_200", nullptr, nullptr, "orientation_200,orientation_400,orientation_800,orientation_1600,accel_800_gyro_200,accel_1600_gyro_200", "Named native accel/gyro acquisition profile"},
     {"startup_bias_capture_s", ParamType::Int, "5", "0", "60", nullptr, "Startup stationary-observation window; records bias evidence without modifying raw samples"},
     {"max_output_rate_hz", ParamType::Enum, "200", nullptr, nullptr, "5,10,20,25,40,50,100,200", "Legacy CSV/BDQ v1 maximum stored IMU rate; BDQ v2 stores the selected profile's full native rate"},
-    {"fifo_poll_rate_hz", ParamType::Enum, "200", nullptr, nullptr, "25,50,100,200,400", "FIFO service rate; lower values reduce transaction overhead but increase batch size and latency"},
+    {"fifo_poll_rate_hz", ParamType::Enum, "200", nullptr, nullptr, "10,25,50,100,200,400", "FIFO service rate; experimental 10 Hz is restricted to accel_800_gyro_200"},
     {"gyro_bias_mode", ParamType::Enum, "off", nullptr, nullptr, "off,ioc", "Gyro hardware bias mode; IOC makes logged gyro counts hardware-offset-compensated"},
     {"ioc_diagnostics", ParamType::Bool, "false", nullptr, nullptr, nullptr, "Experimental 1 Hz BMI270 IOC offset-register trace; requires gyro_bias_mode=ioc", true},
     {"calibration_ref", ParamType::String, "", nullptr, nullptr, nullptr, "Optional host calibration reference"},
@@ -1439,11 +1477,14 @@ Sensor* BMI270ImuSensor::create(
     bool mutedDefault) {
   Params parsed;
   loadParams_(parsed, instanceName, params);
+  const BMI270Profile::NativeProfile* profile =
+      BMI270Profile::find(parsed.profile);
   if (!BMI270Profile::isSupportedAddress(parsed.address) ||
-      !BMI270Profile::find(parsed.profile) ||
-      (parsed.fifoPollRateHz != 25 && parsed.fifoPollRateHz != 50 &&
-       parsed.fifoPollRateHz != 100 && parsed.fifoPollRateHz != 200 &&
-       parsed.fifoPollRateHz != 400) ||
+      !profile ||
+      !BMI270FifoReadPlan::isSupportedFifoPollRate(
+          profile ? profile->accelOdrHz : 0,
+          profile ? profile->gyroOdrHz : 0,
+          parsed.fifoPollRateHz) ||
       !validMountSemantics_(parsed) ||
       (parsed.orientation.accepted &&
        !ImuOrientation::validateMatrix(parsed.orientation.matrix))) {

@@ -35,6 +35,10 @@ public:
   explicit BdqV2StreamQueue(uint16_t streamId, uint64_t nativeTickModulus)
       : streamId_(streamId), nativeTickModulus_(nativeTickModulus) {}
 
+  // Configure before a producer or consumer starts. Stream IDs are assigned
+  // while the per-session BDQ v2 catalog is assembled.
+  void setStreamId(uint16_t streamId) { streamId_ = streamId; }
+
   bool enqueueRecord(const uint8_t* record, size_t length) {
     RecordSlot slot;
     BdqV2Format::StreamRecordPrefix prefix;
@@ -200,7 +204,7 @@ private:
     return static_cast<BdqV2StreamQueue*>(context)->popObservation_(observation);
   }
 
-  const uint16_t streamId_;
+  uint16_t streamId_;
   const uint64_t nativeTickModulus_;
   FixedSpscQueue<RecordSlot, RecordCapacity> records_;
   FixedSpscQueue<BdqV2Format::TimeObservation, ObservationCapacity> observations_;

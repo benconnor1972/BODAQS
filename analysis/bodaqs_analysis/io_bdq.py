@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Optional, Sequence
 
+import numpy as np
 import pandas as pd
 
 
@@ -637,6 +638,22 @@ def read_bdq(path: str | Path) -> BdqReadResult:
     return _read_bdq_bytes(input_path, input_path.read_bytes())
 
 
+def validate_bdq_importable(info: BdqReadResult) -> None:
+    """Check the minimum content required by the import pipeline for either BDQ version."""
+    if not info.metadata:
+        raise ValueError("BDQ file has no metadata chunk")
+    if info.header.format_major == 2:
+        if not info.stream_catalog:
+            raise ValueError("BDQ v2 file has no stream catalog chunk")
+        primary_id = info._primary_stream_id()
+        if primary_id is None or info.stream_record_count(primary_id) <= 0:
+            raise ValueError("BDQ v2 file has no decodable primary stream records")
+    elif not info.channel_schema:
+        raise ValueError("BDQ file has no channel schema chunk")
+    if info.sample_count <= 0:
+        raise ValueError("BDQ file has no decodable samples")
+
+
 def _storage_format(storage_type: str) -> str:
     normalized = str(storage_type).lower()
     if normalized == "uint8":
@@ -812,7 +829,9 @@ def _decorate_native_time(
 
     unwrapped: list[int] = []
     segments: list[int] = []
+    clock_epochs: list[int] = []
     segment = 0
+    clock_epoch = 0
     wrap_offset = 0
     previous_tick = int(ticks[0])
     previous_sequence = int(sequences[0])
@@ -825,25 +844,383 @@ def _decorate_native_time(
             explicit_boundary = bool(status & STREAM_STATUS_DISCONTINUITY_BEFORE)
             if explicit_boundary or sequence_delta != expected_step:
                 segment += 1
-                wrap_offset = 0
-            elif tick < previous_tick and previous_tick - tick > modulus // 2:
-                wrap_offset += modulus
+            # A continuity boundary does not itself reset the source clock.
+            # Preserve modulus unwrapping across queue loss and ordinary
+            # discontinuity markers. A genuine backwards clock reset becomes
+            # a separate fitted epoch.
+            if tick < previous_tick:
+                source_recovery = bool(
+                    status & STREAM_STATUS_SOURCE_RECOVERY_BEFORE
+                )
+                if previous_tick - tick > modulus // 2 and not source_recovery:
+                    wrap_offset += modulus
+                else:
+                    # A small backwards step cannot be a modulus wrap. It is
+                    # evidence that the source clock restarted, normally as
+                    # part of sensor recovery. Keep it as a distinct clock
+                    # epoch so observations on either side are never forced
+                    # through one affine fit.
+                    clock_epoch += 1
+                    wrap_offset = 0
         unwrapped_tick = tick + wrap_offset
         unwrapped.append(unwrapped_tick)
         segments.append(segment)
+        clock_epochs.append(clock_epoch)
         previous_tick = tick
         previous_sequence = sequence
 
     df = df.copy()
     df["continuity_segment"] = segments
+    df["clock_epoch"] = clock_epochs
     df["native_tick_unwrapped"] = unwrapped
+    # Continuity segments describe whether adjacent samples can be treated as
+    # one signal interval; clock epochs define native-time origins. Queue loss
+    # alone therefore does not restart native elapsed time, while a detected
+    # hardware clock restart does.
     native_time_s: list[float] = []
-    first_by_segment: dict[int, int] = {}
-    for segment_id, tick in zip(segments, unwrapped):
-        first_by_segment.setdefault(segment_id, tick)
-        native_time_s.append((tick - first_by_segment[segment_id]) * tick_period_us / 1_000_000.0)
+    first_tick_by_epoch: dict[int, int] = {}
+    for epoch, tick in zip(clock_epochs, unwrapped):
+        first_tick_by_epoch.setdefault(epoch, tick)
+        native_time_s.append(
+            (tick - first_tick_by_epoch[epoch]) * tick_period_us / 1_000_000.0
+        )
     df["native_time_s"] = native_time_s
     return df
+
+
+def _observations_by_stream(info: BdqReadResult) -> dict[int, list[BdqTimeObservation]]:
+    observations: dict[int, list[BdqTimeObservation]] = {}
+    for chunk in info.stream_data_chunks:
+        if chunk.observations:
+            observations.setdefault(chunk.stream_id, []).extend(chunk.observations)
+    return observations
+
+
+def _logger_reference_us(
+    info: BdqReadResult,
+    observations: Mapping[int, Sequence[BdqTimeObservation]],
+) -> Optional[float]:
+    anchor = info.metadata.get("wall_clock_anchor")
+    if isinstance(anchor, Mapping):
+        value = _numeric_value(anchor.get("host_monotonic_us"))
+        if value is not None and value >= 0:
+            return value
+    for stream_observations in observations.values():
+        if stream_observations:
+            value = stream_observations[0]
+            return (float(value.host_min_us) + float(value.host_max_us)) / 2.0
+    return None
+
+
+def _primary_logger_origin_us(
+    primary: pd.DataFrame,
+    descriptor: Mapping[str, Any],
+    reference_us: Optional[float],
+) -> float:
+    timebase = descriptor.get("timebase")
+    if not isinstance(timebase, Mapping) or primary.empty:
+        raise ValueError("BDQ v2 primary stream has no usable logger timebase")
+    modulus = int(timebase["native_tick_modulus"])
+    tick_period_us = _rational_value(timebase.get("nominal_tick_period_us"))
+    if tick_period_us is None or tick_period_us <= 0:
+        raise ValueError("BDQ v2 primary stream has no usable tick period")
+    first_tick = int(primary["native_tick_unwrapped"].iloc[0])
+    if reference_us is not None:
+        reference_tick = reference_us / tick_period_us
+        first_tick += int(round((reference_tick - first_tick) / modulus)) * modulus
+    return float(first_tick) * tick_period_us
+
+
+def _align_logger_clock_stream(
+    frame: pd.DataFrame,
+    descriptor: Mapping[str, Any],
+    logger_origin_us: float,
+) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    timebase = descriptor.get("timebase")
+    if not isinstance(timebase, Mapping):
+        return frame
+    modulus = int(timebase["native_tick_modulus"])
+    tick_period_us = _rational_value(timebase.get("nominal_tick_period_us"))
+    if tick_period_us is None or tick_period_us <= 0:
+        return frame
+    ticks = pd.to_numeric(frame["native_tick_unwrapped"], errors="raise").to_numpy(dtype=np.int64)
+    first_absolute_tick = int(ticks[0]) + int(
+        round((logger_origin_us / tick_period_us - int(ticks[0])) / modulus)
+    ) * modulus
+    shift = first_absolute_tick - int(ticks[0])
+    out = frame.copy()
+    out["time_s"] = ((ticks.astype(np.float64) + float(shift)) * tick_period_us - logger_origin_us) / 1_000_000.0
+    out.attrs["bdq_clock_alignment"] = {
+        "method": "shared_logger_monotonic_clock",
+        "clock_id": descriptor.get("clock_id"),
+        "observation_count": 0,
+    }
+    return out
+
+
+def _robust_clock_fit_us(
+    native_us: np.ndarray,
+    host_us: np.ndarray,
+) -> Optional[tuple[float, float, float, float]]:
+    if native_us.size == 0 or host_us.size != native_us.size:
+        return None
+    native_origin = float(native_us[0])
+    host_origin = float(host_us[0])
+    x = native_us.astype(np.float64) - native_origin
+    y = host_us.astype(np.float64) - host_origin
+    if native_us.size == 1 or float(np.ptp(x)) <= 0:
+        return native_origin, host_origin, 1.0, 0.0
+
+    inliers = np.ones(native_us.size, dtype=bool)
+    slope = 1.0
+    intercept = 0.0
+    for _ in range(4):
+        xi = x[inliers]
+        yi = y[inliers]
+        if xi.size < 2:
+            break
+        centered = xi - np.mean(xi)
+        variance = float(np.dot(centered, centered))
+        if variance <= 0:
+            break
+        slope = float(np.dot(centered, yi - np.mean(yi)) / variance)
+        intercept = float(np.mean(yi) - slope * np.mean(xi))
+        residual = y - (intercept + slope * x)
+        median = float(np.median(residual[inliers]))
+        mad = float(np.median(np.abs(residual[inliers] - median)))
+        threshold_us = max(500.0, 6.0 * 1.4826 * mad)
+        refined = np.abs(residual - median) <= threshold_us
+        if int(np.count_nonzero(refined)) < 2 or np.array_equal(refined, inliers):
+            break
+        inliers = refined
+    if not math.isfinite(slope) or slope <= 0:
+        return None
+    return native_origin, host_origin, slope, intercept
+
+
+def _align_observed_stream(
+    frame: pd.DataFrame,
+    descriptor: Mapping[str, Any],
+    observations: Sequence[BdqTimeObservation],
+    logger_origin_us: float,
+) -> pd.DataFrame:
+    if frame.empty or not observations:
+        return frame
+    timebase = descriptor.get("timebase")
+    if not isinstance(timebase, Mapping):
+        return frame
+    modulus = int(timebase["native_tick_modulus"])
+    tick_period_us = _rational_value(timebase.get("nominal_tick_period_us"))
+    if tick_period_us is None or tick_period_us <= 0:
+        return frame
+
+    sequences = pd.to_numeric(
+        frame["sequence"], errors="raise"
+    ).to_numpy(dtype=np.uint64)
+    record_ticks = pd.to_numeric(
+        frame["native_tick_unwrapped"], errors="raise"
+    ).to_numpy(dtype=np.int64)
+    if "clock_epoch" in frame.columns:
+        clock_epochs = pd.to_numeric(
+            frame["clock_epoch"], errors="raise"
+        ).to_numpy(dtype=np.int64)
+    else:
+        clock_epochs = np.zeros(len(frame.index), dtype=np.int64)
+
+    positions: dict[int, int] = {}
+    for index, value in enumerate(sequences):
+        sequence = int(value)
+        if sequence not in positions:
+            positions[sequence] = index
+
+    observations_by_epoch: dict[int, list[BdqTimeObservation]] = {}
+    for observation in observations:
+        position = positions.get(int(observation.related_sequence))
+        if position is None:
+            continue
+        observations_by_epoch.setdefault(
+            int(clock_epochs[position]), []
+        ).append(observation)
+
+    predicted_host_us = np.full(len(frame.index), np.nan, dtype=np.float64)
+    epoch_reports: list[dict[str, Any]] = []
+    residual_groups: list[np.ndarray] = []
+    observation_count = 0
+    rejected_relation_observations = 0
+    used_preferred_only = True
+    unique_epochs = list(dict.fromkeys(int(value) for value in clock_epochs))
+    for epoch in unique_epochs:
+        indices = np.flatnonzero(clock_epochs == epoch)
+        epoch_observations = observations_by_epoch.get(epoch, [])
+        preferred_observations = [
+            value
+            for value in epoch_observations
+            if value.kind in (2, 4) and (value.flags & 0x0004) == 0
+        ]
+        fit_observations = (
+            preferred_observations
+            if len(preferred_observations) >= 2
+            else [value for value in epoch_observations if value.kind != 3]
+        )
+        if fit_observations is not preferred_observations:
+            used_preferred_only = False
+
+        native_us: list[float] = []
+        host_us: list[float] = []
+        for observation in fit_observations:
+            position = positions.get(int(observation.related_sequence))
+            if position is None or int(clock_epochs[position]) != epoch:
+                continue
+            raw_tick = int(observation.native_tick)
+            related_tick = int(record_ticks[position])
+            unwrapped_tick = raw_tick + int(
+                round((related_tick - raw_tick) / modulus)
+            ) * modulus
+            # A direct sensor-time read can occur after recovery but before
+            # the first record from the new clock epoch is emitted. Firmware
+            # then relates it to the previous sequence. Do not let that
+            # boundary observation corrupt the preceding epoch's fit.
+            if abs(unwrapped_tick - related_tick) * tick_period_us > 250_000.0:
+                rejected_relation_observations += 1
+                continue
+            native_us.append(float(unwrapped_tick) * tick_period_us)
+            host_us.append(
+                (float(observation.host_min_us) + float(observation.host_max_us)) / 2.0
+            )
+
+        observed_native_us = np.asarray(native_us, dtype=np.float64)
+        observed_host_us = np.asarray(host_us, dtype=np.float64)
+        fit = _robust_clock_fit_us(observed_native_us, observed_host_us)
+        if fit is None:
+            epoch_reports.append({
+                "clock_epoch": epoch,
+                "observation_count": 0,
+                "method": "nominal_unanchored",
+            })
+            continue
+
+        native_origin, host_origin, slope, intercept = fit
+        epoch_native_us = record_ticks[indices].astype(np.float64) * tick_period_us
+        predicted_host_us[indices] = host_origin + intercept + slope * (
+            epoch_native_us - native_origin
+        )
+        observed_prediction_us = host_origin + intercept + slope * (
+            observed_native_us - native_origin
+        )
+        residual_us = observed_host_us - observed_prediction_us
+        residual_groups.append(residual_us)
+        observation_count += int(observed_native_us.size)
+        epoch_reports.append({
+            "clock_epoch": epoch,
+            "observation_count": int(observed_native_us.size),
+            "method": "robust_affine_observation_fit",
+            "scale": float(slope),
+            "drift_ppm": float((slope - 1.0) * 1_000_000.0),
+        })
+
+    if not np.isfinite(predicted_host_us).any():
+        return frame
+
+    # Very short post-recovery epochs may contain no timing observation. Place
+    # those records by nominal elapsed sensor time next to the nearest anchored
+    # epoch. This is explicitly reported as unanchored rather than silently
+    # combining two source-clock epochs in one fit.
+    nominal_step_us = max(float(tick_period_us), 1.0)
+    epoch_indices = [
+        np.flatnonzero(clock_epochs == epoch) for epoch in unique_epochs
+    ]
+    epoch_position = 0
+    while epoch_position < len(unique_epochs):
+        indices = epoch_indices[epoch_position]
+        if np.isfinite(predicted_host_us[indices]).all():
+            epoch_position += 1
+            continue
+        run_start = epoch_position
+        while (
+            epoch_position < len(unique_epochs) and
+            not np.isfinite(predicted_host_us[epoch_indices[epoch_position]]).all()
+        ):
+            epoch_position += 1
+        run_end = epoch_position
+
+        if run_start > 0:
+            cursor_us = (
+                float(predicted_host_us[epoch_indices[run_start - 1][-1]]) +
+                nominal_step_us
+            )
+            for missing_position in range(run_start, run_end):
+                missing_indices = epoch_indices[missing_position]
+                elapsed_us = (
+                    record_ticks[missing_indices].astype(np.float64) -
+                    float(record_ticks[missing_indices[0]])
+                ) * tick_period_us
+                predicted_host_us[missing_indices] = cursor_us + elapsed_us
+                cursor_us = float(predicted_host_us[missing_indices[-1]]) + nominal_step_us
+            continue
+
+        if run_end >= len(unique_epochs):
+            return frame
+        cursor_us = (
+            float(predicted_host_us[epoch_indices[run_end][0]]) - nominal_step_us
+        )
+        for missing_position in range(run_end - 1, run_start - 1, -1):
+            missing_indices = epoch_indices[missing_position]
+            elapsed_us = (
+                record_ticks[missing_indices].astype(np.float64) -
+                float(record_ticks[missing_indices[0]])
+            ) * tick_period_us
+            start_us = cursor_us - float(elapsed_us[-1])
+            predicted_host_us[missing_indices] = start_us + elapsed_us
+            cursor_us = start_us - nominal_step_us
+
+    monotonic_adjustments: list[dict[str, Any]] = []
+    previous_last_us: Optional[float] = None
+    for epoch in unique_epochs:
+        indices = np.flatnonzero(clock_epochs == epoch)
+        if previous_last_us is not None and predicted_host_us[indices[0]] <= previous_last_us:
+            shift_us = previous_last_us + nominal_step_us - predicted_host_us[indices[0]]
+            predicted_host_us[indices] += shift_us
+            monotonic_adjustments.append({
+                "clock_epoch": epoch,
+                "shift_us": float(shift_us),
+            })
+        previous_last_us = float(predicted_host_us[indices[-1]])
+
+    out = frame.copy()
+    out["time_s"] = (predicted_host_us - logger_origin_us) / 1_000_000.0
+    residual_us = (
+        np.concatenate(residual_groups)
+        if residual_groups
+        else np.asarray([], dtype=np.float64)
+    )
+    absolute_residual_us = np.abs(residual_us)
+    out.attrs["bdq_clock_alignment"] = {
+        "method": (
+            "robust_affine_observation_fit"
+            if len(unique_epochs) == 1
+            else "segmented_robust_affine_observation_fit"
+        ),
+        "clock_id": descriptor.get("clock_id"),
+        "clock_epoch_count": len(unique_epochs),
+        "observation_count": observation_count,
+        "rejected_relation_observation_count": rejected_relation_observations,
+        "observation_kind": (
+            "clock_sync_or_hardware_capture"
+            if used_preferred_only
+            else "available_bounded_observations"
+        ),
+        "epochs": epoch_reports,
+        "monotonic_adjustments": monotonic_adjustments,
+        "residual_rms_us": float(np.sqrt(np.mean(residual_us * residual_us))) if residual_us.size else None,
+        "residual_p95_abs_us": float(np.percentile(absolute_residual_us, 95)) if residual_us.size else None,
+        "residual_max_abs_us": float(np.max(absolute_residual_us)) if residual_us.size else None,
+    }
+    if len(epoch_reports) == 1 and epoch_reports[0].get("scale") is not None:
+        out.attrs["bdq_clock_alignment"]["scale"] = epoch_reports[0]["scale"]
+        out.attrs["bdq_clock_alignment"]["drift_ppm"] = epoch_reports[0]["drift_ppm"]
+    return out
 
 
 def bdq_to_stream_dataframes(input_path: str | Path) -> dict[str, pd.DataFrame]:
@@ -872,9 +1249,40 @@ def bdq_to_stream_dataframes(input_path: str | Path) -> dict[str, pd.DataFrame]:
         df = pd.DataFrame.from_records(records_by_id[stream_id])
         if not df.empty:
             df = _decorate_native_time(df, descriptor)
-            if descriptor.get("clock_id") == "logger_monotonic":
-                df["time_s"] = df["native_time_s"]
         frames[stream_key] = df
+
+    primary_descriptor = next(
+        (
+            descriptor
+            for descriptor in descriptors_by_id.values()
+            if descriptor.get("stream_key") == "primary"
+        ),
+        None,
+    )
+    primary = frames.get("primary")
+    observations = _observations_by_stream(info)
+    if isinstance(primary_descriptor, Mapping) and isinstance(primary, pd.DataFrame) and not primary.empty:
+        logger_origin_us = _primary_logger_origin_us(
+            primary,
+            primary_descriptor,
+            _logger_reference_us(info, observations),
+        )
+        for stream_id, descriptor in descriptors_by_id.items():
+            stream_key = str(descriptor["stream_key"])
+            frame = frames[stream_key]
+            if frame.empty:
+                continue
+            if descriptor.get("clock_id") == "logger_monotonic":
+                frames[stream_key] = _align_logger_clock_stream(
+                    frame, descriptor, logger_origin_us
+                )
+            elif observations.get(stream_id):
+                frames[stream_key] = _align_observed_stream(
+                    frame,
+                    descriptor,
+                    observations[stream_id],
+                    logger_origin_us,
+                )
     return frames
 
 
@@ -1124,6 +1532,11 @@ def _stream_sample_rate_hz(descriptor: Mapping[str, Any]) -> Optional[float]:
 def _bdq_v2_to_log_metadata(info: BdqReadResult) -> dict[str, Any]:
     metadata = info.metadata
     descriptors = _stream_descriptors(info.stream_catalog)
+    observed_stream_ids = {
+        int(chunk.stream_id)
+        for chunk in info.stream_data_chunks
+        if chunk.observations
+    }
     session_id = _text_or_none(metadata.get("recording_id")) or info.path.stem
 
     declared_streams: dict[str, Any] = {}
@@ -1133,11 +1546,16 @@ def _bdq_v2_to_log_metadata(info: BdqReadResult) -> dict[str, Any]:
         stream_key = str(descriptor["stream_key"])
         sample_rate_hz = _stream_sample_rate_hz(descriptor)
         is_primary = stream_key == "primary"
+        has_logger_time = (
+            is_primary
+            or descriptor.get("clock_id") == "logger_monotonic"
+            or descriptor.get("stream_id") in observed_stream_ids
+        )
         if is_primary:
             primary_descriptor = descriptor
         declared_streams[stream_key] = {
             "type": "uniform" if descriptor.get("stream_kind") == "regular" else "intermittent",
-            "time_column": "time_s" if is_primary else "native_time_s",
+            "time_column": "time_s" if has_logger_time else "native_time_s",
             "time_encoding": "elapsed_s",
             "time_unit": "s",
             "sample_rate_hz": sample_rate_hz,
@@ -1176,6 +1594,13 @@ def _bdq_v2_to_log_metadata(info: BdqReadResult) -> dict[str, Any]:
                 "transport": descriptor.get("transport"),
                 "timebase": copy.deepcopy(descriptor.get("timebase")),
                 "acquisition": copy.deepcopy(descriptor.get("acquisition")),
+                "time_columns": {
+                    "canonical": "time_s" if has_logger_time else "native_time_s",
+                    "canonical_clock": (
+                        "logger_monotonic" if has_logger_time else descriptor.get("clock_id")
+                    ),
+                    "native_nominal": "native_time_s",
+                },
                 "signals": signals,
             }
 
@@ -1187,6 +1612,17 @@ def _bdq_v2_to_log_metadata(info: BdqReadResult) -> dict[str, Any]:
             "stream": "primary",
             "unit": "s",
         }
+        columns["native_time_s"] = {
+            "class": "diagnostic", "stream": "primary", "unit": "s", "raw": False,
+        }
+        for field_name in (
+            "continuity_segment",
+            "clock_epoch",
+            "native_tick_unwrapped",
+        ):
+            columns[field_name] = {
+                "class": "diagnostic", "stream": "primary", "unit": "count", "raw": False,
+            }
         column_map = _bdq_dataframe_column_map(primary_descriptor)
         for channel in _schema_channels(primary_descriptor):
             field_name = _text_or_none(channel.get("field"))

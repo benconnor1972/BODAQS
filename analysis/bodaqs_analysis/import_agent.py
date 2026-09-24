@@ -49,7 +49,7 @@ from .import_agent_logger_wifi_discovery import (
     LoggerWifiDiscoveryUnavailable,
     discover_single_logger_wifi_source,
 )
-from .io_bdq import is_bdq_path, read_bdq
+from .io_bdq import is_bdq_path, read_bdq, validate_bdq_importable
 from .io_fit import refresh_fit_inspection_index
 from .pipeline import preprocess_session
 from .preprocess_profile import load_preprocess_config, resolve_preprocess_config_paths
@@ -1931,12 +1931,7 @@ class ImportSourceRunner:
 
     def _validate_bdq_input(self, bdq_path: Path) -> None:
         info = read_bdq(bdq_path)
-        if not info.metadata:
-            raise ValueError(f"BDQ file has no metadata chunk: {bdq_path.name}")
-        if not info.channel_schema:
-            raise ValueError(f"BDQ file has no channel schema chunk: {bdq_path.name}")
-        if info.sample_count <= 0:
-            raise ValueError(f"BDQ file has no decodable samples: {bdq_path.name}")
+        validate_bdq_importable(info)
 
     def _build_candidate(
         self,
@@ -2737,7 +2732,7 @@ class ImportSourceRunner:
                 if candidate.input_kind == "bdq":
                     source_manifest.update(
                         {
-                            "import_mode": "import_agent_bdq_v1",
+                            "import_mode": "import_agent_" + session["meta"]["source_contract"]["name"].replace(".", "_"),
                             "original_bdq_filename": candidate.archive_name,
                             "original_bdq_sha256": candidate.archive_sha256,
                             "original_bdq_path": str(candidate.inbox_archive_path),

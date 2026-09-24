@@ -38,6 +38,8 @@ bool StorageManager_saveTextFile(const char* path, const String& data);
 StorageTimingStats StorageManager_timingStats();
 
 bool StorageManager_cardDetected();
+bool StorageManager_cardDetectAvailable();
+bool StorageManager_cardDetectedCached();
 bool StorageManager_isMounted();
 bool StorageManager_readyForLogging();
 bool StorageManager_remountIfPresent();

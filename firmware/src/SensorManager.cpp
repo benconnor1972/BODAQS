@@ -29,6 +29,8 @@ static uint32_t s_sampleID = 0;
 namespace {
   //constexpr uint8_t MAX_SENSORS = 16;
   Sensor*             s_list[MAX_SENSORS] = { nullptr };
+  bool                s_loggingStarted[MAX_SENSORS] = {};
+  bool                s_loggingStopped[MAX_SENSORS] = {};
   const LoggerConfig* s_cfg               = nullptr;
   AnalogPotSensor*    s_primaryPot        = nullptr;
   SensorTimingStats   s_timingStats;
@@ -173,7 +175,11 @@ namespace SensorManager {
 
 void begin(const LoggerConfig* cfg) {
   s_cfg = cfg;
-  for (auto& p : s_list) p = nullptr;
+  for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
+    s_list[i] = nullptr;
+    s_loggingStarted[i] = false;
+    s_loggingStopped[i] = false;
+  }
   s_primaryPot = nullptr;
 }
 
@@ -482,10 +488,18 @@ bool onLoggingStart(char* error, size_t errorCapacity) {
   // when the optional detailed timing summaries are compiled out.
   I2CBusScheduler::resetTimingStats();
   if (error && errorCapacity) error[0] = '\0';
-  for (auto* s : s_list) {
-    if (!s) continue;
+  for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
+    s_loggingStarted[i] = false;
+    s_loggingStopped[i] = false;
+  }
+  for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
+    Sensor* s = s_list[i];
+    if (!s || s->muted()) continue;
+    // Remember the attempted start so a partially started sensor is stopped
+    // on failure. Muted sensors must not probe or acquire at log start.
+    s_loggingStarted[i] = true;
     if (!s->startLoggingSession(error, errorCapacity)) {
-      for (auto* started : s_list) if (started) started->onLoggingStop();
+      onLoggingStop();
       return false;
     }
   }
@@ -495,11 +509,19 @@ bool onLoggingStart(char* error, size_t errorCapacity) {
 
 void onLoggingStop() {
   I2CBusScheduler::stop();
-  for (auto* s : s_list) if (s) s->onLoggingStop();
+  for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
+    if (!s_loggingStarted[i] || s_loggingStopped[i]) continue;
+    if (s_list[i]) s_list[i]->onLoggingStop();
+    s_loggingStopped[i] = true;
+  }
 }
 
 void onLoggingFinalized() {
-  for (auto* s : s_list) if (s) s->onLoggingFinalized();
+  for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
+    if (s_loggingStarted[i] && s_list[i]) s_list[i]->onLoggingFinalized();
+    s_loggingStarted[i] = false;
+    s_loggingStopped[i] = false;
+  }
 }
 
 size_t pendingLoggingRows() {

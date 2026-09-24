@@ -318,7 +318,9 @@ void ButtonActions::onToggleLogging(ButtonEvent event) {
     UI::toast("Log stop", 1500, 2);
     UI::status("Ready");
     UI::loop();  // Paint the stop message before queue drain / file close / metadata write.
-    LoggingManager::stop();
+    LoggingManager::stop(
+        LoggingManager::StopReason::UserRequest,
+        evName(event));
     ButtonManager_setPollingEnabled(true);   // re-enable nav polling
   }
 }

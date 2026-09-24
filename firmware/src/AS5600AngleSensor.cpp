@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "ConfigManager.h"
+#include "BdqV2Catalog.h"
 #include "I2CManager.h"
 #include "PowerManager.h"
 #include "SensorRegistry.h"
@@ -57,6 +58,35 @@ void recordRuntimeTiming_(
 static constexpr uint8_t kStatusMagnetTooStrong = 0x08;
 static constexpr uint8_t kStatusMagnetTooWeak = 0x10;
 static constexpr uint8_t kStatusMagnetDetected = 0x20;
+
+const BdqV2CatalogChannel kBdqV2Channels[] = {
+    {"sequence", "sample_sequence", "count", "uint32", 0, "diagnostic"},
+    {"native_tick", "logger_monotonic_time", "us", "uint32", 4,
+     "diagnostic"},
+    {"status_flags", "status", "bitfield", "uint16", 8, "diagnostic"},
+    {"raw_angle", "absolute_angle_raw", "count", "uint16", 12, "signal"},
+    {"sensor_status", "sensor_status", "bitfield", "uint8", 14,
+     "diagnostic"},
+    {"agc", "automatic_gain_control", "count", "uint8", 15,
+     "diagnostic"},
+    {"magnitude", "magnetic_magnitude", "count", "uint16", 16,
+     "diagnostic"},
+    {"read_ok", "read_ok", "flag", "uint8", 18, "diagnostic"},
+    {"reused", "reused_previous", "flag", "uint8", 19, "diagnostic"},
+};
+
+const BdqV2CatalogStatusFlag kBdqV2StatusFlags[] = {
+    {"discontinuity_before", BdqV2Format::DiscontinuityBefore},
+    {"producer_queue_drop_before", BdqV2Format::ProducerQueueDropBefore},
+    {"source_recovery_before", BdqV2Format::SourceRecoveryBefore},
+    {"timing_degraded", BdqV2Format::TimingDegraded},
+    {"read_failed", AS5600BdqV2::kReadFailed},
+    {"reused_previous", AS5600BdqV2::kReusedPrevious},
+    {"diagnostics_stale", AS5600BdqV2::kDiagnosticsStale},
+    {"magnet_not_detected", AS5600BdqV2::kMagnetNotDetected},
+    {"magnet_too_weak", AS5600BdqV2::kMagnetTooWeak},
+    {"magnet_too_strong", AS5600BdqV2::kMagnetTooStrong},
+};
 
 void copyField_(char* dst, size_t cap, const char* src) {
   if (!dst || cap == 0) return;
@@ -475,14 +505,26 @@ void AS5600AngleSensor::onLoggingStart() {
   m_asyncLoggingActive = true;
   m_asyncNextSeq = 0;
   m_asyncLastLoggedSeq = 0;
+  const bool enableBdqV2Stream =
+      ConfigManager::get().logFormat == LogFormat::BodaqsMultiStreamBinary;
+  // Refresh the held primary-stream snapshot now, but do not put this sample
+  // in the native stream. Other sensors can take seconds to start, so native
+  // production begins with the scheduler instead of creating a false opening
+  // gap before regular acquisition starts.
+  m_bdqV2LoggingActive = false;
+  m_bdqV2Sequence = 0;
+  m_bdqV2ReadFailureActive = false;
+  m_bdqV2Queue.reset();
   resetAsyncSnapshot_();
   recordRuntimeEvent_(SensorRuntimeEventType::LoggingStart);
   (void)acquireAsyncSample_();
+  m_bdqV2LoggingActive = enableBdqV2Stream;
 }
 
 void AS5600AngleSensor::onLoggingStop() {
   recordRuntimeEvent_(SensorRuntimeEventType::LoggingStop);
   m_asyncLoggingActive = false;
+  m_bdqV2LoggingActive = false;
   const bool sustainedReadFailure =
     m_runtimeReadFailureActive &&
     m_runtimeReadFailureStreak >= kDeferredRecoveryFailureStreak;
@@ -610,6 +652,39 @@ bool AS5600AngleSensor::readRegBytesLocked_(uint8_t reg, uint8_t* out, uint8_t l
     out[i] = (uint8_t)v;
   }
   return true;
+}
+
+size_t AS5600AngleSensor::pendingLoggingRows() const {
+  return m_muted ? 0 : m_bdqV2Queue.pendingRecords();
+}
+
+bool AS5600AngleSensor::describeBdqV2Stream(
+    uint16_t streamId,
+    BdqV2StreamDescriptor& out) {
+  if (m_muted || streamId == 0) return false;
+
+  m_bdqV2Queue.setStreamId(streamId);
+  out = BdqV2StreamDescriptor{};
+  out.source = m_bdqV2Queue.source();
+  snprintf(out.streamKey, sizeof(out.streamKey), "%s_native", name());
+  copyField_(out.sensorId, sizeof(out.sensorId), name());
+  copyField_(out.transport, sizeof(out.transport), "i2c_direct");
+  copyField_(out.clockId, sizeof(out.clockId), "logger_monotonic");
+  copyField_(out.clockRelation, sizeof(out.clockRelation), "logger_clock");
+  copyField_(out.domain, sizeof(out.domain), m_primaryDomain);
+  copyField_(out.end, sizeof(out.end), m_semanticEnd);
+  out.nativeTickBits = 32;
+  out.nominalTickPeriodNumeratorUs = 1;
+  out.nominalTickPeriodDenominator = 1;
+  out.nominalSampleRateNumeratorHz = asyncTargetRateHz();
+  out.nominalSampleRateDenominator = 1;
+  out.expectedSequenceStep = 1;
+  out.channels = kBdqV2Channels;
+  out.channelCount = sizeof(kBdqV2Channels) / sizeof(kBdqV2Channels[0]);
+  out.statusFlags = kBdqV2StatusFlags;
+  out.statusFlagCount =
+      sizeof(kBdqV2StatusFlags) / sizeof(kBdqV2StatusFlags[0]);
+  return out.valid();
 }
 
 bool AS5600AngleSensor::readRawAngleBytesLocked_(uint8_t* out) const {
@@ -1218,7 +1293,10 @@ bool AS5600AngleSensor::copyAsyncSnapshot_(AsyncSnapshot& snapshot) const {
 }
 
 bool AS5600AngleSensor::acquireAsyncSample_() const {
+  const uint64_t previousRawAcquiredUs = m_lastRawAcquiredUs;
+  const uint64_t attemptStartedUs = (uint64_t)esp_timer_get_time();
   const int raw = readRawAngleOnce_();
+  const uint64_t attemptFinishedUs = (uint64_t)esp_timer_get_time();
 
   AsyncSnapshot snapshot;
   snapshot.have = m_haveLastGoodRaw || m_lastReadOk;
@@ -1232,9 +1310,10 @@ bool AS5600AngleSensor::acquireAsyncSample_() const {
   snapshot.rawReadFailures = m_rawReadFailures;
   snapshot.diagnosticReadFailures = m_diagnosticReadFailures;
   snapshot.seq = ++m_asyncNextSeq;
-  snapshot.acquiredUs = m_lastRawAcquiredUs != 0
+  snapshot.acquiredUs =
+      m_lastRawAcquiredUs != 0 && m_lastRawAcquiredUs != previousRawAcquiredUs
       ? m_lastRawAcquiredUs
-      : (uint64_t)esp_timer_get_time();
+      : attemptStartedUs + ((attemptFinishedUs - attemptStartedUs) / 2u);
   updateReadTransition_(snapshot.readOk);
 
   if (m_includeAngleColumn) {
@@ -1247,7 +1326,64 @@ bool AS5600AngleSensor::acquireAsyncSample_() const {
   }
 
   publishAsyncSnapshot_(snapshot);
+  enqueueBdqV2Record_(snapshot);
   return snapshot.readOk;
+}
+
+void AS5600AngleSensor::enqueueBdqV2Record_(
+    const AsyncSnapshot& snapshot) const {
+  if (!m_bdqV2LoggingActive) return;
+
+  AS5600BdqV2::Record record;
+  record.sequence = m_bdqV2Sequence++;
+  record.nativeTick = static_cast<uint32_t>(snapshot.acquiredUs);
+  record.rawAngle = snapshot.raw;
+  record.sensorStatus = snapshot.status;
+  record.agc = snapshot.agc;
+  record.magnitude = snapshot.magnitude;
+  record.readOk = snapshot.readOk;
+  record.reused = snapshot.reused;
+
+  if (!snapshot.readOk) {
+    record.statusFlags = static_cast<uint16_t>(
+        record.statusFlags |
+        AS5600BdqV2::kReadFailed |
+        BdqV2Format::TimingDegraded);
+    if (snapshot.reused) {
+      record.statusFlags = static_cast<uint16_t>(
+          record.statusFlags | AS5600BdqV2::kReusedPrevious);
+    }
+    m_bdqV2ReadFailureActive = true;
+  } else if (m_bdqV2ReadFailureActive) {
+    record.statusFlags = static_cast<uint16_t>(
+        record.statusFlags |
+        BdqV2Format::DiscontinuityBefore |
+        BdqV2Format::SourceRecoveryBefore);
+    m_bdqV2ReadFailureActive = false;
+  }
+
+  if (!snapshot.haveDiagnostics) {
+    record.statusFlags = static_cast<uint16_t>(
+        record.statusFlags | AS5600BdqV2::kDiagnosticsStale);
+  } else {
+    if ((snapshot.status & kStatusMagnetDetected) == 0) {
+      record.statusFlags = static_cast<uint16_t>(
+          record.statusFlags | AS5600BdqV2::kMagnetNotDetected);
+    }
+    if (snapshot.status & kStatusMagnetTooWeak) {
+      record.statusFlags = static_cast<uint16_t>(
+          record.statusFlags | AS5600BdqV2::kMagnetTooWeak);
+    }
+    if (snapshot.status & kStatusMagnetTooStrong) {
+      record.statusFlags = static_cast<uint16_t>(
+          record.statusFlags | AS5600BdqV2::kMagnetTooStrong);
+    }
+  }
+
+  uint8_t encoded[AS5600BdqV2::kRecordSizeBytes] {};
+  if (AS5600BdqV2::encodeRecord(record, encoded, sizeof(encoded))) {
+    (void)m_bdqV2Queue.enqueueRecord(encoded, sizeof(encoded));
+  }
 }
 
 uint8_t AS5600AngleSensor::columnCount() const {
@@ -1600,6 +1736,22 @@ bool AS5600AngleSensor::describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out
     (out.rawReadFailures > 0 || !m_lastReadOk)
       ? m_lastRawRuntimeFailure
       : SensorRuntimeFailure{};
+  const BdqV2StreamQueueStats streamStats = m_bdqV2Queue.stats();
+  out.hasBdqV2Stream = true;
+  out.bdqV2RecordsEnqueued = streamStats.recordsEnqueued;
+  out.bdqV2RecordsDequeued = streamStats.recordsDequeued;
+  out.bdqV2RecordsDropped = streamStats.recordsDropped;
+  out.bdqV2RecordsRejected = streamStats.recordsRejected;
+  out.bdqV2QueueCapacity = kBdqV2QueueCapacity;
+  out.bdqV2QueueHighWater = static_cast<uint16_t>(
+      streamStats.recordQueueHighWater > UINT16_MAX
+          ? UINT16_MAX
+          : streamStats.recordQueueHighWater);
+  out.bdqV2FinalQueueDepth = static_cast<uint16_t>(
+      m_bdqV2Queue.pendingRecords() > UINT16_MAX
+          ? UINT16_MAX
+          : m_bdqV2Queue.pendingRecords());
+  out.bdqV2NominalRateHz = asyncTargetRateHz();
   return true;
 }
 

@@ -208,7 +208,8 @@ Candidate deliverables:
 Implementation status (2026-09-14): the logger cadence now remains in
 microseconds, and named 200, 400, 800, and 1600 sample/s BMI270 profiles are
 available for bench characterization. FIFO service cadence is independently
-configurable at 25, 50, 100, 200, or 400 Hz. The default remains
+configurable at 25, 50, 100, 200, or 400 Hz, with an experimental 10 Hz option
+restricted to `accel_800_gyro_200`. The default remains
 `orientation_200` with 200 Hz FIFO service. Session metadata records achieved
 service rate, bus occupancy, service deadline misses, queue pressure, FIFO
 throughput, and logger wake lateness. These profiles do not establish usable

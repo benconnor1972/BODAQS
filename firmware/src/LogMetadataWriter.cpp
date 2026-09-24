@@ -484,6 +484,14 @@ void appendI2CSchedulerTiming_(MetadataOutput& out,
     appendKeyBool_(out, depth + 3, "running", b.running);
     appendKeyUInt_(out, depth + 3, "client_count", b.clientCount);
     appendKeyUInt_(out, depth + 3, "hz", b.hz);
+    appendKeyUInt_(out, depth + 3, "recovery_attempts", b.recoveryAttempts);
+    appendKeyUInt_(out, depth + 3, "recovery_successes", b.recoverySuccesses);
+    appendKeyUInt_(out, depth + 3, "recovery_failures", b.recoveryFailures);
+    appendKeyUInt_(out, depth + 3, "last_recovery_clock_pulses", b.lastRecoveryClockPulses);
+    appendKeyBool_(out, depth + 3, "last_recovery_sda_low_before", b.lastRecoverySdaLowBefore);
+    appendKeyBool_(out, depth + 3, "last_recovery_scl_low_before", b.lastRecoverySclLowBefore);
+    appendKeyBool_(out, depth + 3, "last_recovery_sda_low_after", b.lastRecoverySdaLowAfter);
+    appendKeyBool_(out, depth + 3, "last_recovery_scl_low_after", b.lastRecoverySclLowAfter);
     appendKeyFloat_(
         out,
         depth + 3,
@@ -520,6 +528,9 @@ void appendI2CSchedulerTiming_(MetadataOutput& out,
     appendKeyUInt_(out, depth + 3, "address", c.address);
     appendKeyUInt_(out, depth + 3, "target_rate_hz", c.targetRateHz);
     appendKeyUInt_(out, depth + 3, "period_us", c.periodUs);
+    appendKeyBool_(out, depth + 3, "latency_sensitive", c.latencySensitive);
+    appendKeyUInt_(out, depth + 3, "maximum_service_gap_us", c.maximumServiceGapUs);
+    appendKeyUInt_(out, depth + 3, "priority_yield_limit", c.priorityYieldLimit);
     appendKeyUInt_(out, depth + 3, "acquire_ok", c.acquireOk);
     appendKeyUInt_(out, depth + 3, "acquire_fail", c.acquireFail);
     appendKeyFloat_(
@@ -534,6 +545,11 @@ void appendI2CSchedulerTiming_(MetadataOutput& out,
     appendKeyUInt_(out, depth + 3, "service_deadline_misses", c.serviceDeadlineMisses);
     appendKeyUInt_(out, depth + 3, "missed_service_slots", c.missedServiceSlots);
     appendKeyUInt_(out, depth + 3, "maximum_start_lateness_us", c.maximumStartLatenessUs);
+    appendKeyUInt_(out, depth + 3, "maximum_successful_service_interval_us",
+                   c.maximumSuccessfulServiceIntervalUs);
+    appendKeyUInt_(out, depth + 3, "priority_service_count", c.priorityServiceCount);
+    appendKeyUInt_(out, depth + 3, "priority_deferral_count", c.priorityDeferralCount);
+    appendKeyUInt_(out, depth + 3, "priority_deferral_maximum_us", c.priorityDeferralMaximumUs);
     appendKeyUInt_(out, depth + 3, "row_uses", c.rowUses);
     appendKeyUInt_(out, depth + 3, "row_fresh", c.rowFresh);
     appendKeyUInt_(out, depth + 3, "row_reused", c.rowReused);
@@ -1024,6 +1040,12 @@ void appendImuConfig_(MetadataOutput& out, const SensorImuConfigDescriptor& imu)
 
   appendKeyString_(out, 4, "orientation_status",
                    imu.orientationValid ? "accepted" : "unset");
+  appendKey_(out, 4, "orientation_declaration");
+  out += F("{\n");
+  appendKeyString_(out, 5, "plane", imu.orientationPlane);
+  appendKeyInt_(out, 5, "normal_sign", imu.orientationNormalSign, false);
+  appendIndent_(out, 4);
+  out += F("},\n");
   if (imu.orientationValid) {
     appendKey_(out, 4, "mount_transform");
     out += F("{\n");

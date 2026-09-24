@@ -54,8 +54,6 @@ BMI270FifoParseResult BMI270FifoParser::parseHeaderMode(
       case kGyroAccelHeader: {
         if (!require_(index, 12, length)) {
           ++result.partialFrames;
-          result.pendingStatus |= BMI270ImuStatus::kFifoDiscontinuityBefore |
-                                  BMI270ImuStatus::kTimingDegraded;
           index = length;
           break;
         }
@@ -93,8 +91,6 @@ BMI270FifoParseResult BMI270FifoParser::parseHeaderMode(
       case kGyroHeader: {
         if (!require_(index, 6, length)) {
           ++result.partialFrames;
-          result.pendingStatus |= BMI270ImuStatus::kFifoDiscontinuityBefore |
-                                  BMI270ImuStatus::kTimingDegraded;
           index = length;
         } else {
           if (retainUnpairedFrames) ++result.sampleFrames;
@@ -141,7 +137,6 @@ BMI270FifoParseResult BMI270FifoParser::parseHeaderMode(
         result.sensorTimeAnchorByteOffset = index - 1;
         if (!require_(index, 3, length)) {
           ++result.partialFrames;
-          result.pendingStatus |= BMI270ImuStatus::kTimingDegraded;
           index = length;
           break;
         }
@@ -154,8 +149,6 @@ BMI270FifoParseResult BMI270FifoParser::parseHeaderMode(
       case kSkipHeader:
         if (!require_(index, 1, length)) {
           ++result.partialFrames;
-          result.pendingStatus |= BMI270ImuStatus::kFifoDiscontinuityBefore |
-                                  BMI270ImuStatus::kTimingDegraded;
           index = length;
           break;
         }

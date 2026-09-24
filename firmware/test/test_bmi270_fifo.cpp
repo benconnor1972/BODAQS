@@ -74,6 +74,19 @@ int runBMI270FifoTests() {
               "adaptive FIFO follow-up starts only beyond the backlog threshold");
         check(BMI270FifoReadPlan::adaptiveFollowupThresholdBytes(1600, 25) == 1024,
               "adaptive FIFO backlog threshold is bounded at half capacity");
+        check(BMI270FifoReadPlan::maximumPriorityServiceGapUs(800, 200, 25) == 70000 &&
+              BMI270FifoReadPlan::maximumPriorityServiceGapUs(1600, 200, 25) == 70000,
+              "mixed profiles admit the capped 70 ms priority service gap");
+        check(BMI270FifoReadPlan::maximumPriorityServiceGapUs(1600, 1600, 25) < 60000,
+              "full-rate six-axis profile receives a smaller FIFO-derived gap");
+        check(BMI270FifoReadPlan::isSupportedFifoPollRate(800, 200, 10) &&
+              !BMI270FifoReadPlan::isSupportedFifoPollRate(1600, 200, 10) &&
+              !BMI270FifoReadPlan::isSupportedFifoPollRate(800, 800, 10),
+              "experimental 10 Hz FIFO service is restricted to the 800/200 profile");
+        check(BMI270FifoReadPlan::maximumPriorityServiceGapUs(800, 200, 10) == 140000,
+              "10 Hz FIFO service receives its bounded 140 ms service gap");
+        check(BMI270FifoReadPlan::estimatedSchedulerAcquireUs(800, 200, 10) > 30000,
+              "10 Hz scheduler estimate accounts for the larger FIFO burst");
 
         check(BMI270QueuePlan::capacityForRate(200) == 1024 &&
               BMI270QueuePlan::capacityForRate(400) == 2048 &&
@@ -269,8 +282,21 @@ int runBMI270FifoTests() {
             BMI270FifoParser::parseHeaderMode(partial, sizeof(partial), output, 1);
         check(result.partialFrames == 1 && result.samplesWritten == 0,
               "partial combined frame is rejected and counted");
-        check((result.pendingStatus & BMI270ImuStatus::kFifoDiscontinuityBefore) != 0,
-              "partial frame marks a future discontinuity");
+        check(result.pendingStatus == 0,
+              "partial tail is not treated as loss because BMI270 repeats it");
+
+        uint8_t repeated[13] {};
+        putCombined_(repeated, 1, 2, 3, 4, 5, 6);
+        const BMI270FifoParseResult repeatedResult =
+            BMI270FifoParser::parseHeaderMode(
+                repeated,
+                sizeof(repeated),
+                output,
+                1,
+                result.pendingStatus,
+                result.pendingSkippedFrames);
+        check(repeatedResult.samplesWritten == 1 && output[0].statusBefore == 0,
+              "repeated complete frame remains continuous after a partial tail");
     }
 
     {

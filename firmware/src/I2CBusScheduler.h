@@ -16,9 +16,21 @@ public:
   virtual bool asyncMuted() const = 0;
   virtual bool asyncAcquire() = 0;
 
+  // Latency-sensitive clients have no device-side FIFO and benefit from being
+  // sampled immediately before a long, non-preemptible buffered transfer.
+  virtual bool asyncLatencySensitive() const { return false; }
+
+  // Conservative scheduler estimate for one acquisition. It is used only for
+  // bounded look-ahead arbitration, not for timing or data timestamps.
+  virtual uint32_t asyncEstimatedAcquireUs() const { return 0; }
+
   // Opt-in bound used to admit long, low-priority transfers on a shared bus.
   // Zero means this client does not participate in admission control.
   virtual uint32_t asyncMaximumLowPriorityGapUs() const { return 0; }
+
+  // Maximum number of latency-sensitive acquisitions which may be admitted
+  // before one pending service of this buffered client. Zero disables yields.
+  virtual uint8_t asyncMaximumLatencySensitiveYields() const { return 0; }
 
   virtual void asyncSchedulerStarting() {}
   virtual void asyncSchedulerStopped() {}

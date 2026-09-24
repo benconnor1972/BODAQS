@@ -91,6 +91,7 @@ public:
 
 private:
   static bool loadParams_(Params& out, const char* instanceName, const ParamPack& params);
+  bool initializationHealthy_() const;
   bool ensureInitialized_(char* error, size_t errorCapacity);
   bool popBdqV2Record_(uint8_t* destination, size_t capacity);
   static size_t pendingBdqV2Records_(const void* context);

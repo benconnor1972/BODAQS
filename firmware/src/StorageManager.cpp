@@ -45,7 +45,12 @@ static bool s_sdMounted = false;
 static bool s_cardDetectedCached = true;
 static bool s_haveDetectPin = false;
 static uint32_t s_nextDetectPollMs = 0;
+static bool s_cardDetectCandidateActive = false;
+static bool s_cardDetectCandidate = true;
+static uint32_t s_cardDetectCandidateSinceMs = 0;
 static char s_lastStatus[48] = "not initialized";
+constexpr uint32_t kCardDetectPollMs = 50;
+constexpr uint32_t kCardDetectDebounceMs = 150;
 constexpr size_t kMinWriteBufferBytes = 1024;
 constexpr uint32_t kDefaultBdqTargetChunkBytes = 16384UL;
 constexpr uint32_t kStorageWriteStallThresholdUs = 100000UL;
@@ -175,14 +180,19 @@ static bool readCardDetectPin_() {
 
 static void setupCardDetectPin_() {
   s_haveDetectPin = s_storage && s_storage->detect_pin >= 0;
+  s_cardDetectCandidateActive = false;
+  s_cardDetectCandidateSinceMs = 0;
+  s_nextDetectPollMs = 0;
   if (!s_haveDetectPin) {
     s_cardDetectedCached = true;
+    s_cardDetectCandidate = true;
     return;
   }
 
   pinMode((uint8_t)s_storage->detect_pin,
           s_storage->detect_use_internal_pullup ? INPUT_PULLUP : INPUT);
   s_cardDetectedCached = readCardDetectPin_();
+  s_cardDetectCandidate = s_cardDetectedCached;
   STOR_LOGI("SD detect GPIO%d active_%s initial=%s\n",
             (int)s_storage->detect_pin,
             s_storage->detect_active_low ? "low" : "high",
@@ -1598,6 +1608,13 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
   document["session_id"] = s_currentSessionId;
   document["path"] = s_currentLogPath;
   document["clean_shutdown"] = true;
+  JsonObject stop = document["stop"].to<JsonObject>();
+  stop["reason"] = endInfo.stopReason;
+  stop["trigger_event"] = endInfo.stopTriggerEvent;
+  stop["uptime_ms"] = endInfo.stopUptimeMs;
+  stop["sd_detect_available"] = endInfo.stopSdDetectAvailable;
+  stop["sd_card_detected"] = endInfo.stopSdCardDetected;
+  stop["analog_rail_fault"] = endInfo.stopAnalogRailFault;
   const BdqV2WriterStats& totals = s_bdqV2Writer.stats();
   document["chunks_written_before_summary"] = totals.chunksWritten;
   document["stream_data_chunks_written"] = totals.streamDataChunksWritten;
@@ -1664,6 +1681,10 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
       client["bus"] = clientStats.busIndex;
       client["address"] = clientStats.address;
       client["target_rate_hz"] = clientStats.targetRateHz;
+      client["latency_sensitive"] = clientStats.latencySensitive;
+      client["maximum_service_gap_us"] =
+          clientStats.maximumServiceGapUs;
+      client["priority_yield_limit"] = clientStats.priorityYieldLimit;
       client["achieved_service_rate_hz"] = timing.sessionDurationUs
           ? static_cast<double>(clientStats.acquireOk + clientStats.acquireFail) *
                 1000000.0 / static_cast<double>(timing.sessionDurationUs)
@@ -1675,6 +1696,14 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
       client["missed_service_slots"] = clientStats.missedServiceSlots;
       client["maximum_start_lateness_us"] =
           clientStats.maximumStartLatenessUs;
+      client["maximum_successful_service_interval_us"] =
+          clientStats.maximumSuccessfulServiceIntervalUs;
+      client["priority_service_count"] =
+          clientStats.priorityServiceCount;
+      client["priority_deferral_count"] =
+          clientStats.priorityDeferralCount;
+      client["priority_deferral_maximum_us"] =
+          clientStats.priorityDeferralMaximumUs;
       client["acquire_average_us"] = TimingStats_avgUs(clientStats.acquireUs);
       client["acquire_maximum_us"] = clientStats.acquireUs.maxUs;
     }
@@ -1812,9 +1841,27 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
           strcasecmp(diagnostics.sensorName, descriptor.sensorId) != 0) {
         continue;
       }
-      stream["producer_drop_count"] = diagnostics.imuQueueDrops;
-      stream["producer_queue_capacity"] = diagnostics.imuQueueCapacity;
-      stream["producer_queue_high_water"] = diagnostics.imuQueueHighWater;
+      if (diagnostics.hasBdqV2Stream) {
+        stream["producer_drop_count"] = diagnostics.bdqV2RecordsDropped;
+        stream["producer_rejected_count"] = diagnostics.bdqV2RecordsRejected;
+        stream["producer_queue_capacity"] = diagnostics.bdqV2QueueCapacity;
+        stream["producer_queue_high_water"] = diagnostics.bdqV2QueueHighWater;
+        stream["native_rate_hz"] = diagnostics.bdqV2NominalRateHz;
+      } else {
+        stream["producer_drop_count"] = diagnostics.imuQueueDrops;
+        stream["producer_queue_capacity"] = diagnostics.imuQueueCapacity;
+        stream["producer_queue_high_water"] = diagnostics.imuQueueHighWater;
+      }
+      if (!diagnostics.hasImuSession) {
+        if (endInfo.i2cSchedulerTiming &&
+            endInfo.i2cSchedulerTiming->sessionDurationUs != 0) {
+          stream["achieved_record_rate_hz"] =
+              static_cast<double>(stats ? stats->recordsWritten : 0) * 1000000.0 /
+              static_cast<double>(
+                  endInfo.i2cSchedulerTiming->sessionDurationUs);
+        }
+        break;
+      }
       stream["native_rate_hz"] = diagnostics.imuNativeRateHz;
       stream["accel_rate_hz"] = diagnostics.imuAccelRateHz;
       stream["gyro_rate_hz"] = diagnostics.imuGyroRateHz;
@@ -1832,6 +1879,16 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
       stream["drain_failures"] = diagnostics.rawReadFailures;
       stream["fifo_bytes_read"] = diagnostics.imuFifoBytesRead;
       stream["fifo_frames_parsed"] = diagnostics.imuFifoFramesParsed;
+      stream["sensor_time_frames"] = diagnostics.imuSensorTimeFrames;
+      stream["missing_sensor_time_batches"] =
+          diagnostics.imuMissingSensorTimeBatches;
+      stream["skip_control_frames"] = diagnostics.imuSkipControlFrames;
+      stream["unpaired_frames"] = diagnostics.imuUnpairedFrames;
+      stream["input_config_frames"] = diagnostics.imuInputConfigFrames;
+      stream["invalid_headers"] = diagnostics.imuInvalidHeaders;
+      stream["partial_frames"] = diagnostics.imuPartialFrames;
+      stream["overread_frames"] = diagnostics.imuOverreadFrames;
+      stream["parser_output_drops"] = diagnostics.imuParserOutputDrops;
       stream["maximum_fifo_bytes_observed"] =
           diagnostics.imuMaximumFifoBytesObserved;
       stream["adaptive_followup_threshold_bytes"] =
@@ -2276,7 +2333,14 @@ void StorageManager_stopLog() {
 
   if (isCompactBinaryFormat_()) {
     const LoggingManager::RuntimeStats stats = LoggingManager::runtimeStats();
+    const LoggingManager::StopContext stop = LoggingManager::stopContext();
     BdqLogEndInfo endInfo;
+    endInfo.stopReason = LoggingManager::stopReasonName(stop.reason);
+    endInfo.stopTriggerEvent = stop.triggerEvent;
+    endInfo.stopUptimeMs = stop.uptimeMs;
+    endInfo.stopSdDetectAvailable = stop.sdDetectAvailable;
+    endInfo.stopSdCardDetected = stop.sdCardDetected;
+    endInfo.stopAnalogRailFault = stop.analogRailFault;
     endInfo.samplesDropped = s_samplesDropped;
     endInfo.queueMax = s_qMax;
     endInfo.queueDepth = s_qCap;
@@ -2303,7 +2367,14 @@ void StorageManager_stopLog() {
     }
   } else if (isBdqV2Format_()) {
     const LoggingManager::RuntimeStats stats = LoggingManager::runtimeStats();
+    const LoggingManager::StopContext stop = LoggingManager::stopContext();
     BdqLogEndInfo endInfo;
+    endInfo.stopReason = LoggingManager::stopReasonName(stop.reason);
+    endInfo.stopTriggerEvent = stop.triggerEvent;
+    endInfo.stopUptimeMs = stop.uptimeMs;
+    endInfo.stopSdDetectAvailable = stop.sdDetectAvailable;
+    endInfo.stopSdCardDetected = stop.sdCardDetected;
+    endInfo.stopAnalogRailFault = stop.analogRailFault;
     endInfo.samplesDropped = s_samplesDropped;
     endInfo.queueMax = s_qMax;
     endInfo.queueDepth = s_qCap;
@@ -2425,11 +2496,18 @@ void StorageManager_setCustomHeader(const char* csv) {
 bool StorageManager_cardDetected() {
   if (!s_storage) return true;
   if (s_haveDetectPin) {
-    s_cardDetectedCached = readCardDetectPin_();
-    return s_cardDetectedCached;
+    return readCardDetectPin_();
   }
   if (!isSdmmcBackend()) return false;
   return s_sdMounted && SD_MMC.cardType() != CARD_NONE;
+}
+
+bool StorageManager_cardDetectAvailable() {
+  return s_haveDetectPin;
+}
+
+bool StorageManager_cardDetectedCached() {
+  return s_haveDetectPin ? s_cardDetectedCached : StorageManager_cardDetected();
 }
 
 bool StorageManager_isMounted() {
@@ -2441,6 +2519,8 @@ bool StorageManager_remountIfPresent() {
   if (!s_storage || !isSdmmcBackend()) return false;
   if (s_haveDetectPin) {
     s_cardDetectedCached = readCardDetectPin_();
+    s_cardDetectCandidate = s_cardDetectedCached;
+    s_cardDetectCandidateActive = false;
   }
   return mountSdmmc_();
 }
@@ -2604,10 +2684,19 @@ void StorageManager_loop() {
   static uint32_t s_rowCount = 0;
 
   if (s_haveDetectPin && (int32_t)(now - s_nextDetectPollMs) >= 0) {
-    s_nextDetectPollMs = now + 500;
+    s_nextDetectPollMs = now + kCardDetectPollMs;
     const bool present = readCardDetectPin_();
-    if (present != s_cardDetectedCached) {
+    if (present == s_cardDetectedCached) {
+      s_cardDetectCandidateActive = false;
+    } else if (!s_cardDetectCandidateActive ||
+               present != s_cardDetectCandidate) {
+      s_cardDetectCandidate = present;
+      s_cardDetectCandidateSinceMs = now;
+      s_cardDetectCandidateActive = true;
+    } else if ((uint32_t)(now - s_cardDetectCandidateSinceMs) >=
+               kCardDetectDebounceMs) {
       s_cardDetectedCached = present;
+      s_cardDetectCandidateActive = false;
       if (!present) {
         setStatus_("card removed");
         STOR_LOGW("SD card removed\n");
@@ -2616,7 +2705,9 @@ void StorageManager_loop() {
 
         if (LoggingManager::isRunning()) {
           STOR_LOGW("Stopping logging because SD card detect went absent\n");
-          LoggingManager::stop();
+          LoggingManager::stop(
+              LoggingManager::StopReason::SdCardRemoved,
+              "sd_detect_absent");
           SD_MMC.end();
           s_sdMounted = false;
         } else if (s_sdMounted) {

@@ -7,6 +7,7 @@
 #include "DisplayManager.h"
 #include "AnalogPotSensor.h"
 #include "SensorManager.h"
+#include "I2CManager.h"
 #include "Rates.h"
 #include "PowerManager.h"
 #include "IndicatorManager.h"
@@ -42,6 +43,19 @@ namespace {
   volatile bool   s_running       = false;
   LoggingManager::StartFailureHint s_startFailureHint =
       LoggingManager::StartFailureHint::None;
+  LoggingManager::StopContext s_stopContext;
+
+  void captureStopContext_(
+      LoggingManager::StopReason reason,
+      const char* triggerEvent) {
+    s_stopContext = LoggingManager::StopContext{};
+    s_stopContext.reason = reason;
+    s_stopContext.uptimeMs = millis();
+    s_stopContext.triggerEvent = triggerEvent ? triggerEvent : "";
+    s_stopContext.sdDetectAvailable = StorageManager_cardDetectAvailable();
+    s_stopContext.sdCardDetected = StorageManager_cardDetectedCached();
+    s_stopContext.analogRailFault = PowerManager::analogRailFaultActive();
+  }
 
   void classifyStartFailure_(const char* error) {
     if (!error) return;
@@ -310,6 +324,7 @@ void LoggingManager::begin(const LoggerConfig* cfg) {
 
 bool LoggingManager::start() {
   s_startFailureHint = StartFailureHint::None;
+  s_stopContext = StopContext{};
   if (!s_cfg) return false;
   TRACE("enter start()");
   const uint32_t startT0 = millis();
@@ -348,6 +363,9 @@ bool LoggingManager::start() {
     requestedHz = syncCapHz;
   }
   const uint16_t effectiveRateHz = AnalogInputManager::configureFromConfig(*s_cfg, requestedHz);
+  // Include recoveries during sensor initialization in this session's final
+  // bus diagnostics, even when acquisition has not started yet.
+  I2CManager::resetRecoveryStats();
   char sensorError[128] = {0};
   if (!SensorManager::validateLoggingStart(*s_cfg, effectiveRateHz, sensorError, sizeof(sensorError))) {
     classifyStartFailure_(sensorError);
@@ -411,6 +429,7 @@ bool LoggingManager::start() {
   AnalogInputManager::onLoggingStart();
   if (!SensorManager::onLoggingStart(sensorError, sizeof(sensorError))) {
     classifyStartFailure_(sensorError);
+    captureStopContext_(StopReason::StartFailure, "sensor_start_failed");
     AnalogInputManager::onLoggingStop();
     SensorManager::onLoggingStop();
     StorageManager_stopLog();
@@ -491,7 +510,38 @@ LoggingManager::RuntimeStats LoggingManager::runtimeStats() {
   return out;
 }
 
-void LoggingManager::stop() {
+const char* LoggingManager::stopReasonName(StopReason reason) {
+  switch (reason) {
+    case StopReason::None: return "none";
+    case StopReason::UserRequest: return "user_request";
+    case StopReason::AnalogRailFault: return "analog_rail_fault";
+    case StopReason::SleepRequest: return "sleep_request";
+    case StopReason::SdCardRemoved: return "sd_card_removed";
+    case StopReason::StartFailure: return "start_failure";
+    case StopReason::Unspecified: return "unspecified";
+    default: return "unknown";
+  }
+}
+
+LoggingManager::StopContext LoggingManager::stopContext() {
+  return s_stopContext;
+}
+
+void LoggingManager::stop(StopReason reason, const char* triggerEvent) {
+  if (!s_running) {
+    LOGGING_LOGW("stop ignored because logging is not active reason=%s trigger=%s\n",
+                 stopReasonName(reason), triggerEvent ? triggerEvent : "");
+    return;
+  }
+  captureStopContext_(reason, triggerEvent);
+  LOGGING_LOGI(
+      "stop requested reason=%s uptime_ms=%lu trigger=%s sd_detect_available=%u sd_card_detected=%u analog_rail_fault=%u\n",
+      stopReasonName(s_stopContext.reason),
+      (unsigned long)s_stopContext.uptimeMs,
+      s_stopContext.triggerEvent,
+      s_stopContext.sdDetectAvailable ? 1u : 0u,
+      s_stopContext.sdCardDetected ? 1u : 0u,
+      s_stopContext.analogRailFault ? 1u : 0u);
   s_running = false;
 #if defined(ESP32)
   // A sampler that already passed the run-state check may still be copying a

@@ -539,6 +539,40 @@ static bool keyInList_(const char* key, const char* const* list, size_t count) {
   return false;
 }
 
+static String orientationRejectionText_(uint16_t mask) {
+  String message;
+  const struct { uint16_t flag; const char* text; } reasons[] = {
+      {ImuOrientationRejection::kInsufficientSamples, "not enough samples"},
+      {ImuOrientationRejection::kQualityIncident, "sensor data gap or quality incident"},
+      {ImuOrientationRejection::kAccelMeanOutsideGravityBand, "gravity magnitude outside range"},
+      {ImuOrientationRejection::kAccelMagnitudeUnstable, "acceleration not steady"},
+      {ImuOrientationRejection::kGyroUnstable, "rotation not steady"},
+      {ImuOrientationRejection::kGyroMotionDetected, "rotation detected"},
+      {ImuOrientationRejection::kRollOutsideLimit, "bike not level"},
+      {ImuOrientationRejection::kInvalidGeometry, "invalid plane geometry"},
+  };
+  for (const auto& reason : reasons) {
+    if (!(mask & reason.flag)) continue;
+    if (message.length()) message += F(", ");
+    message += reason.text;
+  }
+  return message.length() ? message : String(F("unknown quality check"));
+}
+
+static void sendOrientationFeedback_(WebServer& srv, const String& message, int sensorIndex) {
+  if (HtmlUtil::isHtmxRequest(srv)) {
+    HttpFileSender::sendText(srv, 200, F("text/html"), message, F("no-store"));
+    return;
+  }
+  String page = htmlHeader(F("Set orientation"));
+  page += message;
+  page += F("<p><a href='/config/sensor?id=");
+  page += String(sensorIndex);
+  page += F("'>Back to sensor</a></p>");
+  page += htmlFooter();
+  HttpFileSender::sendText(srv, 200, F("text/html"), page, F("no-store"));
+}
+
 static void emitSensorEditor_(ChunkedHtmlResponse& html,
                               uint8_t idx,
                               const SensorSpec& sp,
@@ -593,6 +627,63 @@ static void emitSensorEditor_(ChunkedHtmlResponse& html,
   if (locked) html += F(" disabled");
   html += F("></div>");
 
+  if (sp.type == SensorType::BMI270ImuI2C) {
+    html += F("<h4>Acquisition</h4>");
+    emitParamRow_(html, idx, sp, defs, defCount, "profile", "Native accel / gyro profile", locked);
+    emitParamRow_(html, idx, sp, defs, defCount, "fifo_poll_rate_hz", "FIFO service rate (Hz)", locked);
+    emitParamRow_(html, idx, sp, defs, defCount, "startup_bias_capture_s", "Startup observation (s)", locked);
+    emitParamRow_(html, idx, sp, defs, defCount, "gyro_bias_mode", "Gyro bias mode", locked);
+    html += F("<small>BDQv2 stores the profile's native streams. The legacy sparse-row output-rate setting is retained in saved configuration but is not used here.</small>");
+    html += F("<h4>Installation</h4>");
+    emitParamRow_(html, idx, sp, defs, defCount, "imu_id", "Physical IMU ID", locked);
+    emitParamRow_(html, idx, sp, defs, defCount, "domain", "Mechanical domain", locked);
+    emitParamRow_(html, idx, sp, defs, defCount, "end", "Bike end", locked);
+    emitParamRow_(html, idx, sp, defs, defCount, "mount_point", "Mount point", locked);
+    emitParamRow_(html, idx, sp, defs, defCount, "calibration_ref", "Host calibration reference", locked);
+    String orientationPlane;
+    sp.params.get("orient_plane", orientationPlane);
+    if (orientationPlane != "xy" && orientationPlane != "yz" && orientationPlane != "xz") {
+      orientationPlane = "xz";
+    }
+    long normalSign = 1;
+    sp.params.getInt("orient_normal_sign", normalSign);
+    html += F("<div class='row' style='display:flex;flex-wrap:wrap;align-items:center;gap:12px'>");
+    html += F("<label>Installation orientation</label><span><select name='s");
+    html += String(idx);
+    html += F(".orient_plane'");
+    if (locked) html += F(" disabled");
+    html += F(" data-saved='");
+    html += orientationPlane;
+    html += F("'><option value='xy'");
+    if (orientationPlane == "xy") html += F(" selected");
+    html += F(">XY (normal Z)</option><option value='yz'");
+    if (orientationPlane == "yz") html += F(" selected");
+    html += F(">YZ (normal X)</option><option value='xz'");
+    if (orientationPlane == "xz") html += F(" selected");
+    html += F(">XZ (normal Y)</option></select> <select name='s");
+    html += String(idx);
+    html += F(".orient_normal_sign'");
+    if (locked) html += F(" disabled");
+    html += F(" data-saved='");
+    html += String(normalSign == -1 ? -1 : 1);
+    html += F("'><option value='1'");
+    if (normalSign != -1) html += F(" selected");
+    html += F(">Positive normal points left</option><option value='-1'");
+    if (normalSign == -1) html += F(" selected");
+    html += F(">Negative normal points left</option></select></span>");
+    html += F("<button type='submit' form='orientation-capture-form' "
+              "onclick=\"for(const s of this.parentElement.querySelectorAll('select'))"
+              "{if(s.value!==s.dataset.saved){document.getElementById('orientation-result').textContent="
+              "'Save Sensor before capturing orientation.';return false;}}\"");
+    if (locked) html += F(" disabled");
+    html += F(">Capture and save orientation <span class='htmx-indicator'>Capturing...</span></button></div>");
+    bool orientationAccepted = false;
+    sp.params.getBool("orient_valid", orientationAccepted);
+    html += F("<div class='row'><label>Capture status</label><span>");
+    html += orientationAccepted ? F("Accepted") : F("Not set");
+    html += F("</span><small>Save Sensor stores the selections. Capture uses the saved settings after final mounting; raw IMU samples are never rotated in the logger.</small></div>");
+    html += F("<div id='orientation-result'></div>");
+  } else {
   if (findParamDef_(defs, defCount, "output_mode")) {
     html += F("<h4>Output</h4>");
     emitOutputModeRow_(html, idx, sp, locked);
@@ -642,6 +733,7 @@ static void emitSensorEditor_(ChunkedHtmlResponse& html,
       printedOther = true;
     }
     emitParamRow_(html, idx, sp, defs, defCount, pd.key, nullptr, locked);
+  }
   }
 
   html += F("<div class='row'><label>Remove</label><button type='submit' name='delete_sensor_idx' value='");
@@ -983,7 +1075,8 @@ void registerConfigRoutes(WebServer& srv) {
         html += F("</td><td>");
         html += sp.mutedDefault ? F("muted") : F("active");
         html += F("</td><td>");
-        html += (mode == OutputMode::RAW) ? F("RAW") : F("LINEAR");
+        if (sp.type == SensorType::BMI270ImuI2C) html += F("native streams");
+        else html += (mode == OutputMode::RAW) ? F("RAW") : F("LINEAR");
         html += F("</td><td><a href='/config/sensor?id=");
         html += String((int)i);
         html += F("'>Edit</a></td></tr>");
@@ -1069,8 +1162,94 @@ void registerConfigRoutes(WebServer& srv) {
     html += F("<p><button type='submit'");
     html += dis;
     html += F(">Save Sensor <span class='htmx-indicator'>Saving...</span></button></p></form>");
+    if (sp.type == SensorType::BMI270ImuI2C) {
+      html += F("<form id='orientation-capture-form' method='POST' action='/config/sensor/orientation'"
+                " hx-post='/config/sensor/orientation' hx-target='#orientation-result' hx-swap='innerHTML'>");
+      html += F("<input type='hidden' name='id' value='");
+      html += String(id);
+      html += F("'></form>");
+    }
     html += htmlFooter();
     html.finish();
+  });
+
+  S->on("/config/sensor/orientation", HTTP_POST, [S](){
+    auto& srv = *S;
+    noteHttpActivity_();
+    if (rejectConfigEditLocked_(srv)) return;
+    if (!srv.hasArg("id")) {
+      srv.send(400, F("text/plain"), F("Missing sensor id"));
+      return;
+    }
+    const String idText = srv.arg("id");
+    if (!idText.length()) {
+      srv.send(400, F("text/plain"), F("Invalid sensor id"));
+      return;
+    }
+    for (size_t i = 0; i < idText.length(); ++i) {
+      if (!isdigit((unsigned char)idText[i])) {
+        srv.send(400, F("text/plain"), F("Invalid sensor id"));
+        return;
+      }
+    }
+    const int id = idText.toInt();
+    SensorSpec spec;
+    if (id < 0 || id >= (int)ConfigManager::sensorCount() ||
+        !ConfigManager::getSensorSpec((uint8_t)id, spec) ||
+        spec.type != SensorType::BMI270ImuI2C) {
+      srv.send(404, F("text/plain"), F("IMU not found"));
+      return;
+    }
+    String planeText = "xz";
+    spec.params.get("orient_plane", planeText);
+    ImuInstallationPlane plane;
+    if (!ImuOrientation::parsePlane(planeText.c_str(), plane)) {
+      srv.send(400, F("text/plain"), F("Saved sensor mounting plane is invalid"));
+      return;
+    }
+    long normalSign = 1;
+    spec.params.getInt("orient_normal_sign", normalSign);
+    if (normalSign != 1 && normalSign != -1) {
+      srv.send(400, F("text/plain"), F("Saved normal direction is invalid"));
+      return;
+    }
+    Sensor* sensor = findLiveSensorByName_(spec.name);
+    if (!sensor || !sensor->supportsImuOrientationCalibration()) {
+      sendOrientationFeedback_(srv,
+          F("<div class='alert-err'>This IMU is not available in the live sensor set. Restart the logger and try again.</div>"),
+          id);
+      return;
+    }
+    ImuOrientationCalibration capture;
+    char error[128] = {0};
+    if (!sensor->captureImuOrientation(plane, static_cast<int8_t>(normalSign),
+                                        capture, error, sizeof(error))) {
+      sendOrientationFeedback_(srv,
+          String(F("<div class='alert-err'>Orientation capture failed: ")) +
+          htmlEscape(String(error[0] ? error : "unknown error")) + F("</div>"), id);
+      return;
+    }
+    if (!capture.accepted) {
+      String message = F("<div class='alert-err'>Orientation rejected; nothing was saved: ");
+      message += htmlEscape(orientationRejectionText_(capture.rejectionMask));
+      message += F(". Keep the bike level and still, then retry.</div>");
+      sendOrientationFeedback_(srv, message, id);
+      return;
+    }
+    if (!sensor->saveImuOrientation(capture, error, sizeof(error))) {
+      sendOrientationFeedback_(srv,
+          String(F("<div class='alert-err'>Orientation was accepted but could not be saved: ")) +
+          htmlEscape(String(error[0] ? error : "unknown error")) + F("</div>"), id);
+      return;
+    }
+    String message = F("<div class='alert-ok'>Orientation saved: ");
+    message += htmlEscape(String(ImuOrientation::planeKey(plane)));
+    message += F(" plane, ");
+    message += String((unsigned long)capture.sampleCount);
+    message += F(" samples, roll deviation ");
+    message += String(capture.rollDeviationDeg, 2);
+    message += F("&deg;. Reload this page to refresh the status above.</div>");
+    sendOrientationFeedback_(srv, message, id);
   });
 
   // -------------------- POST /config/sensors --------------------
@@ -1144,6 +1323,7 @@ void registerConfigRoutes(WebServer& srv) {
     // enumerate current specs, mutate copies, and persist via ConfigManager helpers
     const LoggerConfig& current = ConfigManager::get();  // read-only view for enumeration
     const uint8_t count = current.sensorCount();
+    int orientationChangedIdx = -1;
 
     for (uint8_t idx = 0; idx < count; ++idx) {
       SensorSpec sp;
@@ -1310,6 +1490,49 @@ void registerConfigRoutes(WebServer& srv) {
         { bool assume = false; if (getBoolLast("assume_turn0_at_start", assume)) sp.params.setBool("assume_turn0_at_start", assume); }
       }
 
+      if (sp.type == SensorType::BMI270ImuI2C) {
+        String planeText;
+        String signText;
+        const bool hasPlane = getArgLast("orient_plane", planeText);
+        const bool hasSign = getArgLast("orient_normal_sign", signText);
+        if (hasPlane != hasSign) {
+          srv.send(400, F("text/plain"), F("Incomplete IMU installation orientation"));
+          return;
+        }
+        if (hasPlane) {
+          ImuInstallationPlane plane;
+          if (!ImuOrientation::parsePlane(planeText.c_str(), plane) ||
+              (signText != "1" && signText != "-1")) {
+            srv.send(400, F("text/plain"), F("Invalid IMU installation orientation"));
+            return;
+          }
+          planeText = ImuOrientation::planeKey(plane);
+          String previousPlane = "xz";
+          sp.params.get("orient_plane", previousPlane);
+          ImuInstallationPlane previousParsedPlane;
+          if (ImuOrientation::parsePlane(previousPlane.c_str(), previousParsedPlane)) {
+            previousPlane = ImuOrientation::planeKey(previousParsedPlane);
+          }
+          long previousSign = 1;
+          sp.params.getInt("orient_normal_sign", previousSign);
+          const long selectedSign = signText == "1" ? 1 : -1;
+          const bool changed = previousPlane != planeText || previousSign != selectedSign;
+          if ((changed && !sp.params.setBool("orient_valid", false)) ||
+              !sp.params.set("orient_plane", planeText) ||
+              !sp.params.setInt("orient_normal_sign", selectedSign)) {
+            srv.send(500, F("text/plain"), F("Could not store IMU installation orientation"));
+            return;
+          }
+          if (changed) {
+            // The stored transform was measured for a different declaration.
+            // Preserve raw data, but never publish the old transform as valid.
+            orientationChangedIdx = idx;
+            WEB_LOGW("IMU orientation capture invalidated after mounting declaration changed sensor=%s\n",
+                     sp.name);
+          }
+        }
+      }
+
       // Generic ParamDefs pass (remaining keys defined by the sensor)
       int ac = srv.args();
       for (int ai = 0; ai < ac; ++ai) {
@@ -1329,7 +1552,9 @@ void registerConfigRoutes(WebServer& srv) {
             pkey.equalsIgnoreCase("counts_per_turn") || pkey.equalsIgnoreCase("wrap_threshold_counts") ||
             pkey.equalsIgnoreCase("assume_turn0_at_start") ||
             pkey.equalsIgnoreCase("ain") || pkey.equalsIgnoreCase("i2c_bus") ||
-            pkey.equalsIgnoreCase("i2c_addr")) {
+            pkey.equalsIgnoreCase("i2c_addr") ||
+            pkey.equalsIgnoreCase("orient_plane") ||
+            pkey.equalsIgnoreCase("orient_normal_sign")) {
           continue;
         }
 
@@ -1379,10 +1604,10 @@ void registerConfigRoutes(WebServer& srv) {
       return;
     }
     if (isHtmxRequest(srv)) {
-      if (applyTypeIdx >= 0) {
+      if (applyTypeIdx >= 0 || orientationChangedIdx >= 0) {
         // "Apply Type" was clicked — redirect to rebuild the editor with the new sensor-type fields
         String redirect = F("/config/sensor?id=");
-        redirect += String(applyTypeIdx);
+        redirect += String(applyTypeIdx >= 0 ? applyTypeIdx : orientationChangedIdx);
         redirect += F("&ok=1");
         srv.sendHeader(F("HX-Redirect"), redirect);
         HttpFileSender::sendText(srv, 200, F("text/html"), F(""), F("no-store"));

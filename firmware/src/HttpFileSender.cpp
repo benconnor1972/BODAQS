@@ -1,13 +1,15 @@
 #include "HttpFileSender.h"
 
 #include "SD_MMC.h"
+#include "DebugLog.h"
 #include <errno.h>
 #include <lwip/sockets.h>
 
 namespace {
 
-static constexpr uint32_t kWriteStallTimeoutMs = 1500;
+static constexpr uint32_t kWriteStallTimeoutMs = 5000;
 static constexpr uint32_t kWriteSelectTimeoutUs = 25000;
+#define HTTPFILE_LOGW(...) LOGW_TAG("HTTPFILE", __VA_ARGS__)
 
 static String contentRange_(uint32_t start, uint32_t end, uint32_t total) {
   return String(F("bytes ")) + String(start) + F("-") + String(end) + F("/") + String(total);
@@ -220,16 +222,30 @@ bool sendSdFile(WebServer& srv,
   WiFiClient client = srv.client();
   static uint8_t buf[2048];
   uint32_t remaining = bytesToSend;
+  bool readFailed = false;
   while (remaining > 0) {
     const size_t want = (remaining < sizeof(buf)) ? (size_t)remaining : sizeof(buf);
     const int n = f.read(buf, want);
-    if (n <= 0) break;
+    if (n <= 0) {
+      readFailed = true;
+      break;
+    }
     if (!writeClientChunk_(client, buf, (size_t)n)) break;
     remaining -= (uint32_t)n;
     delay(0);
   }
 
   f.close();
+  if (remaining != 0) {
+    HTTPFILE_LOGW("short transfer path=%s offset=%lu sent=%lu expected=%lu remaining=%lu cause=%s\n",
+                  path.c_str(), (unsigned long)start,
+                  (unsigned long)(bytesToSend - remaining),
+                  (unsigned long)bytesToSend, (unsigned long)remaining,
+                  readFailed ? "sd_read" : "client_write");
+    client.stop();
+  }
+  // Headers have already been sent; callers cannot replace this response with
+  // an HTTP error. The client detects the short body and resumes with Range.
   return true;
 }
 

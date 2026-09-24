@@ -135,6 +135,8 @@ namespace {
   };
 
   static uint8_t    s_calSel     = 0;              // selected sensor index
+  static uint8_t    s_calTop     = 0;              // first visible sensor
+  static constexpr uint8_t CAL_SENSOR_VISIBLE_ROWS = 5;
   static uint8_t    s_calOptSel  = 0;              // selected row within screen
   static CalUiPhase s_calUiPhase = CalUiPhase::Idle;
   static ImuInstallationPlane s_orientationPlane = ImuInstallationPlane::XZ;
@@ -472,6 +474,7 @@ namespace {
         guardEnterRight();              // <--- add
         s_state      = State::CalibSensors;
         s_calSel     = 0;
+        s_calTop     = 0;
         s_calUiPhase = CalUiPhase::Idle;
         drawCalibSensors_();
         break;
@@ -540,7 +543,13 @@ namespace {
     UI::oledText(0, 0, "Calibration");
 
     const uint8_t n = ConfigManager::sensorCount();
-    for (uint8_t i = 0; i < n; ++i) {
+    ensureSelectionVisible_(
+        s_calSel, s_calTop, n, CAL_SENSOR_VISIBLE_ROWS);
+
+    for (uint8_t row = 0; row < CAL_SENSOR_VISIBLE_ROWS; ++row) {
+      const uint8_t i = (uint8_t)(s_calTop + row);
+      if (i >= n) break;
+
       SensorSpec sp; if (!ConfigManager::getSensorSpec(i, sp)) continue;
       Sensor* s = SensorManager::at(i);
       CalModeMask mask = s ? s->allowedCalMask() : 0;
@@ -561,9 +570,17 @@ namespace {
         if (orientation) line += (mask ? "|O" : "O");
         line += "]";
       }
-      const int y = 12 + i * 10;
+      const int y = 12 + row * 10;
       UI::oledText(0, y, line);
     }
+
+    if (s_calTop > 0) {
+      UI::oledText(118, 0, "^");
+    }
+    if ((uint8_t)(s_calTop + CAL_SENSOR_VISIBLE_ROWS) < n) {
+      UI::oledText(118, 54, "v");
+    }
+
     DisplayManager::present();
   }
 

@@ -108,6 +108,16 @@ struct SensorRuntimeDiagnostics {
   uint32_t eventsDropped = 0;
   SensorRuntimeEvent events[kMaxEvents];
 
+  bool hasBdqV2Stream = false;
+  uint32_t bdqV2RecordsEnqueued = 0;
+  uint32_t bdqV2RecordsDequeued = 0;
+  uint32_t bdqV2RecordsDropped = 0;
+  uint32_t bdqV2RecordsRejected = 0;
+  uint16_t bdqV2QueueCapacity = 0;
+  uint16_t bdqV2QueueHighWater = 0;
+  uint16_t bdqV2FinalQueueDepth = 0;
+  uint16_t bdqV2NominalRateHz = 0;
+
   bool hasImuSession = false;
   uint16_t imuNativeRateHz = 0;
   uint16_t imuAccelRateHz = 0;

@@ -959,6 +959,12 @@ def load_bdq_session(
         secondary = log_metadata.get("secondary_streams")
         if isinstance(secondary, Mapping):
             session.setdefault("meta", {})["secondary_streams"] = copy.deepcopy(dict(secondary))
+            session_secondary = session["meta"]["secondary_streams"]
+            for stream_name, frame in native_frames.items():
+                alignment = frame.attrs.get("bdq_clock_alignment")
+                stream_metadata = session_secondary.get(stream_name)
+                if isinstance(alignment, Mapping) and isinstance(stream_metadata, dict):
+                    stream_metadata["clock_alignment"] = copy.deepcopy(dict(alignment))
         session.setdefault("meta", {})["bdq_events"] = [dict(event) for event in info.events]
         timing_observations: Dict[str, Any] = {}
         catalog_streams = info.stream_catalog.get("streams")

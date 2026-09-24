@@ -446,6 +446,84 @@ def _phase6_imu_session(*, include_config: bool = True) -> dict:
     }
 
 
+def _native_v2_imu_session() -> dict:
+    session = _phase6_imu_session()
+    count = 40
+    sequence = np.arange(count, dtype=np.int64)
+    gyro_valid = (sequence % 4 == 3).astype(np.int64)
+    native = pd.DataFrame({
+        "sequence": sequence,
+        "native_tick": 1000 + sequence * 32,
+        "status_flags": np.full(count, 0x0010, dtype=np.int64),
+        "accel_x_raw": 1000 + sequence,
+        "accel_y_raw": 2000 + sequence,
+        "accel_z_raw": 3000 + sequence,
+        "gyro_x_raw": np.where(gyro_valid, 100 + sequence, 0),
+        "gyro_y_raw": np.where(gyro_valid, 200 + sequence, 0),
+        "gyro_z_raw": np.where(gyro_valid, 300 + sequence, 0),
+        "temperature_raw": np.full(count, 512, dtype=np.int64),
+        "gyro_sample_valid": gyro_valid,
+        "continuity_segment": np.where(sequence < 20, 0, 1),
+        "clock_epoch": np.zeros(count, dtype=np.int64),
+        "native_tick_unwrapped": 1000 + sequence * 32,
+        "native_time_s": sequence / 800.0,
+        "time_s": 0.25 + sequence / 800.0,
+    })
+    signals = {}
+    for vector, quantity in (("accel", "linear_acceleration_raw"), ("gyro", "angular_velocity_raw")):
+        for axis in "xyz":
+            signals[f"{vector}_{axis}_raw"] = {
+                "quantity": quantity,
+                "component": axis,
+                "coordinate_frame": "sensor_native",
+                "domain": "frame",
+                "sensor": "frame_imu",
+                "unit": "count",
+            }
+    session["stream_dfs"] = {"frame_imu_001": native}
+    session["meta"]["secondary_streams"] = {
+        "frame_imu_001": {
+            "schema": "bdq.native_stream.v1",
+            "stream_key": "frame_imu_001",
+            "sensor": "frame_imu",
+            "acquisition": {
+                "effective_accel_rate_hz": 800,
+                "effective_gyro_rate_hz": 200,
+                "requested_profile": "accel_800_gyro_200",
+            },
+            "clock_alignment": {
+                "method": "robust_affine_observation_fit",
+                "scale": 1.0,
+                "drift_ppm": 0.0,
+                "epochs": [],
+            },
+            "signals": signals,
+        }
+    }
+    config = session["meta"]["imu_configs"]["frame_imu"]
+    config.update({
+        "contract_id": "bodaqs.bmi270_imu_mvp.v5",
+        "domain": "frame",
+        "imu_id": "frame_imu_001",
+        "imu_rate_hz": 800,
+        "output_rate_hz": 800,
+        "output_decimation_factor": 1,
+        "effective_config": {
+            "accel_odr_hz": 800,
+            "gyro_odr_hz": 200,
+            "accel_range_g": 16,
+            "gyro_range_dps": 2000,
+        },
+        "mount_transform": {
+            "from": "sensor_native",
+            "to": "body_local",
+            "representation": "rotation_matrix",
+            "matrix": np.eye(3).tolist(),
+        },
+    })
+    return session
+
+
 def test_phase6_extracts_unwraps_scales_transforms_and_reports_qc() -> None:
     stream, qc, metadata = extract_imu_stream(_phase6_imu_session(), "frame_imu")
 
@@ -548,6 +626,53 @@ def test_phase6_registers_one_idempotent_persisted_secondary_stream() -> None:
     assert report["frame_imu"]["stream_name"] == "imu_frame_imu"
     assert session["meta"]["imu_qc"] == report
     json.dumps(report, sort_keys=True, allow_nan=False)
+
+
+def test_native_v2_imu_is_adapted_without_losing_high_rate_source() -> None:
+    session = _native_v2_imu_session()
+    source_before = session["stream_dfs"]["frame_imu_001"].copy()
+
+    build_imu_streams(session)
+    build_imu_streams(session)
+
+    pd.testing.assert_frame_equal(session["stream_dfs"]["frame_imu_001"], source_before)
+    assert list(session["stream_dfs"]).count("imu_frame_imu") == 1
+    derived = session["stream_dfs"]["imu_frame_imu"]
+    assert len(derived.index) == 10
+    assert derived["sequence_unwrapped"].tolist() == list(range(3, 40, 4))
+    assert derived["gyro_x_raw_count"].tolist() == [100 + value for value in range(3, 40, 4)]
+    assert derived["body_accel_x_m_s2"].tolist() == pytest.approx(derived["accel_x_m_s2"].tolist())
+    metadata = session["meta"]["secondary_streams"]["imu_frame_imu"]
+    assert metadata["schema"] == "bodaqs.imu_stream.v1"
+    assert metadata["source_stream"] == "frame_imu_001"
+    assert metadata["emitted_sample_rate_hz"] == pytest.approx(200.0)
+    assert metadata["full_vector_selection"]["policy"] == "fresh_gyro_rows"
+    assert metadata["full_vector_selection"]["selected_fraction"] == pytest.approx(0.25)
+    report = session["qc"]["imu"]["frame_imu"]
+    assert report["source_sample_count"] == 40
+    assert report["sample_count"] == 10
+    assert report["sequence"]["expected_delta"] == 4
+    assert report["sequence"]["gap_events"] == 0
+
+
+def test_native_v2_imu_feeds_attitude_preprocessing() -> None:
+    session = _native_v2_imu_session()
+    config = default_preprocess_config()
+    config["imu_attitude"] = {"enabled": True, "required": False}
+
+    result = preprocess_resolved(
+        session,
+        preprocess_config=config,
+        normalize_ranges={},
+        include_events=False,
+        include_metrics=False,
+        strict=False,
+    )
+
+    processed = result["session"]
+    assert "inertial_frame_imu" in processed["stream_dfs"]
+    assert processed["meta"]["attitude_preprocessing"]["status"] == "completed"
+    assert processed["meta"]["attitude_preprocessing"]["output_streams"] == ["inertial_frame_imu"]
 
 
 def test_profile_enabled_attitude_is_materialised_with_persisted_qc() -> None:

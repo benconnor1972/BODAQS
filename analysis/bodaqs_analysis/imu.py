@@ -15,6 +15,7 @@ from .timebase import register_stream_metadata
 
 IMU_QC_SCHEMA = "bodaqs.imu_qc.v1"
 IMU_STREAM_SCHEMA = "bodaqs.imu_stream.v1"
+BDQ_NATIVE_STREAM_SCHEMA = "bdq.native_stream.v1"
 STANDARD_GRAVITY_M_S2 = 9.80665
 SEQUENCE_MODULUS = 1 << 24
 NEAR_RAIL_COUNT = 32760
@@ -452,6 +453,299 @@ def _required_columns(layout: Mapping[str, Any]) -> tuple[dict[str, str], list[s
     return columns, missing
 
 
+def _discover_native_imu_streams(session: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Find vector-complete BDQ v2 IMU streams already decoded by the importer."""
+    meta = session.get("meta") if isinstance(session, Mapping) else None
+    secondary = meta.get("secondary_streams") if isinstance(meta, Mapping) else None
+    stream_dfs = session.get("stream_dfs") if isinstance(session, Mapping) else None
+    if not isinstance(secondary, Mapping) or not isinstance(stream_dfs, Mapping):
+        return {}
+
+    layouts: dict[str, dict[str, Any]] = {}
+    for stream_name, raw_meta in secondary.items():
+        if (
+            not isinstance(raw_meta, Mapping)
+            or raw_meta.get("schema") != BDQ_NATIVE_STREAM_SCHEMA
+            or not isinstance(stream_dfs.get(stream_name), pd.DataFrame)
+        ):
+            continue
+        sensor = canonical_sensor_id(raw_meta.get("sensor"))
+        signals = raw_meta.get("signals")
+        if not sensor or not isinstance(signals, Mapping):
+            continue
+        layout: dict[str, Any] = {
+            "accel": {},
+            "gyro": {},
+            "source_stream": str(stream_name),
+            "source_metadata": raw_meta,
+        }
+        for column, raw_info in signals.items():
+            if not isinstance(column, str) or not isinstance(raw_info, Mapping):
+                continue
+            quantity = _text(raw_info.get("quantity")).lower()
+            component = _text(raw_info.get("component")).lower()
+            if component not in {"x", "y", "z"}:
+                continue
+            if quantity == "linear_acceleration_raw":
+                layout["accel"][component] = column
+            elif quantity == "angular_velocity_raw":
+                layout["gyro"][component] = column
+            for key in ("domain", "end", "mount_point"):
+                if raw_info.get(key) is not None:
+                    layout.setdefault(key, raw_info.get(key))
+        if all(axis in layout[vector] for vector in ("accel", "gyro") for axis in "xyz"):
+            layouts[sensor] = layout
+    return layouts
+
+
+def _native_acquisition_rate(metadata: Mapping[str, Any], key: str) -> Optional[float]:
+    acquisition = metadata.get("acquisition")
+    if isinstance(acquisition, Mapping):
+        rate = _finite_float(acquisition.get(key))
+        if rate is not None and rate > 0:
+            return rate
+    return None
+
+
+def _native_full_vector_stream(
+    session: Mapping[str, Any],
+    sensor: str,
+    layout: Mapping[str, Any],
+    *,
+    strict: bool,
+) -> tuple[pd.DataFrame, dict[str, Any], dict[str, Any]]:
+    """Adapt a native BDQ v2 IMU stream to the shared full-vector IMU contract."""
+    sensor_id = canonical_sensor_id(sensor)
+    source_name = _text(layout.get("source_stream"))
+    stream_dfs = session.get("stream_dfs")
+    source = stream_dfs.get(source_name) if isinstance(stream_dfs, Mapping) else None
+    source_metadata = layout.get("source_metadata")
+    if not isinstance(source, pd.DataFrame) or not isinstance(source_metadata, Mapping):
+        raise ValueError(f"IMU sensor {sensor_id!r} has no decoded native source stream")
+
+    required = ["time_s", "sequence", "status_flags"] + [
+        str(layout[vector][axis]) for vector in ("accel", "gyro") for axis in "xyz"
+    ]
+    missing = [column for column in required if column not in source.columns]
+    if missing:
+        raise ValueError(f"IMU sensor {sensor_id!r} native stream is missing: {', '.join(missing)}")
+
+    config = _find_imu_config(session, sensor_id)
+    config_values, metadata_warnings = _config_values(config)
+    if strict and metadata_warnings:
+        raise ValueError(f"IMU sensor {sensor_id!r} metadata is incomplete: {', '.join(metadata_warnings)}")
+
+    accel_rate_hz = _native_acquisition_rate(source_metadata, "effective_accel_rate_hz")
+    gyro_rate_hz = _native_acquisition_rate(source_metadata, "effective_gyro_rate_hz")
+    selection = np.ones(len(source.index), dtype=bool)
+    selection_policy = "all_native_rows"
+    if "gyro_sample_valid" in source.columns:
+        selection = (
+            pd.to_numeric(source["gyro_sample_valid"], errors="coerce")
+            .fillna(0)
+            .to_numpy(dtype=float)
+            == 1.0
+        )
+        selection_policy = "fresh_gyro_rows"
+    elif accel_rate_hz is not None and gyro_rate_hz is not None and gyro_rate_hz < accel_rate_hz:
+        raise ValueError(
+            f"IMU sensor {sensor_id!r} has mixed accel/gyro rates but no gyro_sample_valid field"
+        )
+    if not selection.any():
+        raise ValueError(f"IMU sensor {sensor_id!r} has no rows containing a fresh gyro sample")
+
+    selected = source.loc[selection].reset_index(drop=True)
+    time_s = pd.to_numeric(selected["time_s"], errors="coerce").to_numpy(dtype=float)
+    if not np.isfinite(time_s).all() or np.any(np.diff(time_s) < 0):
+        raise ValueError(f"IMU sensor {sensor_id!r} native logger-aligned time is invalid")
+    sequence_u32 = pd.to_numeric(selected["sequence"], errors="raise").to_numpy(dtype=np.int64)
+    sequence_unwrapped, sequence_delta = _unwrap_modulo(sequence_u32, 1 << 32)
+    flags = pd.to_numeric(selected["status_flags"], errors="raise").to_numpy(dtype=np.uint16)
+
+    stream = pd.DataFrame({
+        "time_s": time_s,
+        "logger_time_s": time_s,
+        "sequence_u32": sequence_u32.astype(np.uint32),
+        "sequence_unwrapped": sequence_unwrapped,
+        "status_flags": flags,
+    })
+    for column in ("native_tick", "native_tick_unwrapped", "native_time_s", "clock_epoch"):
+        if column in selected.columns:
+            stream[column] = pd.to_numeric(selected[column], errors="coerce").to_numpy()
+    if "continuity_segment" in selected.columns:
+        stream["continuity_segment"] = (
+            pd.to_numeric(selected["continuity_segment"], errors="coerce").fillna(-1).to_numpy(dtype=np.int64)
+        )
+    else:
+        boundary = np.r_[False, sequence_delta <= 0]
+        stream["continuity_segment"] = np.cumsum(boundary, dtype=np.int64)
+    if "gyro_sample_valid" in selected.columns:
+        stream["gyro_sample_valid"] = 1
+    if "temperature_raw" in selected.columns:
+        temperature_raw = pd.to_numeric(selected["temperature_raw"], errors="coerce").to_numpy(dtype=float)
+        stream["temperature_raw_count"] = temperature_raw
+        stream["temperature_c"] = temperature_raw / 512.0 + 23.0
+
+    for vector in ("accel", "gyro"):
+        for axis in "xyz":
+            source_column = str(layout[vector][axis])
+            values = pd.to_numeric(selected[source_column], errors="coerce").to_numpy(dtype=float)
+            if not np.isfinite(values).all():
+                raise ValueError(f"IMU sensor {sensor_id!r} column {source_column!r} contains invalid samples")
+            stream[f"{vector}_{axis}_raw_count"] = values.astype(np.int16)
+
+    accel_range_g = config_values.get("accel_range_g")
+    gyro_range_dps = config_values.get("gyro_range_dps")
+    if accel_range_g is not None and accel_range_g > 0:
+        scale = float(accel_range_g) / 32768.0 * STANDARD_GRAVITY_M_S2
+        for axis in "xyz":
+            stream[f"accel_{axis}_m_s2"] = stream[f"accel_{axis}_raw_count"].astype(float) * scale
+    if gyro_range_dps is not None and gyro_range_dps > 0:
+        scale = float(gyro_range_dps) / 32768.0 * math.pi / 180.0
+        for axis in "xyz":
+            stream[f"gyro_{axis}_rad_s"] = stream[f"gyro_{axis}_raw_count"].astype(float) * scale
+
+    mount_matrix = config_values.get("mount_matrix")
+    if isinstance(mount_matrix, np.ndarray):
+        for vector, unit in (("accel", "m_s2"), ("gyro", "rad_s")):
+            columns = [f"{vector}_{axis}_{unit}" for axis in "xyz"]
+            if all(column in stream.columns for column in columns):
+                body = stream[columns].to_numpy(dtype=float) @ mount_matrix.T
+                for axis_index, axis in enumerate("xyz"):
+                    stream[f"body_{vector}_{axis}_{unit}"] = body[:, axis_index]
+
+    config_domain = config.get("domain") if isinstance(config, Mapping) else None
+    config_end = config.get("end") if isinstance(config, Mapping) else None
+    config_mount = config.get("mount_point") if isinstance(config, Mapping) else None
+    domain = layout.get("domain") or config_domain
+    end = layout.get("end") or config_end
+    mount_point = layout.get("mount_point") or config_mount
+    output_rate_hz = gyro_rate_hz or accel_rate_hz or config_values.get("output_rate_hz")
+    clock_alignment = source_metadata.get("clock_alignment")
+    clock_alignment = dict(clock_alignment) if isinstance(clock_alignment, Mapping) else {}
+    scale = _finite_float(clock_alignment.get("scale"))
+    logger_relative_rate_hz = (
+        float(output_rate_hz) / float(scale)
+        if output_rate_hz is not None and scale is not None and scale > 0
+        else output_rate_hz
+    )
+
+    continuity = stream["continuity_segment"].to_numpy(dtype=np.int64)
+    segment_ids, segment_counts = np.unique(continuity, return_counts=True)
+    segment_durations = [
+        float(time_s[continuity == segment][-1] - time_s[continuity == segment][0])
+        for segment in segment_ids
+    ]
+    expected_delta = max(1, int(round(float(accel_rate_hz) / float(output_rate_hz)))) if (
+        accel_rate_hz is not None and output_rate_hz is not None and output_rate_hz > 0
+    ) else 1
+    gap_mask = sequence_delta > expected_delta
+    reverse_mask = sequence_delta < 0
+    flag_qc: dict[str, Any] = {}
+    for name, flag in STATUS_FLAGS.items():
+        mask = (flags & flag) != 0
+        detail = _event_ranges(mask, time_s, sequence_unwrapped)
+        detail["fraction"] = float(detail["sample_count"] / len(stream.index))
+        flag_qc[name] = detail
+    saturation: dict[str, Any] = {"threshold_count": NEAR_RAIL_COUNT, "axes": {}}
+    for vector in ("accel", "gyro"):
+        for axis in "xyz":
+            raw = stream[f"{vector}_{axis}_raw_count"].to_numpy(dtype=np.int64)
+            detail = _event_ranges(np.abs(raw) >= NEAR_RAIL_COUNT, time_s, sequence_unwrapped)
+            detail["fraction"] = float(detail["sample_count"] / len(stream.index))
+            saturation["axes"][f"{vector}_{axis}"] = detail
+
+    warnings = list(metadata_warnings)
+    if gap_mask.any():
+        warnings.append("sequence_gaps")
+    if reverse_mask.any():
+        warnings.append("out_of_order_sequence_values")
+    for name in ("fifo_discontinuity_before", "queue_drop_before", "sensor_recovery_before", "timing_degraded"):
+        if flag_qc[name]["sample_count"]:
+            warnings.append(name)
+    if any(detail["sample_count"] for detail in saturation["axes"].values()):
+        warnings.append("near_rail_samples")
+
+    duration_s = float(time_s[-1] - time_s[0]) if len(time_s) > 1 else 0.0
+    firmware = _firmware_imu_diagnostics(session, sensor_id)
+    startup = firmware.get("startup_stationary_observation") if isinstance(firmware, Mapping) else None
+    report: dict[str, Any] = {
+        "schema": IMU_QC_SCHEMA,
+        "status": "degraded" if metadata_warnings or reverse_mask.any() else ("warning" if warnings else "ok"),
+        "sensor_id": sensor_id,
+        "domain": domain,
+        "end": end,
+        "mount_point": mount_point,
+        "warnings": list(dict.fromkeys(warnings)),
+        "sample_count": int(len(stream.index)),
+        "source_sample_count": int(len(source.index)),
+        "nominal_odr_hz": float(accel_rate_hz) if accel_rate_hz is not None else None,
+        "emitted_odr_hz": float(output_rate_hz) if output_rate_hz is not None else None,
+        "effective_odr_hz": logger_relative_rate_hz,
+        "sequence": {
+            "expected_delta": expected_delta,
+            "gap_events": int(np.count_nonzero(gap_mask)),
+            "missing_samples": int(np.sum(sequence_delta[gap_mask] - expected_delta, dtype=np.int64)),
+            "duplicates": int(np.count_nonzero(sequence_delta == 0)),
+            "out_of_order": int(np.count_nonzero(reverse_mask)),
+            "first": int(sequence_unwrapped[0]),
+            "last": int(sequence_unwrapped[-1]),
+        },
+        "sensor_time": {
+            "clock_fit_to_logger": copy.deepcopy(clock_alignment),
+            "clock_epochs": copy.deepcopy(clock_alignment.get("epochs", [])),
+        },
+        "continuous_segments": {
+            "count": int(len(segment_ids)),
+            "largest_sample_count": int(np.max(segment_counts)),
+            "largest_duration_s": float(max(segment_durations)),
+        },
+        "status_flags": flag_qc,
+        "saturation": saturation,
+        "startup_stationary_observation": copy.deepcopy(dict(startup)) if isinstance(startup, Mapping) else None,
+        "storage": _source_file_stats(session, duration_s),
+        "timebase_source": "bdq_v2_native_clock_alignment",
+        "full_vector_selection": {
+            "policy": selection_policy,
+            "selected_sample_count": int(len(stream.index)),
+            "source_sample_count": int(len(source.index)),
+            "selected_fraction": float(len(stream.index) / len(source.index)),
+        },
+    }
+    metadata = {
+        "schema": IMU_STREAM_SCHEMA,
+        "source_kind": "bdq_v2_native_stream_adapter",
+        "source_stream": source_name,
+        "sensor": sensor_id,
+        "imu_id": config.get("imu_id") if isinstance(config, Mapping) else None,
+        "domain": domain,
+        "end": end,
+        "mount_point": mount_point,
+        "nominal_sample_rate_hz": float(output_rate_hz) if output_rate_hz is not None else None,
+        "emitted_sample_rate_hz": float(output_rate_hz) if output_rate_hz is not None else None,
+        "logger_relative_sample_rate_hz": logger_relative_rate_hz,
+        "timebase_source": "bdq_v2_native_clock_alignment",
+        "time_columns": {
+            "canonical": "time_s",
+            "canonical_clock": "logger_monotonic",
+            "native_nominal": "native_time_s",
+        },
+        "clock_alignment": copy.deepcopy(clock_alignment),
+        "raw_samples_preserved": True,
+        "full_vector_selection": copy.deepcopy(report["full_vector_selection"]),
+        "gyro_bias_correction": copy.deepcopy(config_values.get("gyro_bias_correction")),
+        "coordinate_frames": ["sensor_native"] + (["body_local"] if isinstance(mount_matrix, np.ndarray) else []),
+        "mount_transform": copy.deepcopy(config.get("mount_transform")) if isinstance(config, Mapping) else None,
+        "source_columns": {
+            f"{vector}_{axis}": str(layout[vector][axis])
+            for vector in ("accel", "gyro")
+            for axis in "xyz"
+        },
+        "qc_ref": f"meta.imu_qc.{sensor_id}",
+    }
+    return stream, report, metadata
+
+
 def extract_imu_stream(
     session: Mapping[str, Any],
     sensor: str,
@@ -869,12 +1163,67 @@ def _stream_name(sensor: str, existing: set[str]) -> str:
     return candidate
 
 
+def _register_imu_stream(
+    session: dict[str, Any],
+    *,
+    sensor: str,
+    stream: pd.DataFrame,
+    report: dict[str, Any],
+    stream_meta: dict[str, Any],
+    stream_dfs: dict[str, Any],
+    secondary: dict[str, Any],
+    qc_imu: dict[str, Any],
+    existing_names: set[str],
+) -> None:
+    name = next(
+        (
+            str(stream_name)
+            for stream_name, raw_meta in secondary.items()
+            if isinstance(raw_meta, Mapping)
+            and raw_meta.get("schema") == IMU_STREAM_SCHEMA
+            and canonical_sensor_id(raw_meta.get("sensor")) == sensor
+        ),
+        "",
+    )
+    if not name:
+        name = _stream_name(sensor, existing_names)
+    existing_names.add(name)
+    stream_dfs[name] = stream
+    has_discontinuity = report["continuous_segments"]["count"] > 1
+    effective_rate = report.get("effective_odr_hz")
+    if not has_discontinuity and effective_rate is not None:
+        register_stream_metadata(
+            session,
+            stream_name=name,
+            kind="uniform",
+            time_col="time_s",
+            sample_rate_hz=float(effective_rate),
+            dt_s=1.0 / float(effective_rate),
+            jitter_frac=0.0,
+            notes="Dense full-vector IMU stream aligned to the logger monotonic clock",
+        )
+    else:
+        register_stream_metadata(
+            session,
+            stream_name=name,
+            kind="intermittent",
+            time_col="time_s",
+            notes="Logger-aligned full-vector IMU stream with explicit native sequence/timing discontinuities",
+        )
+    stream_meta["stream_name"] = name
+    stream_meta["timebase_kind"] = "intermittent" if has_discontinuity else "uniform"
+    secondary[name] = stream_meta
+    report["stream_name"] = name
+    qc_imu[sensor] = report
+
+
 def build_imu_streams(session: dict[str, Any], *, strict: bool = False) -> dict[str, Any]:
     """Build and register dense secondary streams for every IMU described by logger metadata."""
     if not isinstance(session, dict):
         raise TypeError("session must be a dict")
     layouts = _discover_layouts(session)
-    if not layouts:
+    native_layouts = _discover_native_imu_streams(session)
+    if not layouts and not native_layouts:
         return session
 
     stream_dfs = session.setdefault("stream_dfs", {})
@@ -892,7 +1241,35 @@ def build_imu_streams(session: dict[str, Any], *, strict: bool = False) -> dict[
         session["qc"]["imu"] = qc_imu
 
     existing_names = set(map(str, stream_dfs.keys()))
-    for sensor in sorted(layouts):
+    for sensor in sorted(native_layouts):
+        try:
+            stream, report, stream_meta = _native_full_vector_stream(
+                session, sensor, native_layouts[sensor], strict=strict
+            )
+        except ValueError as exc:
+            if strict:
+                raise
+            qc_imu[sensor] = {
+                "schema": IMU_QC_SCHEMA,
+                "status": "failed",
+                "sensor_id": sensor,
+                "errors": [str(exc)],
+                "warnings": [],
+            }
+            continue
+        _register_imu_stream(
+            session,
+            sensor=sensor,
+            stream=stream,
+            report=report,
+            stream_meta=stream_meta,
+            stream_dfs=stream_dfs,
+            secondary=secondary,
+            qc_imu=qc_imu,
+            existing_names=existing_names,
+        )
+
+    for sensor in sorted(set(layouts) - set(native_layouts)):
         try:
             stream, report, stream_meta = extract_imu_stream(session, sensor, strict=strict)
         except ValueError as exc:
@@ -906,48 +1283,18 @@ def build_imu_streams(session: dict[str, Any], *, strict: bool = False) -> dict[
                 "warnings": [],
             }
             continue
-
-        name = next(
-            (
-                str(stream_name)
-                for stream_name, raw_meta in secondary.items()
-                if isinstance(raw_meta, Mapping)
-                and raw_meta.get("schema") == IMU_STREAM_SCHEMA
-                and canonical_sensor_id(raw_meta.get("sensor")) == sensor
-            ),
-            "",
-        )
-        if not name:
-            name = _stream_name(sensor, existing_names)
-        existing_names.add(name)
-        stream_dfs[name] = stream
         _mask_invalid_primary_rows(session, layouts[sensor])
-        has_discontinuity = report["continuous_segments"]["count"] > 1
-        effective_rate = report.get("effective_odr_hz")
-        if not has_discontinuity and effective_rate is not None:
-            register_stream_metadata(
-                session,
-                stream_name=name,
-                kind="uniform",
-                time_col="time_s",
-                sample_rate_hz=float(effective_rate),
-                dt_s=1.0 / float(effective_rate),
-                jitter_frac=0.0,
-                notes="Dense valid-only IMU stream aligned to the logger monotonic clock",
-            )
-        else:
-            register_stream_metadata(
-                session,
-                stream_name=name,
-                kind="intermittent",
-                time_col="time_s",
-                notes="Logger-aligned valid-only IMU stream with explicit native sequence/timing discontinuities",
-            )
-        stream_meta["stream_name"] = name
-        stream_meta["timebase_kind"] = "intermittent" if has_discontinuity else "uniform"
-        secondary[name] = stream_meta
-        report["stream_name"] = name
-        qc_imu[sensor] = report
+        _register_imu_stream(
+            session,
+            sensor=sensor,
+            stream=stream,
+            report=report,
+            stream_meta=stream_meta,
+            stream_dfs=stream_dfs,
+            secondary=secondary,
+            qc_imu=qc_imu,
+            existing_names=existing_names,
+        )
     meta["imu_qc"] = copy.deepcopy(qc_imu)
     return session
 

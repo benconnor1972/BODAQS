@@ -24,6 +24,12 @@ struct BdqLogSessionInfo {
 };
 
 struct BdqLogEndInfo {
+  const char* stopReason = "none";
+  const char* stopTriggerEvent = "";
+  uint32_t stopUptimeMs = 0;
+  bool stopSdDetectAvailable = false;
+  bool stopSdCardDetected = true;
+  bool stopAnalogRailFault = false;
   uint32_t samplesDropped = 0;
   uint16_t queueMax = 0;
   uint16_t queueDepth = 0;

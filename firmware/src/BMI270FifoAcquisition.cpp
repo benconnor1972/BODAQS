@@ -25,7 +25,8 @@ constexpr uint16_t kManagedFifoConfig =
     BMI2_FIFO_TAG_INT2 | BMI2_FIFO_HEADER_EN | BMI2_FIFO_ALL_EN;
 constexpr uint8_t kNormalDrainPasses = 2;
 constexpr uint8_t kFinalDrainPasses = 4;
-constexpr uint32_t kRecoveryFailureThreshold = 3;
+constexpr uint32_t kNormalRecoveryFailureThreshold = 3;
+constexpr uint32_t kExperimentalRecoveryFailureThreshold = 2;
 constexpr uint16_t kRecoveryBackoffPolls = 200;
 constexpr uint64_t kIocOffsetSnapshotPeriodUs = 1000000u;
 constexpr uint16_t kCarryStatusMask =
@@ -40,6 +41,12 @@ bool nearRail_(int16_t value) {
   return value <= -kNearRailThreshold || value >= kNearRailThreshold;
 }
 
+bool busCommunicationFailure_(BMI270I2CFailureStage stage) {
+  return stage != BMI270I2CFailureStage::None &&
+         stage != BMI270I2CFailureStage::InvalidArgument &&
+         stage != BMI270I2CFailureStage::BusLockTimeout;
+}
+
 uint32_t elapsedUs_(uint64_t startedUs) {
   const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
   const uint64_t elapsed = nowUs >= startedUs ? nowUs - startedUs : 0;
@@ -48,11 +55,6 @@ uint32_t elapsedUs_(uint64_t startedUs) {
 
 uint32_t saturatingAddUs_(uint32_t first, uint32_t second) {
   return second > UINT32_MAX - first ? UINT32_MAX : first + second;
-}
-
-bool supportedFifoPollRate_(uint16_t rateHz) {
-  return rateHz == 25 || rateHz == 50 || rateHz == 100 ||
-         rateHz == 200 || rateHz == 400;
 }
 
 static_assert(BMI270FifoAcquisition::kRawBufferBytes >=
@@ -133,7 +135,11 @@ bool BMI270FifoAcquisition::setProfile(
   const BMI270Profile::NativeProfile* supported =
       BMI270Profile::find(profile.name);
   if (!supported || supported->accelOdrHz != profile.accelOdrHz ||
-      supported->gyroOdrHz != profile.gyroOdrHz) {
+      supported->gyroOdrHz != profile.gyroOdrHz ||
+      !BMI270FifoReadPlan::isSupportedFifoPollRate(
+          supported->accelOdrHz,
+          supported->gyroOdrHz,
+          fifoPollRateHz_)) {
     return false;
   }
   const size_t queueCapacity =
@@ -170,7 +176,11 @@ bool BMI270FifoAcquisition::setOutputRateHz(uint16_t rateHz) {
 }
 
 bool BMI270FifoAcquisition::setFifoPollRateHz(uint16_t rateHz) {
-  if (sessionActive() || !supportedFifoPollRate_(rateHz)) return false;
+  if (sessionActive() ||
+      !BMI270FifoReadPlan::isSupportedFifoPollRate(
+          accelRateHz(), gyroRateHz(), rateHz)) {
+    return false;
+  }
   fifoPollRateHz_ = rateHz;
   diagnostics_.fifoPollRateHz = fifoPollRateHz_;
   diagnostics_.adaptiveFollowupThresholdBytes = static_cast<uint16_t>(
@@ -200,7 +210,17 @@ bool BMI270FifoAcquisition::begin() {
     BMI270_FIFO_LOGW("unable to configure I2C burst capacity name=%s\n", name_);
     return false;
   }
-  if (!device_.begin()) return false;
+  const uint32_t startupTransportFailures = device_.transportDiagnostics().failures;
+  if (!device_.begin()) {
+    // Start-up can encounter the same latched shared-wire state as a running
+    // session. Give the bus one bounded clear/reinitialization opportunity
+    // before this IMU is declared unavailable for the log.
+    if (device_.transportDiagnostics().failures == startupTransportFailures ||
+        !busCommunicationFailure_(device_.transportDiagnostics().lastFailure.stage) ||
+        !I2CManager::recoverBus(device_.busIndex()) || !device_.begin()) {
+      return false;
+    }
+  }
   if (!configureFifo_()) {
     device_.shutdown();
     return false;
@@ -338,6 +358,16 @@ void BMI270FifoAcquisition::recordRowEmission(uint32_t ageUs, bool ageValid) {
 bool BMI270FifoAcquisition::asyncAcquire() {
   if (!sessionActive()) return true;
   if (terminalFault_.load(std::memory_order_acquire)) return false;
+  const uint32_t generation = I2CManager::recoveryGeneration(device_.busIndex());
+  if (generation != busRecoveryGeneration_) {
+    busRecoveryGeneration_ = generation;
+    pendingStatus_ |= BMI270ImuStatus::kFifoDiscontinuityBefore |
+                      BMI270ImuStatus::kSensorRecoveryBefore |
+                      BMI270ImuStatus::kTimingDegraded;
+    havePreviousSensorTime_ = false;
+    havePreviousGyroSensorTime_ = false;
+    startupObservation_.noteQualityIncident();
+  }
   if (recoveryBackoffPolls_ > 0) {
     --recoveryBackoffPolls_;
     return false;
@@ -345,6 +375,7 @@ bool BMI270FifoAcquisition::asyncAcquire() {
 
   addCounter_(diagnostics_.drainCalls);
   const uint32_t startedUs = micros();
+  const uint32_t transportFailuresBefore = device_.transportDiagnostics().failures;
   const bool ok = drainAllAvailable_(kNormalDrainPasses, true);
   const uint32_t durationUs = static_cast<uint32_t>(micros() - startedUs);
   TimingStats_record(diagnostics_.drainCallUs, durationUs);
@@ -354,6 +385,7 @@ bool BMI270FifoAcquisition::asyncAcquire() {
 
   if (ok) {
     consecutiveDrainFailures_ = 0;
+    transportFailureDuringDrain_ = false;
     const uint32_t nowUs = micros();
     if (progressWatchdog_.expired(nowUs)) {
       return handleNoSampleProgress_(nowUs);
@@ -363,6 +395,9 @@ bool BMI270FifoAcquisition::asyncAcquire() {
   }
 
   addCounter_(diagnostics_.drainFailures);
+  transportFailureDuringDrain_ =
+      device_.transportDiagnostics().failures != transportFailuresBefore &&
+      busCommunicationFailure_(device_.transportDiagnostics().lastFailure.stage);
   ++consecutiveDrainFailures_;
   if (consecutiveDrainFailures_ > diagnostics_.maximumDrainFailureStreak) {
     diagnostics_.maximumDrainFailureStreak = consecutiveDrainFailures_;
@@ -370,7 +405,10 @@ bool BMI270FifoAcquisition::asyncAcquire() {
   pendingStatus_ |= BMI270ImuStatus::kFifoDiscontinuityBefore |
                     BMI270ImuStatus::kTimingDegraded;
   startupObservation_.noteQualityIncident();
-  if (consecutiveDrainFailures_ < kRecoveryFailureThreshold) return false;
+  const uint32_t recoveryFailureThreshold = fifoPollRateHz_ == 10
+      ? kExperimentalRecoveryFailureThreshold
+      : kNormalRecoveryFailureThreshold;
+  if (consecutiveDrainFailures_ < recoveryFailureThreshold) return false;
 
   const bool recovered = recoverAcquisition_(
       BMI270RecoveryReason::ConsecutiveDrainFailures);
@@ -750,7 +788,19 @@ bool BMI270FifoAcquisition::recoverAcquisition_(BMI270RecoveryReason reason) {
   }
   addCounter_(diagnostics_.recoveryAttempts);
   diagnostics_.lastRecoveryReason = reason;
-  const bool recovered = device_.recover() && configureFifo_() && flushFifo_();
+  const uint32_t transportFailuresBefore = device_.transportDiagnostics().failures;
+  bool recovered = device_.recover() && configureFifo_() && flushFifo_();
+  // A failed device restart can be a controller or shared-wire fault. Only
+  // try bus clearing after a real transport error, not for FIFO/clock quality
+  // issues or scheduler lateness. The bus mutex excludes the OLED and peers.
+  if (!recovered &&
+      (transportFailureDuringDrain_ ||
+       (device_.transportDiagnostics().failures != transportFailuresBefore &&
+        busCommunicationFailure_(device_.transportDiagnostics().lastFailure.stage))) &&
+      I2CManager::recoverBus(device_.busIndex())) {
+    recovered = device_.recover() && configureFifo_() && flushFifo_();
+  }
+  transportFailureDuringDrain_ = false;
   if (!recovered) {
     addCounter_(diagnostics_.recoveryFailures);
     if (consecutiveRecoveryFailures_ < UINT8_MAX) {
@@ -840,6 +890,8 @@ void BMI270FifoAcquisition::resetSessionState_(uint64_t preSessionDiscards) {
   preSessionBoundaryStatus_ = 0;
   pendingSkippedFrames_ = 0;
   consecutiveDrainFailures_ = 0;
+  transportFailureDuringDrain_ = false;
+  busRecoveryGeneration_ = I2CManager::recoveryGeneration(device_.busIndex());
   recoveryBackoffPolls_ = 0;
   consecutiveRecoveryFailures_ = 0;
   recoveryBudget_.reset();

@@ -37,6 +37,13 @@ The BODAQS bicycle body frame is right-handed:
 
 Installation orientation is obtained through the logger calibration workflow. The user declares which sensor-native plane (`xy`, `yz`, or `xz`) is parallel to the bicycle centre plane and which signed normal points toward bicycle positive Y (left). With the bicycle stationary, upright, level fore/aft, and with steering straight where applicable, firmware averages 800 native samples.
 
+The plane and signed normal can be saved before calibration, including from the
+web sensor editor. Session metadata carries this declaration in
+`orientation_declaration` even while `orientation_status=unset`; it does not
+imply a usable transform. Changing either declaration invalidates any earlier
+accepted capture. A later capture uses the saved declaration and only an
+accepted capture publishes `mount_transform` and `orientation_calibration`.
+
 The declared signed normal defines `body_local` positive Y. Mean stationary acceleration defines positive Z after it is projected into the declared plane, and positive X is calculated as `Y cross Z`. Projection deliberately removes an accepted small roll error from the saved transform. Capture is rejected when the observed gravity component normal to the plane corresponds to more than 2 degrees of roll.
 
 The result is a right-handed orthonormal 3 by 3 rotation matrix mapping `sensor_native` vectors to `body_local`. Firmware persists a compact quaternion internally, but session metadata uses the explicit matrix representation. An IMU without an accepted orientation may still record sensor-native raw evidence and must report `orientation_status=unset` rather than claiming an identity transform.
@@ -66,8 +73,8 @@ The named orientation_200 profile expands to:
 | Sensor-time modulus | 2^24 ticks |
 | I2C clock | 400 kHz |
 | Acquisition service | Polling, initially scheduled at 200 Hz |
-| Temperature observation | 10 Hz register read, held between observations |
-| Temperature freshness limit | 250 milliseconds |
+| Temperature observation | 2 Hz register read, held between observations |
+| Temperature freshness limit | 1.25 seconds |
 | Logger row rate | 500 Hz for full 200 Hz output; lower only for declared decimated output |
 
 Phase 2 must read back effective sensor configuration. Both requested profile name and effective values are recorded. If the Bosch API or device rejects a required value, initialization fails visibly rather than silently substituting another profile.
@@ -98,8 +105,9 @@ independently reconstructed sensor-time grid; no gyro sample is repeated to
 fill intervening acceleration records.
 
 `fifo_poll_rate_hz` independently selects FIFO service at 25, 50, 100, 200,
-or 400 Hz; it does not change native sampling. Higher-rate profiles are
-experimental until the target wiring has been characterized using the
+or 400 Hz. An experimental 10 Hz selection is valid only for
+`accel_800_gyro_200`; it does not change native sampling. Higher-rate profiles
+are experimental until the target wiring has been characterized using the
 [high-rate I2C test plan](BMI270_High_Rate_I2C_Testing.md).
 
 ## 5. Scale contract
@@ -124,7 +132,11 @@ Temperature is signed 16-bit raw data. Host conversion is:
 
     temperature_deg_c = temperature_raw / 512 + 23
 
-The Phase 3 implementation reads die temperature independently at 10 Hz and holds the most recent raw value across FIFO samples. A value older than 250 milliseconds, or the placeholder used before any successful observation, carries `TEMPERATURE_STALE`. Metadata must preserve this cadence, freshness limit, and held-value policy.
+The Phase 3 implementation reads die temperature independently at 2 Hz and
+holds the most recent raw value across FIFO samples. A value older than 1.25
+seconds, or the placeholder used before any successful observation, carries
+`TEMPERATURE_STALE`. Metadata preserves this cadence, freshness limit, and
+held-value policy.
 
 ## 6. Row and channel contract
 
@@ -408,6 +420,14 @@ The final summary must contain, per IMU:
 Acquisition-age percentiles are fixed-memory histogram upper bounds with 256 microsecond resolution. Values above the histogram range are retained in the exact maximum, included in the final bucket for percentile calculation, and counted separately as `histogram_clipped`; unavailable ages are counted separately and excluded from percentiles.
 
 No data-loss counter may saturate silently. If an exact count is unavailable, the corresponding diagnostic explicitly states that only an event count is known.
+
+A FIFO read may end partway through a frame because the bounded read plan
+intentionally includes bytes that arrive during the transfer. The BMI270
+repeats that complete frame on the next FIFO access. Firmware therefore counts
+such tails in `partial_frames` for parser provenance but does not, by that fact
+alone, set `FIFO_DISCONTINUITY_BEFORE` or `TIMING_DEGRADED`. Skip frames,
+overflow, invalid headers, parser-output loss, and unexplained native-time gaps
+remain discontinuities.
 
 ## 14. Synthetic acceptance cases
 

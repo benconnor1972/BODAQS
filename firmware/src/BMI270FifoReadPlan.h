@@ -18,6 +18,10 @@ inline constexpr size_t kWireProtocolBytes = 8;
 inline constexpr size_t kArrivalGuardFrames = 1;
 inline constexpr size_t kMaximumReadBytes = 2304;
 inline constexpr uint8_t kAdaptiveBacklogPeriods = 2;
+inline constexpr uint32_t kMaximumPriorityServiceGapUs = 70000;
+inline constexpr uint32_t kMaximumExperimentalPriorityServiceGapUs = 140000;
+inline constexpr size_t kPriorityServiceFifoBudgetBytes =
+    (kFifoCapacityBytes * 3u) / 5u;
 
 constexpr uint32_t transferDurationUs(size_t bytes) {
   const uint64_t bits =
@@ -72,6 +76,48 @@ constexpr uint32_t mixedBytesPerSecond(
   // actual combined header saves one byte, so this remains conservative.
   return static_cast<uint32_t>(accelRateHz + gyroRateHz) *
       kSingleSensorFrameBytes;
+}
+
+constexpr uint32_t fifoBytesPerSecond(
+    uint16_t accelRateHz,
+    uint16_t gyroRateHz) {
+  return accelRateHz == gyroRateHz
+      ? static_cast<uint32_t>(accelRateHz) * kCombinedFrameBytes
+      : mixedBytesPerSecond(accelRateHz, gyroRateHz);
+}
+
+constexpr bool isSupportedFifoPollRate(
+    uint16_t accelRateHz,
+    uint16_t gyroRateHz,
+    uint16_t pollRateHz) {
+  if (pollRateHz == 10) {
+    return accelRateHz == 800 && gyroRateHz == 200;
+  }
+  return pollRateHz == 25 || pollRateHz == 50 || pollRateHz == 100 ||
+         pollRateHz == 200 || pollRateHz == 400;
+}
+
+// Bound latency-priority deferral by both a 70 ms policy ceiling and 60% of
+// FIFO capacity. The remaining FIFO space covers samples arriving while the
+// eventual non-preemptible drain is in progress.
+constexpr uint32_t maximumPriorityServiceGapUs(
+    uint16_t accelRateHz,
+    uint16_t gyroRateHz,
+    uint16_t pollRateHz) {
+  const uint32_t bytesPerSecond = fifoBytesPerSecond(accelRateHz, gyroRateHz);
+  if (bytesPerSecond == 0 ||
+      !isSupportedFifoPollRate(accelRateHz, gyroRateHz, pollRateHz)) {
+    return 0;
+  }
+  const uint64_t fifoBudgetUs =
+      (static_cast<uint64_t>(kPriorityServiceFifoBudgetBytes) * 1000000u) /
+      bytesPerSecond;
+  const uint32_t policyLimitUs = pollRateHz == 10
+      ? kMaximumExperimentalPriorityServiceGapUs
+      : kMaximumPriorityServiceGapUs;
+  return fifoBudgetUs < policyLimitUs
+      ? static_cast<uint32_t>(fifoBudgetUs)
+      : policyLimitUs;
 }
 
 constexpr size_t mixedBytesArrivingDuringRead(
@@ -130,6 +176,20 @@ constexpr size_t expectedBytesPerPoll(
       : 0;
 }
 
+// Scheduler look-ahead includes the planned FIFO transfer plus allowance for
+// the length read, parsing/enqueue, and periodic temperature/sensor-time reads.
+constexpr uint32_t estimatedSchedulerAcquireUs(
+    uint16_t accelRateHz,
+    uint16_t gyroRateHz,
+    uint16_t pollRateHz) {
+  if (!isSupportedFifoPollRate(accelRateHz, gyroRateHz, pollRateHz)) return 0;
+  const size_t fifoLength =
+      expectedBytesPerPoll(accelRateHz, gyroRateHz, pollRateHz);
+  const size_t plannedRead =
+      bytesToRead(fifoLength, accelRateHz, gyroRateHz);
+  return plannedRead != 0 ? transferDurationUs(plannedRead) + 10000u : 0;
+}
+
 // A normal acquisition is allowed to contain two poll periods of samples.
 // A second pass is reserved for a FIFO that has grown beyond that allowance,
 // or beyond half its capacity at very high ODRs.
@@ -182,5 +242,12 @@ static_assert(bytesToRead(kFifoCapacityBytes, 1600) == kMaximumReadBytes,
               "high-rate FIFO reads must make bounded forward progress");
 static_assert(expectedBytesPerPoll(1600, 200, 200) == 63,
               "mixed profile read planning accounts for both sensors");
+static_assert(isSupportedFifoPollRate(800, 200, 10));
+static_assert(!isSupportedFifoPollRate(1600, 200, 10));
+static_assert(maximumPriorityServiceGapUs(800, 200, 25) == 70000);
+static_assert(maximumPriorityServiceGapUs(800, 200, 10) == 140000);
+static_assert(maximumPriorityServiceGapUs(1600, 200, 25) == 70000);
+static_assert(maximumPriorityServiceGapUs(1600, 1600, 25) < 60000);
+static_assert(estimatedSchedulerAcquireUs(800, 200, 10) > 30000);
 
 } // namespace BMI270FifoReadPlan

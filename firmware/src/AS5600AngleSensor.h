@@ -4,6 +4,8 @@
 #include "SensorParams.h"
 #include "SensorTypes.h"
 #include "I2CBusScheduler.h"
+#include "AS5600BdqV2.h"
+#include "BdqV2StreamQueue.h"
 #include <limits.h>
 
 class TwoWire;
@@ -42,6 +44,10 @@ public:
   void onLoggingStart() override;
   void onLoggingStop() override;
   void onLoggingFinalized() override;
+  size_t pendingLoggingRows() const override;
+  bool describeBdqV2Stream(
+      uint16_t streamId,
+      BdqV2StreamDescriptor& out) override;
 
   bool muted() const override { return m_muted; }
   void setMuted(bool m) override { m_muted = m; }
@@ -91,6 +97,8 @@ public:
   uint16_t asyncTargetRateHz() const override;
   bool asyncMuted() const override { return m_muted; }
   bool asyncAcquire() override;
+  bool asyncLatencySensitive() const override { return true; }
+  uint32_t asyncEstimatedAcquireUs() const override { return 2000u; }
   void asyncSchedulerStarting() override;
   void asyncSchedulerStopped() override;
 
@@ -161,6 +169,7 @@ private:
   float primaryFromRaw_(int raw) const;
   void sample(float& primaryOut, int& rawOut) const;
   bool acquireAsyncSample_() const;
+  void enqueueBdqV2Record_(const AsyncSnapshot& snapshot) const;
   void resetAsyncSnapshot_() const;
   void publishAsyncSnapshot_(const AsyncSnapshot& snapshot) const;
   bool copyAsyncSnapshot_(AsyncSnapshot& snapshot) const;
@@ -244,6 +253,14 @@ private:
   mutable uint32_t m_asyncNextSeq = 0;
   mutable uint32_t m_asyncLastLoggedSeq = 0;
   mutable AsyncSnapshot m_asyncSnapshot;
+  static constexpr uint16_t kBdqV2QueueCapacity = 1024;
+  mutable BdqV2StreamQueue<
+      AS5600BdqV2::kRecordSizeBytes,
+      kBdqV2QueueCapacity,
+      1> m_bdqV2Queue {0, AS5600BdqV2::kNativeTickModulus};
+  mutable uint32_t m_bdqV2Sequence = 0;
+  mutable bool m_bdqV2LoggingActive = false;
+  mutable bool m_bdqV2ReadFailureActive = false;
 #if defined(ESP32)
   mutable portMUX_TYPE m_asyncMux = portMUX_INITIALIZER_UNLOCKED;
 #endif

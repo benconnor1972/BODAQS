@@ -45,6 +45,7 @@ from bodaqs_analysis.import_agent_logger_wifi_discovery import (
     discover_logger_wifi_sources,
     discover_single_logger_wifi_source,
 )
+from bodaqs_analysis.io_bdq import read_bdq
 from bodaqs_analysis.pipeline import load_bdq_session
 from bodaqs_analysis.signal_standardize import (
     canonicalize_signal_names,
@@ -427,12 +428,24 @@ def _smoke_test_imu_bdq(path: str | Path) -> dict[str, int]:
     if not input_path.is_file():
         raise FileNotFoundError(f"IMU BDQ smoke-test input not found: {input_path}")
 
+    format_major = read_bdq(input_path).header.format_major
     session = load_bdq_session(input_path)
     session = canonicalize_signal_names(session)
     session = rebuild_and_validate_signal_registry(session, strict_registry_parse=True)
     dataframe = session.get("df")
     if dataframe is None or dataframe.empty:
         raise ValueError("IMU BDQ smoke-test input produced no samples")
+
+    if format_major == 2:
+        stream_dfs = session.get("stream_dfs", {})
+        expected_streams = {f"imu_{index}" for index in range(1, 5)}
+        if set(stream_dfs) != expected_streams:
+            raise ValueError(f"IMU BDQ v2 smoke-test streams are wrong: {sorted(stream_dfs)}")
+        for index in range(1, 5):
+            values = stream_dfs[f"imu_{index}"]["accel_x_raw"].tolist()
+            if values != [-index * 100, -index * 100 - 1]:
+                raise ValueError(f"IMU BDQ v2 smoke-test values are wrong for imu_{index}: {values!r}")
+        return {"rows": int(len(dataframe.index)), "columns": int(len(dataframe.columns))}
 
     expected_values = {
         "frame_imu_accel_x_raw": [-32768, 32767, -123, 0],

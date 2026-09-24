@@ -255,7 +255,13 @@ def _stream_data(
     )
 
 
-def _bdq_v2_bytes(*, bad_stream_id: int | None = None) -> bytes:
+def _bdq_v2_bytes(
+    *,
+    bad_stream_id: int | None = None,
+    primary_records: list[bytes] | None = None,
+    imu_1_records: list[bytes] | None = None,
+    imu_1_observations: list[bytes] | None = None,
+) -> bytes:
     header = FILE_HEADER.pack(
         FILE_MAGIC_V2, 2, 0, FILE_HEADER.size, 1_789_272_000_000_000, 0, 0
     )
@@ -268,11 +274,13 @@ def _bdq_v2_bytes(*, bad_stream_id: int | None = None) -> bytes:
             _stream_data(
                 2 if bad_stream_id is None else bad_stream_id,
                 28,
-                [
+                imu_1_records if imu_1_records is not None else [
                     _imu_record(10, 0xFFFFF8, 100),
                     _imu_record(11, 0x000008, 110),
                 ],
-                [_observation(0x000008, 11, 1_000_000, 1_000_120)],
+                imu_1_observations if imu_1_observations is not None else [
+                    _observation(0x000008, 11, 1_000_000, 1_000_120)
+                ],
             ),
         ),
         _chunk(
@@ -281,7 +289,10 @@ def _bdq_v2_bytes(*, bad_stream_id: int | None = None) -> bytes:
             _stream_data(
                 1,
                 16,
-                [_primary_record(0, 100_000, 200), _primary_record(1, 105_000, 201)],
+                primary_records if primary_records is not None else [
+                    _primary_record(0, 100_000, 200),
+                    _primary_record(1, 105_000, 201),
+                ],
                 [_observation(105_000, 1, 105_000, 105_000)],
             ),
         ),
@@ -369,7 +380,62 @@ def test_v2_native_stream_decode_preserves_signed_values_and_tick_wrap(tmp_path:
     assert imu["native_tick_unwrapped"].tolist() == [0xFFFFF8, 0x1000008]
     assert imu["native_time_s"].tolist() == pytest.approx([0.0, 0.000625])
     assert imu["continuity_segment"].tolist() == [0, 0]
-    assert "time_s" not in imu.columns
+    assert imu["time_s"].tolist() == pytest.approx([0.899435, 0.900060])
+
+
+def test_v2_native_clock_wrap_remains_elapsed_across_discontinuity(tmp_path: Path) -> None:
+    path = tmp_path / "native_boundary.bdq"
+    path.write_bytes(_bdq_v2_bytes(imu_1_records=[
+        _imu_record(10, 0xFFFFF8, 100),
+        _imu_record(11, 0x000008, 110),
+        _imu_record(12, 0x000018, 120),
+        _imu_record(13, 0x000028, 130, status=1),
+    ]))
+
+    imu = bdq_to_stream_dataframes(path)["imu_1"]
+
+    assert imu["continuity_segment"].tolist() == [0, 0, 0, 1]
+    assert imu["native_tick_unwrapped"].tolist() == [
+        0xFFFFF8, 0x1000008, 0x1000018, 0x1000028
+    ]
+    assert imu["native_time_s"].tolist() == pytest.approx([
+        0.0, 0.000625, 0.001250, 0.001875
+    ])
+
+
+def test_v2_source_clock_restart_is_fitted_as_a_new_monotonic_epoch(tmp_path: Path) -> None:
+    path = tmp_path / "native_clock_restart.bdq"
+    path.write_bytes(_bdq_v2_bytes(
+        imu_1_records=[
+            _imu_record(10, 1000, 100),
+            _imu_record(11, 1016, 110),
+            _imu_record(12, 32, 120, status=0x0005),
+            _imu_record(13, 48, 130),
+        ],
+        imu_1_observations=[
+            _observation(1000, 10, 1_000_000, 1_000_000),
+            _observation(1016, 11, 1_000_625, 1_000_625),
+            _observation(32, 12, 1_001_250, 1_001_250),
+            _observation(48, 13, 1_001_875, 1_001_875),
+        ],
+    ))
+
+    imu = bdq_to_stream_dataframes(path)["imu_1"]
+
+    assert imu["clock_epoch"].tolist() == [0, 0, 1, 1]
+    assert imu["continuity_segment"].tolist() == [0, 0, 1, 1]
+    assert imu["native_tick_unwrapped"].tolist() == [1000, 1016, 32, 48]
+    assert imu["native_time_s"].tolist() == pytest.approx([
+        0.0, 0.000625, 0.0, 0.000625
+    ])
+    assert imu["time_s"].is_monotonic_increasing
+    assert imu["time_s"].diff().dropna().tolist() == pytest.approx([
+        0.000625, 0.000625, 0.000625
+    ])
+    alignment = imu.attrs["bdq_clock_alignment"]
+    assert alignment["method"] == "segmented_robust_affine_observation_fit"
+    assert alignment["clock_epoch_count"] == 2
+    assert alignment["observation_count"] == 4
 
 
 def test_v2_primary_dataframe_uses_logger_monotonic_clock(tmp_path: Path) -> None:
@@ -384,6 +450,38 @@ def test_v2_primary_dataframe_uses_logger_monotonic_clock(tmp_path: Path) -> Non
     assert df["suspension_raw_dom_suspension [count]"].tolist() == [200, 201]
 
 
+def test_v2_primary_queue_drops_preserve_elapsed_logger_time(tmp_path: Path) -> None:
+    path = tmp_path / "primary_gaps.bdq"
+    path.write_bytes(_bdq_v2_bytes(primary_records=[
+        _primary_record(0, 100_000, 200),
+        _primary_record(1, 105_000, 201),
+        _primary_record(14, 170_000, 202, status=3),
+        _primary_record(15, 175_000, 203),
+        _primary_record(221, 1_205_000, 204, status=3),
+    ]))
+
+    df = bdq_to_dataframe(path)
+
+    assert df["sequence"].tolist() == [0, 1, 14, 15, 221]
+    assert df["continuity_segment"].tolist() == [0, 0, 1, 1, 2]
+    assert df["time_s"].tolist() == pytest.approx([0.0, 0.005, 0.070, 0.075, 1.105])
+    assert load_bdq_session(path)["df"]["time_s"].is_monotonic_increasing
+
+
+def test_v2_primary_clock_wrap_on_queue_drop_preserves_elapsed_time(tmp_path: Path) -> None:
+    path = tmp_path / "primary_wrap_gap.bdq"
+    path.write_bytes(_bdq_v2_bytes(primary_records=[
+        _primary_record(0, 0xFFFFFF00, 200),
+        _primary_record(2, 0x00000300, 201, status=3),
+        _primary_record(3, 0x00000800, 202),
+    ]))
+
+    df = bdq_to_dataframe(path)
+
+    assert df["continuity_segment"].tolist() == [0, 1, 1]
+    assert df["time_s"].tolist() == pytest.approx([0.0, 0.001024, 0.002304])
+
+
 def test_v2_metadata_and_pipeline_expose_native_secondary_streams(tmp_path: Path) -> None:
     path = tmp_path / "multi.bdq"
     path.write_bytes(_bdq_v2_bytes())
@@ -394,8 +492,13 @@ def test_v2_metadata_and_pipeline_expose_native_secondary_streams(tmp_path: Path
 
     assert metadata["contract"]["name"] == "bdq.v2"
     assert metadata["streams"]["imu_1"]["clock_id"] == "bmi270:imu_1"
+    assert metadata["streams"]["imu_1"]["time_column"] == "time_s"
     assert metadata["secondary_streams"]["imu_1"]["schema"] == "bdq.native_stream.v1"
+    assert metadata["secondary_streams"]["imu_1"]["time_columns"]["canonical"] == "time_s"
     assert set(session["stream_dfs"]) == {"imu_1", "imu_2", "imu_3", "imu_4"}
+    assert session["meta"]["secondary_streams"]["imu_1"]["clock_alignment"]["method"] == (
+        "robust_affine_observation_fit"
+    )
     assert session["meta"]["bdq_events"][0]["event_type"] == "user_mark"
     assert session["meta"]["bdq_timing_observations"]["imu_1"][0]["kind"] == 1
 

@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import http.client
 import json
+import logging
 import os
+import re
 import socket
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,7 +15,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from .io_bdq import read_bdq
+from .io_bdq import read_bdq, validate_bdq_importable
 from .import_agent_sources import (
     LOGGER_WIFI_CLEANUP_DELETE,
     LOGGER_WIFI_CLEANUP_MOVE_TO_UPLOADED,
@@ -20,6 +23,10 @@ from .import_agent_sources import (
     SUPPORTED_LOGGER_WIFI_CLEANUP_MODES,
     normalize_logger_wifi_base_url,
 )
+
+
+_LOG = logging.getLogger(__name__)
+_CONTENT_RANGE = re.compile(r"bytes (\d+)-(\d+)/(\d+)$")
 
 
 class LoggerWifiApiError(RuntimeError):
@@ -48,6 +55,7 @@ class LoggerWifiApiClient:
     base_url: str
     request_timeout_s: float = 5.0
     download_timeout_s: float = 60.0
+    download_attempts: int = 4
 
     def __post_init__(self) -> None:
         normalized = normalize_logger_wifi_base_url(self.base_url)
@@ -58,6 +66,8 @@ class LoggerWifiApiClient:
             raise ValueError("request_timeout_s must be > 0")
         if float(self.download_timeout_s) <= 0:
             raise ValueError("download_timeout_s must be > 0")
+        if self.download_attempts <= 0:
+            raise ValueError("download_attempts must be > 0")
 
     def get_device(self) -> dict[str, Any]:
         obj = self._request_json("GET", "/api/v1/device")
@@ -287,40 +297,96 @@ class LoggerWifiApiClient:
         target = Path(target_path).expanduser().resolve()
         part_path = Path(str(target) + ".part")
         target.parent.mkdir(parents=True, exist_ok=True)
-        if part_path.exists():
-            part_path.unlink()
+        for attempt in range(self.download_attempts):
+            offset = part_path.stat().st_size if part_path.exists() else 0
+            headers = {"Accept": accept}
+            if offset:
+                headers["Range"] = f"bytes={offset}-"
+            request = Request(
+                self._url(endpoint, {"id": session_id}),
+                headers=headers,
+                method="GET",
+            )
+            try:
+                with self._open(request, timeout_s=float(self.download_timeout_s)) as response:
+                    status = response.getcode()
+                    content_length = self._content_length(response)
+                    if content_length is not None and content_length < 0:
+                        raise LoggerWifiApiError(f"{label} returned a negative Content-Length", error="invalid_download_response")
+                    if status == 206:
+                        match = _CONTENT_RANGE.fullmatch(response.headers.get("Content-Range", "").strip())
+                        if not offset or not match:
+                            raise LoggerWifiApiError(f"{label} returned an unexpected partial response", error="invalid_download_response")
+                        start, end, total = (int(value) for value in match.groups())
+                        if start != offset or end < start or end >= total or (
+                            content_length is not None and content_length != end - start + 1
+                        ):
+                            raise LoggerWifiApiError(f"{label} returned a mismatched Content-Range", error="invalid_download_response")
+                        expected_total = total
+                        mode = "ab"
+                    elif status == 200:
+                        if offset:
+                            _LOG.info("Logger ignored Range; restarting %s download from byte zero", label)
+                        expected_total = content_length
+                        mode = "wb"
+                    else:
+                        raise LoggerWifiApiError(f"{label} returned HTTP {status}", error="invalid_download_response")
 
-        request = Request(
-            self._url(endpoint, {"id": session_id}),
-            headers={"Accept": accept},
-            method="GET",
-        )
+                    with part_path.open(mode) as out:
+                        while True:
+                            chunk = response.read(chunk_size)
+                            if not chunk:
+                                break
+                            out.write(chunk)
 
-        try:
-            with self._open(request, timeout_s=float(self.download_timeout_s)) as response:
-                expected_size = self._content_length(response)
-                bytes_written = 0
-                with part_path.open("wb") as out:
-                    while True:
-                        chunk = response.read(chunk_size)
-                        if not chunk:
-                            break
-                        out.write(chunk)
-                        bytes_written += len(chunk)
+                    actual_size = part_path.stat().st_size
+                    if expected_total is not None and actual_size != expected_total:
+                        raise LoggerWifiApiError(
+                            f"{label} download was incomplete: expected {expected_total} bytes, got {actual_size}",
+                            error="download_incomplete",
+                        )
 
-                if expected_size is not None and bytes_written != expected_size:
-                    raise LoggerWifiApiError(
-                        f"{label} download was incomplete: expected {expected_size} bytes, got {bytes_written}",
-                        error="download_incomplete",
-                    )
+                try:
+                    validator(part_path)
+                except LoggerWifiApiError:
+                    if mode != "ab" or attempt + 1 >= self.download_attempts:
+                        raise
+                    # A stale or damaged prefix must not be extended forever.
+                    # One complete restart distinguishes that from a bad source.
+                    _LOG.warning("Resumed %s failed validation; restarting from byte zero", label)
+                    part_path.unlink()
+                    continue
+                os.replace(part_path, target)
+                return target
+            except Exception as exc:
+                error = exc if isinstance(exc, LoggerWifiApiError) else LoggerWifiApiError(
+                    f"{label} download failed: {exc}", error="download_failed"
+                )
+                if error.status_code == 416 and offset:
+                    try:
+                        validator(part_path)
+                    except LoggerWifiApiError:
+                        if attempt + 1 < self.download_attempts:
+                            _LOG.warning("%s partial file is not valid at remote EOF; restarting", label)
+                            part_path.unlink()
+                            continue
+                    else:
+                        os.replace(part_path, target)
+                        return target
+                if error.error not in {"download_incomplete", "download_failed", "connection_failed"} or (
+                    attempt + 1 >= self.download_attempts
+                ):
+                    if error is exc:
+                        raise
+                    raise error from exc
+                _LOG.warning(
+                    "%s download interrupted at %d bytes (attempt %d/%d): %s",
+                    label, part_path.stat().st_size if part_path.exists() else 0,
+                    attempt + 1, self.download_attempts, error,
+                )
+                time.sleep(0.25 * (attempt + 1))
 
-            validator(part_path)
-            os.replace(part_path, target)
-            return target
-        except Exception as exc:
-            if isinstance(exc, LoggerWifiApiError):
-                raise
-            raise LoggerWifiApiError(f"{label} download failed: {exc}", error="download_failed") from exc
+        raise AssertionError("unreachable download retry state")
 
     def _validate_zip(self, path: Path) -> None:
         try:
@@ -337,11 +403,6 @@ class LoggerWifiApiClient:
     def _validate_bdq(self, path: Path) -> None:
         try:
             info = read_bdq(path)
+            validate_bdq_importable(info)
         except Exception as exc:
             raise LoggerWifiApiError(f"Downloaded BDQ data is not valid: {exc}", error="invalid_bdq") from exc
-        if not info.metadata:
-            raise LoggerWifiApiError("Downloaded BDQ data has no metadata chunk", error="invalid_bdq")
-        if not info.channel_schema:
-            raise LoggerWifiApiError("Downloaded BDQ data has no channel schema chunk", error="invalid_bdq")
-        if info.sample_count <= 0:
-            raise LoggerWifiApiError("Downloaded BDQ data has no decodable samples", error="invalid_bdq")

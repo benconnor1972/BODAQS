@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "AS5600BdqV2.h"
 #include "BdqV2Format.h"
 
 int runBdqV2FormatTests() {
@@ -122,6 +123,33 @@ int runBdqV2FormatTests() {
     decodedObservation.hostMinUs = decodedObservation.hostMaxUs + 1;
     check(!BdqV2Format::validTimeObservation(decodedObservation),
           "reversed timing interval is rejected");
+
+    AS5600BdqV2::Record rotary;
+    rotary.sequence = 17;
+    rotary.nativeTick = 0xFEDCBA98u;
+    rotary.statusFlags = AS5600BdqV2::kMagnetNotDetected;
+    rotary.rawAngle = 0x0ABCu;
+    rotary.sensorStatus = 0x20;
+    rotary.agc = 123;
+    rotary.magnitude = 0x0456u;
+    rotary.readOk = true;
+    rotary.reused = false;
+    uint8_t rotaryBytes[AS5600BdqV2::kRecordSizeBytes] {};
+    check(AS5600BdqV2::encodeRecord(
+              rotary, rotaryBytes, sizeof(rotaryBytes)),
+          "AS5600 native record encodes");
+    BdqV2Format::StreamRecordPrefix rotaryPrefix;
+    check(BdqV2Format::decodeStreamRecordPrefix(
+              rotaryBytes, sizeof(rotaryBytes), rotaryPrefix) &&
+          rotaryPrefix.sequence == rotary.sequence &&
+          rotaryPrefix.nativeTick == rotary.nativeTick &&
+          rotaryPrefix.statusFlags == rotary.statusFlags &&
+          BdqV2Format::getU16(rotaryBytes + 12) == rotary.rawAngle &&
+          rotaryBytes[14] == rotary.sensorStatus &&
+          rotaryBytes[15] == rotary.agc &&
+          BdqV2Format::getU16(rotaryBytes + 16) == rotary.magnitude &&
+          rotaryBytes[18] == 1 && rotaryBytes[19] == 0,
+          "AS5600 native record uses the catalogued fixed layout");
 
     std::printf("BDQ v2 format: %d passed, %d failed\n", passed, failed);
     return failed;

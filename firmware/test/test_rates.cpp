@@ -34,6 +34,24 @@ int runRateTests() {
     check(I2CSchedulePlan::nextTieCursor(5, 8) == 6 &&
               I2CSchedulePlan::nextTieCursor(7, 8) == 0,
           "I2C overdue-tie selection rotates through the client table");
+    check(I2CSchedulePlan::shouldYieldToLatencySensitive(
+              15000, 3000, 2000, 29000, true, 50000, 0, 1),
+          "buffered I2C service yields when a latency deadline falls inside its transfer");
+    check(!I2CSchedulePlan::shouldYieldToLatencySensitive(
+               15000, 16000, 2000, 29000, true, 50000, 0, 1),
+          "buffered I2C service does not yield for a deadline beyond its transfer");
+    check(!I2CSchedulePlan::shouldYieldToLatencySensitive(
+               15000, 3000, 2000, 0, false, 50000, 0, 1),
+          "buffered I2C service establishes progress before allowing priority yields");
+    check(!I2CSchedulePlan::shouldYieldToLatencySensitive(
+               15000, 1000, 2000, 48000, true, 50000, 0, 1),
+          "latency priority cannot exceed the buffered client's maximum service gap");
+    check(I2CSchedulePlan::shouldYieldToLatencySensitive(
+              15000, 3000, 2000, 45000, true, 70000, 1, 2),
+          "a buffered client may use a second admitted priority yield");
+    check(!I2CSchedulePlan::shouldYieldToLatencySensitive(
+               15000, 3000, 2000, 45000, true, 70000, 2, 2),
+          "latency priority stops at the per-service yield limit");
 
     std::printf("Rates: %d passed, %d failed\n", passed, failed);
     return failed;

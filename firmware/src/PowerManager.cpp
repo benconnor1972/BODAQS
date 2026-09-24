@@ -125,7 +125,9 @@ static bool checkAnalogRailFault_(bool stopLogging)
 
   if (stopLogging && LoggingManager::isRunning()) {
     PWR_LOGW("Stopping logging because analog rail fault asserted\n");
-    LoggingManager::stop();
+    LoggingManager::stop(
+        LoggingManager::StopReason::AnalogRailFault,
+        "current_limit_fault");
   }
 
   return true;
@@ -365,7 +367,9 @@ static void fuelGaugeInitIfNeeded_()
 static void preSleep_() {
   // Stop high-level activities cleanly
   if (LoggingManager::isRunning()) {
-    LoggingManager::stop();
+    LoggingManager::stop(
+        LoggingManager::StopReason::SleepRequest,
+        "pre_sleep");
   }
 
   WebServerManager::stop();   // safe even if not started

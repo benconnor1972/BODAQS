@@ -40,6 +40,8 @@ public:
   uint16_t asyncTargetRateHz() const override;
   bool asyncMuted() const override { return muted(); }
   bool asyncAcquire() override;
+  bool asyncLatencySensitive() const override { return true; }
+  uint32_t asyncEstimatedAcquireUs() const override { return 2000u; }
   void asyncSchedulerStarting() override;
   void asyncSchedulerStopped() override;
 
