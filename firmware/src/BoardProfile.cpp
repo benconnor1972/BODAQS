@@ -78,6 +78,7 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
       { "mark",      true, 2, 0, true,  true },
     },
     .count = 6,
+    .binding_preset = ButtonBindingPreset::BodaqsRc3,
   },
 
   .fuel = {
@@ -152,6 +153,7 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D_UART_I2C1 = [] {
 static const BoardProfile THING_PLUS_S3_BODAQS_4_F = [] {
   BoardProfile p = THING_PLUS_S3_BODAQS_4_D;
   p.name = "BODAQS 4F";
+  p.buttons.binding_preset = ButtonBindingPreset::PrototypeF;
 
   p.buttons.btn[0] = ButtonHW{ "nav_up",    true, 6,  1, true, true };
   p.buttons.btn[1] = ButtonHW{ "nav_down",  true, 5,  1, true, true };
@@ -244,6 +246,7 @@ static const BoardProfile V1RC3_PROFILE = {
       { "mark",      true, 42, 0, true, true },
     },
     .count = 6,
+    .binding_preset = ButtonBindingPreset::BodaqsA8,
   },
 
   .fuel = {

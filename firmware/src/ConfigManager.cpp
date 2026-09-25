@@ -5,6 +5,7 @@
 #include "Calibration.h"
 #include "SensorRegistry.h"
 #include "StorageManager.h"
+#include "BoardSelect.h"
 #include "DebugLog.h"
 #include <ctype.h>
 #include <stdlib.h>
@@ -44,6 +45,78 @@ namespace {
 
   ButtonBindingDef g_bindingDefs[MAX_BUTTON_BINDINGS];
   uint8_t          g_bindingDefCount       = 0;
+
+  static void copyStrBoundedButton_(const char* src, char* dst, size_t cap);
+  static void copyStrBounded(const char* src, char* dst, size_t cap);
+
+  struct DefaultButtonBinding {
+    const char* button;
+    const char* event;
+    const char* action;
+  };
+
+  static constexpr DefaultButtonBinding kCommonButtonBindings[] = {
+    { "nav_up",    "pressed",      "menu_nav_up" },
+    { "nav_down",  "pressed",      "menu_nav_down" },
+    { "nav_left",  "pressed",      "menu_nav_left" },
+    { "nav_right", "pressed",      "menu_nav_right" },
+    { "nav_enter", "released",     "menu_nav_enter" },
+    { "mark",      "click",        "mark_event" },
+    { "mark",      "double_click", "web_toggle" },
+    { "mark",      "held",         "logging_toggle" },
+    { "mark",      "released",     "menu_select" },
+  };
+
+  static void appendDefaultButtonBinding_(
+      LoggerConfig& cfg,
+      const char* button,
+      const char* event,
+      const char* action) {
+    if (cfg.buttonBindingCount >= MAX_BUTTON_BINDINGS) return;
+    ButtonBindingDef& binding = cfg.buttonBindings[cfg.buttonBindingCount++];
+    copyStrBoundedButton_(button, binding.buttonId, sizeof(binding.buttonId));
+    copyStrBoundedButton_(event, binding.event, sizeof(binding.event));
+    copyStrBoundedButton_(action, binding.action, sizeof(binding.action));
+  }
+
+  static void applyDefaultButtonBindings_(LoggerConfig& cfg) {
+    cfg.buttonBindingCount = 0;
+    for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
+      cfg.buttonBindings[i] = ButtonBindingDef{};
+    }
+    if (!board::gBoard ||
+        board::gBoard->buttons.binding_preset == board::ButtonBindingPreset::None) {
+      return;
+    }
+
+    for (const auto& binding : kCommonButtonBindings) {
+      appendDefaultButtonBinding_(cfg, binding.button, binding.event, binding.action);
+    }
+    if (board::gBoard->buttons.binding_preset != board::ButtonBindingPreset::BodaqsA8) {
+      appendDefaultButtonBinding_(cfg, "nav_left", "held", "sleep");
+    }
+    appendDefaultButtonBinding_(cfg, "nav_up", "held", "upload_mode_toggle");
+    appendDefaultButtonBinding_(cfg, "nav_down", "held", "web_toggle");
+  }
+
+  static bool loadConfigText_(String& content) {
+    if (StorageManager_loadTextFile(g_cfgName, content)) return true;
+
+    const char* leaf = strrchr(g_cfgName, '/');
+    leaf = leaf ? leaf + 1 : g_cfgName;
+    if ((!strcasecmp(leaf, "loggercfg") && strcasecmp(g_cfgName, "/loggercfg")) ||
+        (!strcasecmp(leaf, "loggercfg.txt") && strcasecmp(g_cfgName, "/loggercfg.txt"))) {
+      char rootPath[sizeof(g_cfgName)] = "/";
+      strncat(rootPath, leaf, sizeof(rootPath) - 2);
+      CFG_LOGI("Load: '%s' not found; trying '%s'\n", g_cfgName, rootPath);
+      if (StorageManager_loadTextFile(rootPath, content)) {
+        copyStrBounded(rootPath, g_cfgName, sizeof(g_cfgName));
+        CFG_LOGI("Load: using root-level config '%s'\n", g_cfgName);
+        return true;
+      }
+    }
+    return false;
+  }
 
   // Small helper: bounded string copy for button fields
   static void copyStrBoundedButton_(const char* src, char* dst, size_t cap) {
@@ -368,6 +441,9 @@ static void copyStrBoundedC_(const char* src, char* dst, size_t dstsz) {
 
 void ConfigManager::begin(const char* filename) {
   if (filename && *filename) copyStrBounded(filename, g_cfgName, sizeof(g_cfgName));
+
+  s_cfg = LoggerConfig{};
+  applyDefaultButtonBindings_(s_cfg);
 
   g_specCount = 0;
   g_expectedCount = 0;
@@ -870,10 +946,19 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
 bool ConfigManager::load(LoggerConfig& cfg) {
   CFG_LOGI("Load: starting\n");
 
+  g_bindingDefCount = 0;
+  for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
+    g_bindingDefs[i] = ButtonBindingDef{};
+  }
+
   // ---- Read whole config file into memory via StorageManager ----
   String content;
-  if (!StorageManager_loadTextFile(g_cfgName, content)) {
-    CFG_LOGW("Load: failed to open/read '%s', using defaults\n", g_cfgName);
+  if (!loadConfigText_(content)) {
+    applyDefaultButtonBindings_(cfg);
+    s_cfg = cfg;
+    g_cfg = s_cfg;
+    CFG_LOGW("Load: config unavailable; using compiled defaults (%u button bindings)\n",
+             (unsigned)cfg.buttonBindingCount);
     return false;
   }
 
@@ -1012,11 +1097,17 @@ bool ConfigManager::load(LoggerConfig& cfg) {
     cfg.wifiNetworkCount = 1;
   }
 
-  cfg.buttonBindingCount = (g_bindingDefCount <= MAX_BUTTON_BINDINGS)
-                             ? g_bindingDefCount
-                             : MAX_BUTTON_BINDINGS;
-  for (uint8_t i = 0; i < cfg.buttonBindingCount; ++i) {
-    cfg.buttonBindings[i] = g_bindingDefs[i];
+  if (g_bindingDefCount == 0) {
+    applyDefaultButtonBindings_(cfg);
+    CFG_LOGI("Load: no button bindings configured; using %u board defaults\n",
+             (unsigned)cfg.buttonBindingCount);
+  } else {
+    cfg.buttonBindingCount = (g_bindingDefCount <= MAX_BUTTON_BINDINGS)
+                               ? g_bindingDefCount
+                               : MAX_BUTTON_BINDINGS;
+    for (uint8_t i = 0; i < cfg.buttonBindingCount; ++i) {
+      cfg.buttonBindings[i] = g_bindingDefs[i];
+    }
   }
 
   // Now commit cfg as usual:

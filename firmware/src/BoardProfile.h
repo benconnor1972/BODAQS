@@ -32,6 +32,12 @@ enum class AdcReferenceType : uint8_t { Default, Internal, ExternalRef0, Externa
 enum class AnalogSourceType : uint8_t { None, InternalGpio, ExternalAdc };
 enum class ButtonID : uint8_t { BTN0=0, BTN1, BTN2, BTN3, BTN4, BTN5, Count };
 enum class ButtonMode : uint8_t {Interrupt = 0, Poll = 1 };
+enum class ButtonBindingPreset : uint8_t {
+  None = 0,
+  BodaqsRc3,
+  PrototypeF,
+  BodaqsA8,
+};
 
 // ---------- Sub-profiles ----------
 
@@ -65,6 +71,7 @@ struct ButtonHW {
 struct ButtonsProfile {
   ButtonHW btn[6];     // fixed max, easy on embedded
   uint8_t count = 0;   // number actually present
+  ButtonBindingPreset binding_preset = ButtonBindingPreset::None;
 };
 
 struct DisplayProfile {
