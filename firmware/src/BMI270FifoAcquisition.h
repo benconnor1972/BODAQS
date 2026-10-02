@@ -8,10 +8,13 @@
 #include "BMI270FifoParser.h"
 #include "BMI270FifoReadPlan.h"
 #include "BMI270ImuSample.h"
+#include "BMI270QueuePlan.h"
 #include "BMI270ProgressWatchdog.h"
 #include "BMI270SessionQuality.h"
+#include "DynamicSpscQueue.h"
 #include "FixedSpscQueue.h"
 #include "I2CBusScheduler.h"
+#include "TimingStats.h"
 
 enum class BMI270RecoveryReason : uint8_t {
   None = 0,
@@ -26,11 +29,18 @@ static_assert(static_cast<uint8_t>(BMI270RecoveryReason::SessionStartValidation)
 static_assert(static_cast<uint8_t>(BMI270RecoveryReason::NoSampleProgress) == 3);
 
 struct BMI270FifoDiagnostics {
+  uint16_t nativeRateHz = 0;
+  uint16_t accelRateHz = 0;
+  uint16_t gyroRateHz = 0;
+  uint16_t outputRateHz = 0;
+  uint16_t fifoPollRateHz = 0;
   uint64_t drainCalls = 0;
   uint64_t drainPasses = 0;
   uint64_t emptyPasses = 0;
   uint64_t drainFailures = 0;
   uint64_t drainPassLimitHits = 0;
+  uint64_t adaptiveFollowupPasses = 0;
+  uint64_t adaptiveFollowupSkips = 0;
   uint64_t fifoBytesRead = 0;
   uint64_t fifoFramesParsed = 0;
   uint64_t sensorTimeFrames = 0;
@@ -53,6 +63,10 @@ struct BMI270FifoDiagnostics {
   uint64_t explicitQueueDiscards = 0;
   uint64_t temperatureReads = 0;
   uint64_t temperatureReadFailures = 0;
+  uint64_t sensorTimeReadAttempts = 0;
+  uint64_t sensorTimeReadSuccesses = 0;
+  uint64_t sensorTimeReadFailures = 0;
+  uint64_t sensorTimeObservationDrops = 0;
   uint64_t iocOffsetReadAttempts = 0;
   uint64_t iocOffsetReadFailures = 0;
   uint64_t iocOffsetSnapshotDrops = 0;
@@ -72,10 +86,27 @@ struct BMI270FifoDiagnostics {
   uint64_t accelNearRail[3] {};
   uint64_t gyroNearRail[3] {};
   uint64_t timingDegradedSamples = 0;
+  uint64_t accelTimingDegradedSamples = 0;
+  uint64_t gyroTimingDegradedSamples = 0;
+  uint64_t otherTimingDegradedSamples = 0;
   uint64_t sequenceDiscontinuityEvents = 0;
   uint64_t nativeTimeDiscontinuityEvents = 0;
+  uint64_t accelNativeTimeDiscontinuityEvents = 0;
+  uint64_t gyroNativeTimeDiscontinuityEvents = 0;
+  uint64_t accelNativeTickGapEvents = 0;
+  uint64_t gyroAssociationFallbackEvents = 0;
+
+  TimingSummary drainCallUs;
+  TimingSummary firstDrainPassUs;
+  TimingSummary secondDrainPassUs;
+  TimingSummary fifoLengthReadUs;
+  TimingSummary fifoDataTransferUs;
+  TimingSummary parseEnqueueUs;
+  TimingSummary temperatureReadUs;
+  TimingSummary sensorTimeReadUs;
 
   uint16_t maximumFifoBytesObserved = 0;
+  uint16_t adaptiveFollowupThresholdBytes = 0;
   uint16_t queueCapacity = 0;
   uint16_t queueHighWater = 0;
   uint32_t maximumDrainDurationUs = 0;
@@ -116,19 +147,28 @@ struct BMI270IocOffsetSnapshot {
   uint32_t nativeSequence = 0;
 };
 
+// A direct, short sensor-time register read bracketed by the logger clock.
+// The FIFO path provides separate, wider acquisition windows.
+struct BMI270ClockObservation {
+  uint32_t nativeTick = 0;
+  uint32_t relatedSequence = UINT32_MAX;
+  uint64_t hostMinUs = 0;
+  uint64_t hostMaxUs = 0;
+};
+
 class BMI270FifoAcquisition : public I2CAsyncClient {
 public:
-  static constexpr size_t kQueueCapacity = 512;
   static constexpr size_t kRawBufferBytes = BMI270FifoReadPlan::kMaximumReadBytes;
-  static constexpr size_t kMaximumBatchSamples = 160;
-  static constexpr uint16_t kTargetRateHz = 200;
-  static constexpr uint16_t kTemperatureRateHz = 10;
+  static constexpr size_t kMaximumBatchSamples =
+      (kRawBufferBytes / BMI270FifoReadPlan::kSingleSensorFrameBytes) + 1;
+  static constexpr uint16_t kDefaultFifoPollRateHz = 200;
+  static constexpr uint16_t kTemperatureRateHz = 2;
   static constexpr uint32_t kTemperaturePeriodUs = 1000000u / kTemperatureRateHz;
-  static constexpr uint32_t kTemperatureFreshnessUs = 250000u;
+  static constexpr uint32_t kTemperatureFreshnessUs =
+      (kTemperaturePeriodUs * 5u) / 2u;
+  static constexpr uint32_t kSensorTimeObservationPeriodUs = 100000u;
   static constexpr uint32_t kNoSampleProgressTimeoutUs = 250000u;
   static constexpr uint8_t kMaximumConsecutiveRecoveryFailures = 3;
-  static constexpr uint32_t kQueueCoverageMs =
-      static_cast<uint32_t>((kQueueCapacity * 1000u) / kTargetRateHz);
 
   BMI270FifoAcquisition(uint8_t busIndex, uint8_t address, const char* name = nullptr);
   ~BMI270FifoAcquisition() override;
@@ -139,22 +179,40 @@ public:
   // Initializes and configures the device, then leaves sensing suspended.
   bool begin();
   void shutdown();
+  bool setProfile(const BMI270Profile::NativeProfile& profile);
+  bool setNativeRateHz(uint16_t rateHz);
   bool setOutputRateHz(uint16_t rateHz);
+  bool setFifoPollRateHz(uint16_t rateHz);
   bool setGyroBiasMode(BMI270GyroBiasMode mode);
   void setIocDiagnosticsEnabled(bool enabled) { iocDiagnosticsEnabled_ = enabled; }
+  uint16_t nativeRateHz() const { return profile_->accelOdrHz; }
+  uint16_t accelRateHz() const { return profile_->accelOdrHz; }
+  uint16_t gyroRateHz() const { return profile_->gyroOdrHz; }
+  bool mixedRate() const { return profile_->isMixedRate(); }
+  const BMI270Profile::NativeProfile& profile() const { return *profile_; }
   uint16_t outputRateHz() const { return outputRateHz_; }
   uint16_t outputDecimationFactor() const { return outputDecimationFactor_; }
+  uint16_t fifoPollRateHz() const { return fifoPollRateHz_; }
+  uint32_t queueCoverageMs() const {
+    return BMI270QueuePlan::coverageMs(queue_.capacity(), accelRateHz());
+  }
   BMI270GyroBiasMode gyroBiasMode() const { return gyroBiasMode_; }
 
   // These calls require the I2C scheduler to be stopped. stopSession() stops
   // new production, performs the final FIFO drain, and leaves queued samples
   // available to the Phase 4 row adapter.
-  bool startSession(uint16_t startupObservationSeconds = 5);
+  bool startSession(
+      uint16_t startupObservationSeconds = 5,
+      bool captureClockObservations = false);
   bool stopSession();
   size_t discardQueuedSamples();
 
   bool pop(BMI270ImuSample& sample);
   bool popIocOffsetSnapshot(BMI270IocOffsetSnapshot& snapshot);
+  bool popClockObservation(BMI270ClockObservation& observation) {
+    return clockObservations_.pop(observation);
+  }
+  size_t pendingClockObservations() const { return clockObservations_.size(); }
   void recordRowEmission(uint32_t ageUs, bool ageValid);
   size_t queuedSamples() const { return queue_.size(); }
   bool sessionActive() const { return sessionActive_.load(std::memory_order_acquire); }
@@ -174,8 +232,16 @@ public:
   const char* asyncClientKind() const override { return "bmi270_imu_i2c"; }
   uint8_t asyncI2CBusIndex() const override { return device_.busIndex(); }
   uint8_t asyncI2CAddress() const override { return device_.address(); }
-  uint16_t asyncTargetRateHz() const override { return kTargetRateHz; }
-  uint32_t asyncMaximumLowPriorityGapUs() const override { return 50000u; }
+  uint16_t asyncTargetRateHz() const override { return fifoPollRateHz_; }
+  uint32_t asyncEstimatedAcquireUs() const override {
+    return BMI270FifoReadPlan::estimatedSchedulerAcquireUs(
+        accelRateHz(), gyroRateHz(), fifoPollRateHz_);
+  }
+  uint32_t asyncMaximumLowPriorityGapUs() const override {
+    return BMI270FifoReadPlan::maximumPriorityServiceGapUs(
+        accelRateHz(), gyroRateHz(), fifoPollRateHz_);
+  }
+  uint8_t asyncMaximumLatencySensitiveYields() const override { return 2; }
   bool asyncMuted() const override {
     return !sessionActive() || terminalFault_.load(std::memory_order_acquire);
   }
@@ -200,11 +266,14 @@ private:
   bool readFifoConfiguration_(FifoConfigurationSnapshot& out);
   bool validateOperationalState_(bool sensorsExpected, bool noSampleProgress);
   bool flushFifo_();
+  void maybeReadSensorTime_(uint64_t nowUs);
   bool drainAllAvailable_(
       uint8_t maximumPasses,
       bool readTemperature,
       bool requireEmpty = false);
-  DrainPassResult drainOnePass_(bool readTemperature);
+  DrainPassResult drainOnePass_(
+      bool readTemperature,
+      uint16_t* fifoLengthObserved = nullptr);
   bool recoverAcquisition_(BMI270RecoveryReason reason);
   bool handleNoSampleProgress_(uint32_t nowUs);
   void enterTerminalFault_(BMI270RecoveryReason reason);
@@ -217,15 +286,15 @@ private:
       bool temperatureFresh,
       uint64_t acquisitionStartUs,
       uint64_t acquisitionEndUs,
-      size_t bytesRead,
-      uint32_t acquisitionSpanUs);
+      size_t bytesRead);
   void maybeCaptureIocOffsetSnapshot_(uint64_t nowUs);
   void addCounter_(uint64_t& counter, uint64_t amount = 1);
 
   char name_[32] = "bmi270";
   BMI270Device device_;
-  FixedSpscQueue<BMI270ImuSample, kQueueCapacity> queue_;
+  DynamicSpscQueue<BMI270ImuSample> queue_;
   FixedSpscQueue<BMI270IocOffsetSnapshot, 8> iocOffsetSnapshots_;
+  FixedSpscQueue<BMI270ClockObservation, 32> clockObservations_;
   BMI270FifoDiagnostics diagnostics_;
   std::atomic<bool> sessionActive_ { false };
   std::atomic<bool> terminalFault_ { false };
@@ -234,10 +303,14 @@ private:
   BMI270FifoParsedSample parsed_[kMaximumBatchSamples] {};
 
   uint32_t nextSequence_ = 0;
+  uint32_t nextStartupObservationSequence_ = 0;
+  uint32_t nextAcquisitionBatchId_ = 0;
   uint16_t pendingStatus_ = 0;
   uint16_t preSessionBoundaryStatus_ = 0;
   uint32_t pendingSkippedFrames_ = 0;
   uint32_t consecutiveDrainFailures_ = 0;
+  uint32_t busRecoveryGeneration_ = 0;
+  bool transportFailureDuringDrain_ = false;
   uint8_t consecutiveRecoveryFailures_ = 0;
   uint16_t recoveryBackoffPolls_ = 0;
   BMI270ProgressWatchdog progressWatchdog_ { kNoSampleProgressTimeoutUs };
@@ -245,15 +318,23 @@ private:
   BMI270StartupObservation startupObservation_;
   BMI270AgeHistogram ageHistogram_;
   BMI270RunningStats temperatureStats_;
-  uint16_t outputRateHz_ = kTargetRateHz;
+  const BMI270Profile::NativeProfile* profile_ = &BMI270Profile::kNativeProfiles[0];
+  uint16_t outputRateHz_ = BMI270Profile::kOdrHz;
   uint16_t outputDecimationFactor_ = 1;
+  uint16_t fifoPollRateHz_ = kDefaultFifoPollRateHz;
   BMI270GyroBiasMode gyroBiasMode_ = BMI270GyroBiasMode::Off;
   bool iocDiagnosticsEnabled_ = false;
   uint64_t nextIocOffsetReadUs_ = 0;
+  uint64_t nextSensorTimeReadUs_ = 0;
+  bool captureClockObservations_ = false;
   bool havePreviousDequeuedSequence_ = false;
   uint32_t previousDequeuedSequence_ = 0;
   bool havePreviousSensorTime_ = false;
   uint32_t previousSensorTime_ = 0;
+  bool havePreviousGyroSensorTime_ = false;
+  uint32_t previousGyroSensorTime_ = 0;
+  bool havePreviousEmittedAccelTick_ = false;
+  uint32_t previousEmittedAccelTick_ = 0;
   bool haveTemperature_ = false;
   int16_t lastTemperatureRaw_ = 0;
   uint64_t lastTemperatureHostUs_ = 0;

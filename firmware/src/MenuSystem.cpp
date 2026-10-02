@@ -21,6 +21,7 @@
 #include "DebugLog.h"
 #include <WiFi.h>
 #include "RTCManager.h"
+#include "BoardSelect.h"
 
 #include <esp_system.h>   // esp_restart()
 #include <math.h>
@@ -79,9 +80,17 @@ namespace {
     Calibration,
     SagHelper,
     Sleep,
-    Settings
+    Settings,
+    Restart
   };
-  static inline uint8_t mainItemCount_() { return 8; }
+  static bool showSleep_() {
+    return board::gBoard && board::gBoard->supports_user_sleep;
+  }
+  static inline uint8_t mainItemCount_() { return showSleep_() ? 9 : 8; }
+  static MainItem mainItemAt_(uint8_t index) {
+    if (!showSleep_() && index >= static_cast<uint8_t>(MainItem::Sleep)) ++index;
+    return static_cast<MainItem>(index);
+  }
 
   static void ensureSelectionVisible_(uint8_t& selection,
                                       uint8_t& top,
@@ -111,15 +120,16 @@ namespace {
     LogFormat,
     ResetTime,
     Health,
-    Restart,
     About
   };
-  static inline uint8_t settingsItemCount_() { return 6; }
+  static inline uint8_t settingsItemCount_() { return 5; }
 
   static State   s_state       = State::Inactive;
   static uint8_t s_mainSel     = 0;
   static uint8_t s_settingsSel = 0;
   static uint8_t s_sensorSel   = 0;
+  static uint8_t s_sensorTop   = 0;
+  static constexpr uint8_t SENSOR_VISIBLE_ROWS = 5;
 
   // ---- Calibration UI state (per detail screen) ----
   enum class CalUiPhase : uint8_t {
@@ -135,6 +145,8 @@ namespace {
   };
 
   static uint8_t    s_calSel     = 0;              // selected sensor index
+  static uint8_t    s_calTop     = 0;              // first visible sensor
+  static constexpr uint8_t CAL_SENSOR_VISIBLE_ROWS = 5;
   static uint8_t    s_calOptSel  = 0;              // selected row within screen
   static CalUiPhase s_calUiPhase = CalUiPhase::Idle;
   static ImuInstallationPlane s_orientationPlane = ImuInstallationPlane::XZ;
@@ -244,6 +256,8 @@ namespace {
         return "Sleep";
       case MainItem::Settings:
         return "Settings";
+      case MainItem::Restart:
+        return "Restart";
       default:
         return "?";
     }
@@ -263,8 +277,6 @@ namespace {
         return "Reset time";
       case SettingsItem::Health:
         return "Health";
-      case SettingsItem::Restart:
-        return "Restart";
       case SettingsItem::About:
         return "About";
       default:
@@ -285,7 +297,7 @@ namespace {
       const uint8_t i = (uint8_t)(s_mainTop + row);
       if (i >= N) break;
 
-      const String label = mainItemLabel_(static_cast<MainItem>(i));
+      const String label = mainItemLabel_(mainItemAt_(i));
       String line = (i == s_mainSel) ? "> " : "  ";
       line += label;
 
@@ -371,29 +383,6 @@ namespace {
         break;
       }
 
-      case SettingsItem::Restart: {
-        s_swallowEnterRelease = true;
-        guardEnterRight();
-
-        if (LoggingManager::isRunning()) {
-          UI::toastModal("Stop logging first", 1200, 1);
-          deferUiFor(1200);
-          drawSettings_();
-          break;
-        }
-
-        UI::toastModal("Restarting...", 800, 1);
-        deferUiFor(800);
-        DisplayManager::present();
-
-        LOGI_TAG("Menu", "Restarting via esp_restart()\n");
-        Serial.flush();
-        delay(150);
-        RTCManager_invalidateInternalTime();
-        esp_restart();
-        break;
-      }
-
       case SettingsItem::About: {
         s_swallowEnterRelease = true;
         guardEnterRight();
@@ -406,7 +395,7 @@ namespace {
 
 
   static void openMainSelection_() {
-    switch (static_cast<MainItem>(s_mainSel)) {
+    switch (mainItemAt_(s_mainSel)) {
 
       case MainItem::WebServerToggle: {
         s_swallowEnterRelease = true;
@@ -452,6 +441,7 @@ namespace {
         guardEnterRight();              // <--- add
         s_state = State::SensorsList;
         s_sensorSel = 0;
+        s_sensorTop = 0;
         redraw_();
         break;
 
@@ -472,6 +462,7 @@ namespace {
         guardEnterRight();              // <--- add
         s_state      = State::CalibSensors;
         s_calSel     = 0;
+        s_calTop     = 0;
         s_calUiPhase = CalUiPhase::Idle;
         drawCalibSensors_();
         break;
@@ -491,6 +482,29 @@ namespace {
         s_nextSagRedrawMs = millis() + 1000;
         s_state = State::SagHelper;
         drawSagHelper_();
+        break;
+      }
+
+      case MainItem::Restart: {
+        s_swallowEnterRelease = true;
+        guardEnterRight();
+
+        if (LoggingManager::isRunning()) {
+          UI::toastModal("Stop logging first", 1200, 1);
+          deferUiFor(1200);
+          drawMain_();
+          break;
+        }
+
+        UI::toastModal("Restarting...", 800, 1);
+        deferUiFor(800);
+        DisplayManager::present();
+
+        LOGI_TAG("Menu", "Restarting via esp_restart()\n");
+        Serial.flush();
+        delay(150);
+        RTCManager_invalidateInternalTime();
+        esp_restart();
         break;
       }
 
@@ -516,7 +530,13 @@ namespace {
     UI::oledText(0, 0, "Sensors on/off");
 
     const uint8_t n = ConfigManager::sensorCount();
-    for (uint8_t i = 0; i < n; ++i) {
+    ensureSelectionVisible_(
+        s_sensorSel, s_sensorTop, n, SENSOR_VISIBLE_ROWS);
+
+    for (uint8_t row = 0; row < SENSOR_VISIBLE_ROWS; ++row) {
+      const uint8_t i = (uint8_t)(s_sensorTop + row);
+      if (i >= n) break;
+
       SensorSpec sp; if (!ConfigManager::getSensorSpec(i, sp)) continue;
       bool muted = false; SensorManager::getMuted(i, muted);
 
@@ -527,9 +547,17 @@ namespace {
       line += sp.name;
       if (muted) line += " [M]";
 
-      const int y = 12 + i * 10;
+      const int y = 12 + row * 10;
       UI::oledText(0, y, line);
     }
+
+    if (s_sensorTop > 0) {
+      UI::oledText(118, 0, "^");
+    }
+    if ((uint8_t)(s_sensorTop + SENSOR_VISIBLE_ROWS) < n) {
+      UI::oledText(118, 54, "v");
+    }
+
     DisplayManager::present();
   }
 
@@ -540,7 +568,13 @@ namespace {
     UI::oledText(0, 0, "Calibration");
 
     const uint8_t n = ConfigManager::sensorCount();
-    for (uint8_t i = 0; i < n; ++i) {
+    ensureSelectionVisible_(
+        s_calSel, s_calTop, n, CAL_SENSOR_VISIBLE_ROWS);
+
+    for (uint8_t row = 0; row < CAL_SENSOR_VISIBLE_ROWS; ++row) {
+      const uint8_t i = (uint8_t)(s_calTop + row);
+      if (i >= n) break;
+
       SensorSpec sp; if (!ConfigManager::getSensorSpec(i, sp)) continue;
       Sensor* s = SensorManager::at(i);
       CalModeMask mask = s ? s->allowedCalMask() : 0;
@@ -561,9 +595,17 @@ namespace {
         if (orientation) line += (mask ? "|O" : "O");
         line += "]";
       }
-      const int y = 12 + i * 10;
+      const int y = 12 + row * 10;
       UI::oledText(0, y, line);
     }
+
+    if (s_calTop > 0) {
+      UI::oledText(118, 0, "^");
+    }
+    if ((uint8_t)(s_calTop + CAL_SENSOR_VISIBLE_ROWS) < n) {
+      UI::oledText(118, 54, "v");
+    }
+
     DisplayManager::present();
   }
 
@@ -1322,10 +1364,11 @@ namespace {
   static uint8_t  s_rateIdx = 0;   // selection within Rates::kList
   static uint8_t  s_logFormatIdx = 0;
   static uint8_t  s_wifiModeIdx = 0;
-  static constexpr uint8_t kLogFormatCount = 2;
+  static constexpr uint8_t kLogFormatCount = 3;
   static constexpr LogFormat kLogFormatOptions[kLogFormatCount] = {
     LogFormat::BodaqsStandard,
-    LogFormat::BodaqsCompactBinary
+    LogFormat::BodaqsCompactBinary,
+    LogFormat::BodaqsMultiStreamBinary
   };
   static constexpr uint8_t kWiFiModeCount = 2;
   static constexpr WiFiMode kWiFiModeOptions[kWiFiModeCount] = {
@@ -1614,6 +1657,7 @@ void MenuSystem::requestOpen() {
     MLOG("[MENU] requestOpen -> Inactive -> Main (sel=%u)\n", (unsigned)s_mainSel);
     s_state = State::Main;
     s_sensorSel = 0;
+    s_sensorTop = 0;
     s_calUiPhase= CalUiPhase::Idle;
     touch();
     guardEnterRight();          // <-- ADD THIS LINE

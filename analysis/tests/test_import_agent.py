@@ -121,7 +121,10 @@ from bodaqs_analysis.session_archive import (
 )
 from bodaqs_analysis.session_notes import build_session_catalog_df
 from bodaqs_analysis.ui.preprocess_file_selector import load_processed_sha256_set
-from tools.smoke_test_packaged_imu_bdq import imu_int16_bdq_fixture_bytes
+from tools.smoke_test_packaged_imu_bdq import (
+    imu_int16_bdq_fixture_bytes,
+    imu_multi_stream_bdq_fixture_bytes,
+)
 
 
 def _set_old_mtime(path: Path, *, seconds_ago: int = 120) -> None:
@@ -1621,6 +1624,27 @@ def test_run_sources_once_imports_bdq_and_moves_it_to_done(tmp_path):
     assert manifest["source"]["original_bdq_filename"] == "260516_201542.bdq"
     assert manifest["source"]["bdq_sha256"] == record["archive_sha256"]
     assert manifest["source"]["import_source_id"] == "source_a"
+
+
+def test_run_sources_once_imports_bdq_v2_and_preserves_imu_streams(tmp_path):
+    artifacts_dir = tmp_path / "artifacts"
+    source_root = _prepare_source(tmp_path, "source_a", artifacts_dir)
+    bdq_path = source_root / "inbox" / "packaged-imu-v2-smoke.bdq"
+    bdq_path.write_bytes(imu_multi_stream_bdq_fixture_bytes())
+    _set_old_mtime(bdq_path)
+
+    report = run_sources_once([source_root])
+
+    assert report["totals"]["imported"] == 1
+    assert report["totals"]["failed"] == 0
+    record = report["sources"][0]["imported"][0]
+    session_root = artifacts_dir / "runs" / record["run_id"] / "sessions" / record["session_id"]
+    manifest = json.loads((session_root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["source"]["import_mode"] == "import_agent_bdq_v2"
+    assert (session_root / "source" / "input.bdq").exists()
+    for index in range(1, 5):
+        assert (session_root / "session" / "streams" / f"imu_{index}" / "df.parquet").exists()
+    assert len(list((source_root / "done").glob("*.bdq"))) == 1
 
 
 def test_run_sources_once_can_attach_draft_session_note_from_source_preset(tmp_path):
@@ -3550,6 +3574,15 @@ def test_manager_imu_smoke_entry_point_loads_int16_bdq(tmp_path: Path) -> None:
 
     assert summary["rows"] == 4
     assert summary["columns"] == 9
+
+
+def test_manager_imu_smoke_entry_point_loads_multi_stream_bdq_v2(tmp_path: Path) -> None:
+    fixture_path = tmp_path / "imu_multi_stream.bdq"
+    fixture_path.write_bytes(imu_multi_stream_bdq_fixture_bytes())
+
+    summary = import_agent_setup_module._smoke_test_imu_bdq(fixture_path)
+
+    assert summary["rows"] == 3
 
 
 def test_manager_imu_smoke_cli_bypasses_desktop_window(monkeypatch, tmp_path: Path) -> None:

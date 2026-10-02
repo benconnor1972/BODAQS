@@ -18,9 +18,18 @@ struct BdqLogSessionInfo {
   uint16_t sampleRateHz = 0;
   uint32_t samplePeriodUs = 0;
   uint32_t targetChunkBytes = 8192;
+  uint64_t hostMonotonicUs = 0;
+  uint64_t wallClockUnixUs = 0;
+  uint32_t wallClockUncertaintyUs = 0;
 };
 
 struct BdqLogEndInfo {
+  const char* stopReason = "none";
+  const char* stopTriggerEvent = "";
+  uint32_t stopUptimeMs = 0;
+  bool stopSdDetectAvailable = false;
+  bool stopSdCardDetected = true;
+  bool stopAnalogRailFault = false;
   uint32_t samplesDropped = 0;
   uint16_t queueMax = 0;
   uint16_t queueDepth = 0;
@@ -29,7 +38,11 @@ struct BdqLogEndInfo {
   uint64_t flushTotalMs = 0;
   uint32_t samplerLateTicks = 0;
   uint32_t samplerLateMaxLagMs = 0;
+  uint32_t samplerLateMaxLagUs = 0;
+  uint32_t samplerWakeups = 0;
+  uint32_t samplerLateOverTenPercent = 0;
   uint32_t missedSampleSlots = 0;
+  const TimingSummary* samplerWakeLagUs = nullptr;
   const TimingSummary* sampleOnceUs = nullptr;
   const TimingSummary* sensorSampleUs = nullptr;
   const TimingSummary* enqueueUs = nullptr;
@@ -41,6 +54,10 @@ struct BdqLogEndInfo {
 };
 
 namespace BdqLogWriter {
+  bool buildV2SessionMetadataJson(
+      const BdqLogSessionInfo& info,
+      uint16_t streamCount,
+      String& output);
   bool begin(File& file, const BdqLogSessionInfo& info);
   bool writeSample(uint32_t sampleId, uint64_t tsMs, const float* values, uint16_t nValues, bool mark);
   bool flushDataChunk();

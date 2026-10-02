@@ -50,6 +50,13 @@ struct SensorRuntimeEvent {
   bool analogRailFault = false;
 };
 
+struct SensorRuntimeTimingSummary {
+  uint32_t count = 0;
+  uint32_t minimumUs = 0;
+  uint32_t maximumUs = 0;
+  uint64_t totalUs = 0;
+};
+
 struct SensorRuntimeDiagnostics {
   static constexpr uint8_t kMaxEvents = 32;
 
@@ -82,6 +89,11 @@ struct SensorRuntimeDiagnostics {
 
   uint32_t rawReadFailures = 0;
   uint32_t diagnosticReadFailures = 0;
+  uint32_t fastReadAttempts = 0;
+  uint32_t fastReadSuccesses = 0;
+  uint32_t fastReadFallbacks = 0;
+  uint32_t rawPointerPrimes = 0;
+  SensorRuntimeTimingSummary rawReadUs;
   uint32_t readFailureStreakMax = 0;
   uint32_t readRecoveries = 0;
   bool haveLastGoodRaw = false;
@@ -96,11 +108,29 @@ struct SensorRuntimeDiagnostics {
   uint32_t eventsDropped = 0;
   SensorRuntimeEvent events[kMaxEvents];
 
+  bool hasBdqV2Stream = false;
+  uint32_t bdqV2RecordsEnqueued = 0;
+  uint32_t bdqV2RecordsDequeued = 0;
+  uint32_t bdqV2RecordsDropped = 0;
+  uint32_t bdqV2RecordsRejected = 0;
+  uint16_t bdqV2QueueCapacity = 0;
+  uint16_t bdqV2QueueHighWater = 0;
+  uint16_t bdqV2FinalQueueDepth = 0;
+  uint16_t bdqV2NominalRateHz = 0;
+
   bool hasImuSession = false;
+  uint16_t imuNativeRateHz = 0;
+  uint16_t imuAccelRateHz = 0;
+  uint16_t imuGyroRateHz = 0;
+  uint16_t imuOutputRateHz = 0;
+  uint16_t imuFifoPollRateHz = 0;
+  uint32_t imuQueueCoverageMs = 0;
   uint64_t imuDrainCalls = 0;
   uint64_t imuDrainPasses = 0;
   uint64_t imuEmptyPasses = 0;
   uint64_t imuDrainPassLimitHits = 0;
+  uint64_t imuAdaptiveFollowupPasses = 0;
+  uint64_t imuAdaptiveFollowupSkips = 0;
   uint64_t imuFifoBytesRead = 0;
   uint64_t imuFifoFramesParsed = 0;
   uint64_t imuSensorTimeFrames = 0;
@@ -123,9 +153,14 @@ struct SensorRuntimeDiagnostics {
   uint64_t imuExplicitQueueDiscards = 0;
   uint64_t imuTemperatureReads = 0;
   uint64_t imuTemperatureReadFailures = 0;
+  uint64_t imuSensorTimeReadAttempts = 0;
+  uint64_t imuSensorTimeReadSuccesses = 0;
+  uint64_t imuSensorTimeReadFailures = 0;
+  uint64_t imuSensorTimeObservationDrops = 0;
   uint64_t imuIocOffsetReadAttempts = 0;
   uint64_t imuIocOffsetReadFailures = 0;
   uint64_t imuIocOffsetSnapshotDrops = 0;
+  uint64_t imuBdqV2TimingObservationDrops = 0;
   uint64_t imuOperationalValidationAttempts = 0;
   uint64_t imuOperationalValidationFailures = 0;
   uint64_t imuSessionStartValidationAttempts = 0;
@@ -149,8 +184,23 @@ struct SensorRuntimeDiagnostics {
   uint64_t imuAccelNearRail[3] {};
   uint64_t imuGyroNearRail[3] {};
   uint64_t imuTimingDegradedSamples = 0;
+  uint64_t imuAccelTimingDegradedSamples = 0;
+  uint64_t imuGyroTimingDegradedSamples = 0;
+  uint64_t imuOtherTimingDegradedSamples = 0;
   uint64_t imuSequenceDiscontinuityEvents = 0;
   uint64_t imuNativeTimeDiscontinuityEvents = 0;
+  uint64_t imuAccelNativeTimeDiscontinuityEvents = 0;
+  uint64_t imuGyroNativeTimeDiscontinuityEvents = 0;
+  uint64_t imuAccelNativeTickGapEvents = 0;
+  uint64_t imuGyroAssociationFallbackEvents = 0;
+  SensorRuntimeTimingSummary imuDrainCallUs;
+  SensorRuntimeTimingSummary imuFirstDrainPassUs;
+  SensorRuntimeTimingSummary imuSecondDrainPassUs;
+  SensorRuntimeTimingSummary imuFifoLengthReadUs;
+  SensorRuntimeTimingSummary imuFifoDataTransferUs;
+  SensorRuntimeTimingSummary imuParseEnqueueUs;
+  SensorRuntimeTimingSummary imuTemperatureReadUs;
+  SensorRuntimeTimingSummary imuSensorTimeReadUs;
   uint64_t imuAgeSamples = 0;
   uint64_t imuAgeUnavailable = 0;
   uint64_t imuAgeClipped = 0;
@@ -159,6 +209,7 @@ struct SensorRuntimeDiagnostics {
   uint16_t imuQueueHighWater = 0;
   uint16_t imuFinalQueueDepth = 0;
   uint16_t imuMaximumFifoBytesObserved = 0;
+  uint16_t imuAdaptiveFollowupThresholdBytes = 0;
   uint32_t imuMaximumDrainDurationUs = 0;
   uint32_t imuMaximumDrainFailureStreak = 0;
   uint32_t imuNoProgressTimeoutUs = 0;

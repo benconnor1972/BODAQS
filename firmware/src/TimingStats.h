@@ -111,6 +111,17 @@ struct I2CBusSchedulerTimingStats {
     bool running = false;
     uint8_t clientCount = 0;
     uint32_t hz = 0;
+    uint16_t rollingLoadAveragePermille = 0;
+    uint16_t rollingLoadMaximumPermille = 0;
+    uint32_t rollingLoadWindows = 0;
+    uint32_t recoveryAttempts = 0;
+    uint32_t recoverySuccesses = 0;
+    uint32_t recoveryFailures = 0;
+    uint8_t lastRecoveryClockPulses = 0;
+    bool lastRecoverySdaLowBefore = false;
+    bool lastRecoverySclLowBefore = false;
+    bool lastRecoverySdaLowAfter = false;
+    bool lastRecoverySclLowAfter = false;
     TimingSummary acquireLoopUs;
   };
 
@@ -123,6 +134,9 @@ struct I2CBusSchedulerTimingStats {
     uint8_t address = 0;
     uint16_t targetRateHz = 0;
     uint32_t periodUs = 0;
+    bool latencySensitive = false;
+    uint32_t maximumServiceGapUs = 0;
+    uint8_t priorityYieldLimit = 0;
     uint32_t acquireOk = 0;
     uint32_t acquireFail = 0;
     uint32_t rowUses = 0;
@@ -130,12 +144,20 @@ struct I2CBusSchedulerTimingStats {
     uint32_t rowReused = 0;
     uint32_t rowNoSample = 0;
     uint32_t acquireFailStreakMax = 0;
+    uint32_t serviceDeadlineMisses = 0;
+    uint32_t missedServiceSlots = 0;
+    uint32_t maximumStartLatenessUs = 0;
+    uint32_t maximumSuccessfulServiceIntervalUs = 0;
+    uint32_t priorityServiceCount = 0;
+    uint32_t priorityDeferralCount = 0;
+    uint32_t priorityDeferralMaximumUs = 0;
     uint32_t rowReuseStreakMax = 0;
     uint32_t rowNoSampleStreakMax = 0;
     TimingSummary acquireUs;
     TimingSummary rowAgeUs;
   };
 
+  uint64_t sessionDurationUs = 0;
   uint8_t clientCount = 0;
   BusStats bus[kMaxBuses];
   ClientStats client[kMaxClients];

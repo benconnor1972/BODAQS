@@ -2,7 +2,7 @@
 
 ESP32-based data logger with:
 - An extensible sensor framework - initial target is 2 potentiometer, 2 accelerometer, 2 strain gauge and one event mark channels
-- Up to 500Hz logging (tested to 100Hz so far)
+- Configurable logging rates of 10, 20, 50, 100, 200, 500, 700, and 1000 Hz, subject to sensor throughput limits
 - SD card logging
 - On-device web UI (list/download/delete files, simple config page)
 - mDNS discovery in station and AP mode via `_bodaqs-logger._tcp`
@@ -10,6 +10,26 @@ ESP32-based data logger with:
 - General and sensor configuration via config file on SD (`loggercfg`) 
 
 Developed mainly for mountain bike use.
+
+On the A8, external ADC throughput is budgeted at 70% of each ADS1220's
+2,000 SPS maximum, divided by its number of active, unmuted analog channels.
+The logger uses the lowest limit across the active ADCs and rounds down to a
+permitted rate. There is no separate 500 Hz cap: one active channel per ADC
+allows up to 1,000 Hz, two allow 700 Hz, and three or four allow 200 Hz.
+The requested configuration rate is preserved; the effective rate controls
+logging. Higher rates require hardware validation of sample freshness and
+logger timing. The existing integer-microsecond cadence uses a 1,428 us period
+for 700 Hz (approximately 700.28 Hz).
+
+A8 and RC3 have separate board profiles with the same hardware pin mapping.
+Build A8 with `bodaqs_s3_mini_n4r2` (`BODAQS_A8`) and RC3 with
+`bodaqs_s3_mini_n4r2_rc3` (`BODAQS_V1RC3`). The legacy
+`BODAQS_S3_Mini_N4R2` profile alias selects A8. RC3 and Prototype F retain
+the Sleep menu entry and the default hold-left sleep binding; A8 omits both.
+Explicit bindings in existing config files still apply, so remove any A8
+sleep binding there as needed. Restart is the last main-menu entry on all
+boards and is unavailable while logging. Automatic idle sleep remains
+controlled by `auto_sleep_idle_min`.
 
 ## Hardware
 
@@ -56,10 +76,10 @@ This document summarizes the major modules in the project, what each one is resp
   and shown in the web UI title bar.
 - `ConfigManager::loggerId()` returns a trimmed, filename-safe derivative of
   `logger_name` for API/session identifiers without changing the stored name.
-- `log_format` controls the emitted log file format. `bodaqs_standard` is the normal headed BODAQS CSV; `bodaqs_compact_binary` writes a self-contained `.bdq` compact binary log. Deprecated syn.bike format keys are accepted on load and silently select `bodaqs_compact_binary`.
+- `log_format` controls the emitted log file format. `bodaqs_standard` is the normal headed BODAQS CSV; `bodaqs_compact_binary` writes the established single-timebase BDQ v1 file; and explicit `bodaqs_multi_stream_binary` selection writes the experimental BDQ v2 independent-stream format. Deprecated syn.bike format keys are accepted on load and silently select `bodaqs_compact_binary`.
 - `omit_metadata=false` keeps the default behaviour of writing a same-stem JSON log metadata file at log close. Set `true` to skip metadata generation.
 - Idle timeout config is saved in minutes (`auto_sleep_idle_min`, `wifi_idle_timeout_min`). Legacy `_ms` keys are still accepted on load for migration.
-- Fixed per‑sensor KV capacity (currently 16). Exceeding keys will drop extra pairs.
+- Fixed per‑sensor KV capacity (currently 32). Exceeding keys will drop extra pairs.
 - File format keys used by analog pot sensors: `pin`, `mode`, `include_raw`, `zero_count`, `full_count`, `full_travel_mm`.
 - File format keys used by AS5600 string-pot sensors include `counts_per_turn`, `wrap_threshold_counts`, `sensor_zero_count`, `sensor_full_count`, `installed_zero_count`, `sensor_full_travel_mm`, and `assume_turn0_at_start`.
 - File format keys used by AS5048B and AS5600 rotary angle sensors include `i2c_bus`, `i2c_addr`, `zero_count`, and `direction`. `direction` is `counts_increase_positive` or `counts_decrease_positive`; log metadata still emits legacy `invert` for downstream compatibility.
@@ -120,6 +140,12 @@ This document summarizes the major modules in the project, what each one is resp
   CSV JSON metadata contains the corresponding compact sensor-health summary;
   these diagnostics do not add sample columns or successful-path I2C
   transactions.
+- AS5600 I2C logging uses the device's persistent `RAW_ANGLE` pointer after
+  the first addressed read. Normal samples therefore need only the two-byte
+  read transaction; diagnostic/configuration access invalidates the pointer
+  and the next sample safely re-primes it. Runtime summaries report fast-read
+  attempts/successes/fallbacks and raw-read duration. The default magnetic
+  diagnostic cadence is 1 Hz (`diag_interval_ms=1000`).
 
 **Notes**
 - `ZERO` calibration captures the installed zero point and then asks for a small positive movement so the firmware can set `direction`.
@@ -161,7 +187,8 @@ appended after them.
 
 **Common APIs**
 - `StorageManager_begin(boardProfile)`
-- `StorageManager_setSampleRate(hz)` / `StorageManager_getSampleIntervalMs()`
+- `StorageManager_setSampleRate(hz)` / `StorageManager_getSampleIntervalUs()`
+  (`StorageManager_getSampleIntervalMs()` remains as a rounded-up compatibility view)
 - `StorageManager_setBufferSize(bytes)`
 
 **Notes**
@@ -169,7 +196,29 @@ appended after them.
 - `bodaqs_standard` logs `sample_id`, timestamp, all active sensor columns, and
   `mark`, with a header. Run statistics and generic configured-sensor health
   summaries are written to the same-stem JSON metadata file under `qc`.
-- `bodaqs_compact_binary` writes `.bdq` logs with embedded metadata and channel schema. No separate JSON sidecar or automatic ZIP archive is generated for compact binary sessions.
+- Both binary selections write `.bdq` logs with embedded metadata and schema information. `bodaqs_compact_binary` is BDQ v1; `bodaqs_multi_stream_binary` is the opt-in BDQ v2 path. Neither generates a separate JSON sidecar or automatic ZIP archive.
+- In BDQ v2 mode, sensors with native stream support (currently BMI270) are excluded from the primary row and stored once at the hardware profile rate. BMI270 `max_output_rate_hz` continues to govern the legacy sparse-row adapters only.
+- The BDQ v2 primary-row queue is capped at 32 rows to leave heap for multiple IMU FIFO queues. At the intended auxiliary-sensor ceiling of 200 Hz this is about 160 ms of buffering; primary queue drops are preserved in stream status and the final summary.
+- BMI270 profiles `orientation_200`, `orientation_400`, `orientation_800`, and
+  `orientation_1600` select native accel/gyro ODRs while retaining the existing
+  +/-16 g, +/-2000 deg/s, and filter/performance settings. The higher-rate
+  profiles are experimental until their achieved rates, filtering, loss, and
+  timing have been measured on the target wiring.
+- `accel_1600_gyro_200` is an experimental BDQ-v2-only mixed-rate profile.
+  It emits 1600 records/s on the accelerometer time grid and declares
+  `gyro_sample_valid` at offset 26; gyro axis values are fresh only when that
+  field is 1. The stream catalog separately reports effective accel and gyro
+  rates. CSV and BDQ v1 reject this profile rather than imply that held or
+  placeholder gyro values are native 1600 Hz measurements.
+- `fifo_poll_rate_hz` independently selects FIFO service at 25, 50, 100, 200,
+  or 400 Hz. Experimental 10 Hz service is restricted to
+  `accel_800_gyro_200`. Session diagnostics record the selected native/output/poll rates,
+  queue coverage and pressure, FIFO throughput, I2C occupancy, achieved service
+  rates, missed service slots, and scheduler lateness.
+- A 1600 sample/s stream has an 800 Hz Nyquist limit; it cannot preserve a
+  1 kHz signal regardless of transport performance. A genuine 1 kHz analysis
+  band requires a different IMU profile/device sampling above 2 ksample/s with
+  suitable analogue/digital filter bandwidth.
 - Direct syn.bike CSV output is deprecated. Legacy `syn_bike_raw` configuration values fall back to `bodaqs_compact_binary`; data.syn.bike files can be generated downstream by the BODAQS analysis tooling.
 - Standard CSV and BDQ logging refuse configurations with more than 64 emitted
   sensor columns. CSV rows are formatted in a session-allocated worst-case
@@ -452,11 +501,11 @@ void DBG_IMPL(DebugLevel lvl, const char* fmt, ...);
 
 ## Configuration Keys (globals)
 
-- `logger_name`, `sample_rate_hz`, `timestamp_mode` (`human|fast`), `log_format` (`bodaqs_standard|bodaqs_compact_binary`; deprecated syn.bike values fall back to compact binary), `omit_metadata`, `auto_sleep_idle_min`, `wifi_idle_timeout_min`, `tz`
+- `logger_name`, `sample_rate_hz`, `timestamp_mode` (`human|fast`), `log_format` (`bodaqs_standard|bodaqs_compact_binary|bodaqs_multi_stream_binary`; deprecated syn.bike values fall back to compact binary), `omit_metadata`, `auto_sleep_idle_min`, `wifi_idle_timeout_min`, `tz`
 - `debounce_ms`
 - Button pins: `web_button_pin`, `log_button_pin`, `mark_button_pin`, `nav_up_pin`, `nav_down_pin`, `nav_left_pin`, `nav_right_pin`, `nav_enter_pin`
 - Network/time: `wifi_ssid`, `wifi_password`, `ntp_servers`, `time_check_url`
-- UI: `ui_target`, `ui_serial_level`, `ui_oled_level`, `oled_brightness`, `oled_idle_dim_ms`
+- UI: `ui_target`, `ui_serial_level`, `ui_oled_level`, `oled_brightness`, `oled_idle_dim_ms`, `oled_logging_policy` (`auto`, `freeze`, or `prefer_active`)
 - RTC: `use_external_rtc`
 
 Sensor sections follow the pattern:

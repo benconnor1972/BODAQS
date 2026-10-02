@@ -17,8 +17,9 @@ enum class BoardID : uint8_t {
   ThingPlusS3_BODAQS_4_D_UartI2C1,
   ThingPlusS3_BODAQS_4_F,
   BODAQS_V1RC3,
-  BODAQS_S3_Mini_N4R2 = BODAQS_V1RC3,
   ThingPlusS3_Proto_F_ADC_Diagnostic,
+  BODAQS_A8,
+  BODAQS_S3_Mini_N4R2 = BODAQS_A8,
   // Add more here...
 };
 
@@ -32,6 +33,12 @@ enum class AdcReferenceType : uint8_t { Default, Internal, ExternalRef0, Externa
 enum class AnalogSourceType : uint8_t { None, InternalGpio, ExternalAdc };
 enum class ButtonID : uint8_t { BTN0=0, BTN1, BTN2, BTN3, BTN4, BTN5, Count };
 enum class ButtonMode : uint8_t {Interrupt = 0, Poll = 1 };
+enum class ButtonBindingPreset : uint8_t {
+  None = 0,
+  BodaqsRc3,
+  PrototypeF,
+  BodaqsA8,
+};
 
 // ---------- Sub-profiles ----------
 
@@ -65,6 +72,7 @@ struct ButtonHW {
 struct ButtonsProfile {
   ButtonHW btn[6];     // fixed max, easy on embedded
   uint8_t count = 0;   // number actually present
+  ButtonBindingPreset binding_preset = ButtonBindingPreset::None;
 };
 
 struct DisplayProfile {
@@ -221,6 +229,7 @@ struct BoardProfile {
   IndicatorsProfile indicators;
   CurrentLimitSwitchProfile current_limit;
   LoggerPerfProfile perf;
+  bool supports_user_sleep = false;
 };
 
 // ---------- API ----------

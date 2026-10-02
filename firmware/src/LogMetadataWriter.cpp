@@ -2,6 +2,7 @@
 
 #include "BoardProfile.h"
 #include "SensorManager.h"
+#include "BMI270Profile.h"
 #include <new>
 
 namespace {
@@ -217,8 +218,15 @@ void appendImuQualityDiagnostics_(
   out += F("},\n");
 
   appendKeyUInt64_(out, depth, "timing_degraded_samples", diagnostics.imuTimingDegradedSamples);
+  appendKeyUInt64_(out, depth, "accel_timing_degraded_samples", diagnostics.imuAccelTimingDegradedSamples);
+  appendKeyUInt64_(out, depth, "gyro_timing_degraded_samples", diagnostics.imuGyroTimingDegradedSamples);
+  appendKeyUInt64_(out, depth, "other_timing_degraded_samples", diagnostics.imuOtherTimingDegradedSamples);
   appendKeyUInt64_(out, depth, "sequence_discontinuity_events", diagnostics.imuSequenceDiscontinuityEvents);
   appendKeyUInt64_(out, depth, "native_time_discontinuity_events", diagnostics.imuNativeTimeDiscontinuityEvents);
+  appendKeyUInt64_(out, depth, "accel_native_time_discontinuity_events", diagnostics.imuAccelNativeTimeDiscontinuityEvents);
+  appendKeyUInt64_(out, depth, "gyro_native_time_discontinuity_events", diagnostics.imuGyroNativeTimeDiscontinuityEvents);
+  appendKeyUInt64_(out, depth, "accel_native_tick_gap_events", diagnostics.imuAccelNativeTickGapEvents);
+  appendKeyUInt64_(out, depth, "gyro_association_fallback_events", diagnostics.imuGyroAssociationFallbackEvents);
 
   appendKey_(out, depth, "acquisition_age_us");
   out += F("{\n");
@@ -458,6 +466,7 @@ void appendI2CSchedulerTiming_(MetadataOutput& out,
   appendKey_(out, depth, "i2c_scheduler_timing");
   out += F("{\n");
   appendKeyUInt_(out, depth + 1, "client_count", stats.clientCount);
+  appendKeyUInt64_(out, depth + 1, "session_duration_us", stats.sessionDurationUs);
 
   appendKey_(out, depth + 1, "buses");
   out += F("{\n");
@@ -475,6 +484,22 @@ void appendI2CSchedulerTiming_(MetadataOutput& out,
     appendKeyBool_(out, depth + 3, "running", b.running);
     appendKeyUInt_(out, depth + 3, "client_count", b.clientCount);
     appendKeyUInt_(out, depth + 3, "hz", b.hz);
+    appendKeyUInt_(out, depth + 3, "recovery_attempts", b.recoveryAttempts);
+    appendKeyUInt_(out, depth + 3, "recovery_successes", b.recoverySuccesses);
+    appendKeyUInt_(out, depth + 3, "recovery_failures", b.recoveryFailures);
+    appendKeyUInt_(out, depth + 3, "last_recovery_clock_pulses", b.lastRecoveryClockPulses);
+    appendKeyBool_(out, depth + 3, "last_recovery_sda_low_before", b.lastRecoverySdaLowBefore);
+    appendKeyBool_(out, depth + 3, "last_recovery_scl_low_before", b.lastRecoverySclLowBefore);
+    appendKeyBool_(out, depth + 3, "last_recovery_sda_low_after", b.lastRecoverySdaLowAfter);
+    appendKeyBool_(out, depth + 3, "last_recovery_scl_low_after", b.lastRecoverySclLowAfter);
+    appendKeyFloat_(
+        out,
+        depth + 3,
+        "measured_bus_occupancy_percent",
+        stats.sessionDurationUs
+            ? static_cast<float>(100.0 * static_cast<double>(b.acquireLoopUs.totalUs) /
+                                 static_cast<double>(stats.sessionDurationUs))
+            : 0.0f);
     appendTimingSummary_(out, depth + 3, "acquire_loop_us", b.acquireLoopUs, false);
     appendIndent_(out, depth + 2);
     out += F("}");
@@ -503,8 +528,28 @@ void appendI2CSchedulerTiming_(MetadataOutput& out,
     appendKeyUInt_(out, depth + 3, "address", c.address);
     appendKeyUInt_(out, depth + 3, "target_rate_hz", c.targetRateHz);
     appendKeyUInt_(out, depth + 3, "period_us", c.periodUs);
+    appendKeyBool_(out, depth + 3, "latency_sensitive", c.latencySensitive);
+    appendKeyUInt_(out, depth + 3, "maximum_service_gap_us", c.maximumServiceGapUs);
+    appendKeyUInt_(out, depth + 3, "priority_yield_limit", c.priorityYieldLimit);
     appendKeyUInt_(out, depth + 3, "acquire_ok", c.acquireOk);
     appendKeyUInt_(out, depth + 3, "acquire_fail", c.acquireFail);
+    appendKeyFloat_(
+        out,
+        depth + 3,
+        "achieved_service_rate_hz",
+        stats.sessionDurationUs
+            ? static_cast<float>(
+                  static_cast<double>(c.acquireOk + c.acquireFail) * 1000000.0 /
+                  static_cast<double>(stats.sessionDurationUs))
+            : 0.0f);
+    appendKeyUInt_(out, depth + 3, "service_deadline_misses", c.serviceDeadlineMisses);
+    appendKeyUInt_(out, depth + 3, "missed_service_slots", c.missedServiceSlots);
+    appendKeyUInt_(out, depth + 3, "maximum_start_lateness_us", c.maximumStartLatenessUs);
+    appendKeyUInt_(out, depth + 3, "maximum_successful_service_interval_us",
+                   c.maximumSuccessfulServiceIntervalUs);
+    appendKeyUInt_(out, depth + 3, "priority_service_count", c.priorityServiceCount);
+    appendKeyUInt_(out, depth + 3, "priority_deferral_count", c.priorityDeferralCount);
+    appendKeyUInt_(out, depth + 3, "priority_deferral_maximum_us", c.priorityDeferralMaximumUs);
     appendKeyUInt_(out, depth + 3, "row_uses", c.rowUses);
     appendKeyUInt_(out, depth + 3, "row_fresh", c.rowFresh);
     appendKeyUInt_(out, depth + 3, "row_reused", c.rowReused);
@@ -580,7 +625,12 @@ void appendRunStats_(MetadataOutput& out, uint8_t depth, const LogMetadataContex
   appendKeyUInt_(out, depth + 1, "buffer_size", ctx.bufferSize);
   appendKeyUInt_(out, depth + 1, "sampler_late_ticks", ctx.samplerLateTicks);
   appendKeyUInt_(out, depth + 1, "sampler_late_max_lag_ms", ctx.samplerLateMaxLagMs);
+  appendKeyUInt_(out, depth + 1, "sampler_late_max_lag_us", ctx.samplerLateMaxLagUs);
+  appendKeyUInt_(out, depth + 1, "sampler_wakeups", ctx.samplerWakeups);
+  appendKeyUInt_(out, depth + 1, "sampler_late_over_10_percent", ctx.samplerLateOverTenPercent);
   appendKeyUInt_(out, depth + 1, "missed_sample_slots", ctx.missedSampleSlots);
+
+  appendTimingSummary_(out, depth + 1, "sampler_wake_lag_us", ctx.samplerWakeLagUs ? *ctx.samplerWakeLagUs : emptyTimingSummary_());
   const StorageTimingStats& storageTiming = ctx.storageTiming ? *ctx.storageTiming : emptyStorageTiming_();
   appendTimingSummary_(out, depth + 1, "sample_once_us", ctx.sampleOnceUs ? *ctx.sampleOnceUs : emptyTimingSummary_());
   appendTimingSummary_(out, depth + 1, "sensor_sample_us", ctx.sensorSampleUs ? *ctx.sensorSampleUs : emptyTimingSummary_());
@@ -745,6 +795,14 @@ void appendSensorRuntimeDiagnostics_(MetadataOutput& out, uint8_t depth, bool co
     out += F("{\n");
     appendKeyUInt_(out, depth + 4, "raw_read_failures", diagnostics.rawReadFailures);
     appendKeyUInt_(out, depth + 4, "diagnostic_read_failures", diagnostics.diagnosticReadFailures);
+    appendKeyUInt_(out, depth + 4, "fast_read_attempts", diagnostics.fastReadAttempts);
+    appendKeyUInt_(out, depth + 4, "fast_read_successes", diagnostics.fastReadSuccesses);
+    appendKeyUInt_(out, depth + 4, "fast_read_fallbacks", diagnostics.fastReadFallbacks);
+    appendKeyUInt_(out, depth + 4, "raw_pointer_primes", diagnostics.rawPointerPrimes);
+    appendKeyUInt_(out, depth + 4, "raw_read_duration_count", diagnostics.rawReadUs.count);
+    appendKeyUInt_(out, depth + 4, "raw_read_duration_min_us", diagnostics.rawReadUs.minimumUs);
+    appendKeyUInt_(out, depth + 4, "raw_read_duration_max_us", diagnostics.rawReadUs.maximumUs);
+    appendKeyUInt64_(out, depth + 4, "raw_read_duration_total_us", diagnostics.rawReadUs.totalUs);
     appendKeyUInt_(out, depth + 4, "read_failure_streak_max", diagnostics.readFailureStreakMax);
     appendKeyUInt_(out, depth + 4, "read_recoveries", diagnostics.readRecoveries);
     appendKeyBool_(out, depth + 4, "have_last_good_raw", diagnostics.haveLastGoodRaw);
@@ -805,6 +863,12 @@ void appendImuRuntimeDiagnostics_(MetadataOutput& out, uint8_t depth, bool comma
     appendKeyHex8_(out, depth + 3, "initialization_chip_id", diagnostics.imuInitializationChipId);
     appendKeyBool_(out, depth + 3, "initialization_cleanup_attempted", diagnostics.imuInitializationCleanupAttempted);
     appendKeyBool_(out, depth + 3, "initialization_cleanup_ok", diagnostics.imuInitializationCleanupOk);
+    appendKeyUInt_(out, depth + 3, "native_rate_hz", diagnostics.imuNativeRateHz);
+    appendKeyUInt_(out, depth + 3, "accel_rate_hz", diagnostics.imuAccelRateHz);
+    appendKeyUInt_(out, depth + 3, "gyro_rate_hz", diagnostics.imuGyroRateHz);
+    appendKeyUInt_(out, depth + 3, "output_rate_hz", diagnostics.imuOutputRateHz);
+    appendKeyUInt_(out, depth + 3, "fifo_poll_rate_hz", diagnostics.imuFifoPollRateHz);
+    appendKeyUInt_(out, depth + 3, "queue_coverage_ms", diagnostics.imuQueueCoverageMs);
     appendKeyUInt64_(out, depth + 3, "drain_calls", diagnostics.imuDrainCalls);
     appendKeyUInt64_(out, depth + 3, "drain_passes", diagnostics.imuDrainPasses);
     appendKeyUInt64_(out, depth + 3, "empty_passes", diagnostics.imuEmptyPasses);
@@ -834,9 +898,14 @@ void appendImuRuntimeDiagnostics_(MetadataOutput& out, uint8_t depth, bool comma
     appendKeyUInt64_(out, depth + 3, "explicit_queue_discards", diagnostics.imuExplicitQueueDiscards);
     appendKeyUInt64_(out, depth + 3, "temperature_reads", diagnostics.imuTemperatureReads);
     appendKeyUInt64_(out, depth + 3, "temperature_read_failures", diagnostics.imuTemperatureReadFailures);
+    appendKeyUInt64_(out, depth + 3, "sensor_time_register_read_attempts", diagnostics.imuSensorTimeReadAttempts);
+    appendKeyUInt64_(out, depth + 3, "sensor_time_register_read_successes", diagnostics.imuSensorTimeReadSuccesses);
+    appendKeyUInt64_(out, depth + 3, "sensor_time_register_read_failures", diagnostics.imuSensorTimeReadFailures);
+    appendKeyUInt64_(out, depth + 3, "sensor_time_register_observation_drops", diagnostics.imuSensorTimeObservationDrops);
     appendKeyUInt64_(out, depth + 3, "ioc_offset_read_attempts", diagnostics.imuIocOffsetReadAttempts);
     appendKeyUInt64_(out, depth + 3, "ioc_offset_read_failures", diagnostics.imuIocOffsetReadFailures);
     appendKeyUInt64_(out, depth + 3, "ioc_offset_snapshot_drops", diagnostics.imuIocOffsetSnapshotDrops);
+    appendKeyUInt64_(out, depth + 3, "bdq_v2_timing_observation_drops", diagnostics.imuBdqV2TimingObservationDrops);
     appendKeyUInt64_(out, depth + 3, "operational_validation_attempts", diagnostics.imuOperationalValidationAttempts);
     appendKeyUInt64_(out, depth + 3, "operational_validation_failures", diagnostics.imuOperationalValidationFailures);
     appendKeyUInt64_(out, depth + 3, "session_start_validation_attempts", diagnostics.imuSessionStartValidationAttempts);
@@ -971,6 +1040,12 @@ void appendImuConfig_(MetadataOutput& out, const SensorImuConfigDescriptor& imu)
 
   appendKeyString_(out, 4, "orientation_status",
                    imu.orientationValid ? "accepted" : "unset");
+  appendKey_(out, 4, "orientation_declaration");
+  out += F("{\n");
+  appendKeyString_(out, 5, "plane", imu.orientationPlane);
+  appendKeyInt_(out, 5, "normal_sign", imu.orientationNormalSign, false);
+  appendIndent_(out, 4);
+  out += F("},\n");
   if (imu.orientationValid) {
     appendKey_(out, 4, "mount_transform");
     out += F("{\n");
@@ -1013,11 +1088,13 @@ void appendImuConfig_(MetadataOutput& out, const SensorImuConfigDescriptor& imu)
   appendKeyBool_(out, 5, "matched", imu.effectiveConfigMatched);
   appendKeyUInt_(out, 5, "config_file_major", imu.configFileMajor);
   appendKeyUInt_(out, 5, "config_file_minor", imu.configFileMinor);
-  appendKeyUInt_(out, 5, "accel_odr_hz", 200);
+  appendKeyUInt_(out, 5, "accel_odr_hz",
+                 BMI270Profile::nativeRateForOdrCode(imu.accelOdr));
   appendKeyUInt_(out, 5, "accel_range_g", 16);
   appendKeyString_(out, 5, "accel_bandwidth", "normal_avg4");
   appendKeyString_(out, 5, "accel_filter_performance", "performance_optimized");
-  appendKeyUInt_(out, 5, "gyro_odr_hz", 200);
+  appendKeyUInt_(out, 5, "gyro_odr_hz",
+                 BMI270Profile::nativeRateForOdrCode(imu.gyroOdr));
   appendKeyUInt_(out, 5, "gyro_range_dps", 2000);
   appendKeyString_(out, 5, "gyro_bandwidth", "normal");
   appendKeyString_(out, 5, "gyro_noise_performance", "power_optimized");

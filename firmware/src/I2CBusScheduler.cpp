@@ -4,6 +4,7 @@
 
 #include "BoardProfile.h"
 #include "I2CManager.h"
+#include "I2CSchedulePlan.h"
 #include "DebugLog.h"
 #include "I2CLowPriorityWindow.h"
 #include "esp_timer.h"
@@ -31,6 +32,7 @@ static constexpr int64_t kFineSleepGuardUs = 100;
 static constexpr int64_t kFineSleepMaxUs = 500;
 static constexpr uint32_t kStopWaitMs = 1500;
 static constexpr uint32_t kTaskStackBytes = 4096;
+static constexpr uint32_t kLoadWindowUs = 1000000UL;
 // Match Arduino loopTask so sustained I2C work cannot starve storage service
 // on the same core. Acquisition deadlines are still driven by nextDueUs.
 static constexpr UBaseType_t kTaskPriority = 1;
@@ -54,6 +56,15 @@ struct ClientSlot {
   uint32_t rowNoSample = 0;
   uint32_t acquireFailStreak = 0;
   uint32_t acquireFailStreakMax = 0;
+  uint32_t serviceDeadlineMisses = 0;
+  uint32_t missedServiceSlots = 0;
+  uint32_t maximumStartLatenessUs = 0;
+  uint32_t maximumSuccessfulServiceIntervalUs = 0;
+  uint32_t priorityServiceCount = 0;
+  uint32_t priorityDeferralCount = 0;
+  uint32_t priorityDeferralMaximumUs = 0;
+  uint32_t priorityDeferralCurrentUs = 0;
+  uint8_t priorityYieldCountForCurrentService = 0;
   uint32_t rowReuseStreak = 0;
   uint32_t rowReuseStreakMax = 0;
   uint32_t rowNoSampleStreak = 0;
@@ -62,8 +73,17 @@ struct ClientSlot {
 
 ClientSlot s_clients[kMaxClients];
 std::atomic<uint32_t> s_lastSuccessfulAcquireEndUs[kMaxClients];
+std::atomic<uint16_t> s_liveLoadPermille[kMaxBuses];
+std::atomic<uint16_t> s_maxLiveLoadPermille[kMaxBuses];
+std::atomic<uint32_t> s_liveLoadWindowSequence[kMaxBuses];
+std::atomic<uint32_t> s_lastServiceMissUs[kMaxBuses];
+uint64_t s_liveLoadPermilleTotal[kMaxBuses] {};
+uint32_t s_liveLoadWindowCount[kMaxBuses] {};
 TimingSummary s_busAcquireUs[kMaxBuses];
 I2CBusSchedulerTimingStats s_timingSnapshot;
+uint64_t s_sessionStartUs = 0;
+uint64_t s_sessionEndUs = 0;
+uint8_t s_nextTieStart[kMaxBuses] {};
 
 #if defined(ESP32)
 TaskHandle_t s_tasks[kMaxBuses] = { nullptr, nullptr };
@@ -121,12 +141,34 @@ void buildTimingSnapshot_() {
   // large. Callers only invoke it while scheduler tasks are inactive.
   memset(&s_timingSnapshot, 0, sizeof(s_timingSnapshot));
   I2CBusSchedulerTimingStats& snapshot = s_timingSnapshot;
+  const uint64_t snapshotEndUs = s_sessionEndUs != 0
+      ? s_sessionEndUs
+      : static_cast<uint64_t>(esp_timer_get_time());
+  if (s_sessionStartUs != 0 && snapshotEndUs >= s_sessionStartUs) {
+    snapshot.sessionDurationUs = snapshotEndUs - s_sessionStartUs;
+  }
   for (uint8_t bus = 0; bus < kMaxBuses; ++bus) {
     auto& b = snapshot.bus[bus];
     const board::I2CProfile* profile = I2CManager::profile(bus);
     b.present = I2CManager::available(bus);
     b.hz = (profile && profile->hz) ? profile->hz : 0;
     b.acquireLoopUs = s_busAcquireUs[bus];
+    b.rollingLoadWindows = s_liveLoadWindowCount[bus];
+    b.rollingLoadAveragePermille = s_liveLoadWindowCount[bus]
+        ? static_cast<uint16_t>(
+              s_liveLoadPermilleTotal[bus] / s_liveLoadWindowCount[bus])
+        : 0;
+    b.rollingLoadMaximumPermille =
+        s_maxLiveLoadPermille[bus].load(std::memory_order_acquire);
+    const I2CManager::BusRecoveryStatus& recovery = I2CManager::recoveryStatus(bus);
+    b.recoveryAttempts = recovery.attempts;
+    b.recoverySuccesses = recovery.successes;
+    b.recoveryFailures = recovery.failures;
+    b.lastRecoveryClockPulses = recovery.clockPulses;
+    b.lastRecoverySdaLowBefore = recovery.sdaLowBefore;
+    b.lastRecoverySclLowBefore = recovery.sclLowBefore;
+    b.lastRecoverySdaLowAfter = recovery.sdaLowAfter;
+    b.lastRecoverySclLowAfter = recovery.sclLowAfter;
 #if defined(ESP32)
     b.running = (s_tasks[bus] != nullptr) && s_run[bus];
 #endif
@@ -145,6 +187,10 @@ void buildTimingSnapshot_() {
     stats.address = client->asyncI2CAddress();
     stats.targetRateHz = targetRateHz_(client);
     stats.periodUs = periodUsFor_(client);
+    stats.latencySensitive = client->asyncLatencySensitive();
+    stats.maximumServiceGapUs = client->asyncMaximumLowPriorityGapUs();
+    stats.priorityYieldLimit =
+        client->asyncMaximumLatencySensitiveYields();
     copyText_(stats.name, sizeof(stats.name), client->asyncClientName());
     copyText_(stats.kind, sizeof(stats.kind), client->asyncClientKind());
     stats.acquireUs = slot.acquireUs;
@@ -156,6 +202,14 @@ void buildTimingSnapshot_() {
     stats.rowReused = slot.rowReused;
     stats.rowNoSample = slot.rowNoSample;
     stats.acquireFailStreakMax = slot.acquireFailStreakMax;
+    stats.serviceDeadlineMisses = slot.serviceDeadlineMisses;
+    stats.missedServiceSlots = slot.missedServiceSlots;
+    stats.maximumStartLatenessUs = slot.maximumStartLatenessUs;
+    stats.maximumSuccessfulServiceIntervalUs =
+        slot.maximumSuccessfulServiceIntervalUs;
+    stats.priorityServiceCount = slot.priorityServiceCount;
+    stats.priorityDeferralCount = slot.priorityDeferralCount;
+    stats.priorityDeferralMaximumUs = slot.priorityDeferralMaximumUs;
     stats.rowReuseStreakMax = slot.rowReuseStreakMax;
     stats.rowNoSampleStreakMax = slot.rowNoSampleStreakMax;
     if (stats.busIndex < kMaxBuses) ++snapshot.bus[stats.busIndex].clientCount;
@@ -166,6 +220,12 @@ void buildTimingSnapshot_() {
 void resetRuntimeStats_() {
   for (uint8_t bus = 0; bus < kMaxBuses; ++bus) {
     s_busAcquireUs[bus] = TimingSummary{};
+    s_liveLoadPermille[bus].store(0, std::memory_order_release);
+    s_maxLiveLoadPermille[bus].store(0, std::memory_order_release);
+    s_liveLoadWindowSequence[bus].store(0, std::memory_order_release);
+    s_lastServiceMissUs[bus].store(0, std::memory_order_release);
+    s_liveLoadPermilleTotal[bus] = 0;
+    s_liveLoadWindowCount[bus] = 0;
   }
   for (uint8_t i = 0; i < kMaxClients; ++i) {
     ClientSlot& slot = s_clients[i];
@@ -179,6 +239,15 @@ void resetRuntimeStats_() {
     slot.rowNoSample = 0;
     slot.acquireFailStreak = 0;
     slot.acquireFailStreakMax = 0;
+    slot.serviceDeadlineMisses = 0;
+    slot.missedServiceSlots = 0;
+    slot.maximumStartLatenessUs = 0;
+    slot.maximumSuccessfulServiceIntervalUs = 0;
+    slot.priorityServiceCount = 0;
+    slot.priorityDeferralCount = 0;
+    slot.priorityDeferralMaximumUs = 0;
+    slot.priorityDeferralCurrentUs = 0;
+    slot.priorityYieldCountForCurrentService = 0;
     slot.rowReuseStreak = 0;
     slot.rowReuseStreakMax = 0;
     slot.rowNoSampleStreak = 0;
@@ -186,6 +255,8 @@ void resetRuntimeStats_() {
     s_lastSuccessfulAcquireEndUs[i].store(0, std::memory_order_release);
   }
   s_timingSnapshot = I2CBusSchedulerTimingStats{};
+  s_sessionStartUs = 0;
+  s_sessionEndUs = 0;
 }
 
 bool busHasActiveClients_(uint8_t bus) {
@@ -204,7 +275,9 @@ ClientSlot* nextDueClient_(uint8_t bus, uint64_t nowUs, uint64_t& earliestDueUs)
   ClientSlot* due = nullptr;
   earliestDueUs = nowUs + kMutedClientBackoffUs;
 
-  for (uint8_t i = 0; i < kMaxClients; ++i) {
+  const uint8_t first = bus < kMaxBuses ? s_nextTieStart[bus] : 0;
+  for (uint8_t offset = 0; offset < kMaxClients; ++offset) {
+    const uint8_t i = static_cast<uint8_t>((first + offset) % kMaxClients);
     ClientSlot& slot = s_clients[i];
     I2CAsyncClient* client = slot.registered ? slot.client : nullptr;
     if (!client || client->asyncI2CBusIndex() != bus) continue;
@@ -222,6 +295,122 @@ ClientSlot* nextDueClient_(uint8_t bus, uint64_t nowUs, uint64_t& earliestDueUs)
   }
 
   return due;
+}
+
+ClientSlot* latencySensitiveClientBeforeBlock_(
+    uint8_t bus,
+    ClientSlot& buffered,
+    uint64_t nowUs,
+    uint64_t& serviceAtUs) {
+  serviceAtUs = nowUs;
+  I2CAsyncClient* bufferedClient = buffered.client;
+  if (!bufferedClient || bufferedClient->asyncLatencySensitive()) {
+    return nullptr;
+  }
+
+  const uint32_t bufferedAcquireUs = bufferedClient->asyncEstimatedAcquireUs();
+  const uint32_t bufferedMaximumGapUs =
+      bufferedClient->asyncMaximumLowPriorityGapUs();
+  const uint8_t bufferedMaximumYields =
+      bufferedClient->asyncMaximumLatencySensitiveYields();
+  if (bufferedAcquireUs == 0 || bufferedMaximumGapUs == 0 ||
+      bufferedMaximumYields == 0 ||
+      buffered.priorityYieldCountForCurrentService >= bufferedMaximumYields) {
+    return nullptr;
+  }
+
+  const size_t bufferedIndex = static_cast<size_t>(&buffered - s_clients);
+  if (bufferedIndex >= kMaxClients) return nullptr;
+  const uint32_t bufferedLastSuccessUs =
+      s_lastSuccessfulAcquireEndUs[bufferedIndex].load(std::memory_order_acquire);
+  const bool bufferedHasSuccessfulService = bufferedLastSuccessUs != 0;
+  const uint32_t bufferedServiceAgeUs = static_cast<uint32_t>(
+      micros() - bufferedLastSuccessUs);
+
+  ClientSlot* selected = nullptr;
+  uint64_t selectedAtUs = UINT64_MAX;
+  for (uint8_t i = 0; i < kMaxClients; ++i) {
+    ClientSlot& candidate = s_clients[i];
+    I2CAsyncClient* client = candidate.registered ? candidate.client : nullptr;
+    if (!client || client == bufferedClient || client->asyncMuted() ||
+        client->asyncI2CBusIndex() != bus ||
+        !client->asyncLatencySensitive()) {
+      continue;
+    }
+
+    const uint32_t latencyAcquireUs = client->asyncEstimatedAcquireUs();
+    const uint64_t latencyWaitWide =
+        candidate.nextDueUs > nowUs ? candidate.nextDueUs - nowUs : 0;
+    const uint32_t latencyWaitUs = latencyWaitWide > UINT32_MAX
+        ? UINT32_MAX
+        : static_cast<uint32_t>(latencyWaitWide);
+    if (!I2CSchedulePlan::shouldYieldToLatencySensitive(
+            bufferedAcquireUs,
+            latencyWaitUs,
+            latencyAcquireUs,
+            bufferedServiceAgeUs,
+            bufferedHasSuccessfulService,
+            bufferedMaximumGapUs,
+            buffered.priorityYieldCountForCurrentService,
+            bufferedMaximumYields)) {
+      continue;
+    }
+
+    const uint64_t candidateAtUs =
+        candidate.nextDueUs > nowUs ? candidate.nextDueUs : nowUs;
+    if (!selected || candidateAtUs < selectedAtUs) {
+      selected = &candidate;
+      selectedAtUs = candidateAtUs;
+    }
+  }
+
+  if (!selected) return nullptr;
+
+  ++buffered.priorityYieldCountForCurrentService;
+  ++buffered.priorityDeferralCount;
+  ++selected->priorityServiceCount;
+  serviceAtUs = selectedAtUs;
+  return selected;
+}
+
+void initializeBusSchedule_(uint8_t bus, uint64_t nowUs) {
+  if (bus >= kMaxBuses) return;
+  s_nextTieStart[bus] = 0;
+
+  for (uint8_t i = 0; i < kMaxClients; ++i) {
+    ClientSlot& slot = s_clients[i];
+    I2CAsyncClient* client = slot.registered ? slot.client : nullptr;
+    if (!client || client->asyncI2CBusIndex() != bus) continue;
+    client->asyncSchedulerStarting();
+    slot.nextDueUs = 0;
+    slot.priorityDeferralCurrentUs = 0;
+    slot.priorityYieldCountForCurrentService = 0;
+  }
+
+  for (uint8_t i = 0; i < kMaxClients; ++i) {
+    ClientSlot& slot = s_clients[i];
+    I2CAsyncClient* client = slot.registered ? slot.client : nullptr;
+    if (!client || client->asyncI2CBusIndex() != bus || client->asyncMuted()) {
+      continue;
+    }
+
+    const uint32_t periodUs = periodUsFor_(client);
+    uint8_t peerCount = 0;
+    uint8_t ordinal = 0;
+    for (uint8_t peerIndex = 0; peerIndex < kMaxClients; ++peerIndex) {
+      I2CAsyncClient* peer = s_clients[peerIndex].registered
+          ? s_clients[peerIndex].client
+          : nullptr;
+      if (!peer || peer->asyncI2CBusIndex() != bus || peer->asyncMuted() ||
+          periodUsFor_(peer) != periodUs) {
+        continue;
+      }
+      if (peerIndex < i) ++ordinal;
+      ++peerCount;
+    }
+    slot.nextDueUs = nowUs + I2CSchedulePlan::staggerOffsetUs(
+        periodUs, ordinal, peerCount);
+  }
 }
 
 void waitUntil_(uint64_t targetUs) {
@@ -247,14 +436,9 @@ void taskFn_(void* arg) {
   I2CSCHED_LOGI("bus%u scheduler started\n", (unsigned)bus);
 
   uint64_t nowUs = (uint64_t)esp_timer_get_time();
-  for (uint8_t i = 0; i < kMaxClients; ++i) {
-    ClientSlot& slot = s_clients[i];
-    if (!slot.registered || !slot.client) continue;
-    if (slot.client->asyncI2CBusIndex() == bus) {
-      slot.client->asyncSchedulerStarting();
-      slot.nextDueUs = nowUs;
-    }
-  }
+  initializeBusSchedule_(bus, nowUs);
+  uint64_t loadWindowStartedUs = nowUs;
+  uint64_t loadWindowBusyUs = 0;
 
   while (bus < kMaxBuses && s_run[bus]) {
     nowUs = (uint64_t)esp_timer_get_time();
@@ -265,16 +449,62 @@ void taskFn_(void* arg) {
       continue;
     }
 
+    ClientSlot* priorityDeferredSlot = nullptr;
+    uint64_t priorityDecisionUs = nowUs;
+    uint64_t priorityServiceAtUs = nowUs;
+    if (ClientSlot* priority = latencySensitiveClientBeforeBlock_(
+            bus, *slot, nowUs, priorityServiceAtUs)) {
+      priorityDeferredSlot = slot;
+      slot = priority;
+      waitUntil_(priorityServiceAtUs);
+    }
+
+    const size_t slotIndex = static_cast<size_t>(slot - s_clients);
+    if (slotIndex < kMaxClients) {
+      s_nextTieStart[bus] = I2CSchedulePlan::nextTieCursor(
+          static_cast<uint8_t>(slotIndex), kMaxClients);
+    }
+
     I2CAsyncClient* client = slot->client;
     const uint32_t periodUs = periodUsFor_(client);
+    const uint64_t scheduledUs = slot->nextDueUs;
+    const uint64_t acquireStartUs = static_cast<uint64_t>(esp_timer_get_time());
+    const uint64_t startLatenessUs = acquireStartUs > scheduledUs
+        ? acquireStartUs - scheduledUs
+        : 0;
+    if (periodUs != 0 && startLatenessUs >= periodUs && bus < kMaxBuses) {
+      s_lastServiceMissUs[bus].store(micros(), std::memory_order_release);
+    }
+#if BODAQS_TIMING_INSTRUMENTATION
+    const uint32_t boundedStartLatenessUs = startLatenessUs > UINT32_MAX
+        ? UINT32_MAX
+        : static_cast<uint32_t>(startLatenessUs);
+    if (boundedStartLatenessUs > slot->maximumStartLatenessUs) {
+      slot->maximumStartLatenessUs = boundedStartLatenessUs;
+    }
+    if (periodUs != 0 && startLatenessUs >= periodUs) {
+      ++slot->serviceDeadlineMisses;
+    }
+#endif
     const uint32_t t0 = micros();
     const bool ok = client->asyncAcquire();
-    const uint32_t acquireUs = (uint32_t)(micros() - t0);
+    const uint32_t acquireCompletedUs = micros();
+    const uint32_t acquireUs =
+        static_cast<uint32_t>(acquireCompletedUs - t0);
     if (ok) {
-      const size_t slotIndex = static_cast<size_t>(slot - s_clients);
       if (slotIndex < kMaxClients) {
+        const uint32_t previousSuccessfulEndUs =
+            s_lastSuccessfulAcquireEndUs[slotIndex].load(
+                std::memory_order_acquire);
+        if (previousSuccessfulEndUs != 0) {
+          const uint32_t serviceIntervalUs = static_cast<uint32_t>(
+              acquireCompletedUs - previousSuccessfulEndUs);
+          if (serviceIntervalUs > slot->maximumSuccessfulServiceIntervalUs) {
+            slot->maximumSuccessfulServiceIntervalUs = serviceIntervalUs;
+          }
+        }
         s_lastSuccessfulAcquireEndUs[slotIndex].store(
-            micros(),
+            acquireCompletedUs,
             std::memory_order_release);
       }
     }
@@ -295,14 +525,65 @@ void taskFn_(void* arg) {
       TimingStats_record(s_busAcquireUs[bus], acquireUs);
     }
 #endif
+    if (bus < kMaxBuses) loadWindowBusyUs += acquireUs;
 
     uint64_t nextDue = slot->nextDueUs + periodUs;
     const uint64_t afterUs = (uint64_t)esp_timer_get_time();
+    if (priorityDeferredSlot) {
+      const uint64_t deferralUs = afterUs > priorityDecisionUs
+          ? afterUs - priorityDecisionUs
+          : 0;
+      const uint32_t boundedDeferralUs = deferralUs > UINT32_MAX
+          ? UINT32_MAX
+          : static_cast<uint32_t>(deferralUs);
+      if (boundedDeferralUs >
+          UINT32_MAX - priorityDeferredSlot->priorityDeferralCurrentUs) {
+        priorityDeferredSlot->priorityDeferralCurrentUs = UINT32_MAX;
+      } else {
+        priorityDeferredSlot->priorityDeferralCurrentUs += boundedDeferralUs;
+      }
+      if (priorityDeferredSlot->priorityDeferralCurrentUs >
+          priorityDeferredSlot->priorityDeferralMaximumUs) {
+        priorityDeferredSlot->priorityDeferralMaximumUs =
+            priorityDeferredSlot->priorityDeferralCurrentUs;
+      }
+    }
     if (periodUs > 0 && nextDue <= afterUs) {
       const uint64_t missed = ((afterUs - nextDue) / periodUs) + 1ULL;
+      if (bus < kMaxBuses) {
+        s_lastServiceMissUs[bus].store(micros(), std::memory_order_release);
+      }
+#if BODAQS_TIMING_INSTRUMENTATION
+      const uint64_t room = UINT32_MAX - slot->missedServiceSlots;
+      slot->missedServiceSlots += static_cast<uint32_t>(missed > room ? room : missed);
+#endif
       nextDue += missed * (uint64_t)periodUs;
     }
     slot->nextDueUs = nextDue;
+    if (!client->asyncLatencySensitive()) {
+      slot->priorityDeferralCurrentUs = 0;
+      slot->priorityYieldCountForCurrentService = 0;
+    }
+
+    if (bus < kMaxBuses && afterUs - loadWindowStartedUs >= kLoadWindowUs) {
+      const uint64_t elapsedUs = afterUs - loadWindowStartedUs;
+      uint64_t permille = elapsedUs
+          ? (loadWindowBusyUs * 1000ULL) / elapsedUs
+          : 0;
+      if (permille > 1000ULL) permille = 1000ULL;
+      const uint16_t load = static_cast<uint16_t>(permille);
+      s_liveLoadPermille[bus].store(load, std::memory_order_release);
+      uint16_t maximum = s_maxLiveLoadPermille[bus].load(std::memory_order_relaxed);
+      while (load > maximum &&
+             !s_maxLiveLoadPermille[bus].compare_exchange_weak(
+                 maximum, load, std::memory_order_acq_rel)) {
+      }
+      s_liveLoadPermilleTotal[bus] += load;
+      ++s_liveLoadWindowCount[bus];
+      s_liveLoadWindowSequence[bus].fetch_add(1, std::memory_order_acq_rel);
+      loadWindowStartedUs = afterUs;
+      loadWindowBusyUs = 0;
+    }
   }
 
   for (uint8_t i = 0; i < kMaxClients; ++i) {
@@ -354,10 +635,8 @@ void unregisterClient(I2CAsyncClient* client) {
 }
 
 void resetTimingStats() {
-#if BODAQS_TIMING_INSTRUMENTATION
   resetRuntimeStats_();
   buildTimingSnapshot_();
-#endif
 }
 
 const I2CBusSchedulerTimingStats& timingStats() {
@@ -371,6 +650,10 @@ const I2CBusSchedulerTimingStats& timingStats() {
 
 void start() {
 #if defined(ESP32)
+  if (!schedulerTasksActive_()) {
+    s_sessionStartUs = static_cast<uint64_t>(esp_timer_get_time());
+    s_sessionEndUs = 0;
+  }
   for (uint8_t bus = 0; bus < kMaxBuses; ++bus) {
     if (s_tasks[bus]) continue;
     if (!busHasActiveClients_(bus)) continue;
@@ -414,6 +697,7 @@ void stop() {
   }
 
   if (!schedulerTasksActive_()) {
+    s_sessionEndUs = static_cast<uint64_t>(esp_timer_get_time());
     buildTimingSnapshot_();
   } else {
     I2CSCHED_LOGW("scheduler task did not stop within %lu ms; retaining last coherent timing snapshot\n",
@@ -429,6 +713,27 @@ bool isRunning() {
   }
 #endif
   return false;
+}
+
+bool liveBusLoad(uint8_t busIndex, LiveBusLoad& out) {
+  out = LiveBusLoad{};
+  if (busIndex >= kMaxBuses) return false;
+  out.windowSequence =
+      s_liveLoadWindowSequence[busIndex].load(std::memory_order_acquire);
+  out.valid = out.windowSequence != 0;
+  out.loadPermille =
+      s_liveLoadPermille[busIndex].load(std::memory_order_acquire);
+  out.maximumLoadPermille =
+      s_maxLiveLoadPermille[busIndex].load(std::memory_order_acquire);
+#if defined(ESP32)
+  out.running = s_tasks[busIndex] != nullptr && s_run[busIndex];
+#endif
+  const uint32_t lastMissUs =
+      s_lastServiceMissUs[busIndex].load(std::memory_order_acquire);
+  if (lastMissUs != 0) {
+    out.recentMissAgeUs = static_cast<uint32_t>(micros() - lastMissUs);
+  }
+  return true;
 }
 
 bool lowPriorityWindowAvailable(

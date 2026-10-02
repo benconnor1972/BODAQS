@@ -7,6 +7,7 @@
 #include "SensorRuntimeDiagnostics.h"
 
 class TransformRegistry;
+struct BdqV2StreamDescriptor;
 
 using CalMask = CalModeMask;
 
@@ -251,6 +252,10 @@ public:
       size_t) const { return true; }
   virtual bool startLoggingSession(char*, size_t) { onLoggingStart(); return true; }
   virtual size_t pendingLoggingRows() const { return 0; }
+  virtual bool describeBdqV2Stream(
+      uint16_t,
+      BdqV2StreamDescriptor&) { return false; }
+  virtual bool usesBdqV2NativeStream() const { return false; }
 
   // ----- Runtime muting -----
   virtual bool muted() const = 0;

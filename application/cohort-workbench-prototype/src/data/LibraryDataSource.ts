@@ -1,6 +1,10 @@
 import type {
   AnalysisAdequacyResult,
   AnalysisViewRecord,
+  EventAnnotationRecord,
+  EventDefinitionsResponse,
+  EventReference,
+  EventSegmentsResponse,
   LibraryRecord,
   LocalVideoFileSelection,
   SessionGpsPointSet,
@@ -61,6 +65,10 @@ export type SessionNoteSaveResult =
   | { ok: true; note: SessionNoteRecord }
   | { ok: false; sessionRef: StudySessionRef; message: string }
 
+export type AnalysisTabsOpenResult = {
+  opened: boolean[]
+}
+
 export interface LibraryDataSource {
   listLibraries(): Promise<LibraryRecord[]>
   refreshLibrary?(libraryId: string): Promise<LibraryRecord | void>
@@ -73,11 +81,12 @@ export interface LibraryDataSource {
   loadStudySet?(studySetId: string): Promise<StudySet>
   listAnalysisViews?(): Promise<AnalysisViewRecord[]>
   evaluateAnalysisAdequacy?(viewId: string, studySet: StudySet): Promise<AnalysisAdequacyResult>
+  openAnalysisTabs?(urls: string[]): Promise<AnalysisTabsOpenResult>
   listSavedSessionFilters?(): Promise<SavedSessionFilterRecord[]>
   listScenarios?(): Promise<ScenarioRecord[]>
   saveScenario?(scenario: ScenarioRecord): Promise<ScenarioRecord>
   deleteScenario?(scenarioId: string): Promise<void>
-  evaluateScenario?(request: ScenarioEvaluationRequest): Promise<ScenarioEvaluationResponse>
+  evaluateScenario?(request: ScenarioEvaluationRequest, options?: { signal?: AbortSignal }): Promise<ScenarioEvaluationResponse>
   saveStudySet(studySet: StudySet): Promise<StudySet>
   deleteStudySet?(studySetId: string): Promise<void>
   deleteSession?(
@@ -114,4 +123,12 @@ export interface LibraryDataSource {
   querySignals(libraryId: string, request: SignalQueryRequest): Promise<SignalQueryResponse>
   queryEvents(libraryId: string, request: TableQueryRequest): Promise<TableQueryResponse>
   queryMetrics(libraryId: string, request: TableQueryRequest): Promise<TableQueryResponse>
+  queryEventDefinitions?(sessions: StudySessionRef[]): Promise<EventDefinitionsResponse>
+  queryEventSegments?(
+    libraryId: string,
+    request: { events: EventReference[]; window?: { preS: number; postS: number }; roles?: string[] },
+  ): Promise<EventSegmentsResponse>
+  listEventAnnotations?(sessions: StudySessionRef[]): Promise<EventAnnotationRecord[]>
+  saveEventAnnotation?(annotation: EventAnnotationRecord): Promise<EventAnnotationRecord>
+  deleteEventAnnotation?(annotationId: string): Promise<void>
 }

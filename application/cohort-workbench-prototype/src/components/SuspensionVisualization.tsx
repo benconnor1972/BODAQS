@@ -1,6 +1,6 @@
-import { Fragment, memo, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
+import { Fragment, memo, startTransition, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
 import * as d3 from 'd3'
-import { Activity, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, FileClock, Folder, ListFilter, Milestone, Route } from 'lucide-react'
+import { Activity, ChevronDown, ChevronUp, FileClock, Folder, ListFilter, Milestone, Route } from 'lucide-react'
 import type { LibraryDataSource } from '../data/LibraryDataSource'
 import { scratchScenario } from '../domain/scenarios'
 import {
@@ -33,6 +33,7 @@ import type {
   TrackpointRecord,
 } from '../domain/types'
 import { InfoTip } from './Common'
+import { AnalysisControlDrawer, AnalysisEndPicker, AnalysisEntityPicker, AnalysisScenarioPicker } from './AnalysisControls'
 import { ScenarioEditorModal } from './ScenarioEditorModal'
 
 const FRONT_COLOR = '#008c95'
@@ -164,9 +165,9 @@ type LoadState =
 
 type ScenarioEvaluationState =
   | { status: 'idle'; message: string }
-  | { status: 'loading'; message: string }
+  | { status: 'loading'; message: string; results: Record<string, ScenarioEvaluationResponse> }
   | { status: 'ready'; message: string; results: Record<string, ScenarioEvaluationResponse>; failedCount: number }
-  | { status: 'error'; message: string }
+  | { status: 'error'; message: string; results: Record<string, ScenarioEvaluationResponse> }
 
 type ComparisonLayout = 'entities' | 'ends'
 type ScopeMode = 'whole_session' | 'sector'
@@ -330,7 +331,7 @@ const populationSourceCache = new WeakMap<VisualizationData, VisualizationData>(
 const populationSelectionCache = new WeakMap<VisualizationData, PopulationSelection>()
 const populationViewCache = new WeakMap<VisualizationData, Map<string, VisualizationData>>()
 const populationSampleMaskCache = new WeakMap<VisualizationData, Map<string, Uint8Array | null>>()
-const scenarioEvaluationCache = new WeakMap<LibraryDataSource, Map<string, Promise<ScenarioEvaluationResponse>>>()
+const scenarioEvaluationCache = new WeakMap<LibraryDataSource, Map<string, ScenarioEvaluationResponse>>()
 const EMPTY_SCENARIO_RESULTS: Record<string, ScenarioEvaluationResponse> = {}
 const VISUALIZATION_SETTINGS_STORAGE_PREFIX = 'bodaqs.suspension-visualization.settings.'
 const POPULATION_VIEW_CACHE_LIMIT = 32
@@ -607,33 +608,39 @@ export function SuspensionVisualization({
       return
     }
     if (selectedSessionRefs.length > 32) {
-      setScenarioEvaluationState({ status: 'error', message: 'Scenario evaluation supports at most 32 selected sessions.' })
+      setScenarioEvaluationState({ status: 'error', message: 'Scenario evaluation supports at most 32 selected sessions.', results: EMPTY_SCENARIO_RESULTS })
       return
     }
     if (!dataSource.evaluateScenario) {
-      setScenarioEvaluationState({ status: 'error', message: 'The current data source cannot evaluate Scenarios.' })
+      setScenarioEvaluationState({ status: 'error', message: 'The current data source cannot evaluate Scenarios.', results: EMPTY_SCENARIO_RESULTS })
       return
     }
     let cancelled = false
-    setScenarioEvaluationState({ status: 'loading', message: `Evaluating ${selectedScenarios.length} Scenario${selectedScenarios.length === 1 ? '' : 's'}...` })
+    const abortController = new AbortController()
+    setScenarioEvaluationState((current) => ({
+      status: 'loading',
+      message: `Evaluating ${selectedScenarios.length} Scenario${selectedScenarios.length === 1 ? '' : 's'}...`,
+      results: 'results' in current ? current.results : EMPTY_SCENARIO_RESULTS,
+    }))
     const evaluateScenario = dataSource.evaluateScenario.bind(dataSource)
-    const requests = selectedScenarios.map((scenario) => {
-      const request = scenario.id && scenario.revision
-        ? {
-            scenarioRef: { scenarioId: scenario.id, revision: scenario.revision },
-            sessions: scenarioEvaluationSessionRefs,
-            options: { includeCriterionDiagnostics: true },
-          }
-        : {
-            scenario: scratchScenario(scenario),
-            sessions: scenarioEvaluationSessionRefs,
-            options: { includeCriterionDiagnostics: true },
-          }
-      const requestKey = `${cacheGeneration}\n${selectedScenarioSessionKey}\n${JSON.stringify(scenario.id && scenario.revision ? { id: scenario.id, revision: scenario.revision } : scratchScenario(scenario))}`
-      return cachedScenarioEvaluation(dataSource, requestKey, () => evaluateScenario(request))
-        .then((result) => ({ key: scenarioKey(scenario), result }))
-    })
-    const evaluation = Promise.allSettled(requests).then((settled) => {
+    const evaluationTimer = window.setTimeout(() => {
+      const requests = selectedScenarios.map((scenario) => {
+        const request = scenario.id && scenario.revision
+          ? {
+              scenarioRef: { scenarioId: scenario.id, revision: scenario.revision },
+              sessions: scenarioEvaluationSessionRefs,
+              options: { includeCriterionDiagnostics: true },
+            }
+          : {
+              scenario: scratchScenario(scenario),
+              sessions: scenarioEvaluationSessionRefs,
+              options: { includeCriterionDiagnostics: true },
+            }
+        const requestKey = `${cacheGeneration}\n${selectedScenarioSessionKey}\n${JSON.stringify(scenario.id && scenario.revision ? { id: scenario.id, revision: scenario.revision } : scratchScenario(scenario))}`
+        return cachedScenarioEvaluation(dataSource, requestKey, () => evaluateScenario(request, { signal: abortController.signal }))
+          .then((result) => ({ key: scenarioKey(scenario), result }))
+      })
+      const evaluation = Promise.allSettled(requests).then((settled) => {
         const results = settled.flatMap((item) => item.status === 'fulfilled' ? [item.value] : [])
         const failedCount = settled.length - results.length
         if (results.length === 0) {
@@ -649,23 +656,32 @@ export function SuspensionVisualization({
           matchedSessionCount: evaluationResults.reduce((total, result) => total + result.summary.matchedSessionCount, 0),
         }
       })
-    void evaluation
-      .then((batch) => {
-        if (cancelled) return
-        setScenarioEvaluationState({
-          status: 'ready',
-          results: batch.results,
-          failedCount: batch.failedCount,
-          message: `${batch.episodeCount} Episode(s) across ${batch.matchedSessionCount} Scenario-session match(es).${batch.failedCount ? ` ${batch.failedCount} Scenario evaluation(s) failed.` : ''}`,
+      void evaluation
+        .then((batch) => {
+          if (cancelled) return
+          startTransition(() => {
+            setScenarioEvaluationState({
+              status: 'ready',
+              results: batch.results,
+              failedCount: batch.failedCount,
+              message: `${batch.episodeCount} Episode(s) across ${batch.matchedSessionCount} Scenario-session match(es).${batch.failedCount ? ` ${batch.failedCount} Scenario evaluation(s) failed.` : ''}`,
+            })
+          })
         })
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          setScenarioEvaluationState({ status: 'error', message: `Could not evaluate Scenario: ${errorMessage(error)}` })
-        }
-      })
+        .catch((error) => {
+          if (!cancelled) {
+            setScenarioEvaluationState((current) => ({
+              status: 'error',
+              message: `Could not evaluate Scenario: ${errorMessage(error)}`,
+              results: 'results' in current ? current.results : EMPTY_SCENARIO_RESULTS,
+            }))
+          }
+        })
+    }, 150)
     return () => {
       cancelled = true
+      window.clearTimeout(evaluationTimer)
+      abortController.abort()
     }
   }, [analysisMode, cacheGeneration, dataSource, scenarioEvaluationSessionRefs, selectedScenarioSessionKey, selectedScenarioSignature, selectedScenarios, selectedSessionRefs.length])
 
@@ -818,7 +834,7 @@ export function SuspensionVisualization({
     () => (windowedData && deferredExcludeInactivePeriods ? applyActivityMask(windowedData) : windowedData),
     [deferredExcludeInactivePeriods, windowedData],
   )
-  const scenarioResults = scenarioEvaluationState.status === 'ready' ? scenarioEvaluationState.results : EMPTY_SCENARIO_RESULTS
+  const scenarioResults = 'results' in scenarioEvaluationState ? scenarioEvaluationState.results : EMPTY_SCENARIO_RESULTS
   const scenarioPopulations = useMemo<ScenarioFacetPopulation[]>(() => {
     if (analysisMode !== 'session' || !activityFilteredWindowedData) {
       return []
@@ -1004,28 +1020,13 @@ export function SuspensionVisualization({
       </header>
 
       <div className={`suspension-viz-workspace${controlsCollapsed ? ' controls-collapsed' : ''}`}>
-        <aside className={`viz-control-drawer${controlsCollapsed ? ' collapsed' : ''}`} aria-label="Select and filter">
-          {controlsCollapsed ? (
-            <button className="viz-control-drawer-rail" type="button" onClick={() => togglePanel('select-filter')}>
-              <ChevronRight size={15} />
-              <span>Select and filter</span>
-            </button>
-          ) : (
-            <section className="viz-control-panel">
-              <button className="viz-control-panel-header" type="button" onClick={() => togglePanel('select-filter')}>
-                <span>
-                  <strong>
-                    Select and Filter
-                    <InfoTip text="Choose which sessions, groups, ends, sectors, scope, layout, and time windows are shown in this analysis view. Study Set membership is not changed." />
-                  </strong>
-                  <small>
-                    {selectedEntityIds.length} sessions/groups, {selectedTrack ? '1 track' : 'no track'} · {analysisMode === 'session' ? 'Session view' : 'Track view'}
-                  </small>
-                </span>
-                <ChevronLeft size={16} />
-              </button>
-              <div className="viz-control-panel-body">
-                <VisualizationFilterChips
+        <AnalysisControlDrawer
+          collapsed={controlsCollapsed}
+          summary={`${selectedEntityIds.length} sessions/groups, ${selectedTrack ? '1 track' : 'no track'} · ${analysisMode === 'session' ? 'Session view' : 'Track view'}`}
+          infoText="Choose which sessions, groups, ends, sectors, scope, layout, and time windows are shown in this analysis view. Study Set membership is not changed."
+          onToggle={() => togglePanel('select-filter')}
+        >
+          <VisualizationFilterChips
                   entities={entities}
                   tracks={studySetTracks}
                   selectedEntityIds={selectedEntityIds}
@@ -1053,7 +1054,7 @@ export function SuspensionVisualization({
                   loading={!savedScenariosLoaded}
                   message={scenarioListMessage || scenarioEvaluationState.message}
                   status={scenarioEvaluationState.status}
-                  updating={selectedScenarioKeys !== deferredSelectedScenarioKeys}
+                  updating={selectedScenarioKeys !== deferredSelectedScenarioKeys || scenarioEvaluationState.status === 'loading'}
                   warning={scenarioEvaluationState.status === 'error' || (scenarioEvaluationState.status === 'ready' && (scenarioEvaluationState.failedCount > 0 || Object.values(scenarioEvaluationState.results).some((result) => result.status !== 'succeeded')))}
                   onChange={setSelectedScenarioKeys}
                   onEdit={() => setScenarioEditorOpen(true)}
@@ -1131,10 +1132,7 @@ export function SuspensionVisualization({
                   showVelocityStatsOnChart={showVelocityStatsOnChart}
                 />
                 )}
-              </div>
-            </section>
-          )}
-        </aside>
+        </AnalysisControlDrawer>
 
         <div className="suspension-viz-content">
           {loadState.status === 'loading' && <div className="viz-status">{loadState.message}</div>}
@@ -1502,17 +1500,11 @@ function AnalysisModeControl({ value, onChange, trackAvailable }: { value: Analy
 
 function EndSelectionControl({ selectedEnds, onToggleEnd }: { selectedEnds: SuspensionEnd[]; onToggleEnd: (end: SuspensionEnd) => void }) {
   return (
-    <section className="viz-mode-filter-control">
-      <strong>Ends</strong>
-      <div className="viz-entity-chips">
-        {(['front', 'rear'] as const).map((end) => (
-          <button className={`viz-entity-chip end-chip${selectedEnds.includes(end) ? ' selected' : ''}`} key={end} onClick={() => onToggleEnd(end)} type="button">
-            <span className="color-dot" style={{ backgroundColor: roleColor(end) }} />
-            <span>{formatRole(end)}</span>
-          </button>
-        ))}
-      </div>
-    </section>
+    <AnalysisEndPicker
+      ends={(['front', 'rear'] as const).map((end) => ({ id: end, label: formatRole(end), color: roleColor(end) }))}
+      selectedIds={selectedEnds}
+      onToggle={(end) => onToggleEnd(end as SuspensionEnd)}
+    />
   )
 }
 
@@ -1608,20 +1600,15 @@ function ScenarioControl({
         <ListFilter size={15} />
       </div>
       <div className="viz-scenario-control-row">
-        <div className="viz-scenario-picker" aria-label="Scenario populations">
-          <label className="viz-scenario-option">
-            <input aria-label="Include all qualifying data" checked={selectedKeys.includes(BASELINE_SCENARIO_KEY)} onChange={(event) => onChange(selectionWith(selectedKeys, BASELINE_SCENARIO_KEY, event.currentTarget.checked))} type="checkbox" />
-            <span>All qualifying data</span>
-          </label>
-          {scratch && <label className="viz-scenario-option">
-            <input aria-label={`Include Scratch: ${scratch.displayName}`} checked={selectedKeys.includes(SCRATCH_SCENARIO_KEY)} onChange={(event) => onChange(selectionWith(selectedKeys, SCRATCH_SCENARIO_KEY, event.currentTarget.checked))} type="checkbox" />
-            <span>Scratch: {scratch.displayName}</span>
-          </label>}
-          {scenarios.map((scenario) => scenario.id ? <label className="viz-scenario-option" key={scenario.id}>
-            <input aria-label={`Include ${scenario.displayName}`} checked={selectedKeys.includes(scenario.id)} disabled={loading} onChange={(event) => onChange(selectionWith(selectedKeys, scenario.id as string, event.currentTarget.checked))} type="checkbox" />
-            <span>{scenario.displayName} (r{scenario.revision})</span>
-          </label> : null)}
-        </div>
+        <AnalysisScenarioPicker
+          options={[
+            { id: BASELINE_SCENARIO_KEY, label: 'All qualifying data' },
+            ...(scratch ? [{ id: SCRATCH_SCENARIO_KEY, label: `Scratch: ${scratch.displayName}` }] : []),
+            ...scenarios.filter((scenario) => scenario.id).map((scenario) => ({ id: scenario.id as string, label: `${scenario.displayName} (r${scenario.revision})`, disabled: loading })),
+          ]}
+          selectedIds={selectedKeys}
+          onToggle={(key, checked) => onChange(selectionWith(selectedKeys, key, checked))}
+        />
         <button className="ghost-action" type="button" onClick={onEdit}>Create or edit</button>
       </div>
       {(updating || message) && <p className={`viz-scenario-status${warning || status === 'error' ? ' warning' : ''}`}>{updating ? 'Updating selection…' : message}</p>}
@@ -2490,30 +2477,17 @@ function VisualizationFilterChips({
       aria-label={`Analysis scope: ${selectedEntityIds.length} sessions/groups, ${selectedTrackId ? 'one track' : 'no track'}`}
     >
 
-      <div className="viz-filter-group">
-        <strong>Sessions and groups</strong>
-        <div className="viz-entity-chips">
-          {entities.map((entity) => {
-            const selected = selectedEntityIds.includes(entity.id)
-            return (
-              <button
-                className={`viz-entity-chip${selected ? ' selected' : ''}${entity.kind === 'grouping' ? ' grouping' : ''}`}
-                key={entity.id}
-                type="button"
-                onClick={() => onToggleEntity(entity.id)}
-                style={entity.color ? { borderColor: entity.color } : undefined}
-              >
-                {entity.color && <span className="color-dot" style={{ backgroundColor: entity.color }} />}
-                <EntityTypeGlyph
-                  type={entity.kind === 'grouping' ? 'group' : 'session'}
-                  detail={entity.kind === 'grouping' ? `${entity.sessionRefs.length} pooled sessions` : undefined}
-                />
-                <span className="viz-entity-chip-label">{entity.label}</span>
-              </button>
-            )
-          })}
-        </div>
-      </div>
+      <AnalysisEntityPicker
+        entities={entities.map((entity) => ({
+          id: entity.id,
+          kind: entity.kind,
+          label: entity.label,
+          color: entity.color,
+          memberCount: entity.sessionRefs.length,
+        }))}
+        selectedIds={selectedEntityIds}
+        onToggle={onToggleEntity}
+      />
 
       <div className="viz-filter-group">
         <strong className="inline-heading">Tracks <InfoTip text="Track view uses one enabled track as its coordinate and sector frame. Session view retains but ignores this choice." /></strong>
@@ -6336,15 +6310,17 @@ function cachedScenarioEvaluation(
     cache.delete(key)
     cache.set(key, cached)
     debugPopulationPerformance('scenario-client-hit', key, 0)
-    return cached
+    return Promise.resolve(cached)
   }
   const started = suspensionCacheNowMs()
   const pending = load()
-  cache.set(key, pending)
-  pruneOldestMapEntries(cache, SCENARIO_EVALUATION_CACHE_LIMIT)
   void pending.then(
-    () => debugPopulationPerformance('scenario-client-load', key, suspensionCacheNowMs() - started),
-    () => cache?.delete(key),
+    (result) => {
+      cache?.set(key, result)
+      if (cache) pruneOldestMapEntries(cache, SCENARIO_EVALUATION_CACHE_LIMIT)
+      debugPopulationPerformance('scenario-client-load', key, suspensionCacheNowMs() - started)
+    },
+    () => undefined,
   )
   return pending
 }

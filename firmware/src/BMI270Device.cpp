@@ -19,6 +19,12 @@ constexpr uint8_t kRequiredPowerControl =
 
 static_assert(BMI2_ACC_ODR_200HZ == BMI270Profile::kOdrCode);
 static_assert(BMI2_GYR_ODR_200HZ == BMI270Profile::kOdrCode);
+static_assert(BMI2_ACC_ODR_400HZ == BMI270Profile::odrCodeForRate(400));
+static_assert(BMI2_ACC_ODR_800HZ == BMI270Profile::odrCodeForRate(800));
+static_assert(BMI2_ACC_ODR_1600HZ == BMI270Profile::odrCodeForRate(1600));
+static_assert(BMI2_GYR_ODR_400HZ == BMI270Profile::odrCodeForRate(400));
+static_assert(BMI2_GYR_ODR_800HZ == BMI270Profile::odrCodeForRate(800));
+static_assert(BMI2_GYR_ODR_1600HZ == BMI270Profile::odrCodeForRate(1600));
 static_assert(BMI2_ACC_RANGE_16G == BMI270Profile::kAccelRange16GCode);
 static_assert(BMI2_ACC_NORMAL_AVG4 == BMI270Profile::kAccelNormalAvg4Code);
 static_assert(BMI2_GYR_RANGE_2000 == BMI270Profile::kGyroRange2000DpsCode);
@@ -57,6 +63,22 @@ bool BMI270Device::setGyroBiasMode(BMI270GyroBiasMode mode) {
   return true;
 }
 
+bool BMI270Device::setNativeRateHz(uint16_t rateHz) {
+  const BMI270Profile::NativeProfile* profile = BMI270Profile::find(rateHz);
+  return profile && setProfile(*profile);
+}
+
+bool BMI270Device::setProfile(const BMI270Profile::NativeProfile& profile) {
+  if (diagnostics_.state != BMI270DeviceState::Uninitialized) return false;
+  const BMI270Profile::NativeProfile* supported = BMI270Profile::find(profile.name);
+  if (!supported || supported->accelOdrHz != profile.accelOdrHz ||
+      supported->gyroOdrHz != profile.gyroOdrHz) {
+    return false;
+  }
+  profile_ = supported;
+  return true;
+}
+
 bool BMI270Device::begin() {
   ++diagnostics_.beginCalls;
   if (ready()) return true;
@@ -73,11 +95,13 @@ bool BMI270Device::begin() {
     if (initializeOnce_()) {
       setState_(BMI270DeviceState::Ready);
       BMI270_LOGI(
-          "ready bus=%u addr=0x%02X chip=0x%02X profile=%s\n",
+          "ready bus=%u addr=0x%02X chip=0x%02X profile=%s accel_hz=%u gyro_hz=%u\n",
           (unsigned)busIndex(),
           (unsigned)address(),
           (unsigned)diagnostics_.chipId,
-          BMI270Profile::kProfileName);
+          profile_->name,
+          (unsigned)profile_->accelOdrHz,
+          (unsigned)profile_->gyroOdrHz);
       return true;
     }
 
@@ -169,7 +193,7 @@ bool BMI270Device::validateOperationalState(
     out.lastApiResult = result;
   } else {
     copyEffectiveConfig_(config, out.effectiveConfig);
-    if (!BMI270Profile::matchesOrientation200(out.effectiveConfig)) {
+    if (!BMI270Profile::matches(out.effectiveConfig, *profile_)) {
       out.issues |= BMI270OperationalIssue::kProfileMismatch;
       out.lastApiResult = BMI2_E_INVALID_STATUS;
     }
@@ -264,10 +288,10 @@ bool BMI270Device::initializeOnce_() {
     return false;
   }
 
-  return configureOrientation200_();
+  return configureOrientationProfile_();
 }
 
-bool BMI270Device::configureOrientation200_() {
+bool BMI270Device::configureOrientationProfile_() {
   struct bmi2_sens_config config[2] {};
   config[0].type = BMI2_ACCEL;
   config[1].type = BMI2_GYRO;
@@ -279,12 +303,12 @@ bool BMI270Device::configureOrientation200_() {
     return false;
   }
 
-  config[0].cfg.acc.odr = BMI2_ACC_ODR_200HZ;
+  config[0].cfg.acc.odr = profile_->accelOdrCode;
   config[0].cfg.acc.range = BMI2_ACC_RANGE_16G;
   config[0].cfg.acc.bwp = BMI2_ACC_NORMAL_AVG4;
   config[0].cfg.acc.filter_perf = BMI2_PERF_OPT_MODE;
 
-  config[1].cfg.gyr.odr = BMI2_GYR_ODR_200HZ;
+  config[1].cfg.gyr.odr = profile_->gyroOdrCode;
   config[1].cfg.gyr.range = BMI2_GYR_RANGE_2000;
   config[1].cfg.gyr.bwp = BMI2_GYR_NORMAL_MODE;
   config[1].cfg.gyr.noise_perf = BMI2_POWER_OPT_MODE;
@@ -317,7 +341,7 @@ bool BMI270Device::configureOrientation200_() {
   diagnostics_.configurationReadOk = true;
   copyEffectiveConfig_(effective, effectiveConfig_);
   diagnostics_.configurationMatched =
-      BMI270Profile::matchesOrientation200(effectiveConfig_);
+      BMI270Profile::matches(effectiveConfig_, *profile_);
   if (!diagnostics_.configurationMatched) {
     fail_(BMI270DeviceStep::VerifyConfiguration, BMI2_E_INVALID_STATUS);
     return false;

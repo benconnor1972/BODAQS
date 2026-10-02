@@ -26,13 +26,28 @@ static constexpr uint8_t kRawAngleMsbReg = 0x0C;
 static constexpr uint8_t kAngleMsbReg = 0x0E;
 static constexpr uint8_t kAgcReg = 0x1A;
 static constexpr uint8_t kMagnitudeMsbReg = 0x1B;
-static constexpr uint32_t kDefaultDiagnosticIntervalMs = 250;
+static constexpr uint32_t kDefaultDiagnosticIntervalMs = 1000;
 static constexpr uint32_t kDeviceConfigRetryMs = 2000;
 static constexpr uint8_t kDiagnosticColumnCount = 7;
 static constexpr uint16_t kConfSlowFilterMask = 0x0300;
 static constexpr uint8_t kConfSlowFilterShift = 8;
 static constexpr uint16_t kMaxAsyncRateHz = 1000;
 static constexpr uint32_t kDeferredRecoveryFailureStreak = 3;
+
+void recordRuntimeTiming_(
+    SensorRuntimeTimingSummary& summary,
+    uint32_t durationUs) {
+  if (summary.count == 0 || durationUs < summary.minimumUs) {
+    summary.minimumUs = durationUs;
+  }
+  if (durationUs > summary.maximumUs) summary.maximumUs = durationUs;
+  if (UINT64_MAX - summary.totalUs < durationUs) {
+    summary.totalUs = UINT64_MAX;
+  } else {
+    summary.totalUs += durationUs;
+  }
+  if (summary.count != UINT32_MAX) ++summary.count;
+}
 
 static constexpr uint8_t kStatusMagnetTooStrong = 0x08;
 static constexpr uint8_t kStatusMagnetTooWeak = 0x10;
@@ -213,6 +228,11 @@ void AS5600StringPotI2C::resetSessionRuntimeDiagnostics_() const {
   m_runtimeDiagnostics.eventsDropped = 0;
   m_runtimeDiagnostics.readFailureStreakMax = 0;
   m_runtimeDiagnostics.readRecoveries = 0;
+  m_runtimeDiagnostics.fastReadAttempts = 0;
+  m_runtimeDiagnostics.fastReadSuccesses = 0;
+  m_runtimeDiagnostics.fastReadFallbacks = 0;
+  m_runtimeDiagnostics.rawPointerPrimes = 0;
+  m_runtimeDiagnostics.rawReadUs = SensorRuntimeTimingSummary{};
   m_runtimeSessionReadFailureBase = m_readFailures;
   m_runtimeSessionDiagnosticFailureBase = m_diagnosticReadFailures;
   m_runtimeReadFailureStreak = 0;
@@ -449,6 +469,7 @@ bool AS5600StringPotI2C::probe_() const {
     setRuntimeFailure_(SensorRuntimeFailureStage::BusLock);
     return false;
   }
+  m_rawAnglePointerPrimed = false;
   m_wire->beginTransmission(m_i2cAddr);
   const uint8_t result = (uint8_t)m_wire->endTransmission(true);
   I2CManager::unlock(m_wire);
@@ -469,6 +490,7 @@ bool AS5600StringPotI2C::readRegBytesLocked_(uint8_t reg, uint8_t* out, uint8_t 
     return false;
   }
 
+  m_rawAnglePointerPrimed = false;
   m_wire->beginTransmission(m_i2cAddr);
   m_wire->write(reg);
   const uint8_t txResult = (uint8_t)m_wire->endTransmission(false);
@@ -498,6 +520,34 @@ bool AS5600StringPotI2C::readRegBytesLocked_(uint8_t reg, uint8_t* out, uint8_t 
   return true;
 }
 
+bool AS5600StringPotI2C::readRawAngleBytesLocked_(uint8_t* out) const {
+  if (!out) return false;
+  if (m_rawAnglePointerPrimed) {
+    ++m_runtimeDiagnostics.fastReadAttempts;
+    const size_t got = m_wire->requestFrom((int)m_i2cAddr, 2);
+    if (got == 2) {
+      const int first = m_wire->read();
+      const int second = m_wire->read();
+      if (first >= 0 && second >= 0) {
+        out[0] = static_cast<uint8_t>(first);
+        out[1] = static_cast<uint8_t>(second);
+        ++m_runtimeDiagnostics.fastReadSuccesses;
+        return true;
+      }
+    }
+    while (m_wire->available() > 0) (void)m_wire->read();
+    ++m_runtimeDiagnostics.fastReadFallbacks;
+    m_rawAnglePointerPrimed = false;
+  }
+
+  const bool ok = readRegBytesLocked_(kRawAngleMsbReg, out, 2);
+  if (ok) {
+    m_rawAnglePointerPrimed = true;
+    ++m_runtimeDiagnostics.rawPointerPrimes;
+  }
+  return ok;
+}
+
 bool AS5600StringPotI2C::writeRegBytesLocked_(uint8_t reg,
                                               const uint8_t* data,
                                               uint8_t len) const {
@@ -510,6 +560,7 @@ bool AS5600StringPotI2C::writeRegBytesLocked_(uint8_t reg,
     return false;
   }
 
+  m_rawAnglePointerPrimed = false;
   m_wire->beginTransmission(m_i2cAddr);
   m_wire->write(reg);
   for (uint8_t i = 0; i < len; ++i) m_wire->write(data[i]);
@@ -549,9 +600,27 @@ bool AS5600StringPotI2C::readAngleRegister_(uint16_t& value) const {
 
 bool AS5600StringPotI2C::readWrappedCounts_(int& wrapped) const {
   wrapped = 0;
-  uint16_t raw = 0;
-  if (!readReg16_(kRawAngleMsbReg, raw)) return false;
-  wrapped = int(raw);
+  if (!m_wire) m_wire = I2CManager::bus(m_busIndex);
+  if (!m_wire) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusUnavailable);
+    return false;
+  }
+  if (!I2CManager::lock(m_wire)) {
+    setRuntimeFailure_(SensorRuntimeFailureStage::BusLock);
+    return false;
+  }
+  const uint64_t startedUs = static_cast<uint64_t>(esp_timer_get_time());
+  uint8_t bytes[2] = {0, 0};
+  const bool ok = readRawAngleBytesLocked_(bytes);
+  const uint64_t endedUs = static_cast<uint64_t>(esp_timer_get_time());
+  I2CManager::unlock(m_wire);
+  const uint64_t durationUs = endedUs >= startedUs ? endedUs - startedUs : 0;
+  recordRuntimeTiming_(
+      m_runtimeDiagnostics.rawReadUs,
+      durationUs > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(durationUs));
+  m_lastRawAcquiredUs = startedUs + (durationUs / 2u);
+  if (!ok) return false;
+  wrapped = int(decode12_(bytes[0], bytes[1]));
   return true;
 }
 
@@ -969,7 +1038,9 @@ bool AS5600StringPotI2C::acquireAsyncSample_() const {
   snapshot.readFailures = m_readFailures;
   snapshot.diagnosticReadFailures = m_diagnosticReadFailures;
   snapshot.seq = ++m_asyncNextSeq;
-  snapshot.acquiredUs = (uint64_t)esp_timer_get_time();
+  snapshot.acquiredUs = m_lastRawAcquiredUs != 0
+      ? m_lastRawAcquiredUs
+      : (uint64_t)esp_timer_get_time();
   updateReadTransition_(snapshot.readOk);
 
   if (m_includeAngleColumn) {
@@ -1200,7 +1271,7 @@ const ParamDef* AS5600StringPotI2C::paramDefs(size_t& count) {
     {"async_rate_hz",        ParamType::Int,   "0",     "0",    "1000", nullptr, "Async I2C acquisition rate; 0 follows logger sample rate"},
     {"include_angle",        ParamType::Bool,  "false", nullptr, nullptr, nullptr, "Append AS5600 ANGLE register counts for diagnostics"},
     {"include_diag",         ParamType::Bool,  "false", nullptr, nullptr, nullptr, "Append AS5600 magnetic diagnostics, read state, and failure counters"},
-    {"diag_interval_ms",     ParamType::Int,   "250",   "0",    "5000", nullptr, "Minimum interval between AS5600 diagnostic reads"},
+    {"diag_interval_ms",     ParamType::Int,   "1000",  "0",    "5000", nullptr, "Minimum interval between AS5600 diagnostic reads"},
     {"counts_per_turn",      ParamType::Int,   "4096",  "2",    "32767", nullptr, "Wrapped counts per AS5600 turn"},
     {"wrap_threshold_counts",ParamType::Int,   "2048",  "1",    "32767", nullptr, "Delta threshold used to detect wrap crossings"},
     {"sensor_zero_count",    ParamType::Int,   "0",     nullptr, nullptr, nullptr, "Unwrapped counts at zero travel"},

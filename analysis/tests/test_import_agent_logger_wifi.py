@@ -39,6 +39,7 @@ from bodaqs_analysis.import_agent_sources import (
     LOGGER_WIFI_CLEANUP_MOVE_TO_UPLOADED,
     SOURCE_TYPE_LOGGER_WIFI,
 )
+from tools.smoke_test_packaged_imu_bdq import imu_multi_stream_bdq_fixture_bytes
 
 
 def _archive_bytes(stem: str = "2026-05-16_20-15-42") -> bytes:
@@ -384,22 +385,32 @@ class _FakeLoggerHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/v1/session/data":
             query = parse_qs(parsed.query)
             self.state["data_ids"].append(query.get("id", [""])[0])
+            range_header = self.headers.get("Range")
+            self.state["data_ranges"].append(range_header)
             payload = self.state["data_bytes"]
-            if self.state.get("truncate_data"):
-                partial = payload[: max(1, len(payload) // 3)]
-                self.send_response(200)
-                self.send_header("Content-Type", "application/octet-stream")
-                self.send_header("Content-Length", str(len(payload)))
+            start = 0
+            if range_header and not self.state.get("ignore_data_range"):
+                assert range_header.startswith("bytes=") and range_header.endswith("-")
+                start = int(range_header[6:-1])
+            if start >= len(payload):
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{len(payload)}")
                 self.end_headers()
-                self.wfile.write(partial)
-                self.close_connection = True
                 return
-
-            self.send_response(200)
+            body = payload[start:]
+            self.send_response(206 if start else 200)
             self.send_header("Content-Type", "application/octet-stream")
-            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Content-Length", str(len(body)))
+            if start:
+                reported_start = start + 1 if self.state.get("bad_data_range") else start
+                self.send_header("Content-Range", f"bytes {reported_start}-{len(payload) - 1}/{len(payload)}")
             self.end_headers()
-            self.wfile.write(payload)
+            truncate = self.state.get("truncate_data") or self.state.pop("truncate_data_once", False)
+            if truncate:
+                self.wfile.write(body[: max(1, len(body) // 3)])
+                self.close_connection = True
+            else:
+                self.wfile.write(body)
             return
 
         self._send_json(404, {"schema": "bodaqs.logger.error", "api_version": 1, "error": "not_found"})
@@ -474,6 +485,7 @@ class _FakeLoggerServer:
             "data_bytes": _importable_bdq_bytes(),
             "archive_ids": [],
             "data_ids": [],
+            "data_ranges": [],
             "acks": [],
             "cleanups": [],
             "requests": [],
@@ -553,6 +565,108 @@ def test_logger_wifi_client_downloads_bdq_data_via_part_then_final(tmp_path):
     assert target.exists()
     assert not Path(str(target.resolve()) + ".part").exists()
     assert server.state["data_ids"] == ["Prototype E__260516_201542"]
+
+
+def test_logger_wifi_client_downloads_bdq_v2_data_via_part_then_final(tmp_path):
+    payload = imu_multi_stream_bdq_fixture_bytes()
+    with _FakeLoggerServer(data_bytes=payload) as server:
+        client = LoggerWifiApiClient(server.base_url)
+        target = tmp_path / "session.bdq"
+
+        result = client.download_bdq_to_part("Prototype E__260516_201542", target)
+
+    assert result == target.resolve()
+    assert target.read_bytes() == payload
+    assert not Path(str(target.resolve()) + ".part").exists()
+
+
+def test_logger_wifi_client_resumes_interrupted_bdq_download(tmp_path):
+    payload = imu_multi_stream_bdq_fixture_bytes()
+    with _FakeLoggerServer(data_bytes=payload, truncate_data_once=True) as server:
+        client = LoggerWifiApiClient(server.base_url)
+        target = tmp_path / "session.bdq"
+
+        result = client.download_bdq_to_part("Prototype E__260516_201542", target, chunk_size=64)
+
+    assert result.read_bytes() == payload
+    assert server.state["data_ranges"][0] is None
+    assert server.state["data_ranges"][1].startswith("bytes=")
+
+
+def test_logger_wifi_client_resumes_part_file_on_next_import(tmp_path):
+    payload = imu_multi_stream_bdq_fixture_bytes()
+    with _FakeLoggerServer(data_bytes=payload, truncate_data=True) as server:
+        target = tmp_path / "session.bdq"
+        client = LoggerWifiApiClient(server.base_url, download_attempts=1)
+        with pytest.raises(LoggerWifiApiError):
+            client.download_bdq_to_part("Prototype E__260516_201542", target, chunk_size=64)
+        part = Path(str(target.resolve()) + ".part")
+        offset = part.stat().st_size
+        server.state["truncate_data"] = False
+
+        result = client.download_bdq_to_part("Prototype E__260516_201542", target, chunk_size=64)
+
+    assert result.read_bytes() == payload
+    assert server.state["data_ranges"][-1] == f"bytes={offset}-"
+    assert not part.exists()
+
+
+def test_logger_wifi_client_restarts_if_logger_ignores_range(tmp_path):
+    payload = imu_multi_stream_bdq_fixture_bytes()
+    with _FakeLoggerServer(data_bytes=payload, ignore_data_range=True) as server:
+        target = tmp_path / "session.bdq"
+        Path(str(target.resolve()) + ".part").write_bytes(payload[:64])
+
+        result = LoggerWifiApiClient(server.base_url).download_bdq_to_part(
+            "Prototype E__260516_201542", target, chunk_size=64
+        )
+
+    assert result.read_bytes() == payload
+    assert server.state["data_ranges"] == ["bytes=64-"]
+
+
+def test_logger_wifi_client_commits_complete_part_after_range_416(tmp_path):
+    payload = imu_multi_stream_bdq_fixture_bytes()
+    with _FakeLoggerServer(data_bytes=payload) as server:
+        target = tmp_path / "session.bdq"
+        Path(str(target.resolve()) + ".part").write_bytes(payload)
+
+        result = LoggerWifiApiClient(server.base_url).download_bdq_to_part(
+            "Prototype E__260516_201542", target
+        )
+
+    assert result.read_bytes() == payload
+    assert server.state["data_ranges"] == [f"bytes={len(payload)}-"]
+
+
+def test_logger_wifi_client_rejects_mismatched_content_range_without_appending(tmp_path):
+    payload = imu_multi_stream_bdq_fixture_bytes()
+    with _FakeLoggerServer(data_bytes=payload, bad_data_range=True) as server:
+        target = tmp_path / "session.bdq"
+        part = Path(str(target.resolve()) + ".part")
+        part.write_bytes(payload[:64])
+
+        with pytest.raises(LoggerWifiApiError, match="Content-Range"):
+            LoggerWifiApiClient(server.base_url).download_bdq_to_part(
+                "Prototype E__260516_201542", target
+            )
+
+    assert part.read_bytes() == payload[:64]
+    assert not target.exists()
+
+
+def test_logger_wifi_client_restarts_after_invalid_resumed_prefix(tmp_path):
+    payload = imu_multi_stream_bdq_fixture_bytes()
+    with _FakeLoggerServer(data_bytes=payload) as server:
+        target = tmp_path / "session.bdq"
+        Path(str(target.resolve()) + ".part").write_bytes(b"X" * 64)
+
+        result = LoggerWifiApiClient(server.base_url).download_bdq_to_part(
+            "Prototype E__260516_201542", target
+        )
+
+    assert result.read_bytes() == payload
+    assert server.state["data_ranges"] == ["bytes=64-", None]
 
 
 def test_logger_wifi_client_failed_download_leaves_part_file(tmp_path):
@@ -847,7 +961,11 @@ def test_logger_wifi_pipeline_downloads_next_session_while_processing_first(tmp_
     assert second_download_index < first_ack_index
 
 
-def test_logger_wifi_source_acquires_imports_bdq_session_data(tmp_path):
+@pytest.mark.parametrize("bdq_bytes,expected_mode", [
+    (_importable_bdq_bytes(), "import_agent_bdq_v1"),
+    (imu_multi_stream_bdq_fixture_bytes(), "import_agent_bdq_v2"),
+], ids=["v1", "v2"])
+def test_logger_wifi_source_acquires_imports_bdq_session_data(tmp_path, bdq_bytes, expected_mode):
     sessions = [
         {
             "session_id": "Prototype E__260516_201542",
@@ -856,12 +974,12 @@ def test_logger_wifi_source_acquires_imports_bdq_session_data(tmp_path):
             "data_path": "/260516_201542.bdq",
             "archive_ready": False,
             "data_ready": True,
-            "data_size": len(_importable_bdq_bytes()),
+            "data_size": len(bdq_bytes),
             "uploaded": False,
             "acknowledged": False,
         }
     ]
-    with _FakeLoggerServer(sessions=sessions, data_bytes=_importable_bdq_bytes()) as server:
+    with _FakeLoggerServer(sessions=sessions, data_bytes=bdq_bytes) as server:
         source, library = _provision_wifi_source(tmp_path, server.base_url)
 
         report = run_sources_once([source.source_root])
@@ -890,6 +1008,7 @@ def test_logger_wifi_source_acquires_imports_bdq_session_data(tmp_path):
     assert imported_record["remote_session_id"] == "Prototype E__260516_201542"
     assert manifest["source"]["path"] == "source/input.bdq"
     assert manifest["source"]["input_kind"] == "bdq"
+    assert manifest["source"]["import_mode"] == expected_mode
     assert manifest["source"]["original_bdq_filename"].endswith(".bdq")
     assert (session_manifest.parent / "source" / "input.bdq").exists()
 

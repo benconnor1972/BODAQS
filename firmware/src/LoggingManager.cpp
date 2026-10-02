@@ -4,8 +4,10 @@
 #include "RTCManager.h"
 #include "WebServerManager.h"
 #include "UI.h"
+#include "DisplayManager.h"
 #include "AnalogPotSensor.h"
 #include "SensorManager.h"
+#include "I2CManager.h"
 #include "Rates.h"
 #include "PowerManager.h"
 #include "IndicatorManager.h"
@@ -17,6 +19,7 @@
 #include "DebugLog.h"
 #include "LoggerLimits.h"
 #include <atomic>
+#include <string.h>
 
 #define LOGGING_LOGE(...) LOGE_TAG("Logging", __VA_ARGS__)
 #define LOGGING_LOGW(...) LOGW_TAG("Logging", __VA_ARGS__)
@@ -38,9 +41,32 @@ namespace {
 
   // Run-state
   volatile bool   s_running       = false;
-  unsigned long   s_intervalMs    = 1000;
-  unsigned long   s_lastSample    = 0;     // only used in legacy loop() mode
-  uint64_t        s_t0_ms         = 0;
+  LoggingManager::StartFailureHint s_startFailureHint =
+      LoggingManager::StartFailureHint::None;
+  LoggingManager::StopContext s_stopContext;
+
+  void captureStopContext_(
+      LoggingManager::StopReason reason,
+      const char* triggerEvent) {
+    s_stopContext = LoggingManager::StopContext{};
+    s_stopContext.reason = reason;
+    s_stopContext.uptimeMs = millis();
+    s_stopContext.triggerEvent = triggerEvent ? triggerEvent : "";
+    s_stopContext.sdDetectAvailable = StorageManager_cardDetectAvailable();
+    s_stopContext.sdCardDetected = StorageManager_cardDetectedCached();
+    s_stopContext.analogRailFault = PowerManager::analogRailFaultActive();
+  }
+
+  void classifyStartFailure_(const char* error) {
+    if (!error) return;
+    if (strstr(error, "restart required")) {
+      s_startFailureHint = LoggingManager::StartFailureHint::RestartNow;
+    } else if (strstr(error, "BDQ v2")) {
+      s_startFailureHint = LoggingManager::StartFailureHint::UseBdqV2;
+    }
+  }
+  uint32_t        s_intervalUs    = 1000000;
+  uint64_t        s_t0UnixUs      = 0;
   uint32_t        s_sampleCount   = 0;
 
   // Mark queue (single-producer, single-consumer)
@@ -54,7 +80,7 @@ namespace {
   void enqueueNow() {
     uint8_t next = (uint8_t)(s_markHead + 1) % MAX_MARKS;
     if (next == s_markTail) return; // drop if full
-    s_markTimes[s_markHead] = millis(); // or RTCManager_getEpochMs()
+    s_markTimes[s_markHead] = static_cast<uint64_t>(esp_timer_get_time());
     s_markHead = next;
   }
 
@@ -76,7 +102,11 @@ namespace {
   // Stats: how often the sampler task woke up "late"
   static uint32_t s_lateTicks    = 0;
   static uint32_t s_lateMaxLagMs = 0;
+  static uint32_t s_lateMaxLagUs = 0;
+  static uint32_t s_schedulerWakeups = 0;
+  static uint32_t s_lateOverTenPercent = 0;
   static uint32_t s_missedSampleSlots = 0;
+  static TimingSummary s_wakeLagUs;
   static TimingSummary s_sampleOnceUs;
   static TimingSummary s_sensorSampleUs;
   static TimingSummary s_enqueueUs;
@@ -90,8 +120,12 @@ namespace {
   static inline void resetLateStats_() {
     s_lateTicks = 0;
     s_lateMaxLagMs = 0;
+    s_lateMaxLagUs = 0;
+    s_schedulerWakeups = 0;
+    s_lateOverTenPercent = 0;
     s_missedSampleSlots = 0;
 #if BODAQS_TIMING_INSTRUMENTATION
+    TimingStats_reset(s_wakeLagUs);
     TimingStats_reset(s_sampleOnceUs);
     TimingStats_reset(s_sensorSampleUs);
     TimingStats_reset(s_enqueueUs);
@@ -101,8 +135,7 @@ namespace {
   // One sample, no scheduling logic (task provides cadence)
 static inline bool sampleOnce_(bool allowStopped = false) {
   if (!s_running && !allowStopped) return false;
-  if (s_intervalMs < 1) return false;
-  if (s_intervalMs > 1000) return false; // sanity, optional
+  if (s_intervalUs < 1 || s_intervalUs > 1000000UL) return false;
 
 
   // --------- 1 Hz production-rate diagnostic ---------
@@ -112,9 +145,9 @@ static inline bool sampleOnce_(bool allowStopped = false) {
   ++s_prodCount;
   uint32_t now_ms = millis();
   if ((uint32_t)(now_ms - s_prodT0_ms) >= 1000) {
-    PROD_LOGD("samples/s=%lu intervalMs=%u running=%d\n",
+    PROD_LOGD("samples/s=%lu intervalUs=%lu running=%d\n",
               (unsigned long)s_prodCount,
-              (unsigned)s_intervalMs,
+              (unsigned long)s_intervalUs,
               (int)s_running);
     s_prodCount = 0;
     s_prodT0_ms = now_ms;
@@ -124,10 +157,9 @@ static inline bool sampleOnce_(bool allowStopped = false) {
 #endif
 
   // --------- Deterministic timestamp for THIS sample (grid-aligned) ---------
-  uint32_t intervalMs = s_intervalMs;
-  if (intervalMs == 0) intervalMs = 1; // safety
-
-  uint64_t ts_ms = s_t0_ms + (uint64_t)s_sampleCount * (uint64_t)intervalMs;
+  const uint64_t scheduledUnixUs =
+      Rates::scheduledTimeUs(s_t0UnixUs, s_sampleCount, s_intervalUs);
+  const uint64_t ts_ms = scheduledUnixUs / 1000ULL;
   const uint32_t sample_id = (uint32_t)s_sampleCount;
   ++s_sampleCount;
 
@@ -136,9 +168,11 @@ static inline bool sampleOnce_(bool allowStopped = false) {
   static uint32_t s_cacheT0_ms = 0;
 
   // Refresh cache occasionally (every ~1s) in case sensors change mid-run
-  if (s_maxOutCached == 0 || (uint32_t)(now_ms - s_cacheT0_ms) >= 1000) {
+  const bool independentStreams =
+      s_cfg && s_cfg->logFormat == LogFormat::BodaqsMultiStreamBinary;
+  if (s_cacheT0_ms == 0 || (uint32_t)(now_ms - s_cacheT0_ms) >= 1000) {
     s_cacheT0_ms = now_ms;
-    uint16_t cap = SensorManager::dynamicColumnCount(); // number of sensor columns (not including sample_id)
+    uint16_t cap = SensorManager::dynamicColumnCount(independentStreams);
     if (cap > LoggerLimits::kMaxDynamicColumns) cap = LoggerLimits::kMaxDynamicColumns;
     s_maxOutCached = cap;
   }
@@ -148,7 +182,10 @@ static inline bool sampleOnce_(bool allowStopped = false) {
 #if BODAQS_TIMING_INSTRUMENTATION
   const uint32_t sensorT0 = micros();
 #endif
-  SensorManager::sampleValues(values, s_maxOutCached, nWritten);
+  const uint64_t hostMonotonicUs =
+      static_cast<uint64_t>(esp_timer_get_time());
+  SensorManager::sampleValues(
+      values, s_maxOutCached, nWritten, independentStreams);
 #if BODAQS_TIMING_INSTRUMENTATION
   TimingStats_record(s_sensorSampleUs, (uint32_t)(micros() - sensorT0));
 #endif
@@ -161,7 +198,14 @@ static inline bool sampleOnce_(bool allowStopped = false) {
 #if BODAQS_TIMING_INSTRUMENTATION
   const uint32_t enqueueT0 = micros();
 #endif
-  const bool enqueued = StorageManager_enqueueSample(sample_id, ts_ms, values, nWritten, markNow);
+  const bool enqueued = StorageManager_enqueueSample(
+      sample_id,
+      ts_ms,
+      values,
+      nWritten,
+      markNow,
+      hostMonotonicUs,
+      markNow ? markTime : 0);
 #if BODAQS_TIMING_INSTRUMENTATION
   TimingStats_record(s_enqueueUs, (uint32_t)(micros() - enqueueT0));
   TimingStats_record(s_sampleOnceUs, (uint32_t)(micros() - sampleT0));
@@ -189,9 +233,9 @@ static void sampleTaskFn_(void* arg) {
       lastBlockUs = next_us;
     }
 
-    uint32_t intervalMs = s_intervalMs;
-    if (intervalMs == 0) intervalMs = 1;
-    const int64_t interval_us = (int64_t)intervalMs * 1000LL;
+    uint32_t intervalUs = s_intervalUs;
+    if (intervalUs == 0) intervalUs = 1;
+    const int64_t interval_us = static_cast<int64_t>(intervalUs);
 
     // Wait for the next scheduled slot. If we are already late, skip missed
     // slots instead of trying to catch up with a no-yield burst of samples.
@@ -201,13 +245,24 @@ static void sampleTaskFn_(void* arg) {
 
       if (remaining_us <= 0) {
         const int64_t lag_us = -remaining_us;
+        const uint32_t boundedLagUs = lag_us > UINT32_MAX
+            ? UINT32_MAX
+            : static_cast<uint32_t>(lag_us);
+        ++s_schedulerWakeups;
+        if (boundedLagUs > s_lateMaxLagUs) s_lateMaxLagUs = boundedLagUs;
+#if BODAQS_TIMING_INSTRUMENTATION
+        TimingStats_record(s_wakeLagUs, boundedLagUs);
+#endif
+        const uint32_t tenPercentUs = intervalUs >= 10 ? intervalUs / 10u : 1u;
+        if (boundedLagUs > tenPercentUs) ++s_lateOverTenPercent;
         if (lag_us >= 1000) {
           ++s_lateTicks;
           const uint32_t lag_ms = (uint32_t)((lag_us + 999LL) / 1000LL);
           if (lag_ms > s_lateMaxLagMs) s_lateMaxLagMs = lag_ms;
         }
         if (lag_us >= interval_us) {
-          const uint32_t missed = (uint32_t)(lag_us / interval_us);
+          const uint32_t missed = Rates::missedSlots(
+              static_cast<uint64_t>(lag_us), intervalUs);
           s_missedSampleSlots += missed;
           s_sampleCount += missed;
           next_us += (int64_t)missed * interval_us;
@@ -253,17 +308,12 @@ static void sampleTaskFn_(void* arg) {
 
 #endif
 
-  static inline uint32_t clampDiv_(uint32_t num, uint16_t den) {
-    return (den == 0) ? 1000 : (num / den);
-  }
-
 } // anon
 
 void LoggingManager::begin(const LoggerConfig* cfg) {
   s_cfg = cfg;
-  s_intervalMs  = StorageManager_getSampleIntervalMs();
-  s_lastSample  = 0;
-  s_t0_ms       = 0;
+  s_intervalUs  = StorageManager_getSampleIntervalUs();
+  s_t0UnixUs    = 0;
   s_sampleCount = 0;
   s_markHead = s_markTail = 0;
 
@@ -273,6 +323,8 @@ void LoggingManager::begin(const LoggerConfig* cfg) {
 }
 
 bool LoggingManager::start() {
+  s_startFailureHint = StartFailureHint::None;
+  s_stopContext = StopContext{};
   if (!s_cfg) return false;
   TRACE("enter start()");
   const uint32_t startT0 = millis();
@@ -299,8 +351,7 @@ bool LoggingManager::start() {
   }
 
   // Pick up any sample-rate changes that were applied while logging was idle.
-  s_intervalMs = StorageManager_getSampleIntervalMs();
-  s_lastSample = 0;
+  s_intervalUs = StorageManager_getSampleIntervalUs();
 
   // sampling cadence
   uint16_t requestedHz = s_cfg->sampleRateHz;
@@ -312,15 +363,19 @@ bool LoggingManager::start() {
     requestedHz = syncCapHz;
   }
   const uint16_t effectiveRateHz = AnalogInputManager::configureFromConfig(*s_cfg, requestedHz);
+  // Include recoveries during sensor initialization in this session's final
+  // bus diagnostics, even when acquisition has not started yet.
+  I2CManager::resetRecoveryStats();
   char sensorError[128] = {0};
   if (!SensorManager::validateLoggingStart(*s_cfg, effectiveRateHz, sensorError, sizeof(sensorError))) {
+    classifyStartFailure_(sensorError);
     UI::toast("Sensor config", 1800, 1);
     UI::status("Sensor config");
     LOGGING_LOGW("start refused: %s\n", sensorError[0] ? sensorError : "sensor validation failed");
     return false;
   }
   StorageManager_setSampleRate(effectiveRateHz);
-  s_intervalMs = StorageManager_getSampleIntervalMs();
+  s_intervalUs = StorageManager_getSampleIntervalUs();
 
   // Logging owns the device: take Wi-Fi (and therefore web server) down NOW.
   if (WebServerManager::isRunning()) {
@@ -346,9 +401,7 @@ bool LoggingManager::start() {
   TRACE("RTC sanity check done");
 
   // time anchors + grid align
-  s_t0_ms = RTCManager_getEpochMs();
-  unsigned long now = millis();
-  s_lastSample = (s_intervalMs ? ((now / s_intervalMs) * s_intervalMs) : now);
+  s_t0UnixUs = RTCManager_getEpochMs() * 1000ULL;
   s_sampleCount = 0;
 
 #if defined(ESP32)
@@ -369,8 +422,14 @@ bool LoggingManager::start() {
   TRACE("storagemanager_startlog complete");
 
   const uint32_t sensorStartT0 = millis();
+  // Paint the durable recording frame while the OLED is still allowed to
+  // transfer. Auto/freeze policies may suppress every later refresh.
+  DisplayManager::prepareLoggingScreen(
+      effectiveRateHz, SensorManager::activeCount());
   AnalogInputManager::onLoggingStart();
   if (!SensorManager::onLoggingStart(sensorError, sizeof(sensorError))) {
+    classifyStartFailure_(sensorError);
+    captureStopContext_(StopReason::StartFailure, "sensor_start_failed");
     AnalogInputManager::onLoggingStop();
     SensorManager::onLoggingStop();
     StorageManager_stopLog();
@@ -404,7 +463,7 @@ bool LoggingManager::start() {
   TRACE("LED turned on");
 
   //UI::toast("Logging started");
-  unsigned hz = s_intervalMs ? (1000UL / s_intervalMs) : 0;
+  const unsigned hz = StorageManager_getSampleRateHz();
   char st[24]; snprintf(st, sizeof(st), "Logging %uHz", hz);
   UI::status(String(st));
   LOGGING_LOGI("start timing: wifiOff=%lu ms storage=%lu ms sensors=%lu ms total=%lu ms rtcValid=%d\n",
@@ -418,6 +477,10 @@ bool LoggingManager::start() {
   return true;
 }
 
+LoggingManager::StartFailureHint LoggingManager::startFailureHint() {
+  return s_startFailureHint;
+}
+
 void LoggingManager::setSampleRateHz(uint16_t hz) {
   // snap to allowed values for safety
   int idx = Rates::indexOf(hz);
@@ -425,11 +488,7 @@ void LoggingManager::setSampleRateHz(uint16_t hz) {
   ConfigManager::setSampleRateHz(hz);        // update + persist
   const uint16_t effectiveHz = AnalogInputManager::configureFromConfig(ConfigManager::get(), hz);
   StorageManager_setSampleRate(effectiveHz); // apply to the live logging cadence
-  s_intervalMs = StorageManager_getSampleIntervalMs();
-
-  // realign to grid to avoid jitter: next sample at now + interval
-  uint32_t now = millis();
-  s_lastSample = now - s_intervalMs;
+  s_intervalUs = StorageManager_getSampleIntervalUs();
 }
 
 LoggingManager::RuntimeStats LoggingManager::runtimeStats() {
@@ -437,8 +496,12 @@ LoggingManager::RuntimeStats LoggingManager::runtimeStats() {
 #if defined(ESP32)
   out.samplerLateTicks = s_lateTicks;
   out.samplerLateMaxLagMs = s_lateMaxLagMs;
+  out.samplerLateMaxLagUs = s_lateMaxLagUs;
+  out.samplerWakeups = s_schedulerWakeups;
+  out.samplerLateOverTenPercent = s_lateOverTenPercent;
   out.missedSampleSlots = s_missedSampleSlots;
 #if BODAQS_TIMING_INSTRUMENTATION
+  out.samplerWakeLagUs = s_wakeLagUs;
   out.sampleOnceUs = s_sampleOnceUs;
   out.sensorSampleUs = s_sensorSampleUs;
   out.enqueueUs = s_enqueueUs;
@@ -447,7 +510,38 @@ LoggingManager::RuntimeStats LoggingManager::runtimeStats() {
   return out;
 }
 
-void LoggingManager::stop() {
+const char* LoggingManager::stopReasonName(StopReason reason) {
+  switch (reason) {
+    case StopReason::None: return "none";
+    case StopReason::UserRequest: return "user_request";
+    case StopReason::AnalogRailFault: return "analog_rail_fault";
+    case StopReason::SleepRequest: return "sleep_request";
+    case StopReason::SdCardRemoved: return "sd_card_removed";
+    case StopReason::StartFailure: return "start_failure";
+    case StopReason::Unspecified: return "unspecified";
+    default: return "unknown";
+  }
+}
+
+LoggingManager::StopContext LoggingManager::stopContext() {
+  return s_stopContext;
+}
+
+void LoggingManager::stop(StopReason reason, const char* triggerEvent) {
+  if (!s_running) {
+    LOGGING_LOGW("stop ignored because logging is not active reason=%s trigger=%s\n",
+                 stopReasonName(reason), triggerEvent ? triggerEvent : "");
+    return;
+  }
+  captureStopContext_(reason, triggerEvent);
+  LOGGING_LOGI(
+      "stop requested reason=%s uptime_ms=%lu trigger=%s sd_detect_available=%u sd_card_detected=%u analog_rail_fault=%u\n",
+      stopReasonName(s_stopContext.reason),
+      (unsigned long)s_stopContext.uptimeMs,
+      s_stopContext.triggerEvent,
+      s_stopContext.sdDetectAvailable ? 1u : 0u,
+      s_stopContext.sdCardDetected ? 1u : 0u,
+      s_stopContext.analogRailFault ? 1u : 0u);
   s_running = false;
 #if defined(ESP32)
   // A sampler that already passed the run-state check may still be copying a
@@ -466,7 +560,9 @@ void LoggingManager::stop() {
   // suspended production and completed its final FIFO drain, so one forced
   // sparse row per remaining queued sample closes the session boundary.
   StorageManager_drainQueuedSamples();
-  size_t pendingRows = SensorManager::pendingLoggingRows();
+  size_t pendingRows = StorageManager_usesIndependentStreams()
+      ? 0
+      : SensorManager::pendingLoggingRows();
   const size_t initialPendingRows = pendingRows;
   size_t tailRowsWritten = 0;
   while (pendingRows > 0 && tailRowsWritten < initialPendingRows) {
@@ -505,6 +601,10 @@ void LoggingManager::stop() {
                (unsigned long)s_lateMaxLagMs);
   LOGGING_LOGI("missedSampleSlots=%lu\n",
                (unsigned long)s_missedSampleSlots);
+  LOGGING_LOGI("schedulerWakeups=%lu lateOver10pct=%lu maxLagUs=%lu\n",
+               (unsigned long)s_schedulerWakeups,
+               (unsigned long)s_lateOverTenPercent,
+               (unsigned long)s_lateMaxLagUs);
 #endif
 }
 

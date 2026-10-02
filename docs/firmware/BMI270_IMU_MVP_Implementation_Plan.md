@@ -635,7 +635,8 @@ Firmware implementation completed on 2026-08-06:
 - hardware skip frames advance the sequence by the reported loss count and mark the first following stored sample with `FIFO_DISCONTINUITY_BEFORE`;
 - raw sensor-time anchors are aligned down to the BMI270's 200 Hz sample grid and per-sample ticks are back-filled at 128 native ticks modulo 2^24; every derived value carries `SENSOR_TIME_ESTIMATED`, inconsistent consecutive anchors mark a discontinuity, and a missing first anchor remains unavailable rather than inventing a zero-time host observation;
 - the parser retains the sensor-time frame's byte position so its raw tick can be correlated to an interpolated point within the host-observed I2C transfer; older samples are projected backwards from that observation, while batches extrapolated from a prior anchor use a degraded midpoint observation;
-- die temperature is observed independently at 10 Hz, held between observations, and marked stale after 250 ms or before the first successful observation;
+- die temperature is observed independently at 2 Hz, held between observations,
+  and marked stale after 1.25 seconds or before the first successful observation;
 - three consecutive drain failures trigger one bounded device recovery attempt; failed recovery is followed by a one-second scheduler-call backoff, successful recovery reconfigures and flushes the FIFO without resetting sequence, and the next stored sample is marked with recovery and discontinuity flags;
 - session start suspends production, counts and clears the old queue, resets session sequence/diagnostics, flushes the hardware FIFO, and resumes sensing; session stop first suspends new production, performs a bounded final drain, and deliberately leaves the queue available for the Phase 4 row adapter; and
 - all cumulative diagnostics use saturating 64-bit counters with an explicit saturation indicator, while sequence wrap remains intentional.

@@ -6,6 +6,7 @@
 #include "SD_MMC.h"
 
 #include "ConfigManager.h"
+#include "DisplayManager.h"
 #include "FirmwareInfo.h"
 #include "LoggingManager.h"
 #include "PowerManager.h"
@@ -551,6 +552,8 @@ static void addConfigGlobalsJson_(JsonObject obj, const LoggerConfig& cfg) {
   obj["wifi_ap_ssid"] = cfg.wifiApSsid;
   obj["ntp_servers"] = cfg.ntpServers;
   obj["time_check_url"] = cfg.timeCheckUrl;
+  obj["oled_logging_policy"] =
+      ConfigManager::oledLoggingPolicyKey(cfg.oledLoggingPolicy);
   obj["sensor_count"] = cfg.sensorCount();
 }
 
@@ -579,7 +582,7 @@ static void handleConfigPut_(WebServer& srv) {
   if (!req["sample_rate_hz"].isNull()) {
     long hz = req["sample_rate_hz"] | tmp.sampleRateHz;
     if (hz < 1 || hz > 2000 || !Rates::isSupported((uint16_t)hz)) {
-      sendError_(srv, 400, "invalid_sample_rate", "sample_rate_hz must be one of 10, 20, 50, 100, 200, 500, 1000.");
+      sendError_(srv, 400, "invalid_sample_rate", "sample_rate_hz must be one of 10, 20, 50, 100, 200, 500, 700, 1000.");
       return;
     }
     tmp.sampleRateHz = (uint16_t)hz;
@@ -631,11 +634,19 @@ static void handleConfigPut_(WebServer& srv) {
     s.trim();
     s.toCharArray(tmp.timeCheckUrl, sizeof(tmp.timeCheckUrl));
   }
+  if (!req["oled_logging_policy"].isNull()) {
+    String s = req["oled_logging_policy"] | "";
+    OledLoggingPolicy policy;
+    if (ConfigManager::parseOledLoggingPolicy(s.c_str(), policy)) {
+      tmp.oledLoggingPolicy = policy;
+    }
+  }
 
   if (!ConfigManager::save(tmp)) {
     sendError_(srv, 500, "save_failed", "Failed to save configuration.");
     return;
   }
+  DisplayManager::setLoggingPolicy(ConfigManager::get().oledLoggingPolicy);
   handleConfigGet_(srv);
 }
 

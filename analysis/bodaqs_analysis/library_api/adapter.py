@@ -17,6 +17,15 @@ from .analysis_views import (
     list_analysis_views,
 )
 from .bookmarks import create_bookmark, delete_bookmark, list_bookmarks, load_bookmark, update_bookmark
+from .event_annotations import (
+    create_event_annotation,
+    delete_event_annotation,
+    load_event_annotation,
+    query_event_annotations,
+    update_event_annotation,
+)
+from .event_definitions import query_event_definitions
+from .event_segments import query_event_segments
 from .cache import InMemoryLruCache, PersistentJsonCache, stable_cache_digest
 from .catalog import (
     build_session_catalog,
@@ -662,6 +671,38 @@ class LibraryAdapter:
             request,
             lambda single_request: query_metrics(self._library_root(library_id), single_request, library_id=library_id),
         )
+
+    def query_event_definitions(self, request: dict[str, Any]) -> dict[str, Any]:
+        return query_event_definitions(request, resolve_library_root=self._library_root)
+
+    def query_event_segments(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        return query_event_segments(self._library_root(library_id), request, library_id=library_id)
+
+    def query_event_annotations(self, request: dict[str, Any]) -> dict[str, Any]:
+        return query_event_annotations(self.libraries_root, request)
+
+    def load_event_annotation(self, annotation_id: str) -> dict[str, Any]:
+        return load_event_annotation(self.libraries_root, annotation_id)
+
+    def create_event_annotation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return create_event_annotation(self.libraries_root, payload)
+
+    def update_event_annotation(
+        self,
+        annotation_id: str,
+        *,
+        expected_revision: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        return update_event_annotation(
+            self.libraries_root,
+            annotation_id,
+            expected_revision=expected_revision,
+            payload=payload,
+        )
+
+    def delete_event_annotation(self, annotation_id: str) -> dict[str, Any]:
+        return delete_event_annotation(self.libraries_root, annotation_id)
 
     def get_session_gps_summary(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
         row = self._catalog_row_for_session(library_id, request)

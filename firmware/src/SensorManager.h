@@ -6,6 +6,7 @@
 #include "TimingStats.h"
 
 struct LoggerConfig;
+struct BdqV2StreamDescriptor;
 
 namespace SensorManager {
   struct PreviewValue {
@@ -44,16 +45,30 @@ namespace SensorManager {
   bool setMuted(uint8_t index, bool muted);     // false if out of range
 
   // CSV / sampling
-  uint16_t dynamicColumnCount();
+  uint16_t dynamicColumnCount(bool excludeBdqV2NativeStreams = false);
   uint16_t synchronousMaxSampleRateHz();
   void buildHeader(char* out, size_t n, bool humanTs);
   String buildHeaderString(bool humanTs);
-  void sampleValues(float* out, uint16_t maxOut, uint16_t& written);
-  uint16_t describeSensorColumns(SensorColumnDescriptor* out, uint16_t maxOut);
-  bool describeSensorColumnAt(uint16_t columnIndex, SensorColumnDescriptor& out);
+  void sampleValues(
+      float* out,
+      uint16_t maxOut,
+      uint16_t& written,
+      bool excludeBdqV2NativeStreams = false);
+  uint16_t describeSensorColumns(
+      SensorColumnDescriptor* out,
+      uint16_t maxOut,
+      bool excludeBdqV2NativeStreams = false);
+  bool describeSensorColumnAt(
+      uint16_t columnIndex,
+      SensorColumnDescriptor& out,
+      bool excludeBdqV2NativeStreams = false);
   uint16_t describeSensors(SensorMetadataDescriptor* out, uint16_t maxOut);
   bool describeSensorAt(uint16_t sensorIndex, SensorMetadataDescriptor& out);
   bool describeRuntimeDiagnosticsAt(uint8_t sensorIndex, SensorRuntimeDiagnostics& out);
+  uint16_t describeBdqV2Streams(
+      BdqV2StreamDescriptor* out,
+      uint16_t maxOut,
+      uint16_t firstStreamId = 2);
   uint16_t describeSensorColumnRawFlags(bool* out, uint16_t maxOut);
   uint16_t readSuspensionPreview(PreviewMode mode, PreviewValue* out, uint16_t maxOut);
   bool gpsStatus(SensorGpsStatus& out);

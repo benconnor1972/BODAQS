@@ -220,8 +220,12 @@ Tasks:
 - Use standard-library HTTP first if practical.
 - Keep response validation explicit and friendly.
 - Normalize `base_url` with no trailing slash.
-- Stream downloads to `<target>.part`.
-- Rename `.part` only after successful response and ZIP validation.
+- Stream downloads to `<target>.part`; retry an interrupted transfer from its
+  byte offset when the logger supports HTTP Range. If the logger ignores Range,
+  restart that response from byte zero rather than appending duplicate bytes.
+- Check Content-Length/Content-Range and validate the completed ZIP or BDQ
+  before renaming `.part`. A failed import keeps its partial file for the next
+  attempt; a damaged resumed prefix is retried once from byte zero.
 - Add unit tests with a local fake HTTP server.
 
 Acceptance:

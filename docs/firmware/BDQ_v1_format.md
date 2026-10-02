@@ -1,5 +1,9 @@
 # BODAQS BDQ v1 Compact Binary Log Format
 
+For native independently clocked streams, see the accepted
+[BDQ v2 Multi-Stream Data Contract](BDQ_v2_Multi_Stream_Contract.md). BDQ v1
+remains the fixed-rate global-row format.
+
 This document is the parser contract for BODAQS compact binary logs. It is
 intended to be sufficient for an implementation agent to build a reader without
 access to firmware source code.

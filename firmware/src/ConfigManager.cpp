@@ -5,6 +5,7 @@
 #include "Calibration.h"
 #include "SensorRegistry.h"
 #include "StorageManager.h"
+#include "BoardSelect.h"
 #include "DebugLog.h"
 #include <ctype.h>
 #include <stdlib.h>
@@ -44,6 +45,78 @@ namespace {
 
   ButtonBindingDef g_bindingDefs[MAX_BUTTON_BINDINGS];
   uint8_t          g_bindingDefCount       = 0;
+
+  static void copyStrBoundedButton_(const char* src, char* dst, size_t cap);
+  static void copyStrBounded(const char* src, char* dst, size_t cap);
+
+  struct DefaultButtonBinding {
+    const char* button;
+    const char* event;
+    const char* action;
+  };
+
+  static constexpr DefaultButtonBinding kCommonButtonBindings[] = {
+    { "nav_up",    "pressed",      "menu_nav_up" },
+    { "nav_down",  "pressed",      "menu_nav_down" },
+    { "nav_left",  "pressed",      "menu_nav_left" },
+    { "nav_right", "pressed",      "menu_nav_right" },
+    { "nav_enter", "released",     "menu_nav_enter" },
+    { "mark",      "click",        "mark_event" },
+    { "mark",      "double_click", "web_toggle" },
+    { "mark",      "held",         "logging_toggle" },
+    { "mark",      "released",     "menu_select" },
+  };
+
+  static void appendDefaultButtonBinding_(
+      LoggerConfig& cfg,
+      const char* button,
+      const char* event,
+      const char* action) {
+    if (cfg.buttonBindingCount >= MAX_BUTTON_BINDINGS) return;
+    ButtonBindingDef& binding = cfg.buttonBindings[cfg.buttonBindingCount++];
+    copyStrBoundedButton_(button, binding.buttonId, sizeof(binding.buttonId));
+    copyStrBoundedButton_(event, binding.event, sizeof(binding.event));
+    copyStrBoundedButton_(action, binding.action, sizeof(binding.action));
+  }
+
+  static void applyDefaultButtonBindings_(LoggerConfig& cfg) {
+    cfg.buttonBindingCount = 0;
+    for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
+      cfg.buttonBindings[i] = ButtonBindingDef{};
+    }
+    if (!board::gBoard ||
+        board::gBoard->buttons.binding_preset == board::ButtonBindingPreset::None) {
+      return;
+    }
+
+    for (const auto& binding : kCommonButtonBindings) {
+      appendDefaultButtonBinding_(cfg, binding.button, binding.event, binding.action);
+    }
+    if (board::gBoard->supports_user_sleep) {
+      appendDefaultButtonBinding_(cfg, "nav_left", "held", "sleep");
+    }
+    appendDefaultButtonBinding_(cfg, "nav_up", "held", "upload_mode_toggle");
+    appendDefaultButtonBinding_(cfg, "nav_down", "held", "web_toggle");
+  }
+
+  static bool loadConfigText_(String& content) {
+    if (StorageManager_loadTextFile(g_cfgName, content)) return true;
+
+    const char* leaf = strrchr(g_cfgName, '/');
+    leaf = leaf ? leaf + 1 : g_cfgName;
+    if ((!strcasecmp(leaf, "loggercfg") && strcasecmp(g_cfgName, "/loggercfg")) ||
+        (!strcasecmp(leaf, "loggercfg.txt") && strcasecmp(g_cfgName, "/loggercfg.txt"))) {
+      char rootPath[sizeof(g_cfgName)] = "/";
+      strncat(rootPath, leaf, sizeof(rootPath) - 2);
+      CFG_LOGI("Load: '%s' not found; trying '%s'\n", g_cfgName, rootPath);
+      if (StorageManager_loadTextFile(rootPath, content)) {
+        copyStrBounded(rootPath, g_cfgName, sizeof(g_cfgName));
+        CFG_LOGI("Load: using root-level config '%s'\n", g_cfgName);
+        return true;
+      }
+    }
+    return false;
+  }
 
   // Small helper: bounded string copy for button fields
   static void copyStrBoundedButton_(const char* src, char* dst, size_t cap) {
@@ -369,6 +442,9 @@ static void copyStrBoundedC_(const char* src, char* dst, size_t dstsz) {
 void ConfigManager::begin(const char* filename) {
   if (filename && *filename) copyStrBounded(filename, g_cfgName, sizeof(g_cfgName));
 
+  s_cfg = LoggerConfig{};
+  applyDefaultButtonBindings_(s_cfg);
+
   g_specCount = 0;
   g_expectedCount = 0;
 
@@ -464,6 +540,7 @@ static String minutesStringFromMs_(uint32_t ms) {
 
 const char* ConfigManager::logFormatKey(LogFormat format) {
   switch (format) {
+    case LogFormat::BodaqsMultiStreamBinary: return "bodaqs_multi_stream_binary";
     case LogFormat::BodaqsCompactBinary: return "bodaqs_compact_binary";
     case LogFormat::BodaqsStandard:
     default: return "bodaqs_standard";
@@ -472,6 +549,7 @@ const char* ConfigManager::logFormatKey(LogFormat format) {
 
 const char* ConfigManager::logFormatLabel(LogFormat format) {
   switch (format) {
+    case LogFormat::BodaqsMultiStreamBinary: return "BODAQS multi-stream binary";
     case LogFormat::BodaqsCompactBinary: return "BODAQS compact binary";
     case LogFormat::BodaqsStandard:
     default: return "BODAQS CSV";
@@ -502,6 +580,13 @@ bool ConfigManager::parseLogFormat(const char* text, LogFormat& out) {
       keyEquals(text, "bdq") ||
       keyEquals(text, "binary")) {
     out = LogFormat::BodaqsCompactBinary;
+    return true;
+  }
+  if (keyEquals(text, "bodaqs_multi_stream_binary") ||
+      keyEquals(text, "bodaqs_multistream_binary") ||
+      keyEquals(text, "multi_stream_binary") ||
+      keyEquals(text, "bdq_v2")) {
+    out = LogFormat::BodaqsMultiStreamBinary;
     return true;
   }
   return false;
@@ -536,6 +621,43 @@ bool ConfigManager::parseWifiMode(const char* text, WiFiMode& out) {
       keyEquals(text, "accesspoint") ||
       keyEquals(text, "ap")) {
     out = WiFiMode::AccessPoint;
+    return true;
+  }
+  return false;
+}
+
+const char* ConfigManager::oledLoggingPolicyKey(OledLoggingPolicy policy) {
+  switch (policy) {
+    case OledLoggingPolicy::Freeze: return "freeze";
+    case OledLoggingPolicy::PreferActive: return "prefer_active";
+    case OledLoggingPolicy::Auto:
+    default: return "auto";
+  }
+}
+
+const char* ConfigManager::oledLoggingPolicyLabel(OledLoggingPolicy policy) {
+  switch (policy) {
+    case OledLoggingPolicy::Freeze: return "Freeze while logging";
+    case OledLoggingPolicy::PreferActive: return "Prefer active";
+    case OledLoggingPolicy::Auto:
+    default: return "Automatic";
+  }
+}
+
+bool ConfigManager::parseOledLoggingPolicy(
+    const char* text,
+    OledLoggingPolicy& out) {
+  if (!text || !*text) return false;
+  if (keyEquals(text, "auto") || keyEquals(text, "automatic")) {
+    out = OledLoggingPolicy::Auto;
+    return true;
+  }
+  if (keyEquals(text, "freeze") || keyEquals(text, "off")) {
+    out = OledLoggingPolicy::Freeze;
+    return true;
+  }
+  if (keyEquals(text, "prefer_active") || keyEquals(text, "active")) {
+    out = OledLoggingPolicy::PreferActive;
     return true;
   }
   return false;
@@ -753,6 +875,13 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
   if (keyEquals(key, "ui_oled_level"))  { long v=strtol(val,nullptr,10); if (v<1) v=1; if (v>4) v=4; cfg.uiOledLevel=(uint8_t)v; return true; }
   if (keyEquals(key, "oled_brightness")){ long v=strtol(val,nullptr,10); if (v<0) v=0; if (v>255) v=255; cfg.oledBrightness=(uint8_t)v; return true; }
   if (keyEquals(key, "oled_idle_dim_ms")){long v=strtol(val,nullptr,10); if (v<0) v=0; if (v>65535) v=65535; cfg.oledIdleDimMs=(uint16_t)v; return true; }
+  if (keyEquals(key, "oled_logging_policy")) {
+    OledLoggingPolicy policy;
+    if (ConfigManager::parseOledLoggingPolicy(val, policy)) {
+      cfg.oledLoggingPolicy = policy;
+    }
+    return true;
+  }
 
   // --- buttonN.* : DEPRECATED (hardware buttons are defined by BoardProfile) ---
   if (!strncasecmp(key, "button", 6) && isdigit((unsigned char)key[6])) {
@@ -817,10 +946,19 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
 bool ConfigManager::load(LoggerConfig& cfg) {
   CFG_LOGI("Load: starting\n");
 
+  g_bindingDefCount = 0;
+  for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) {
+    g_bindingDefs[i] = ButtonBindingDef{};
+  }
+
   // ---- Read whole config file into memory via StorageManager ----
   String content;
-  if (!StorageManager_loadTextFile(g_cfgName, content)) {
-    CFG_LOGW("Load: failed to open/read '%s', using defaults\n", g_cfgName);
+  if (!loadConfigText_(content)) {
+    applyDefaultButtonBindings_(cfg);
+    s_cfg = cfg;
+    g_cfg = s_cfg;
+    CFG_LOGW("Load: config unavailable; using compiled defaults (%u button bindings)\n",
+             (unsigned)cfg.buttonBindingCount);
     return false;
   }
 
@@ -959,11 +1097,17 @@ bool ConfigManager::load(LoggerConfig& cfg) {
     cfg.wifiNetworkCount = 1;
   }
 
-  cfg.buttonBindingCount = (g_bindingDefCount <= MAX_BUTTON_BINDINGS)
-                             ? g_bindingDefCount
-                             : MAX_BUTTON_BINDINGS;
-  for (uint8_t i = 0; i < cfg.buttonBindingCount; ++i) {
-    cfg.buttonBindings[i] = g_bindingDefs[i];
+  if (g_bindingDefCount == 0) {
+    applyDefaultButtonBindings_(cfg);
+    CFG_LOGI("Load: no button bindings configured; using %u board defaults\n",
+             (unsigned)cfg.buttonBindingCount);
+  } else {
+    cfg.buttonBindingCount = (g_bindingDefCount <= MAX_BUTTON_BINDINGS)
+                               ? g_bindingDefCount
+                               : MAX_BUTTON_BINDINGS;
+    for (uint8_t i = 0; i < cfg.buttonBindingCount; ++i) {
+      cfg.buttonBindings[i] = g_bindingDefs[i];
+    }
   }
 
   // Now commit cfg as usual:
@@ -1144,6 +1288,7 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
   kv_u("ui_oled_level", (unsigned)cfg.uiOledLevel);
   kv_u("oled_brightness", (unsigned)cfg.oledBrightness);
   kv_u("oled_idle_dim_ms", (unsigned)cfg.oledIdleDimMs);
+  kv("oled_logging_policy", ConfigManager::oledLoggingPolicyKey(cfg.oledLoggingPolicy));
   line("");
 
 
@@ -1202,6 +1347,8 @@ void ConfigManager::print(const LoggerConfig& cfg) {
   LOGI("debounceMs=%u\n", cfg.debounceMs);
   LOGI("autoSleepIdleMs=%lu\n", (unsigned long)cfg.autoSleepIdleMs);
   LOGI("wifiIdleTimeoutMs=%lu\n", (unsigned long)cfg.wifiIdleTimeoutMs);
+  LOGI("oledLoggingPolicy=%s\n",
+       ConfigManager::oledLoggingPolicyKey(cfg.oledLoggingPolicy));
   LOGI("logLevel=%s\n", (cfg.logLevelOverride == 0xFF) ? "default" : Log_levelName((LogLevel)cfg.logLevelOverride));
 
   LOGI("wifiMode=%s\n", ConfigManager::wifiModeKey(cfg.wifiMode));

@@ -4935,6 +4935,292 @@ button {
   position: relative;
 }
 
+.event-browser select,
+.event-browser input[type="number"],
+.event-browser input[type="text"] {
+  width: 100%;
+  min-width: 0;
+}
+
+.event-browser-check-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.event-browser-check-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--text-body);
+  font-weight: var(--weight-regular);
+  text-transform: none;
+}
+
+.event-browser-range {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+}
+
+.event-browser-sort {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: var(--space-2);
+}
+
+.event-browser-range label,
+.event-browser-time-windows label {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  text-transform: none;
+}
+
+.event-browser-time-windows {
+  display: grid;
+  gap: 7px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.event-browser-time-windows > div {
+  display: grid;
+  grid-template-columns: minmax(110px, 1.5fr) 1fr 1fr;
+  align-items: end;
+  gap: 6px;
+  padding: 6px;
+  border: var(--border-subtle);
+  background: white;
+}
+
+.event-browser-time-windows > div > span {
+  align-self: center;
+  overflow: hidden;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.event-browser-navigator {
+  display: grid;
+  grid-template-columns: auto auto minmax(200px, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: var(--border-subtle);
+  background: var(--surface-warm);
+}
+
+.event-browser-chart-panel,
+.event-browser-comparison,
+.event-browser-metrics,
+.event-browser-tags {
+  overflow: hidden;
+}
+
+.event-browser-comparison-actions,
+.event-browser-bulk-add {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.event-browser-comparison-actions button,
+.event-browser-pinned-item button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.event-browser-comparison-body {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+}
+
+.event-browser-bulk-add select {
+  max-width: 300px;
+}
+
+.event-browser-pinned-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--space-2);
+}
+
+.event-browser-pinned-item {
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 7px;
+  padding: 7px;
+  border: var(--border-subtle);
+  background: var(--surface-warm);
+}
+
+.event-browser-pinned-item.incompatible {
+  opacity: 0.62;
+}
+
+.event-browser-pinned-item > span:nth-child(2) {
+  display: grid;
+  min-width: 0;
+}
+
+.event-browser-pinned-item small {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.event-browser-trace-swatch {
+  width: 9px;
+  height: 32px;
+  border-radius: var(--radius-pill);
+}
+
+.event-browser-comparison-status {
+  padding: 7px 9px;
+  border-left: 3px solid var(--teal-quiet);
+  background: var(--teal-soft);
+  color: var(--green);
+  font-size: var(--text-caption);
+}
+
+.event-browser .viz-panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 9px 11px;
+  border-bottom: var(--border-subtle);
+  background: var(--surface-warm);
+}
+
+.event-browser .viz-panel-heading > div {
+  display: grid;
+  gap: 2px;
+}
+
+.event-browser .viz-panel-heading small {
+  color: var(--muted);
+}
+
+.event-browser-charts {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+}
+
+.event-browser-chart {
+  min-width: 0;
+  margin: 0;
+  border: var(--border-subtle);
+  background: white;
+}
+
+.event-browser-chart figcaption {
+  padding: 7px 9px 0;
+  color: var(--green);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-bold);
+  text-transform: uppercase;
+}
+
+.event-browser-chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 220px;
+}
+
+.event-browser-chart text {
+  fill: var(--muted);
+  font-size: 10px;
+}
+
+.event-chart-axis {
+  stroke: #c7cfcb;
+  stroke-width: 1;
+}
+
+.event-chart-trigger {
+  stroke: var(--green);
+  stroke-dasharray: 4 3;
+  stroke-width: 1.5;
+}
+
+.event-chart-trigger.secondary {
+  stroke: #d55e00;
+  stroke-width: 1;
+}
+
+.event-browser-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--space-5);
+}
+
+.event-browser-metrics dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1px;
+  margin: 0;
+  padding: var(--space-3);
+  background: var(--line);
+}
+
+.event-browser-metrics dl > div {
+  padding: 8px;
+  background: white;
+}
+
+.event-browser-metrics dt {
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.event-browser-metrics dd {
+  margin: 3px 0 0;
+  font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
+}
+
+.event-browser-tags > :not(.viz-panel-heading) {
+  margin: var(--space-3);
+}
+
+.event-browser-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.event-browser-tag-list button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 7px;
+  border: 1px solid var(--teal-quiet);
+  border-radius: var(--radius-pill);
+  background: var(--teal-soft);
+  color: var(--green);
+}
+
+.event-browser-tags form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px;
+}
+
 .suspension-viz-hero {
   display: flex;
   align-items: flex-start;
@@ -8660,6 +8946,34 @@ button {
     height: auto;
     min-height: var(--control-height-lg);
     writing-mode: horizontal-tb;
+  }
+
+  .event-browser-navigator {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .event-browser-navigator select {
+    grid-row: 2;
+    grid-column: 1 / -1;
+  }
+
+  .event-browser-navigator button:last-child {
+    grid-row: 1;
+    grid-column: 3;
+  }
+
+  .event-browser-comparison .viz-panel-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .event-browser-bulk-add {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .event-browser-bulk-add select {
+    max-width: none;
   }
 
 }

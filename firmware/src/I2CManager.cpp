@@ -1,5 +1,6 @@
 #include "I2CManager.h"
 #include "DebugLog.h"
+#include <atomic>
 #if defined(ESP32)
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -17,6 +18,12 @@ namespace {
     I2C_BUFFER_LENGTH,
     I2C_BUFFER_LENGTH
   };
+  uint16_t s_transactionTimeoutMs[board::BOARD_MAX_I2C_BUSES] = {50, 50};
+  I2CManager::BusRecoveryStatus s_recovery[board::BOARD_MAX_I2C_BUSES];
+  std::atomic<uint32_t> s_recoveryGeneration[board::BOARD_MAX_I2C_BUSES];
+  bool s_recoveryAttemptKnown[board::BOARD_MAX_I2C_BUSES] {};
+  bool s_lastRecoveryOk[board::BOARD_MAX_I2C_BUSES] {};
+  constexpr uint32_t kRecoveryCooldownMs = 2000;
 #if defined(ESP32)
   SemaphoreHandle_t s_mutexes[board::BOARD_MAX_I2C_BUSES] = { nullptr, nullptr };
 #endif
@@ -117,7 +124,116 @@ bool I2CManager::setTransactionTimeout(uint8_t busIndex, uint16_t timeoutMs) {
   TwoWire* wire = s_buses[busIndex];
   if (!wire) return false;
   wire->setTimeOut(timeoutMs);
+  s_transactionTimeoutMs[busIndex] = timeoutMs;
   return true;
+}
+
+bool I2CManager::recoverBus(uint8_t busIndex) {
+  if (busIndex >= board::BOARD_MAX_I2C_BUSES || !s_available[busIndex]) return false;
+  TwoWire* wire = s_buses[busIndex];
+  const board::I2CProfile* cfg = s_profiles[busIndex];
+  if (!wire || !cfg || cfg->sda < 0 || cfg->scl < 0) return false;
+  if (!lock(wire, 200)) {
+    I2C_LOGW("bus%u recovery deferred: mutex busy\n", (unsigned)busIndex);
+    return false;
+  }
+
+  const uint32_t nowMs = millis();
+  if (s_recoveryAttemptKnown[busIndex] &&
+      (uint32_t)(nowMs - s_recovery[busIndex].lastAttemptMs) < kRecoveryCooldownMs) {
+    const bool previousOk = s_lastRecoveryOk[busIndex];
+    unlock(wire);
+    return previousOk;
+  }
+
+  BusRecoveryStatus& status = s_recovery[busIndex];
+  s_recoveryAttemptKnown[busIndex] = true;
+  status.lastAttemptMs = nowMs;
+  ++status.attempts;
+  status.clockPulses = 0;
+  // The controller is detached before GPIO bus-clear pulses. The external
+  // pull-ups provide the released level; never drive either line high.
+  wire->end();
+  pinMode((uint8_t)cfg->sda, INPUT_PULLUP);
+  pinMode((uint8_t)cfg->scl, INPUT_PULLUP);
+  delayMicroseconds(5);
+  status.sdaLowBefore = digitalRead((uint8_t)cfg->sda) == LOW;
+  status.sclLowBefore = digitalRead((uint8_t)cfg->scl) == LOW;
+
+  if (status.sdaLowBefore && !status.sclLowBefore) {
+    digitalWrite((uint8_t)cfg->scl, HIGH);
+    pinMode((uint8_t)cfg->scl, OUTPUT_OPEN_DRAIN);
+    for (uint8_t pulse = 0; pulse < 9 && digitalRead((uint8_t)cfg->sda) == LOW; ++pulse) {
+      digitalWrite((uint8_t)cfg->scl, LOW);
+      delayMicroseconds(5);
+      digitalWrite((uint8_t)cfg->scl, HIGH);
+      for (uint8_t wait = 0; wait < 20 && digitalRead((uint8_t)cfg->scl) == LOW; ++wait) {
+        delayMicroseconds(5);
+      }
+      ++status.clockPulses;
+      if (digitalRead((uint8_t)cfg->scl) == LOW) break;
+      delayMicroseconds(5);
+    }
+    // Generate STOP only if the clock has been released. A permanently low
+    // SCL cannot be cleared by the controller and needs physical attention.
+    if (digitalRead((uint8_t)cfg->scl) == HIGH) {
+      digitalWrite((uint8_t)cfg->sda, LOW);
+      pinMode((uint8_t)cfg->sda, OUTPUT_OPEN_DRAIN);
+      delayMicroseconds(5);
+      digitalWrite((uint8_t)cfg->sda, HIGH);
+      delayMicroseconds(5);
+    }
+  }
+
+  pinMode((uint8_t)cfg->sda, INPUT_PULLUP);
+  pinMode((uint8_t)cfg->scl, INPUT_PULLUP);
+  delayMicroseconds(5);
+  status.sdaLowAfter = digitalRead((uint8_t)cfg->sda) == LOW;
+  status.sclLowAfter = digitalRead((uint8_t)cfg->scl) == LOW;
+  const bool started = wire->begin(cfg->sda, cfg->scl);
+  bool bufferOk = false;
+  if (started) {
+    wire->setClock(cfg->hz ? cfg->hz : 100000UL);
+    wire->setTimeOut(s_transactionTimeoutMs[busIndex]);
+    bufferOk = wire->setBufferSize(s_bufferCapacity[busIndex]) >=
+        s_bufferCapacity[busIndex];
+  }
+  const bool ok = started && bufferOk && !status.sdaLowAfter && !status.sclLowAfter;
+  s_lastRecoveryOk[busIndex] = ok;
+  if (ok) {
+    ++status.successes;
+    status.generation = s_recoveryGeneration[busIndex].fetch_add(
+        1, std::memory_order_acq_rel) + 1;
+  } else {
+    ++status.failures;
+  }
+  I2C_LOGW("bus%u recovery %s pre_sda=%u pre_scl=%u post_sda=%u post_scl=%u pulses=%u controller=%u buffer=%u\n",
+           (unsigned)busIndex, ok ? "ready" : "failed",
+           status.sdaLowBefore ? 1u : 0u, status.sclLowBefore ? 1u : 0u,
+           status.sdaLowAfter ? 1u : 0u, status.sclLowAfter ? 1u : 0u,
+           (unsigned)status.clockPulses, started ? 1u : 0u, bufferOk ? 1u : 0u);
+  unlock(wire);
+  return ok;
+}
+
+uint32_t I2CManager::recoveryGeneration(uint8_t busIndex) {
+  return busIndex < board::BOARD_MAX_I2C_BUSES
+      ? s_recoveryGeneration[busIndex].load(std::memory_order_acquire)
+      : 0;
+}
+
+void I2CManager::resetRecoveryStats() {
+  for (uint8_t busIndex = 0; busIndex < board::BOARD_MAX_I2C_BUSES; ++busIndex) {
+    s_recovery[busIndex] = BusRecoveryStatus{};
+    s_recoveryAttemptKnown[busIndex] = false;
+    s_lastRecoveryOk[busIndex] = false;
+    s_recoveryGeneration[busIndex].store(0, std::memory_order_release);
+  }
+}
+
+const I2CManager::BusRecoveryStatus& I2CManager::recoveryStatus(uint8_t busIndex) {
+  static const BusRecoveryStatus empty;
+  return busIndex < board::BOARD_MAX_I2C_BUSES ? s_recovery[busIndex] : empty;
 }
 
 bool I2CManager::lock(TwoWire* wire, uint32_t timeoutMs) {

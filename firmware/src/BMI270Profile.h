@@ -2,10 +2,11 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 namespace BMI270Profile {
 
-inline constexpr const char* kContractId = "bodaqs.bmi270_imu_mvp.v3";
+inline constexpr const char* kContractId = "bodaqs.bmi270_imu_mvp.v5";
 inline constexpr const char* kProfileName = "orientation_200";
 inline constexpr const char* kDriverRevision = "41129fcfe39c583ee5462d79195741945d51c1fe";
 
@@ -14,6 +15,7 @@ inline constexpr uint8_t kSecondaryAddress = 0x69;
 inline constexpr uint16_t kOdrHz = 200;
 inline constexpr uint16_t kLoggerRateHz = 500;
 inline constexpr uint8_t kInitializationAttempts = 5;
+inline constexpr uint32_t kSensorTimeRateHz = 25600;
 
 // Bosch API values pinned by kDriverRevision. Keeping the pure profile
 // definition independent of the Bosch headers makes validation host-testable.
@@ -24,6 +26,27 @@ inline constexpr uint8_t kGyroRange2000DpsCode = 0x00;
 inline constexpr uint8_t kGyroNormalModeCode = 0x02;
 inline constexpr uint8_t kPowerOptimizedCode = 0x00;
 inline constexpr uint8_t kPerformanceOptimizedCode = 0x01;
+
+struct NativeProfile {
+  const char* name = nullptr;
+  uint16_t accelOdrHz = 0;
+  uint16_t gyroOdrHz = 0;
+  uint8_t accelOdrCode = 0;
+  uint8_t gyroOdrCode = 0;
+
+  constexpr bool isMixedRate() const { return accelOdrHz != gyroOdrHz; }
+};
+
+inline constexpr NativeProfile kNativeProfiles[] = {
+    {"orientation_200", 200, 200, 0x09, 0x09},
+    {"orientation_400", 400, 400, 0x0A, 0x0A},
+    {"orientation_800", 800, 800, 0x0B, 0x0B},
+    {"orientation_1600", 1600, 1600, 0x0C, 0x0C},
+    {"accel_800_gyro_200", 800, 200, 0x0B, 0x09},
+    {"accel_1600_gyro_200", 1600, 200, 0x0C, 0x09},
+};
+inline constexpr size_t kNativeProfileCount =
+    sizeof(kNativeProfiles) / sizeof(kNativeProfiles[0]);
 
 struct EffectiveConfig {
   uint8_t accelOdr = 0;
@@ -41,25 +64,92 @@ constexpr bool isSupportedAddress(uint8_t address) {
   return address == kPrimaryAddress || address == kSecondaryAddress;
 }
 
-constexpr bool matchesOrientation200(const EffectiveConfig& config) {
-  return config.accelOdr == kOdrCode &&
+constexpr bool isSupportedNativeRate(uint16_t odrHz) {
+  return odrHz == 200 || odrHz == 400 || odrHz == 800 || odrHz == 1600;
+}
+
+constexpr uint8_t odrCodeForRate(uint16_t odrHz) {
+  return odrHz == 200 ? 0x09 :
+         odrHz == 400 ? 0x0A :
+         odrHz == 800 ? 0x0B :
+         odrHz == 1600 ? 0x0C : 0;
+}
+
+constexpr uint16_t nativeRateForOdrCode(uint8_t odrCode) {
+  return odrCode == 0x09 ? 200 :
+         odrCode == 0x0A ? 400 :
+         odrCode == 0x0B ? 800 :
+         odrCode == 0x0C ? 1600 : 0;
+}
+
+constexpr uint32_t sensorTimeTicksPerSample(uint16_t odrHz) {
+  return isSupportedNativeRate(odrHz) ? kSensorTimeRateHz / odrHz : 0;
+}
+
+inline const NativeProfile* find(const char* name) {
+  if (!name) return nullptr;
+  for (size_t index = 0; index < kNativeProfileCount; ++index) {
+    if (strcmp(name, kNativeProfiles[index].name) == 0) {
+      return &kNativeProfiles[index];
+    }
+  }
+  return nullptr;
+}
+
+inline const NativeProfile* find(uint16_t odrHz) {
+  for (size_t index = 0; index < kNativeProfileCount; ++index) {
+    if (odrHz == kNativeProfiles[index].accelOdrHz &&
+        odrHz == kNativeProfiles[index].gyroOdrHz) {
+      return &kNativeProfiles[index];
+    }
+  }
+  return nullptr;
+}
+
+inline const NativeProfile* find(uint16_t accelOdrHz, uint16_t gyroOdrHz) {
+  for (size_t index = 0; index < kNativeProfileCount; ++index) {
+    if (accelOdrHz == kNativeProfiles[index].accelOdrHz &&
+        gyroOdrHz == kNativeProfiles[index].gyroOdrHz) {
+      return &kNativeProfiles[index];
+    }
+  }
+  return nullptr;
+}
+
+constexpr bool matches(
+    const EffectiveConfig& config,
+    const NativeProfile& profile) {
+  return profile.accelOdrCode != 0 && profile.gyroOdrCode != 0 &&
+         config.accelOdr == profile.accelOdrCode &&
          config.accelRange == kAccelRange16GCode &&
          config.accelBandwidth == kAccelNormalAvg4Code &&
          config.accelFilterPerformance == kPerformanceOptimizedCode &&
-         config.gyroOdr == kOdrCode &&
+         config.gyroOdr == profile.gyroOdrCode &&
          config.gyroRange == kGyroRange2000DpsCode &&
          config.gyroBandwidth == kGyroNormalModeCode &&
          config.gyroNoisePerformance == kPowerOptimizedCode &&
          config.gyroFilterPerformance == kPerformanceOptimizedCode;
 }
 
-constexpr EffectiveConfig orientation200Expected() {
+constexpr bool matches(
+    const EffectiveConfig& config,
+    uint16_t nativeRateHz) {
+  const NativeProfile profile = {
+      nullptr,
+      nativeRateHz,
+      nativeRateHz,
+      odrCodeForRate(nativeRateHz),
+      odrCodeForRate(nativeRateHz)};
+  return matches(config, profile);
+}
+
+constexpr EffectiveConfig expected(const NativeProfile& profile) {
   return EffectiveConfig{
-    kOdrCode,
+    profile.accelOdrCode,
     kAccelRange16GCode,
     kAccelNormalAvg4Code,
     kPerformanceOptimizedCode,
-    kOdrCode,
+    profile.gyroOdrCode,
     kGyroRange2000DpsCode,
     kGyroNormalModeCode,
     kPowerOptimizedCode,
@@ -67,9 +157,27 @@ constexpr EffectiveConfig orientation200Expected() {
   };
 }
 
+constexpr EffectiveConfig expected(uint16_t nativeRateHz) {
+  return expected(NativeProfile{
+      nullptr,
+      nativeRateHz,
+      nativeRateHz,
+      odrCodeForRate(nativeRateHz),
+      odrCodeForRate(nativeRateHz)});
+}
+
+constexpr bool matchesOrientation200(const EffectiveConfig& config) {
+  return matches(config, kOdrHz);
+}
+
+constexpr EffectiveConfig orientation200Expected() {
+  return expected(kOdrHz);
+}
+
 // These are the deliberately supported sparse-row output selections for the
-// orientation_200 profile.  The physical FIFO is always acquired at kOdrHz;
-// this list governs which native samples may be materialised into logger rows.
+// legacy CSV and BDQ-v1 adapters. The physical FIFO is always acquired at the
+// selected native profile rate; this list governs which samples may be
+// materialised into logger rows.
 inline constexpr uint16_t kOutputRateOptionsHz[] = {
     5, 10, 20, 25, 40, 50, 100, 200,
 };
@@ -87,6 +195,17 @@ constexpr uint16_t outputDecimationFactor(uint16_t outputRateHz) {
   return isSupportedOutputRate(outputRateHz) ? kOdrHz / outputRateHz : 0;
 }
 
+constexpr uint16_t outputDecimationFactor(
+    uint16_t nativeRateHz,
+    uint16_t outputRateHz) {
+  return isSupportedNativeRate(nativeRateHz) &&
+         (isSupportedOutputRate(outputRateHz) || outputRateHz == nativeRateHz) &&
+         outputRateHz <= nativeRateHz &&
+         nativeRateHz % outputRateHz == 0
+      ? nativeRateHz / outputRateHz
+      : 0;
+}
+
 constexpr uint16_t minimumSparseRowLoggerRateHz(uint16_t outputRateHz) {
   // The current BDQ-v1 adapter carries each emitted IMU sample in a primary
   // logger row.  Leave one row of headroom per sample; full-rate output keeps
@@ -98,12 +217,14 @@ constexpr uint16_t minimumSparseRowLoggerRateHz(uint16_t outputRateHz) {
 }
 
 constexpr uint16_t resolveSparseRowOutputRateHz(
+    uint16_t nativeRateHz,
     uint16_t maximumOutputRateHz,
     uint16_t loggerRateHz) {
   uint16_t resolved = 0;
   for (size_t i = 0; i < kOutputRateOptionCount; ++i) {
     const uint16_t candidate = kOutputRateOptionsHz[i];
     if (candidate <= maximumOutputRateHz &&
+        outputDecimationFactor(nativeRateHz, candidate) != 0 &&
         minimumSparseRowLoggerRateHz(candidate) <= loggerRateHz) {
       resolved = candidate;
     }
@@ -111,10 +232,22 @@ constexpr uint16_t resolveSparseRowOutputRateHz(
   return resolved;
 }
 
+constexpr uint16_t resolveSparseRowOutputRateHz(
+    uint16_t maximumOutputRateHz,
+    uint16_t loggerRateHz) {
+  return resolveSparseRowOutputRateHz(kOdrHz, maximumOutputRateHz, loggerRateHz);
+}
+
 static_assert(isSupportedAddress(kPrimaryAddress));
 static_assert(isSupportedAddress(kSecondaryAddress));
 static_assert(!isSupportedAddress(0x67));
 static_assert(matchesOrientation200(orientation200Expected()));
+static_assert(matches(expected(1600), 1600));
+static_assert(matches(
+    expected(kNativeProfiles[4]),
+    kNativeProfiles[4]));
+static_assert(sensorTimeTicksPerSample(200) == 128);
+static_assert(sensorTimeTicksPerSample(1600) == 16);
 static_assert(isSupportedOutputRate(10));
 static_assert(isSupportedOutputRate(5));
 static_assert(isSupportedOutputRate(200));

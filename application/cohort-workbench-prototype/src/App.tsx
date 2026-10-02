@@ -44,6 +44,7 @@ import { SessionSignalPreview } from './components/SessionSignalPreview'
 import { SessionTable, type SessionColumnWidthId, type SessionColumnWidths, type SessionSelectionGesture } from './components/SessionTable'
 import { StudySessionTable } from './components/StudySessionTable'
 import { SuspensionVisualization } from './components/SuspensionVisualization'
+import { EventBrowser } from './components/EventBrowser'
 import { TrackAnalysisView } from './components/TrackAnalysisView'
 import { UnsavedChangesDialog } from './components/UnsavedChangesDialog'
 import { FixtureLibraryDataSource } from './data/FixtureLibraryDataSource'
@@ -1233,6 +1234,12 @@ function App() {
       return
     }
 
+    const sessionCandidateId = candidateId(session)
+    if (deletingCandidateIds.has(sessionCandidateId)) {
+      return
+    }
+    setDeletingCandidateIds((current) => new Set(current).add(sessionCandidateId))
+    setStatusMessage(`Deleting session "${session.name}"...`)
     try {
       await deleteSession(session)
       applyOptimisticSessionDeletes([session])
@@ -1261,6 +1268,12 @@ function App() {
         const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
         setStatusMessage(`Could not delete session with cleanup: ${cleanupMessage}`)
       }
+    } finally {
+      setDeletingCandidateIds((current) => {
+        const next = new Set(current)
+        next.delete(sessionCandidateId)
+        return next
+      })
     }
   }
 
@@ -1510,7 +1523,7 @@ function App() {
   }
 
   function openAnalysisView(viewId: string, studySet: StudySet) {
-    if (viewId === 'simple-suspension' || viewId === 'suspension-phase-diagram' || viewId === 'track-analysis-lap-timing') {
+    if (viewId === 'simple-suspension' || viewId === 'suspension-phase-diagram' || viewId === 'track-analysis-lap-timing' || viewId === 'event-browser') {
       const url = analysisRouteUrl(viewId, studySet)
       const opened = window.open(url, '_blank')
       if (!opened) {
@@ -1525,9 +1538,17 @@ function App() {
     setStatusMessage(`Analysis view "${viewId}" is not implemented in this prototype yet.`)
   }
 
-  function openAnalysisViews(viewIds: string[], studySet: StudySet) {
-    const blockedViewIds = openAnalysisTabs(viewIds, studySet)
-    const openedCount = viewIds.length - blockedViewIds.length
+  async function openAnalysisViews(viewIds: string[], studySet: StudySet) {
+    const uniqueViewIds = Array.from(new Set(viewIds))
+    let blockedViewIds: string[]
+    try {
+      blockedViewIds = await openAnalysisTabsWithDataSource(activeDataSource, uniqueViewIds, studySet)
+    } catch (error) {
+      const detail = error instanceof Error ? `: ${error.message}` : ''
+      setStatusMessage(`Could not open the selected analysis tabs${detail}`)
+      return uniqueViewIds
+    }
+    const openedCount = uniqueViewIds.length - blockedViewIds.length
     if (blockedViewIds.length > 0) {
       setStatusMessage(`Opened ${openedCount} analysis tab${openedCount === 1 ? '' : 's'}; ${blockedViewIds.length} ${blockedViewIds.length === 1 ? 'was' : 'were'} blocked by the browser.`)
     } else {
@@ -3024,6 +3045,8 @@ function AnalysisRoutePage({
       ? 'Simple Suspension Analysis'
       : route.viewId === 'suspension-phase-diagram'
         ? 'Suspension Phase Diagram'
+      : route.viewId === 'event-browser'
+        ? 'Event Browser'
       : route.viewId === 'track-analysis-lap-timing'
         ? 'Track Analysis and Lap Timing'
         : route.viewId
@@ -3096,6 +3119,31 @@ function AnalysisRoutePage({
             />
           </RouteErrorBoundary>
         </section>
+      ) : route.viewId === 'event-browser' ? (
+        <section className="analysis-route-content">
+          {scopeNotice && (
+            <div className={`analysis-route-notice ${scopeNotice.kind}`}>
+              <span>{scopeNotice.message}</span>
+              <div className="analysis-route-notice-actions">
+                {scopeNotice.refreshable && <button className="secondary-action compact" type="button" onClick={onRefreshScope}>Refresh analysis</button>}
+                <button className="secondary-action compact" type="button" onClick={onDismissScopeNotice}>Dismiss</button>
+              </div>
+            </div>
+          )}
+          <RouteErrorBoundary resetKey={analysisRouteErrorBoundaryKey(route, studySet)}>
+            <EventBrowser
+              key={`${studySet.id}:${studySet.revision}`}
+              studySet={studySet}
+              sessions={sessions}
+              dataSource={dataSource}
+              canWrite={canWrite}
+              onInspectSignals={(sessionRef, window) => {
+                const session = sessionByRef(sessionRef, sessions)
+                if (session) setRouteModal({ kind: 'signal-inspector', session, initialWindow: window })
+              }}
+            />
+          </RouteErrorBoundary>
+        </section>
       ) : route.viewId === 'track-analysis-lap-timing' ? (
         <section className="analysis-route-content">
           {scopeNotice && (
@@ -3143,7 +3191,7 @@ function AnalysisRoutePage({
           onOpenAnalysis={(viewId, nextStudySet) => {
             window.location.href = analysisRouteUrl(viewId, nextStudySet)
           }}
-          onOpenAnalyses={openAnalysisTabs}
+          onOpenAnalyses={(viewIds, nextStudySet) => openAnalysisTabsWithDataSource(dataSource, viewIds, nextStudySet)}
           onOpenSignalInspector={(session, initialWindow = null) =>
             setRouteModal({ kind: 'signal-inspector', session, initialWindow })
           }
@@ -3244,6 +3292,9 @@ function browserTabTitle(route: AnalysisRouteState | null) {
   if (route.viewId === 'suspension-phase-diagram') {
     return 'suspension phase diagram'
   }
+  if (route.viewId === 'event-browser') {
+    return 'event browser'
+  }
   if (route.viewId === 'track-analysis-lap-timing') {
     return 'track analysis and lap timing'
   }
@@ -3272,6 +3323,21 @@ function openAnalysisTabs(viewIds: string[], studySet: StudySet) {
     }
   }
   return blockedViewIds
+}
+
+async function openAnalysisTabsWithDataSource(
+  dataSource: LibraryDataSource,
+  viewIds: string[],
+  studySet: StudySet,
+) {
+  const uniqueViewIds = Array.from(new Set(viewIds))
+  if (!dataSource.openAnalysisTabs) {
+    return openAnalysisTabs(uniqueViewIds, studySet)
+  }
+  const result = await dataSource.openAnalysisTabs(
+    uniqueViewIds.map((viewId) => analysisRouteUrl(viewId, studySet)),
+  )
+  return uniqueViewIds.filter((_, index) => result.opened[index] !== true)
 }
 
 function persistAnalysisScope(studySet: StudySet) {

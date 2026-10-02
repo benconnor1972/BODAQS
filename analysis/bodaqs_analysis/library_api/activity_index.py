@@ -17,8 +17,10 @@ from .timeseries import _parquet_columns, _resolve_time_column
 
 ACTIVITY_INDEX_SCHEMA = "bodaqs.activity_index"
 ACTIVITY_INDEX_VERSION = 1
-ACTIVITY_INDEX_ALGORITHM_VERSION = 1
+ACTIVITY_INDEX_ALGORITHM_VERSION = 2
 ACTIVITY_COLUMNS = ("active_mask_qc", "inactive_mask_qc", "inactive_mask")
+SAMPLE_CONTINUITY_GAP_FACTOR = 3.0
+SAMPLE_CONTINUITY_TOLERANCE_S = 1e-6
 Interval = tuple[float, float]
 
 
@@ -78,6 +80,7 @@ def build_activity_index_from_frame(
     known_intervals = sample_cell_intervals(times, known)
     active_runs = _mask_runs(times, active)
     inactive_runs = _mask_runs(times, inactive)
+    nominal_interval_s, maximum_continuous_gap_s = _sample_timing(times)
     sample_count = int(len(times))
     known_count = int(np.count_nonzero(known))
     active_count = int(np.count_nonzero(active))
@@ -94,6 +97,12 @@ def build_activity_index_from_frame(
             "time_column": time_column,
             "activity_column": activity_column,
             "activity_semantics": "positive_is_active" if activity_column == "active_mask_qc" else "nonpositive_is_active",
+            "continuity": {
+                "policy": "jitter_tolerant_conservative_sample_cells",
+                "nominal_interval_s": nominal_interval_s,
+                "maximum_continuous_gap_s": maximum_continuous_gap_s,
+                "maximum_gap_factor": SAMPLE_CONTINUITY_GAP_FACTOR,
+            },
         },
         "sample_count": sample_count,
         "known_sample_count": known_count,
@@ -109,6 +118,9 @@ def build_activity_index_from_frame(
             "known_duration_s": interval_duration(known_intervals),
             "encoded_run_count": run_count,
             "runs_per_sample": run_count / sample_count if sample_count else 0.0,
+            "active_interval_count": len(active_intervals),
+            "known_interval_count": len(known_intervals),
+            "intervals_per_sample": len(known_intervals) / sample_count if sample_count else 0.0,
         },
         "provenance": {"input_artifacts": [dict(item) for item in input_artifacts]},
         "warnings": [],
@@ -154,23 +166,56 @@ def activity_regions(index: Mapping[str, Any]) -> tuple[list[Interval], list[Int
 
 
 def sample_cell_intervals(times: np.ndarray, selected: np.ndarray) -> list[Interval]:
-    valid_times = np.sort(np.unique(times[np.isfinite(times)]))
-    diffs = np.diff(valid_times)
-    positive = diffs[diffs > 1e-9]
+    raw_times = np.asarray(times, dtype=float)
+    raw_selected = np.asarray(selected, dtype=bool)
+    if raw_times.shape != raw_selected.shape:
+        raise ValueError("times and selected must have the same shape")
+    finite = np.isfinite(raw_times)
+    if not np.any(finite):
+        return []
+
+    ordered_times = raw_times[finite]
+    ordered_selected = raw_selected[finite]
+    order = np.argsort(ordered_times, kind="stable")
+    ordered_times = ordered_times[order]
+    ordered_selected = ordered_selected[order]
+    valid_times, first_indices = np.unique(ordered_times, return_index=True)
+    selected_times = np.logical_or.reduceat(ordered_selected, first_indices)
+    nominal, maximum_gap = _sample_timing(valid_times)
+    half = nominal / 2.0
+    starts = np.maximum(0.0, valid_times - half)
+    ends = valid_times + half
+    if valid_times.size > 1:
+        gaps = np.diff(valid_times)
+        continuous = gaps <= maximum_gap + 1e-9
+        midpoints = (valid_times[:-1] + valid_times[1:]) / 2.0
+        ends[:-1] = np.where(continuous, midpoints, ends[:-1])
+        starts[1:] = np.where(continuous, midpoints, starts[1:])
+
+    selected_rows = np.flatnonzero(selected_times)
+    if selected_rows.size == 0:
+        return []
+    selected_starts = starts[selected_rows]
+    selected_ends = ends[selected_rows]
+    split_at = np.flatnonzero(selected_starts[1:] > selected_ends[:-1] + 1e-9) + 1
+    groups = np.split(np.arange(selected_rows.size), split_at)
+    return [(float(selected_starts[group[0]]), float(selected_ends[group[-1]])) for group in groups]
+
+
+def _sample_timing(times: np.ndarray) -> tuple[float, float]:
+    valid_times = np.sort(np.unique(np.asarray(times, dtype=float)[np.isfinite(times)]))
+    positive = np.diff(valid_times)
+    positive = positive[positive > 1e-9]
     nominal = (
         float(np.median(positive))
         if positive.size >= 2
         else (min(float(positive[0]), 0.1) if positive.size else 0.001)
     )
-    half = nominal / 2.0
-    selected_times = np.sort(times[np.asarray(selected, dtype=bool) & np.isfinite(times)])
-    if selected_times.size == 0:
-        return []
-    starts = np.maximum(0.0, selected_times - half)
-    ends = selected_times + half
-    split_at = np.flatnonzero(starts[1:] > ends[:-1] + 1e-9) + 1
-    groups = np.split(np.arange(selected_times.size), split_at)
-    return [(float(starts[group[0]]), float(ends[group[-1]])) for group in groups]
+    maximum_gap = max(
+        SAMPLE_CONTINUITY_GAP_FACTOR * nominal,
+        nominal + SAMPLE_CONTINUITY_TOLERANCE_S,
+    )
+    return nominal, maximum_gap
 
 
 def interval_duration(intervals: Sequence[Interval]) -> float:

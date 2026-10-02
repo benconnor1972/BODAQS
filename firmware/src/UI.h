@@ -29,6 +29,9 @@ namespace UI {
 
   // Quick toast on OLED bottom
   void toast(const String& oledText, uint16_t durationMs = 1500, uint8_t textSize = 2);
+  void toastSequence(const String& first, const String& second,
+                     uint16_t durationMs = 1500, uint8_t firstSize = 2,
+                     uint8_t secondSize = 1);
   void clear(uint8_t target = TARGET_OLED);
   void toastModal(const String& text, uint16_t durationMs = 1200, uint8_t textSize = 2);
 
