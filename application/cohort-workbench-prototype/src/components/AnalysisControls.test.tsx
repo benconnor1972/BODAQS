@@ -1,5 +1,6 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { AnalysisControlDrawer, AnalysisEndPicker, AnalysisEntityPicker, AnalysisScenarioPicker } from './AnalysisControls'
 
@@ -31,5 +32,27 @@ describe('shared analysis controls', () => {
     expect(onEndToggle).toHaveBeenCalledWith('front')
     expect(onScenarioToggle).toHaveBeenCalledWith('rough', true)
     expect(onDrawerToggle).toHaveBeenCalledOnce()
+  })
+
+  it('keeps Scenario selection immediately reversible in a controlled view', async () => {
+    const user = userEvent.setup()
+
+    function ScenarioHarness() {
+      const [selectedIds, setSelectedIds] = useState<string[]>([])
+      return (
+        <AnalysisScenarioPicker
+          options={[{ id: 'rough', label: 'Rough trail' }]}
+          selectedIds={selectedIds}
+          onToggle={(id, checked) => setSelectedIds(checked ? [id] : [])}
+        />
+      )
+    }
+
+    const view = render(<ScenarioHarness />)
+    const checkbox = within(view.container).getByRole('checkbox', { name: 'Include Rough trail' })
+    await user.click(checkbox)
+    expect(checkbox).toBeChecked()
+    await user.click(checkbox)
+    expect(checkbox).not.toBeChecked()
   })
 })

@@ -65,6 +65,10 @@ export type SessionNoteSaveResult =
   | { ok: true; note: SessionNoteRecord }
   | { ok: false; sessionRef: StudySessionRef; message: string }
 
+export type AnalysisTabsOpenResult = {
+  opened: boolean[]
+}
+
 export interface LibraryDataSource {
   listLibraries(): Promise<LibraryRecord[]>
   refreshLibrary?(libraryId: string): Promise<LibraryRecord | void>
@@ -77,11 +81,12 @@ export interface LibraryDataSource {
   loadStudySet?(studySetId: string): Promise<StudySet>
   listAnalysisViews?(): Promise<AnalysisViewRecord[]>
   evaluateAnalysisAdequacy?(viewId: string, studySet: StudySet): Promise<AnalysisAdequacyResult>
+  openAnalysisTabs?(urls: string[]): Promise<AnalysisTabsOpenResult>
   listSavedSessionFilters?(): Promise<SavedSessionFilterRecord[]>
   listScenarios?(): Promise<ScenarioRecord[]>
   saveScenario?(scenario: ScenarioRecord): Promise<ScenarioRecord>
   deleteScenario?(scenarioId: string): Promise<void>
-  evaluateScenario?(request: ScenarioEvaluationRequest): Promise<ScenarioEvaluationResponse>
+  evaluateScenario?(request: ScenarioEvaluationRequest, options?: { signal?: AbortSignal }): Promise<ScenarioEvaluationResponse>
   saveStudySet(studySet: StudySet): Promise<StudySet>
   deleteStudySet?(studySetId: string): Promise<void>
   deleteSession?(

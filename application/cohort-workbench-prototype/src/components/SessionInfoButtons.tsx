@@ -123,17 +123,19 @@ function SessionInfoButton({
 export function SessionDeleteButton({
   session,
   onDelete,
+  pending = false,
 }: {
   session: SessionRecord
   onDelete?: (session: SessionRecord) => void
+  pending?: boolean
 }) {
   return (
     <IconButton
-      label={onDelete ? 'Delete session' : 'Delete session unavailable until library API support is added'}
-      onClick={onDelete ? () => onDelete(session) : undefined}
-      icon={<Trash2 size={15} />}
+      label={pending ? 'Deleting session' : onDelete ? 'Delete session' : 'Delete session unavailable until library API support is added'}
+      onClick={onDelete && !pending ? () => onDelete(session) : undefined}
+      icon={pending ? <LoaderCircle className="session-rename-pending" size={15} /> : <Trash2 size={15} />}
       tone="alert"
-      disabled={!onDelete}
+      disabled={!onDelete || pending}
     />
   )
 }

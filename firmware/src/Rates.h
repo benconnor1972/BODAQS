@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 namespace Rates {
-  static constexpr uint16_t kList[] = {10, 20, 50, 100, 200, 500, 1000};
+  static constexpr uint16_t kList[] = {10, 20, 50, 100, 200, 500, 700, 1000};
   static constexpr size_t   kCount  = sizeof(kList)/sizeof(kList[0]);
 
   inline int indexOf(uint16_t hz) {

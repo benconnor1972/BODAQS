@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
+import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from bodaqs_analysis.library_api import LibraryAdapter
-from bodaqs_analysis.library_api.errors import LibraryApiError, ReadOnlyModeError
+from bodaqs_analysis.library_api.cache import stable_cache_digest
+from bodaqs_analysis.library_api.errors import InvalidRequestError, LibraryApiError, ReadOnlyModeError
 
 try:
     from bodaqs_library_service_build_version import SERVICE_VERSION as _PACKAGED_SERVICE_VERSION
@@ -38,6 +43,13 @@ DEFAULT_ALLOW_ORIGINS = (
     "http://127.0.0.1:4173",
 )
 LOOPBACK_ALLOW_ORIGIN_REGEX = r"https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?"
+MAX_ANALYSIS_TABS_PER_REQUEST = 4
+SUPPORTED_ANALYSIS_VIEW_IDS = {
+    "simple-suspension",
+    "suspension-phase-diagram",
+    "track-analysis-lap-timing",
+    "event-browser",
+}
 
 
 @dataclass(frozen=True)
@@ -58,6 +70,7 @@ def create_app(
     web_root: str | Path | None = None,
     read_only: bool = False,
     demo_welcome_enabled: bool = False,
+    analysis_tab_opener: Callable[[str], bool] | None = None,
 ) -> FastAPI:
     """Create a local-only FastAPI app backed by ``LibraryAdapter``."""
 
@@ -77,6 +90,9 @@ def create_app(
     app.state.config = config
     app.state.adapter = LibraryAdapter(config.libraries_root, write_catalog_revision=not config.read_only)
     app.state.trackpoint_query_threads = {}
+    app.state.scenario_evaluation_tasks = {}
+    app.state.scenario_evaluation_semaphore = None
+    app.state.analysis_tab_opener = analysis_tab_opener or webbrowser.open_new_tab
 
     app.add_middleware(
         CORSMiddleware,
@@ -132,6 +148,29 @@ def create_app(
     def select_local_video_file() -> dict[str, Any]:
         _assert_writable(app)
         return _select_local_video_file(_current_config(app).libraries_root)
+
+    @app.post("/api/v1/local/open-analysis-tabs")
+    async def open_local_analysis_tabs(request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        urls = _analysis_tab_urls(request, payload)
+        results = []
+        for index, url in enumerate(urls):
+            try:
+                opened = bool(await run_in_threadpool(app.state.analysis_tab_opener, url))
+                results.append({"index": index, "opened": opened})
+            except Exception as exc:
+                results.append(
+                    {
+                        "index": index,
+                        "opened": False,
+                        "error": type(exc).__name__,
+                    }
+                )
+        return {
+            "requested_count": len(urls),
+            "opened_count": sum(1 for result in results if result["opened"]),
+            "results": results,
+        }
 
     @app.get("/api/v1/workbench/bootstrap")
     def workbench_bootstrap() -> dict[str, Any]:
@@ -425,7 +464,44 @@ def create_app(
     @app.post("/api/v1/scenario-evaluations")
     async def evaluate_root_scenario(request: Request) -> dict[str, Any]:
         payload = await request.json()
-        return _current_adapter(app).evaluate_scenario(_json_object_payload(payload))
+        scenario_request = _json_object_payload(payload)
+        adapter = _current_adapter(app)
+        request_key = f"{id(adapter)}:{stable_cache_digest(scenario_request)}"
+        tasks: dict[str, asyncio.Task[dict[str, Any]]] = app.state.scenario_evaluation_tasks
+        task = tasks.get(request_key)
+        if task is None:
+            semaphore = app.state.scenario_evaluation_semaphore
+            if semaphore is None:
+                # Scenario evaluation is I/O-heavy and mutates shared cache diagnostics.
+                # Keep it off the event loop, but serialize cold evaluations so several
+                # selected Scenarios cannot overwhelm the desktop service or its caches.
+                semaphore = asyncio.Semaphore(1)
+                app.state.scenario_evaluation_semaphore = semaphore
+
+            async def evaluate() -> dict[str, Any]:
+                async with semaphore:
+                    return await run_in_threadpool(adapter.evaluate_scenario, scenario_request)
+
+            task = asyncio.create_task(evaluate())
+            tasks[request_key] = task
+
+            def discard_completed(completed: asyncio.Task[dict[str, Any]]) -> None:
+                if tasks.get(request_key) is completed:
+                    tasks.pop(request_key, None)
+                if not completed.cancelled():
+                    # Retrieve any exception even when every HTTP waiter was
+                    # cancelled, avoiding an unobserved-task warning.
+                    completed.exception()
+
+            task.add_done_callback(discard_completed)
+
+        try:
+            # A browser cancelling an obsolete selection must not cancel work shared
+            # by another identical request.
+            return await asyncio.shield(task)
+        finally:
+            if task.done() and tasks.get(request_key) is task:
+                tasks.pop(request_key, None)
 
     @app.get("/api/v1/bookmarks")
     def list_root_bookmarks(
@@ -782,13 +858,15 @@ def _assert_writable(app: FastAPI) -> None:
 
 def _capabilities_response(app: FastAPI) -> dict[str, Any]:
     capabilities = _current_adapter(app).capabilities()
+    capabilities = dict(capabilities)
+    features = dict(capabilities.get("features", {}))
+    features["open_local_analysis_tabs"] = True
+    capabilities["features"] = features
     if not _current_config(app).read_only:
         capabilities["read_only"] = False
         return capabilities
 
-    capabilities = dict(capabilities)
     capabilities["read_only"] = True
-    features = dict(capabilities.get("features", {}))
     for feature in (
         "write_study_sets",
         "delete_study_sets",
@@ -810,6 +888,58 @@ def _capabilities_response(app: FastAPI) -> dict[str, Any]:
         features[feature] = False
     capabilities["features"] = features
     return capabilities
+
+
+def _analysis_tab_urls(request: Request, payload: Any) -> list[str]:
+    payload = _json_object_payload(payload)
+    values = payload.get("urls")
+    if not isinstance(values, list) or not values:
+        raise InvalidRequestError("urls must be a non-empty array of analysis URLs.")
+    if len(values) > MAX_ANALYSIS_TABS_PER_REQUEST:
+        raise InvalidRequestError(
+            f"At most {MAX_ANALYSIS_TABS_PER_REQUEST} analysis tabs may be opened at once.",
+            details={
+                "maximum_tab_count": MAX_ANALYSIS_TABS_PER_REQUEST,
+                "requested_tab_count": len(values),
+            },
+        )
+
+    request_origin = request.headers.get("origin", "").strip()
+    if not request_origin:
+        request_origin = f"{request.url.scheme}://{request.url.netloc}"
+    expected = urlsplit(request_origin)
+    if expected.scheme not in {"http", "https"} or not _is_loopback_host(expected.hostname):
+        raise InvalidRequestError("Native analysis-tab launching is available only to the local Workbench.")
+
+    urls: list[str] = []
+    for value in values:
+        if not isinstance(value, str) or not value.strip():
+            raise InvalidRequestError("Each analysis URL must be a non-empty string.")
+        url = value.strip()
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme != expected.scheme
+            or parsed.hostname != expected.hostname
+            or parsed.port != expected.port
+        ):
+            raise InvalidRequestError(
+                "Analysis URLs must use the requesting Workbench origin.",
+                details={"expected_origin": request_origin},
+            )
+        fragment_path = parsed.fragment.split("?", 1)[0]
+        prefix = "/analysis/"
+        view_id = fragment_path[len(prefix):] if fragment_path.startswith(prefix) else ""
+        if view_id not in SUPPORTED_ANALYSIS_VIEW_IDS:
+            raise InvalidRequestError(
+                "Analysis URL does not identify a supported analysis view.",
+                details={"view_id": view_id},
+            )
+        urls.append(url)
+    return urls
+
+
+def _is_loopback_host(hostname: str | None) -> bool:
+    return (hostname or "").lower() in {"localhost", "127.0.0.1", "::1"}
 
 
 def _select_local_video_file(libraries_root: Path) -> dict[str, Any]:

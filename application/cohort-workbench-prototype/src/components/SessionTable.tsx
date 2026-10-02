@@ -221,7 +221,11 @@ export function SessionTable({
             />
           </span>
         )}
-        <SessionDeleteButton session={row.original} onDelete={onDeleteSession} />
+        <SessionDeleteButton
+          session={row.original}
+          onDelete={onDeleteSession}
+          pending={deletingSessionIds?.has(candidateId(row.original))}
+        />
       </div>
     ),
     enableSorting: false,

@@ -3868,6 +3868,55 @@ def test_metric_viz_join_still_rejects_true_duplicate_event_metric_rows() -> Non
         )
 
 
+def test_library_api_service_opens_selected_analysis_tabs_via_local_host(tmp_path: Path) -> None:
+    opened_urls: list[str] = []
+
+    def open_tab(url: str) -> bool:
+        opened_urls.append(url)
+        return True
+
+    app = create_app(
+        tmp_path / "libraries",
+        analysis_tab_opener=open_tab,
+    )
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
+    urls = [
+        "http://127.0.0.1:8765/#/analysis/simple-suspension?studySet=collie",
+        "http://127.0.0.1:8765/#/analysis/suspension-phase-diagram?studySet=collie",
+        "http://127.0.0.1:8765/#/analysis/event-browser?studySet=collie",
+    ]
+
+    response = client.post(
+        "/api/v1/local/open-analysis-tabs",
+        headers={"Origin": "http://127.0.0.1:8765"},
+        json={"urls": urls},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["requested_count"] == 3
+    assert response.json()["opened_count"] == 3
+    assert response.json()["results"] == [
+        {"index": 0, "opened": True},
+        {"index": 1, "opened": True},
+        {"index": 2, "opened": True},
+    ]
+    assert opened_urls == urls
+
+    external = client.post(
+        "/api/v1/local/open-analysis-tabs",
+        headers={"Origin": "http://127.0.0.1:8765"},
+        json={"urls": ["https://example.com/#/analysis/simple-suspension"]},
+    )
+    assert external.status_code == 400
+
+    excessive = client.post(
+        "/api/v1/local/open-analysis-tabs",
+        headers={"Origin": "http://127.0.0.1:8765"},
+        json={"urls": [urls[0]] * 5},
+    )
+    assert excessive.status_code == 400
+
+
 def test_library_api_service_exposes_core_routes(tmp_path: Path) -> None:
     libraries_root = tmp_path / "libraries"
     library_root = libraries_root / "default-library"
@@ -3891,6 +3940,7 @@ def test_library_api_service_exposes_core_routes(tmp_path: Path) -> None:
     assert capabilities.json()["features"]["explain_analysis_adequacy_cache_keys"] is True
     assert capabilities.json()["features"]["warm_analysis_adequacy"] is True
     assert capabilities.json()["features"]["read_cache_diagnostics"] is True
+    assert capabilities.json()["features"]["open_local_analysis_tabs"] is True
 
     libraries = client.get("/api/v1/libraries")
     assert libraries.status_code == 200

@@ -306,7 +306,10 @@ def _component_version_lines() -> list[str]:
         return [f"{_APP_DISPLAY_NAME}: {version}" if version else _APP_DISPLAY_NAME]
 
     try:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        # Windows PowerShell 5.1 writes `-Encoding UTF8` with a BOM. Accept it
+        # here so installer-generated manifests and BOM-free manifests from the
+        # macOS/Linux builders are handled identically.
+        payload = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return [_APP_DISPLAY_NAME]
     if not isinstance(payload, Mapping):

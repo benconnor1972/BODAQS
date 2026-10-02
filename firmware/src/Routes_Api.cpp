@@ -582,7 +582,7 @@ static void handleConfigPut_(WebServer& srv) {
   if (!req["sample_rate_hz"].isNull()) {
     long hz = req["sample_rate_hz"] | tmp.sampleRateHz;
     if (hz < 1 || hz > 2000 || !Rates::isSupported((uint16_t)hz)) {
-      sendError_(srv, 400, "invalid_sample_rate", "sample_rate_hz must be one of 10, 20, 50, 100, 200, 500, 1000.");
+      sendError_(srv, 400, "invalid_sample_rate", "sample_rate_hz must be one of 10, 20, 50, 100, 200, 500, 700, 1000.");
       return;
     }
     tmp.sampleRateHz = (uint16_t)hz;

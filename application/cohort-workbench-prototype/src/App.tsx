@@ -1234,6 +1234,12 @@ function App() {
       return
     }
 
+    const sessionCandidateId = candidateId(session)
+    if (deletingCandidateIds.has(sessionCandidateId)) {
+      return
+    }
+    setDeletingCandidateIds((current) => new Set(current).add(sessionCandidateId))
+    setStatusMessage(`Deleting session "${session.name}"...`)
     try {
       await deleteSession(session)
       applyOptimisticSessionDeletes([session])
@@ -1262,6 +1268,12 @@ function App() {
         const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
         setStatusMessage(`Could not delete session with cleanup: ${cleanupMessage}`)
       }
+    } finally {
+      setDeletingCandidateIds((current) => {
+        const next = new Set(current)
+        next.delete(sessionCandidateId)
+        return next
+      })
     }
   }
 
@@ -1526,9 +1538,17 @@ function App() {
     setStatusMessage(`Analysis view "${viewId}" is not implemented in this prototype yet.`)
   }
 
-  function openAnalysisViews(viewIds: string[], studySet: StudySet) {
-    const blockedViewIds = openAnalysisTabs(viewIds, studySet)
-    const openedCount = viewIds.length - blockedViewIds.length
+  async function openAnalysisViews(viewIds: string[], studySet: StudySet) {
+    const uniqueViewIds = Array.from(new Set(viewIds))
+    let blockedViewIds: string[]
+    try {
+      blockedViewIds = await openAnalysisTabsWithDataSource(activeDataSource, uniqueViewIds, studySet)
+    } catch (error) {
+      const detail = error instanceof Error ? `: ${error.message}` : ''
+      setStatusMessage(`Could not open the selected analysis tabs${detail}`)
+      return uniqueViewIds
+    }
+    const openedCount = uniqueViewIds.length - blockedViewIds.length
     if (blockedViewIds.length > 0) {
       setStatusMessage(`Opened ${openedCount} analysis tab${openedCount === 1 ? '' : 's'}; ${blockedViewIds.length} ${blockedViewIds.length === 1 ? 'was' : 'were'} blocked by the browser.`)
     } else {
@@ -3171,7 +3191,7 @@ function AnalysisRoutePage({
           onOpenAnalysis={(viewId, nextStudySet) => {
             window.location.href = analysisRouteUrl(viewId, nextStudySet)
           }}
-          onOpenAnalyses={openAnalysisTabs}
+          onOpenAnalyses={(viewIds, nextStudySet) => openAnalysisTabsWithDataSource(dataSource, viewIds, nextStudySet)}
           onOpenSignalInspector={(session, initialWindow = null) =>
             setRouteModal({ kind: 'signal-inspector', session, initialWindow })
           }
@@ -3303,6 +3323,21 @@ function openAnalysisTabs(viewIds: string[], studySet: StudySet) {
     }
   }
   return blockedViewIds
+}
+
+async function openAnalysisTabsWithDataSource(
+  dataSource: LibraryDataSource,
+  viewIds: string[],
+  studySet: StudySet,
+) {
+  const uniqueViewIds = Array.from(new Set(viewIds))
+  if (!dataSource.openAnalysisTabs) {
+    return openAnalysisTabs(uniqueViewIds, studySet)
+  }
+  const result = await dataSource.openAnalysisTabs(
+    uniqueViewIds.map((viewId) => analysisRouteUrl(viewId, studySet)),
+  )
+  return uniqueViewIds.filter((_, index) => result.opened[index] !== true)
 }
 
 function persistAnalysisScope(studySet: StudySet) {

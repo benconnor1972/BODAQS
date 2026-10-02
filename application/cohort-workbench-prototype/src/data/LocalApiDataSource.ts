@@ -70,6 +70,7 @@ import type {
   TrackRecord,
 } from '../domain/types'
 import type {
+  AnalysisTabsOpenResult,
   CatalogRevision,
   LibraryDataSource,
   SessionGpsPointLoadOptions,
@@ -252,6 +253,20 @@ export class LocalApiDataSource implements LibraryDataSource {
     return mapAnalysisAdequacy(response)
   }
 
+  async openAnalysisTabs(urls: string[]): Promise<AnalysisTabsOpenResult> {
+    const response = await requestJson<ApiObject>(`${this.baseUrl}/api/v1/local/open-analysis-tabs`, {
+      method: 'POST',
+      body: JSON.stringify({ urls }),
+    })
+    const results = arrayValue(response.results).filter(isObject)
+    return {
+      opened: urls.map((_, index) => {
+        const result = results.find((candidate) => candidate.index === index)
+        return result?.opened === true
+      }),
+    }
+  }
+
   async listSavedSessionFilters() {
     const filters = await requestJson<ApiObject[]>(`${this.baseUrl}/api/v1/session-filters`)
     return filters.map(mapSavedSessionFilter)
@@ -282,10 +297,11 @@ export class LocalApiDataSource implements LibraryDataSource {
     })
   }
 
-  async evaluateScenario(request: ScenarioEvaluationRequest): Promise<ScenarioEvaluationResponse> {
+  async evaluateScenario(request: ScenarioEvaluationRequest, options?: { signal?: AbortSignal }): Promise<ScenarioEvaluationResponse> {
     const response = await requestJson<ApiObject>(`${this.baseUrl}/api/v1/scenario-evaluations`, {
       method: 'POST',
       body: JSON.stringify(toApiScenarioEvaluationRequest(request)),
+      signal: options?.signal,
     })
     return mapScenarioEvaluation(response)
   }

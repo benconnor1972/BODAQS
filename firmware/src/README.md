@@ -2,7 +2,7 @@
 
 ESP32-based data logger with:
 - An extensible sensor framework - initial target is 2 potentiometer, 2 accelerometer, 2 strain gauge and one event mark channels
-- Up to 500Hz logging (tested to 100Hz so far)
+- Configurable logging rates of 10, 20, 50, 100, 200, 500, 700, and 1000 Hz, subject to sensor throughput limits
 - SD card logging
 - On-device web UI (list/download/delete files, simple config page)
 - mDNS discovery in station and AP mode via `_bodaqs-logger._tcp`
@@ -10,6 +10,16 @@ ESP32-based data logger with:
 - General and sensor configuration via config file on SD (`loggercfg`) 
 
 Developed mainly for mountain bike use.
+
+On the A8, external ADC throughput is budgeted at 70% of each ADS1220's
+2,000 SPS maximum, divided by its number of active, unmuted analog channels.
+The logger uses the lowest limit across the active ADCs and rounds down to a
+permitted rate. There is no separate 500 Hz cap: one active channel per ADC
+allows up to 1,000 Hz, two allow 700 Hz, and three or four allow 200 Hz.
+The requested configuration rate is preserved; the effective rate controls
+logging. Higher rates require hardware validation of sample freshness and
+logger timing. The existing integer-microsecond cadence uses a 1,428 us period
+for 700 Hz (approximately 700.28 Hz).
 
 ## Hardware
 

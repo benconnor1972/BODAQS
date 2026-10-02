@@ -21,9 +21,10 @@ from .timeseries import _parquet_columns, _read_json_object, _resolve_signal_req
 
 SCENARIO_EVALUATION_SCHEMA = "bodaqs.scenario_evaluation"
 SCENARIO_EVALUATION_VERSION = 1
-SCENARIO_EVALUATION_ALGORITHM_VERSION = 1
+SCENARIO_EVALUATION_ALGORITHM_VERSION = 2
 MAX_SESSIONS = 32
 MAX_EPISODES = 10_000
+MAX_INTERVALS_PER_STATE = 1_000_000
 Interval = tuple[float, float]
 
 
@@ -281,6 +282,15 @@ def _evaluate_session(
     )
     minimum_duration = float(policy.get("minimum_duration_s") or 0.0)
     truth = [interval for interval in truth if interval[1] - interval[0] >= minimum_duration]
+    if len(truth) > MAX_EPISODES:
+        raise InvalidRequestError(
+            f"Scenario evaluation exceeded the {MAX_EPISODES} Episode limit.",
+            details={
+                "maximum": MAX_EPISODES,
+                "candidate_episode_count": len(truth),
+                "session_ref": ref,
+            },
+        )
     episodes: list[dict[str, Any]] = []
     minimum_distance = policy.get("minimum_distance_m")
     for start, end in truth:
@@ -519,6 +529,7 @@ def _distance_mapper(store: ArtifactStore, ref: Mapping[str, str]) -> Callable[[
 
 
 def _and_states(states: Sequence[tuple[list[Interval], list[Interval]]]) -> tuple[list[Interval], list[Interval]]:
+    _guard_interval_states(states)
     truth = states[0][0]
     for child_truth, _ in states[1:]: truth = _intersect(truth, child_truth)
     false: list[Interval] = []
@@ -527,6 +538,7 @@ def _and_states(states: Sequence[tuple[list[Interval], list[Interval]]]) -> tupl
 
 
 def _or_states(states: Sequence[tuple[list[Interval], list[Interval]]]) -> tuple[list[Interval], list[Interval]]:
+    _guard_interval_states(states)
     truth = _union([interval for state, _ in states for interval in state])
     false = _subtract(states[0][1], states[0][0])
     for child_truth, child_known in states[1:]: false = _intersect(false, _subtract(child_known, child_truth))
@@ -541,12 +553,23 @@ def _bridge_known_false_gaps(
     maximum_gap_m: float | None,
     distance_mapper: Callable[[float], float | None] | None,
 ) -> list[Interval]:
-    if len(truth) < 2 or (maximum_gap_s is None and maximum_gap_m is None):
-        return truth
-    result = [truth[0]]
-    for current in truth[1:]:
+    truth_intervals = _union(truth)
+    known_intervals = _union(known)
+    _guard_interval_states([(truth_intervals, known_intervals)])
+    if len(truth_intervals) < 2 or (maximum_gap_s is None and maximum_gap_m is None):
+        return truth_intervals
+    result = [truth_intervals[0]]
+    known_index = 0
+    for current in truth_intervals[1:]:
         previous = result[-1]
         gap = (previous[1], current[0])
+        while known_index < len(known_intervals) and known_intervals[known_index][1] < gap[0] - 1e-9:
+            known_index += 1
+        gap_is_known = (
+            known_index < len(known_intervals)
+            and known_intervals[known_index][0] <= gap[0] + 1e-9
+            and known_intervals[known_index][1] >= gap[1] - 1e-9
+        )
         time_ok = maximum_gap_s is None or gap[1] - gap[0] <= float(maximum_gap_s)
         if maximum_gap_m is None:
             distance_ok = True
@@ -558,7 +581,7 @@ def _bridge_known_false_gaps(
                 and end_distance is not None
                 and abs(end_distance - start_distance) <= float(maximum_gap_m)
             )
-        if time_ok and distance_ok and _covered(gap, known): result[-1] = (previous[0], current[1])
+        if time_ok and distance_ok and gap_is_known: result[-1] = (previous[0], current[1])
         else: result.append(current)
     return result
 
@@ -584,23 +607,48 @@ def _intersect(left: Sequence[Interval], right: Sequence[Interval]) -> list[Inte
 
 
 def _subtract(left: Sequence[Interval], right: Sequence[Interval]) -> list[Interval]:
+    left_intervals = _union(left)
+    right_intervals = _union(right)
+    if len(left_intervals) > MAX_INTERVALS_PER_STATE or len(right_intervals) > MAX_INTERVALS_PER_STATE:
+        raise InvalidRequestError(
+            "Scenario evidence is too fragmented for synchronous evaluation.",
+            details={
+                "maximum_intervals_per_state": MAX_INTERVALS_PER_STATE,
+                "left_interval_count": len(left_intervals),
+                "right_interval_count": len(right_intervals),
+            },
+        )
     result: list[Interval] = []
-    for start, end in left:
-        pieces = [(start, end)]
-        for cut_start, cut_end in right:
-            next_pieces: list[Interval] = []
-            for a, b in pieces:
-                if cut_end <= a or cut_start >= b: next_pieces.append((a, b))
-                else:
-                    if cut_start > a: next_pieces.append((a, min(b, cut_start)))
-                    if cut_end < b: next_pieces.append((max(a, cut_end), b))
-            pieces = next_pieces
-        result.extend(pieces)
-    return _union(result)
+    right_index = 0
+    for start, end in left_intervals:
+        while right_index < len(right_intervals) and right_intervals[right_index][1] <= start:
+            right_index += 1
+        cursor = start
+        cut_index = right_index
+        while cut_index < len(right_intervals) and right_intervals[cut_index][0] < end:
+            cut_start, cut_end = right_intervals[cut_index]
+            if cut_start > cursor:
+                result.append((cursor, min(end, cut_start)))
+            cursor = max(cursor, cut_end)
+            if cursor >= end:
+                break
+            cut_index += 1
+        if cursor < end:
+            result.append((cursor, end))
+    return result
 
 
-def _covered(interval: Interval, coverage: Sequence[Interval]) -> bool:
-    return any(start <= interval[0] + 1e-9 and end >= interval[1] - 1e-9 for start, end in coverage)
+def _guard_interval_states(states: Sequence[tuple[list[Interval], list[Interval]]]) -> None:
+    counts = [len(intervals) for state in states for intervals in state]
+    maximum = max(counts, default=0)
+    if maximum > MAX_INTERVALS_PER_STATE:
+        raise InvalidRequestError(
+            "Scenario evidence is too fragmented for synchronous evaluation.",
+            details={
+                "maximum_intervals_per_state": MAX_INTERVALS_PER_STATE,
+                "observed_interval_count": maximum,
+            },
+        )
 
 
 def _duration(intervals: Sequence[Interval]) -> float:

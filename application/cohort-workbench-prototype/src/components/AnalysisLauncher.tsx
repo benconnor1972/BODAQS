@@ -33,10 +33,11 @@ export function AnalysisLauncher({
   dataSource: LibraryDataSource
   onClose: () => void
   onOpenAnalysis: (viewId: string, studySet: StudySet) => void
-  onOpenAnalyses: (viewIds: string[], studySet: StudySet) => string[]
+  onOpenAnalyses: (viewIds: string[], studySet: StudySet) => Promise<string[]>
 }) {
   const [items, setItems] = useState<AnalysisLauncherItem[]>([])
   const [loading, setLoading] = useState(true)
+  const [opening, setOpening] = useState(false)
   const [notice, setNotice] = useState('')
   const [selectedViewIds, setSelectedViewIds] = useState<string[]>([])
 
@@ -121,17 +122,24 @@ export function AnalysisLauncher({
       : current.filter((candidate) => candidate !== viewId))
   }
 
-  function openAllSelected() {
+  async function openAllSelected() {
     if (selectedOpenableViewIds.length === 0) {
       return
     }
-    const blockedViewIds = onOpenAnalyses(selectedOpenableViewIds, studySet)
-    if (blockedViewIds.length > 0) {
-      setSelectedViewIds(blockedViewIds)
-      setNotice(`${blockedViewIds.length} selected analysis tab${blockedViewIds.length === 1 ? ' was' : 's were'} blocked by the browser. Allow pop-ups for this site and try again.`)
-      return
+    setOpening(true)
+    try {
+      const blockedViewIds = await onOpenAnalyses(selectedOpenableViewIds, studySet)
+      if (blockedViewIds.length > 0) {
+        setSelectedViewIds(blockedViewIds)
+        setNotice(`${blockedViewIds.length} selected analysis tab${blockedViewIds.length === 1 ? ' could' : 's could'} not be opened. Try again, or open ${blockedViewIds.length === 1 ? 'it' : 'them'} individually.`)
+        return
+      }
+      onClose()
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'The selected analysis tabs could not be opened.')
+    } finally {
+      setOpening(false)
     }
-    onClose()
   }
 
   return (
@@ -173,9 +181,9 @@ export function AnalysisLauncher({
             />
           ))}
           <div className="analysis-view-bulk-actions">
-            <button className="primary-action compact-row-action" disabled={selectedOpenableViewIds.length === 0} onClick={openAllSelected}>
+            <button className="primary-action compact-row-action" disabled={opening || selectedOpenableViewIds.length === 0} onClick={() => void openAllSelected()}>
               <ChevronsRight size={17} />
-              Open all selected
+              {opening ? 'Opening selected...' : 'Open all selected'}
             </button>
           </div>
         </div>

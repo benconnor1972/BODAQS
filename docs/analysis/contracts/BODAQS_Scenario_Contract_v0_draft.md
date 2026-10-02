@@ -489,6 +489,22 @@ Episode time bounds use half-open intervals:
 [start_time_s, end_time_s)
 ```
 
+Source observations use conservative midpoint-bounded sample cells. A stream's
+nominal interval is estimated from the median positive timestamp delta when an
+explicit native cadence is unavailable. Adjacent observations belong to the
+same continuity region when their separation is no greater than the larger of
+three nominal intervals and the nominal interval plus one microsecond. This
+tolerance absorbs normal scheduler, bus, and timestamp jitter without treating
+each observation as a separate region.
+
+A larger separation is a hard continuity break. Cells on either side are
+truncated to half a nominal interval, leaving the unsupported gap unknown.
+Predicate and activity states are run-normalised before Boolean composition;
+ordinary timestamp jitter therefore does not increase interval count. Scenario
+evaluation uses linear-time operations on sorted interval states and rejects
+pathologically fragmented evidence or more than 10,000 candidate Episodes
+instead of attempting unbounded synchronous work.
+
 The exclusive end bound must include the represented support of a final
 matching observation where appropriate. Consumers use half-open membership to
 prevent double counting adjacent Episodes.

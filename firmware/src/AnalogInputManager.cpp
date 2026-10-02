@@ -28,8 +28,7 @@ constexpr uint8_t ADS1220_CMD_START = 0x08;
 constexpr uint8_t ADS1220_CMD_RDATA = 0x10;
 constexpr uint8_t ADS1220_CMD_WREG  = 0x40;
 constexpr uint8_t kInvalidChannel = 0xFF;
-constexpr uint16_t kExternalAdcGlobalCapHz = 500;
-constexpr uint32_t kExternalAdcUtilizationPermille = 550;
+constexpr uint32_t kExternalAdcUtilizationPermille = 700;
 constexpr uint32_t kFastDrdyPollMaxUs = 1500;
 constexpr uint32_t kAsyncStopWaitMs = 100;
 constexpr uint32_t kAsyncTaskStackBytes = 4096;
@@ -781,7 +780,6 @@ uint16_t configureFromConfig(const LoggerConfig& cfg, uint16_t requestedHz) {
   }
 
   uint32_t maxHz = s_requestedHz;
-  bool anyExternalActive = false;
   for (uint8_t adc = 0; adc < board::BOARD_MAX_EXTERNAL_ADCS; ++adc) {
     AdsDevice& dev = s_ads[adc];
     if (!dev.present) continue;
@@ -792,14 +790,9 @@ uint16_t configureFromConfig(const LoggerConfig& cfg, uint16_t requestedHz) {
     }
     dev.activeChannels = active;
     if (active == 0) continue;
-    anyExternalActive = true;
 
     const uint32_t adcMaxHz = usableLoggerHzForAdc_(dev, active);
     if (adcMaxHz < maxHz) maxHz = adcMaxHz;
-  }
-
-  if (anyExternalActive && maxHz > kExternalAdcGlobalCapHz) {
-    maxHz = kExternalAdcGlobalCapHz;
   }
 
   s_effectiveHz = snapDownRate_(s_requestedHz, maxHz);

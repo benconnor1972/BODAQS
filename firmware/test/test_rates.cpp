@@ -16,6 +16,14 @@ int runRateTests() {
         }
     };
 
+    check(Rates::isSupported(700) && Rates::nearest(700) == 700,
+          "700 Hz is accepted and preserved when loading configuration");
+    check(Rates::nearest(650) == 700 && Rates::nearest(850) == 700,
+          "configuration rounding includes 700 Hz and keeps the lower rate on ties");
+    check(!Rates::isSupported(701),
+          "rates outside the permitted list remain unsupported");
+    check(Rates::periodUs(700) == 1428,
+          "700 Hz uses the existing integer-microsecond period policy");
     check(Rates::periodUs(1000) == 1000,
           "1000 Hz cadence retains a 1000 us period");
     check(Rates::periodUs(500) == 2000 && Rates::periodUs(200) == 5000,

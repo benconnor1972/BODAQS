@@ -159,7 +159,8 @@ int runBMI270FifoTests() {
         bool havePreviousGyro = false;
         uint32_t previousAccel = 0;
         uint32_t previousGyro = 0;
-        check(result.samplesWritten == 8 && result.accelFrames == 8 &&
+        check(result.samplesWritten == 9 && result.sampleFrames == 9 &&
+                  result.accelFrames == 8 &&
                   result.gyroFrames == 1 && result.unpairedFrames == 0,
               "mixed-rate FIFO retains expected single-sensor frames");
         check(BMI270FifoParser::assignSensorTimesMixed(

@@ -1,12 +1,16 @@
+import asyncio
 import json
 import shutil
+import threading
 from pathlib import Path
 
+import httpx
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
 import bodaqs_analysis.library_api.adapter as adapter_module
+from bodaqs_analysis.library_api.scenario_evaluation import _subtract
 from bodaqs_analysis.artifacts import ArtifactStore
 from bodaqs_analysis.library_api import LibraryAdapter
 from bodaqs_analysis.library_api.errors import InvalidScenarioError, RevisionConflictError
@@ -193,6 +197,13 @@ def test_scenario_evaluation_respects_activity_and_support_gaps(tmp_path: Path) 
     assert spatial_response["sessions"][0]["episodes"][0]["end_time_s"] == pytest.approx(2.5)
 
 
+def test_interval_subtraction_scales_linearly_for_fragmented_evidence() -> None:
+    left = [(float(index * 2), float(index * 2 + 1)) for index in range(20_000)]
+    right = list(left)
+
+    assert _subtract(left, right) == []
+
+
 def test_scenario_evaluation_uses_native_registered_gps_stream(tmp_path: Path) -> None:
     libraries_root, _, ref = _library(tmp_path)
     scenario = {
@@ -319,3 +330,42 @@ def test_scenario_http_routes(tmp_path: Path) -> None:
         json={"session": ref, "metrics": ["twistiness_rad_per_m"]},
     )
     assert spatial.status_code == 200
+
+
+def test_scenario_http_evaluation_does_not_block_and_coalesces_identical_requests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    libraries_root, _, _ = _library(tmp_path)
+    app = create_app(libraries_root)
+    started = threading.Event()
+    release = threading.Event()
+    call_count = 0
+
+    def slow_evaluation(_request: dict) -> dict:
+        nonlocal call_count
+        call_count += 1
+        started.set()
+        assert release.wait(timeout=2.0)
+        return {"status": "succeeded"}
+
+    monkeypatch.setattr(app.state.adapter, "evaluate_scenario", slow_evaluation)
+
+    async def exercise() -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            first = asyncio.create_task(client.post("/api/v1/scenario-evaluations", json={"scenario": {}}))
+            assert await asyncio.to_thread(started.wait, 1.0)
+            second = asyncio.create_task(client.post("/api/v1/scenario-evaluations", json={"scenario": {}}))
+            await asyncio.sleep(0)
+
+            health = await asyncio.wait_for(client.get("/api/v1/health"), timeout=0.25)
+            assert health.status_code == 200
+
+            release.set()
+            first_response, second_response = await asyncio.gather(first, second)
+            assert first_response.status_code == 200
+            assert second_response.status_code == 200
+
+    asyncio.run(exercise())
+    assert call_count == 1

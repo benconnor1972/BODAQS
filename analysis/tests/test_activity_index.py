@@ -35,17 +35,43 @@ def test_activity_index_preserves_source_runs_and_conservative_time_cells() -> N
     assert index["known_intervals_s"] == [[0.0, 5.5]]
 
 
-def test_vectorized_sample_cells_match_the_reference_intervalisation() -> None:
+def test_sample_cells_are_stable_for_unsorted_duplicates_and_gaps() -> None:
     from bodaqs_analysis.library_api.activity_index import sample_cell_intervals
 
     times = np.array([3.0, 0.0, 1.0, 2.0, 10.0, np.nan, 10.0, 12.5])
-    selections = [
+    assert sample_cell_intervals(
+        times,
         np.array([True, True, True, True, True, False, True, False]),
+    ) == [(0.0, 3.5), (9.5, 11.25)]
+    assert sample_cell_intervals(
+        times,
         np.array([False, True, False, True, False, True, False, True]),
-        np.zeros(len(times), dtype=bool),
+    ) == [(0.0, 0.5), (1.5, 2.5), (11.25, 13.0)]
+    assert sample_cell_intervals(times, np.zeros(len(times), dtype=bool)) == []
+
+
+def test_sample_cells_tolerate_high_rate_timestamp_jitter_without_fragmenting() -> None:
+    from bodaqs_analysis.library_api.activity_index import sample_cell_intervals
+
+    deltas = np.resize(np.array([0.00175, 0.00225, 0.0019, 0.0021]), 20_000)
+    times = np.concatenate(([0.0], np.cumsum(deltas)))
+
+    intervals = sample_cell_intervals(times, np.ones(len(times), dtype=bool))
+
+    assert len(intervals) == 1
+    assert intervals[0][0] == 0.0
+    assert intervals[0][1] > times[-1]
+
+
+def test_sample_cells_leave_real_dropouts_unknown() -> None:
+    from bodaqs_analysis.library_api.activity_index import sample_cell_intervals
+
+    times = np.array([0.0, 0.002, 0.004, 0.020, 0.022])
+
+    assert sample_cell_intervals(times, np.ones(len(times), dtype=bool)) == [
+        (0.0, pytest.approx(0.005)),
+        (pytest.approx(0.019), pytest.approx(0.023)),
     ]
-    for selected in selections:
-        assert sample_cell_intervals(times, selected) == _reference_sample_cells(times, selected)
 
 
 @pytest.mark.parametrize("case_id", ["pipenhot_full", "sendit2_full", "rapid_activity_boundaries"])
@@ -62,27 +88,3 @@ def test_activity_index_is_compact_for_real_regression_sessions(case_id: str) ->
     assert index["sample_count"] >= 26_000
     assert index["summary"]["encoded_run_count"] <= 10
     assert index["summary"]["runs_per_sample"] < 0.001
-
-
-def _reference_sample_cells(times: np.ndarray, selected: np.ndarray) -> list[tuple[float, float]]:
-    valid_times = np.sort(np.unique(times[np.isfinite(times)]))
-    positive = np.diff(valid_times)
-    positive = positive[positive > 1e-9]
-    nominal = (
-        float(np.median(positive))
-        if positive.size >= 2
-        else (min(float(positive[0]), 0.1) if positive.size else 0.001)
-    )
-    half = nominal / 2.0
-    cells = sorted(
-        (max(0.0, float(time) - half), float(time) + half)
-        for time in times[selected]
-        if np.isfinite(time)
-    )
-    intervals: list[tuple[float, float]] = []
-    for start, end in cells:
-        if intervals and start <= intervals[-1][1] + 1e-9:
-            intervals[-1] = (intervals[-1][0], max(intervals[-1][1], end))
-        else:
-            intervals.append((start, end))
-    return intervals
