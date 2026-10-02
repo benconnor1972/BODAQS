@@ -134,7 +134,8 @@ static const BoardProfile THING_PLUS_S3_BODAQS_4_D = {
     .queue_depth = 256,
     .ring_buffer_bytes = 32768,
     .bdq_chunk_bytes = 16384
-  }
+  },
+  .supports_user_sleep = true,
 };
 
 static const BoardProfile THING_PLUS_S3_BODAQS_4_D_UART_I2C1 = [] {
@@ -211,7 +212,7 @@ static const BoardProfile THING_PLUS_S3_PROTO_F_ADC_DIAGNOSTIC = [] {
   return p;
 }();
 
-static const BoardProfile V1RC3_PROFILE = {
+static const BoardProfile A8_PROFILE = {
   .name = "BODAQS A8",
 
   .storage = {
@@ -383,6 +384,15 @@ static const BoardProfile V1RC3_PROFILE = {
   }
 };
 
+// RC3 uses the same pin mapping but relies on sleep for user power-off.
+static const BoardProfile V1RC3_PROFILE = [] {
+  BoardProfile p = A8_PROFILE;
+  p.name = "BODAQS V1RC3";
+  p.buttons.binding_preset = ButtonBindingPreset::BodaqsRc3;
+  p.supports_user_sleep = true;
+  return p;
+}();
+
 const BoardProfile& GetBoardProfile(BoardID id) {
   switch (id) {
     case BoardID::ThingPlusS3_BODAQS_4_D: return THING_PLUS_S3_BODAQS_4_D;
@@ -390,6 +400,7 @@ const BoardProfile& GetBoardProfile(BoardID id) {
     case BoardID::ThingPlusS3_BODAQS_4_F: return THING_PLUS_S3_BODAQS_4_F;
     case BoardID::ThingPlusS3_Proto_F_ADC_Diagnostic: return THING_PLUS_S3_PROTO_F_ADC_DIAGNOSTIC;
     case BoardID::BODAQS_V1RC3: return V1RC3_PROFILE;
+    case BoardID::BODAQS_A8: return A8_PROFILE;
     default: return THING_PLUS_S3_BODAQS_4_D;
   }
 }
@@ -401,9 +412,9 @@ const BoardProfile& GetBoardProfileByName(const char* name) {
   if (strcmp(name, THING_PLUS_S3_BODAQS_4_D_UART_I2C1.name) == 0) return THING_PLUS_S3_BODAQS_4_D_UART_I2C1;
   if (strcmp(name, THING_PLUS_S3_BODAQS_4_F.name) == 0) return THING_PLUS_S3_BODAQS_4_F;
   if (strcmp(name, THING_PLUS_S3_PROTO_F_ADC_DIAGNOSTIC.name) == 0) return THING_PLUS_S3_PROTO_F_ADC_DIAGNOSTIC;
-  if (strcmp(name, V1RC3_PROFILE.name) == 0) return V1RC3_PROFILE;
+  if (strcmp(name, A8_PROFILE.name) == 0) return A8_PROFILE;
   if (strcmp(name, "BODAQS V1RC3") == 0) return V1RC3_PROFILE;
-  if (strcmp(name, "BODAQS S3 Mini N4R2") == 0) return V1RC3_PROFILE;
+  if (strcmp(name, "BODAQS S3 Mini N4R2") == 0) return A8_PROFILE;
 
   return THING_PLUS_S3_BODAQS_4_D;
 }

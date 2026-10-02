@@ -92,7 +92,7 @@ namespace {
     for (const auto& binding : kCommonButtonBindings) {
       appendDefaultButtonBinding_(cfg, binding.button, binding.event, binding.action);
     }
-    if (board::gBoard->buttons.binding_preset != board::ButtonBindingPreset::BodaqsA8) {
+    if (board::gBoard->supports_user_sleep) {
       appendDefaultButtonBinding_(cfg, "nav_left", "held", "sleep");
     }
     appendDefaultButtonBinding_(cfg, "nav_up", "held", "upload_mode_toggle");

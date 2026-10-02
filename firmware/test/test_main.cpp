@@ -39,6 +39,7 @@ int runBdqV2WriterTests();
 
 // Defined in test_rates.cpp
 int runRateTests();
+int runBoardProfileTests();
 
 static int tests_passed = 0;
 static int tests_failed = 0;
@@ -316,6 +317,9 @@ int main() {
     printf("\nRunning rate/cadence tests...\n\n");
     int rate_failed = runRateTests();
     tests_failed += rate_failed;
+
+    printf("\nRunning board profile tests...\n\n");
+    tests_failed += runBoardProfileTests();
 
     printf("\n%d passed, %d failed\n", tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;

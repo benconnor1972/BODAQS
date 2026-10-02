@@ -13,6 +13,10 @@
 #include <ctype.h>     // isspace, tolower, toupper
 #include <stdio.h>
 
+// Default ESP32-S3 UART pins used by the board-profile fixtures.
+inline constexpr uint8_t TX = 43;
+inline constexpr uint8_t RX = 44;
+
 // ── F() macro ──
 // Real Arduino wraps in __FlashStringHelper; for host tests, pass-through.
 #define F(x) (static_cast<const char*>(x))

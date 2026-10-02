@@ -17,8 +17,9 @@ enum class BoardID : uint8_t {
   ThingPlusS3_BODAQS_4_D_UartI2C1,
   ThingPlusS3_BODAQS_4_F,
   BODAQS_V1RC3,
-  BODAQS_S3_Mini_N4R2 = BODAQS_V1RC3,
   ThingPlusS3_Proto_F_ADC_Diagnostic,
+  BODAQS_A8,
+  BODAQS_S3_Mini_N4R2 = BODAQS_A8,
   // Add more here...
 };
 
@@ -228,6 +229,7 @@ struct BoardProfile {
   IndicatorsProfile indicators;
   CurrentLimitSwitchProfile current_limit;
   LoggerPerfProfile perf;
+  bool supports_user_sleep = false;
 };
 
 // ---------- API ----------

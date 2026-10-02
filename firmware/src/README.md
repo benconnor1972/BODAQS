@@ -21,6 +21,16 @@ logging. Higher rates require hardware validation of sample freshness and
 logger timing. The existing integer-microsecond cadence uses a 1,428 us period
 for 700 Hz (approximately 700.28 Hz).
 
+A8 and RC3 have separate board profiles with the same hardware pin mapping.
+Build A8 with `bodaqs_s3_mini_n4r2` (`BODAQS_A8`) and RC3 with
+`bodaqs_s3_mini_n4r2_rc3` (`BODAQS_V1RC3`). The legacy
+`BODAQS_S3_Mini_N4R2` profile alias selects A8. RC3 and Prototype F retain
+the Sleep menu entry and the default hold-left sleep binding; A8 omits both.
+Explicit bindings in existing config files still apply, so remove any A8
+sleep binding there as needed. Restart is the last main-menu entry on all
+boards and is unavailable while logging. Automatic idle sleep remains
+controlled by `auto_sleep_idle_min`.
+
 ## Hardware
 
 - **ESP32** (Arduino core 3.3.0 tested) - SparkFun ESP32 Thing Plus dev board

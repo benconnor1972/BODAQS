@@ -205,6 +205,14 @@ namespace {
       return;
     }
 
+    // No scheduler task means there are no active asynchronous I2C clients on
+    // this bus. In particular, an all-muted sensor configuration has no sensor
+    // deadlines for an OLED transfer to disturb.
+    if (!load.running) {
+      transitionLoggingState_(LoggingDisplayState::Normal, nowMs);
+      return;
+    }
+
     const bool recentMiss = load.recentMissAgeUs <= LOGGING_RECENT_MISS_US;
     if (recentMiss) {
       transitionLoggingState_(
@@ -306,9 +314,8 @@ namespace {
 
   void renderLoggingHud_(uint16_t hz, uint8_t activeSensors) {
     DisplayManager::clear();
-    renderStatus_();
     renderFooter_();
-    DisplayManager::drawText(0, 14, "RECORDING", 2);
+    DisplayManager::drawText(0, 14, "Logging", 2);
     DisplayManager::drawText(
         0, 35,
         String(hz) + " Hz  " + String(activeSensors) + " sensors", 1);
