@@ -177,7 +177,7 @@ public:
   BMI270FifoAcquisition& operator=(const BMI270FifoAcquisition&) = delete;
 
   // Initializes and configures the device, then leaves sensing suspended.
-  bool begin();
+  bool begin(bool allowBusRecovery = true);
   void shutdown();
   bool setProfile(const BMI270Profile::NativeProfile& profile);
   bool setNativeRateHz(uint16_t rateHz);

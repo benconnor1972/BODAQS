@@ -54,7 +54,7 @@ constexpr uint32_t kCardDetectDebounceMs = 150;
 constexpr size_t kMinWriteBufferBytes = 1024;
 constexpr uint32_t kDefaultBdqTargetChunkBytes = 16384UL;
 constexpr uint32_t kStorageWriteStallThresholdUs = 100000UL;
-constexpr uint32_t kBdqV2QueueCoverageMs = 2560UL;
+constexpr uint32_t kBdqV2QueueCoverageMs = 5120UL;
 constexpr uint16_t kBdqV2MinimumRecordsPerChunk = 16;
 constexpr uint32_t kBdqV2MaximumChunkLatencyUs = 50000UL;
 constexpr size_t kBdqV2MaximumPrimaryRecordBytes =
@@ -1246,6 +1246,44 @@ bool StorageManager_saveTextFile(const char* path, const String& data) {
   return true;
 }
 
+bool StorageManager_saveStartupReport(const char* body, char* savedPath, size_t pathCapacity) {
+  if (savedPath && pathCapacity) savedPath[0] = '\0';
+  if (!body || !s_sdMounted || SD_MMC.cardType() == CARD_NONE ||
+      LoggingManager::isRunning() || I2CBusScheduler::isRunning()) return false;
+  if (strlen(body) > 32768) return false;
+
+  // Scan only our fixed slots after initialization. No index file or valid RTC
+  // is needed; interruption of a previous save cannot advance a separate index.
+  unsigned long long maximumSequence = 0;
+  for (unsigned slot = 0; slot < 32; ++slot) {
+    char path[48];
+    snprintf(path, sizeof(path), "/startup/boot-%02u.txt", slot);
+    File file = SD_MMC.open(path, FILE_READ);
+    if (!file) continue;
+    char header[80] = {};
+    const int received = file.read(reinterpret_cast<uint8_t*>(header), sizeof(header) - 1);
+    file.close();
+    if (received <= 0) continue;
+    unsigned long long sequence = 0;
+    if (sscanf(header, "[STARTUP-REPORT] sequence=%llu", &sequence) == 1 &&
+        sequence > maximumSequence) maximumSequence = sequence;
+  }
+  if (maximumSequence == UINT64_MAX) return false;
+  const unsigned long long sequence = maximumSequence + 1;
+  char path[48], header[80];
+  snprintf(path, sizeof(path), "/startup/boot-%02u.txt", (unsigned)((sequence - 1) % 32));
+  const int headerLength = snprintf(header, sizeof(header), "[STARTUP-REPORT] sequence=%llu\n", sequence);
+  const size_t bodyLength = strlen(body);
+  String report;
+  if (!report.reserve(static_cast<size_t>(headerLength) + bodyLength + 1)) return false;
+  report += header;
+  report += body;
+  if (report.length() != static_cast<size_t>(headerLength) + bodyLength ||
+      !StorageManager_saveTextFile(path, report)) return false;
+  if (savedPath && pathCapacity) snprintf(savedPath, pathCapacity, "%s", path);
+  return true;
+}
+
 StorageTimingStats StorageManager_timingStats() {
   return s_storageTiming;
 }
@@ -1603,6 +1641,8 @@ static bool drainOneReadyBdqV2Chunk_(uint64_t nowUs) {
 }
 
 static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
+  // Finalization is serialized; avoid large diagnostics objects on loopTask.
+  static SensorRuntimeDiagnostics diagnostics;
   JsonDocument document;
   document["summary_format"] = "bdq.final_summary.v2";
   document["session_id"] = s_currentSessionId;
@@ -1704,6 +1744,7 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
           clientStats.priorityDeferralCount;
       client["priority_deferral_maximum_us"] =
           clientStats.priorityDeferralMaximumUs;
+      client["scheduling_policy"] = "fixed_two_deferral";
       client["acquire_average_us"] = TimingStats_avgUs(clientStats.acquireUs);
       client["acquire_maximum_us"] = clientStats.acquireUs.maxUs;
     }
@@ -1780,7 +1821,6 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
 
   JsonArray sensorRuntime = document["sensor_runtime"].to<JsonArray>();
   for (uint8_t sensorIndex = 0; sensorIndex < MAX_SENSORS; ++sensorIndex) {
-    SensorRuntimeDiagnostics diagnostics;
     if (!SensorManager::describeRuntimeDiagnosticsAt(
             sensorIndex, diagnostics) ||
         !diagnostics.present || diagnostics.hasImuSession) {
@@ -1835,7 +1875,6 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
     }
 
     for (uint8_t sensorIndex = 0; sensorIndex < MAX_SENSORS; ++sensorIndex) {
-      SensorRuntimeDiagnostics diagnostics;
       if (!SensorManager::describeRuntimeDiagnosticsAt(
               sensorIndex, diagnostics) ||
           strcasecmp(diagnostics.sensorName, descriptor.sensorId) != 0) {
@@ -2319,6 +2358,139 @@ static bool writeLogMetadataSidecar_(const String& path, const LogMetadataContex
 }
 
 
+// Keep each format's finalization locals in a separate stack frame.
+static __attribute__((noinline)) void finalizeBdqV1_() {
+  const LoggingManager::RuntimeStats stats = LoggingManager::runtimeStats();
+  const LoggingManager::StopContext stop = LoggingManager::stopContext();
+  BdqLogEndInfo endInfo;
+  endInfo.stopReason = LoggingManager::stopReasonName(stop.reason);
+  endInfo.stopTriggerEvent = stop.triggerEvent;
+  endInfo.stopUptimeMs = stop.uptimeMs;
+  endInfo.stopSdDetectAvailable = stop.sdDetectAvailable;
+  endInfo.stopSdCardDetected = stop.sdCardDetected;
+  endInfo.stopAnalogRailFault = stop.analogRailFault;
+  endInfo.samplesDropped = s_samplesDropped;
+  endInfo.queueMax = s_qMax;
+  endInfo.queueDepth = s_qCap;
+  endInfo.flushCount = s_flushCount;
+  endInfo.flushMaxMs = s_flushMaxMs;
+  endInfo.flushTotalMs = s_flushTotalMs;
+  endInfo.samplerLateTicks = stats.samplerLateTicks;
+  endInfo.samplerLateMaxLagMs = stats.samplerLateMaxLagMs;
+  endInfo.samplerLateMaxLagUs = stats.samplerLateMaxLagUs;
+  endInfo.samplerWakeups = stats.samplerWakeups;
+  endInfo.samplerLateOverTenPercent = stats.samplerLateOverTenPercent;
+  endInfo.missedSampleSlots = stats.missedSampleSlots;
+  endInfo.samplerWakeLagUs = &stats.samplerWakeLagUs;
+  endInfo.sampleOnceUs = &stats.sampleOnceUs;
+  endInfo.sensorSampleUs = &stats.sensorSampleUs;
+  endInfo.enqueueUs = &stats.enqueueUs;
+  endInfo.storageTiming = &s_storageTiming;
+  endInfo.externalAdcTiming = &AnalogInputManager::timingStats();
+  endInfo.sensorTiming = &SensorManager::timingStats();
+  endInfo.i2cSchedulerTiming = &I2CBusScheduler::timingStats();
+  endInfo.boardProfile = board::gBoard;
+  if (!BdqLogWriter::end(endInfo)) {
+    STOR_LOGW("BDQ writer end failed for %s\n", s_currentLogPath.c_str());
+  }
+}
+
+static __attribute__((noinline)) void finalizeBdqV2_() {
+  const LoggingManager::RuntimeStats stats = LoggingManager::runtimeStats();
+  const LoggingManager::StopContext stop = LoggingManager::stopContext();
+  BdqLogEndInfo endInfo;
+  endInfo.stopReason = LoggingManager::stopReasonName(stop.reason);
+  endInfo.stopTriggerEvent = stop.triggerEvent;
+  endInfo.stopUptimeMs = stop.uptimeMs;
+  endInfo.stopSdDetectAvailable = stop.sdDetectAvailable;
+  endInfo.stopSdCardDetected = stop.sdCardDetected;
+  endInfo.stopAnalogRailFault = stop.analogRailFault;
+  endInfo.samplesDropped = s_samplesDropped;
+  endInfo.queueMax = s_qMax;
+  endInfo.queueDepth = s_qCap;
+  endInfo.flushCount = s_flushCount;
+  endInfo.flushMaxMs = s_flushMaxMs;
+  endInfo.flushTotalMs = s_flushTotalMs;
+  endInfo.samplerLateTicks = stats.samplerLateTicks;
+  endInfo.samplerLateMaxLagMs = stats.samplerLateMaxLagMs;
+  endInfo.samplerLateMaxLagUs = stats.samplerLateMaxLagUs;
+  endInfo.samplerWakeups = stats.samplerWakeups;
+  endInfo.samplerLateOverTenPercent = stats.samplerLateOverTenPercent;
+  endInfo.missedSampleSlots = stats.missedSampleSlots;
+  endInfo.samplerWakeLagUs = &stats.samplerWakeLagUs;
+  endInfo.sampleOnceUs = &stats.sampleOnceUs;
+  endInfo.sensorSampleUs = &stats.sensorSampleUs;
+  endInfo.enqueueUs = &stats.enqueueUs;
+  endInfo.storageTiming = &s_storageTiming;
+  endInfo.externalAdcTiming = &AnalogInputManager::timingStats();
+  endInfo.sensorTiming = &SensorManager::timingStats();
+  endInfo.i2cSchedulerTiming = &I2CBusScheduler::timingStats();
+  endInfo.boardProfile = board::gBoard;
+  const uint32_t finalFlushStartMs = millis();
+  if (g_sdTrackEnabled) g_sdWriteSinceLastSample = true;
+  if (s_bdqV2Writer.flush()) {
+    const uint32_t durationMs = millis() - finalFlushStartMs;
+    ++s_flushCount;
+    s_flushTotalMs += durationMs;
+    if (durationMs > s_flushMaxMs) s_flushMaxMs = durationMs;
+  } else {
+    ++s_storageWriteFailures;
+  }
+  const String summary = buildBdqV2FinalSummary_(endInfo);
+  if (!summary.length() ||
+      !s_bdqV2Writer.end(summary.c_str(), summary.length())) {
+    STOR_LOGW("BDQ v2 writer end failed for %s\n", s_currentLogPath.c_str());
+  }
+}
+
+static __attribute__((noinline)) void finalizeCsv_() {
+  const String generatedAtLocal = isoLocalFromEpoch_(RTCManager_getEpoch());
+  const LoggingManager::RuntimeStats stats = LoggingManager::runtimeStats();
+  LogMetadataContext metaCtx;
+  metaCtx.csvPath = s_currentLogPath.c_str();
+  metaCtx.sessionId = s_currentSessionId.c_str();
+  metaCtx.startedAtUtc = s_logStartedAtUtc.c_str();
+  metaCtx.startedAtLocal = s_logStartedAtLocal.c_str();
+  metaCtx.timezone = RTCManager_getTimezone();
+  metaCtx.generatedAtLocal = generatedAtLocal.c_str();
+  metaCtx.rowCount = s_rowsWritten;
+  metaCtx.sampleRateHz = (uint16_t)sampleRateHz;
+  metaCtx.humanReadableTime = RTCManager_isHumanReadable();
+  metaCtx.logFormat = s_activeLogFormat;
+  metaCtx.samplesDropped = s_samplesDropped;
+  metaCtx.rowsFormatFailed = s_rowsFormatFailed;
+  metaCtx.storageWriteFailures = s_storageWriteFailures;
+  metaCtx.queueMax = s_qMax;
+  metaCtx.queueDepth = s_qCap;
+  metaCtx.flushCount = s_flushCount;
+  metaCtx.flushMaxMs = s_flushMaxMs;
+  metaCtx.flushTotalMs = s_flushTotalMs;
+  metaCtx.bufferSize = bufferSize;
+  metaCtx.samplerLateTicks = stats.samplerLateTicks;
+  metaCtx.samplerLateMaxLagMs = stats.samplerLateMaxLagMs;
+  metaCtx.samplerLateMaxLagUs = stats.samplerLateMaxLagUs;
+  metaCtx.samplerWakeups = stats.samplerWakeups;
+  metaCtx.samplerLateOverTenPercent = stats.samplerLateOverTenPercent;
+  metaCtx.missedSampleSlots = stats.missedSampleSlots;
+  metaCtx.samplerWakeLagUs = &stats.samplerWakeLagUs;
+  metaCtx.sampleOnceUs = &stats.sampleOnceUs;
+  metaCtx.sensorSampleUs = &stats.sensorSampleUs;
+  metaCtx.enqueueUs = &stats.enqueueUs;
+  metaCtx.storageTiming = &s_storageTiming;
+  metaCtx.externalAdcTiming = &AnalogInputManager::timingStats();
+  metaCtx.sensorTiming = &SensorManager::timingStats();
+  metaCtx.i2cSchedulerTiming = &I2CBusScheduler::timingStats();
+  metaCtx.boardProfile = board::gBoard;
+
+  const String metadataPath = LogMetadataWriter_metadataPathForCsv(s_currentLogPath.c_str());
+  if (writeLogMetadataSidecar_(metadataPath, metaCtx)) {
+    STOR_LOGI("Log metadata written: %s\n", metadataPath.c_str());
+    createSessionArchive_(s_currentLogPath, metadataPath);
+  } else {
+    STOR_LOGW("Failed to write complete log metadata for %s\n", s_currentLogPath.c_str());
+  }
+}
+
 // Stop log
 void StorageManager_stopLog() {
   if (!loggingActive) return;
@@ -2332,135 +2504,15 @@ void StorageManager_stopLog() {
   }
 
   if (isCompactBinaryFormat_()) {
-    const LoggingManager::RuntimeStats stats = LoggingManager::runtimeStats();
-    const LoggingManager::StopContext stop = LoggingManager::stopContext();
-    BdqLogEndInfo endInfo;
-    endInfo.stopReason = LoggingManager::stopReasonName(stop.reason);
-    endInfo.stopTriggerEvent = stop.triggerEvent;
-    endInfo.stopUptimeMs = stop.uptimeMs;
-    endInfo.stopSdDetectAvailable = stop.sdDetectAvailable;
-    endInfo.stopSdCardDetected = stop.sdCardDetected;
-    endInfo.stopAnalogRailFault = stop.analogRailFault;
-    endInfo.samplesDropped = s_samplesDropped;
-    endInfo.queueMax = s_qMax;
-    endInfo.queueDepth = s_qCap;
-    endInfo.flushCount = s_flushCount;
-    endInfo.flushMaxMs = s_flushMaxMs;
-    endInfo.flushTotalMs = s_flushTotalMs;
-    endInfo.samplerLateTicks = stats.samplerLateTicks;
-    endInfo.samplerLateMaxLagMs = stats.samplerLateMaxLagMs;
-    endInfo.samplerLateMaxLagUs = stats.samplerLateMaxLagUs;
-    endInfo.samplerWakeups = stats.samplerWakeups;
-    endInfo.samplerLateOverTenPercent = stats.samplerLateOverTenPercent;
-    endInfo.missedSampleSlots = stats.missedSampleSlots;
-    endInfo.samplerWakeLagUs = &stats.samplerWakeLagUs;
-    endInfo.sampleOnceUs = &stats.sampleOnceUs;
-    endInfo.sensorSampleUs = &stats.sensorSampleUs;
-    endInfo.enqueueUs = &stats.enqueueUs;
-    endInfo.storageTiming = &s_storageTiming;
-    endInfo.externalAdcTiming = &AnalogInputManager::timingStats();
-    endInfo.sensorTiming = &SensorManager::timingStats();
-    endInfo.i2cSchedulerTiming = &I2CBusScheduler::timingStats();
-    endInfo.boardProfile = board::gBoard;
-    if (!BdqLogWriter::end(endInfo)) {
-      STOR_LOGW("BDQ writer end failed for %s\n", s_currentLogPath.c_str());
-    }
+    finalizeBdqV1_();
   } else if (isBdqV2Format_()) {
-    const LoggingManager::RuntimeStats stats = LoggingManager::runtimeStats();
-    const LoggingManager::StopContext stop = LoggingManager::stopContext();
-    BdqLogEndInfo endInfo;
-    endInfo.stopReason = LoggingManager::stopReasonName(stop.reason);
-    endInfo.stopTriggerEvent = stop.triggerEvent;
-    endInfo.stopUptimeMs = stop.uptimeMs;
-    endInfo.stopSdDetectAvailable = stop.sdDetectAvailable;
-    endInfo.stopSdCardDetected = stop.sdCardDetected;
-    endInfo.stopAnalogRailFault = stop.analogRailFault;
-    endInfo.samplesDropped = s_samplesDropped;
-    endInfo.queueMax = s_qMax;
-    endInfo.queueDepth = s_qCap;
-    endInfo.flushCount = s_flushCount;
-    endInfo.flushMaxMs = s_flushMaxMs;
-    endInfo.flushTotalMs = s_flushTotalMs;
-    endInfo.samplerLateTicks = stats.samplerLateTicks;
-    endInfo.samplerLateMaxLagMs = stats.samplerLateMaxLagMs;
-    endInfo.samplerLateMaxLagUs = stats.samplerLateMaxLagUs;
-    endInfo.samplerWakeups = stats.samplerWakeups;
-    endInfo.samplerLateOverTenPercent = stats.samplerLateOverTenPercent;
-    endInfo.missedSampleSlots = stats.missedSampleSlots;
-    endInfo.samplerWakeLagUs = &stats.samplerWakeLagUs;
-    endInfo.sampleOnceUs = &stats.sampleOnceUs;
-    endInfo.sensorSampleUs = &stats.sensorSampleUs;
-    endInfo.enqueueUs = &stats.enqueueUs;
-    endInfo.storageTiming = &s_storageTiming;
-    endInfo.externalAdcTiming = &AnalogInputManager::timingStats();
-    endInfo.sensorTiming = &SensorManager::timingStats();
-    endInfo.i2cSchedulerTiming = &I2CBusScheduler::timingStats();
-    endInfo.boardProfile = board::gBoard;
-    const uint32_t finalFlushStartMs = millis();
-    if (g_sdTrackEnabled) g_sdWriteSinceLastSample = true;
-    if (s_bdqV2Writer.flush()) {
-      const uint32_t durationMs = millis() - finalFlushStartMs;
-      ++s_flushCount;
-      s_flushTotalMs += durationMs;
-      if (durationMs > s_flushMaxMs) s_flushMaxMs = durationMs;
-    } else {
-      ++s_storageWriteFailures;
-    }
-    const String summary = buildBdqV2FinalSummary_(endInfo);
-    if (!summary.length() ||
-        !s_bdqV2Writer.end(summary.c_str(), summary.length())) {
-      STOR_LOGW("BDQ v2 writer end failed for %s\n", s_currentLogPath.c_str());
-    }
+    finalizeBdqV2_();
   }
 
   logFileMMC.close();
 
   if (!isBinaryFormat_() && s_currentLogPath.length() && !ConfigManager::get().omitMetadata) {
-    const String generatedAtLocal = isoLocalFromEpoch_(RTCManager_getEpoch());
-    const LoggingManager::RuntimeStats stats = LoggingManager::runtimeStats();
-    LogMetadataContext metaCtx;
-    metaCtx.csvPath = s_currentLogPath.c_str();
-    metaCtx.sessionId = s_currentSessionId.c_str();
-    metaCtx.startedAtUtc = s_logStartedAtUtc.c_str();
-    metaCtx.startedAtLocal = s_logStartedAtLocal.c_str();
-    metaCtx.timezone = RTCManager_getTimezone();
-    metaCtx.generatedAtLocal = generatedAtLocal.c_str();
-    metaCtx.rowCount = s_rowsWritten;
-    metaCtx.sampleRateHz = (uint16_t)sampleRateHz;
-    metaCtx.humanReadableTime = RTCManager_isHumanReadable();
-    metaCtx.logFormat = s_activeLogFormat;
-    metaCtx.samplesDropped = s_samplesDropped;
-    metaCtx.rowsFormatFailed = s_rowsFormatFailed;
-    metaCtx.storageWriteFailures = s_storageWriteFailures;
-    metaCtx.queueMax = s_qMax;
-    metaCtx.queueDepth = s_qCap;
-    metaCtx.flushCount = s_flushCount;
-    metaCtx.flushMaxMs = s_flushMaxMs;
-    metaCtx.flushTotalMs = s_flushTotalMs;
-    metaCtx.bufferSize = bufferSize;
-    metaCtx.samplerLateTicks = stats.samplerLateTicks;
-    metaCtx.samplerLateMaxLagMs = stats.samplerLateMaxLagMs;
-    metaCtx.samplerLateMaxLagUs = stats.samplerLateMaxLagUs;
-    metaCtx.samplerWakeups = stats.samplerWakeups;
-    metaCtx.samplerLateOverTenPercent = stats.samplerLateOverTenPercent;
-    metaCtx.missedSampleSlots = stats.missedSampleSlots;
-    metaCtx.samplerWakeLagUs = &stats.samplerWakeLagUs;
-    metaCtx.sampleOnceUs = &stats.sampleOnceUs;
-    metaCtx.sensorSampleUs = &stats.sensorSampleUs;
-    metaCtx.enqueueUs = &stats.enqueueUs;
-    metaCtx.storageTiming = &s_storageTiming;
-    metaCtx.externalAdcTiming = &AnalogInputManager::timingStats();
-    metaCtx.sensorTiming = &SensorManager::timingStats();
-    metaCtx.i2cSchedulerTiming = &I2CBusScheduler::timingStats();
-    metaCtx.boardProfile = board::gBoard;
-
-    const String metadataPath = LogMetadataWriter_metadataPathForCsv(s_currentLogPath.c_str());
-    if (writeLogMetadataSidecar_(metadataPath, metaCtx)) {
-      STOR_LOGI("Log metadata written: %s\n", metadataPath.c_str());
-      createSessionArchive_(s_currentLogPath, metadataPath);
-    } else {
-      STOR_LOGW("Failed to write complete log metadata for %s\n", s_currentLogPath.c_str());
-    }
+    finalizeCsv_();
   } else if (!isBinaryFormat_() && s_currentLogPath.length()) {
     STOR_LOGI("Log metadata omitted by config\n");
   }

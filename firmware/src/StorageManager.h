@@ -35,6 +35,9 @@ void StorageManager_drainQueuedSamples();
 
 bool StorageManager_loadTextFile(const char* path, String& out);
 bool StorageManager_saveTextFile(const char* path, const String& data);
+// Startup-only: bounded 32-slot rotation, using the existing atomic text save.
+// Refuses to write while acquisition/logging is active or SD is unavailable.
+bool StorageManager_saveStartupReport(const char* body, char* savedPath, size_t pathCapacity);
 StorageTimingStats StorageManager_timingStats();
 
 bool StorageManager_cardDetected();

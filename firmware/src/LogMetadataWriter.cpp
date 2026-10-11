@@ -550,6 +550,7 @@ void appendI2CSchedulerTiming_(MetadataOutput& out,
     appendKeyUInt_(out, depth + 3, "priority_service_count", c.priorityServiceCount);
     appendKeyUInt_(out, depth + 3, "priority_deferral_count", c.priorityDeferralCount);
     appendKeyUInt_(out, depth + 3, "priority_deferral_maximum_us", c.priorityDeferralMaximumUs);
+    appendKeyString_(out, depth + 3, "scheduling_policy", "fixed_two_deferral");
     appendKeyUInt_(out, depth + 3, "row_uses", c.rowUses);
     appendKeyUInt_(out, depth + 3, "row_fresh", c.rowFresh);
     appendKeyUInt_(out, depth + 3, "row_reused", c.rowReused);
@@ -752,7 +753,8 @@ void appendRuntimeFailure_(MetadataOutput& out,
 void appendSensorRuntimeDiagnostics_(MetadataOutput& out, uint8_t depth, bool comma = true) {
   uint8_t describedCount = 0;
   const uint8_t registered = SensorManager::count();
-  SensorRuntimeDiagnostics diagnostics;
+  // Sidecar serialization runs serially; keep diagnostics off loopTask.
+  static SensorRuntimeDiagnostics diagnostics;
   for (uint8_t i = 0; i < registered; ++i) {
     if (SensorManager::describeRuntimeDiagnosticsAt(i, diagnostics) && diagnostics.present) {
       ++describedCount;
@@ -829,7 +831,7 @@ void appendSensorRuntimeDiagnostics_(MetadataOutput& out, uint8_t depth, bool co
 void appendImuRuntimeDiagnostics_(MetadataOutput& out, uint8_t depth, bool comma = true) {
   uint8_t imuCount = 0;
   const uint8_t sensorCount = SensorManager::count();
-  SensorRuntimeDiagnostics diagnostics;
+  static SensorRuntimeDiagnostics diagnostics;
   for (uint8_t i = 0; i < sensorCount; ++i) {
     if (SensorManager::describeRuntimeDiagnosticsAt(i, diagnostics) &&
         diagnostics.present && diagnostics.hasImuSession) {
@@ -1116,6 +1118,8 @@ void appendImuConfig_(MetadataOutput& out, const SensorImuConfigDescriptor& imu)
   appendKeyString_(out, 5, "mode", "header");
   appendKeyString_(out, 5, "content", "accel,gyro,sensor_time");
   appendKeyUInt_(out, 5, "poll_rate_hz", imu.fifoPollRateHz);
+  appendKeyString_(out, 5, "service_mode", "whole");
+  appendKeyUInt_(out, 5, "slice_bytes", 0);
   appendKeyUInt_(out, 5, "watermark", imu.fifoWatermark);
   appendKeyUInt_(out, 5, "effective_config", imu.fifoConfig, false);
   appendIndent_(out, 4);

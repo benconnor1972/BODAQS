@@ -1,3 +1,4 @@
+#include "StartupLog.h"
 #include "AS5600StringPotI2C.h"
 
 #include <Arduino.h>
@@ -7,6 +8,7 @@
 
 #include "ConfigManager.h"
 #include "I2CManager.h"
+#include "I2CTransferPriority.h"
 #include "PowerManager.h"
 #include "SensorRegistry.h"
 #include "DebugLog.h"
@@ -297,6 +299,48 @@ void AS5600StringPotI2C::updateReadTransition_(bool readOk) const {
 }
 
 void AS5600StringPotI2C::begin() {
+  beginImpl_(true);
+}
+
+bool AS5600StringPotI2C::describeI2CStartup(I2CStartupStatus& out) const {
+  out = I2CStartupStatus{};
+  out.kind = I2CStartupKind::AS5600;
+  out.busIndex = m_busIndex;
+  out.address = m_i2cAddr;
+  out.ready = I2CManager::available(m_busIndex) &&
+      m_runtimeDiagnostics.initialProbeOk && m_lastReadOk &&
+      m_deviceConfigReadOk && (!m_configWriteAttempted || m_configWriteOk);
+  if (!out.ready) {
+    out.step = static_cast<uint8_t>(m_runtimeDiagnostics.initializationFailure.stage);
+    out.result = m_runtimeDiagnostics.initializationFailure.resultCode;
+  }
+  return true;
+}
+
+bool AS5600StringPotI2C::retryI2CStartup(bool allowBusRecovery) {
+  I2CStartupStatus status;
+  describeI2CStartup(status);
+  if (status.ready) return true;
+  beginImpl_(allowBusRecovery);
+  describeI2CStartup(status);
+  return status.ready;
+}
+
+bool AS5600StringPotI2C::probeWithRetries_(bool allowBusRecovery) const {
+  uint8_t attempt = 0;
+  return I2CStartupRecovery::probeWithRetries([&]() {
+    const bool ok = probe_();
+    StartupLog::printf("[I2C-STARTUP] as5600_probe uptime_ms=%lu sensor=%s bus=%u addr=0x%02X attempt=%u ok=%u stage=%u wire_result=%d\n",
+                  (unsigned long)millis(), name(), (unsigned)m_busIndex, (unsigned)m_i2cAddr,
+                  (unsigned)++attempt, ok ? 1u : 0u,
+                  ok ? 0u : (unsigned)m_lastRuntimeFailure.stage,
+                  ok ? 0 : (int)m_lastRuntimeFailure.resultCode);
+    return ok;
+  }, [&]() { return I2CManager::recoverBus(m_busIndex); },
+  [](uint32_t ms) { delay(ms); }, allowBusRecovery);
+}
+
+void AS5600StringPotI2C::beginImpl_(bool allowBusRecovery) {
   m_deferredRecoveryPending = false;
   resetRuntimeDiagnostics_();
   m_wire = I2CManager::bus(m_busIndex);
@@ -343,7 +387,7 @@ void AS5600StringPotI2C::begin() {
     m_runtimeDiagnostics.initializationFailure = m_lastRuntimeFailure;
     AS5600I2C_LOGW("sensor '%s': I2C bus %u unavailable\n",
                    name(), (unsigned)m_busIndex);
-  } else if (!probe_()) {
+  } else if (!probeWithRetries_(allowBusRecovery)) {
     m_runtimeDiagnostics.initializationFailure = m_lastRuntimeFailure;
     AS5600I2C_LOGW("sensor '%s': no AS5600 response at 0x%02X on bus %u\n",
                    name(), (unsigned)m_i2cAddr, (unsigned)m_busIndex);
@@ -481,6 +525,7 @@ bool AS5600StringPotI2C::probe_() const {
 }
 
 bool AS5600StringPotI2C::readRegBytesLocked_(uint8_t reg, uint8_t* out, uint8_t len) const {
+  I2CTransferPriorityScope transferPriority;
   if (!m_wire) {
     setRuntimeFailure_(SensorRuntimeFailureStage::BusUnavailable);
     return false;
@@ -521,6 +566,7 @@ bool AS5600StringPotI2C::readRegBytesLocked_(uint8_t reg, uint8_t* out, uint8_t 
 }
 
 bool AS5600StringPotI2C::readRawAngleBytesLocked_(uint8_t* out) const {
+  I2CTransferPriorityScope transferPriority;
   if (!out) return false;
   if (m_rawAnglePointerPrimed) {
     ++m_runtimeDiagnostics.fastReadAttempts;
@@ -551,6 +597,7 @@ bool AS5600StringPotI2C::readRawAngleBytesLocked_(uint8_t* out) const {
 bool AS5600StringPotI2C::writeRegBytesLocked_(uint8_t reg,
                                               const uint8_t* data,
                                               uint8_t len) const {
+  I2CTransferPriorityScope transferPriority;
   if (!m_wire) {
     setRuntimeFailure_(SensorRuntimeFailureStage::BusUnavailable);
     return false;

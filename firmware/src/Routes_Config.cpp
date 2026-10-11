@@ -8,6 +8,8 @@
 #include "HtmlUtil.h"
 #include "ConfigManager.h"
 #include "SensorManager.h"
+#include "SensorAssignment.h"
+#include "LoggingManager.h"
 #include "SensorRegistry.h"
 #include "RTCManager.h"
 #include "WiFiManager.h"
@@ -25,6 +27,20 @@
 #define WEB_LOGW(...) LOGW_TAG("WEB", __VA_ARGS__)
 
 // ---- Helpers (file scope) ----
+static String configurationNotice_(bool outOfBand = false) {
+  LoggingManager::refreshConfigurationStatus();
+  String html = outOfBand ? F("<div id='logging-config-notice' hx-swap-oob='outerHTML'>")
+      : F("<div id='logging-config-notice'>");
+  const auto issue = LoggingManager::configurationIssue();
+  if (issue != LoggingConfigIssue::None && !LoggingManager::isRunning()) {
+    String title = issue == LoggingConfigIssue::RestartRequired ? F("Restart required - press Enter on the home screen.")
+        : (issue == LoggingConfigIssue::Conflict ? F("Config conflict - please review.") : F("Sensor configuration - please review."));
+    html += String(F("<div class='alert-warn'><strong>")) + title + F("</strong><br>") +
+        HtmlUtil::htmlEscape(String(LoggingManager::configurationDetail())) + F("</div>");
+  }
+  return html + F("</div>");
+}
+
 static String fmtIPv4(const uint8_t a[4]) {
   char buf[16];
   snprintf(buf, sizeof(buf), "%u.%u.%u.%u",
@@ -209,6 +225,7 @@ static bool applyLiveSensorSpec_(uint8_t idx, const char* lookupName, const Sens
   }
 
   live->setAllowedCalMask(ConfigManager::calAllowedMaskByIndex(idx));
+  SensorManager::noteLiveConfiguration(live, sp);
   return true;
 }
 
@@ -390,6 +407,38 @@ static void emitParamRow_(ChunkedHtmlResponse& html,
     html += F("</small>");
   }
   html += F("</div>");
+}
+
+static String sensorInputLabel_(const SensorSpec& spec) {
+  const auto assignment = sensorAssignment(spec, board::gBoard);
+  if (assignment.kind == SensorAssignment::Kind::I2C) {
+    char label[24];
+    snprintf(label, sizeof(label), "I2C%d [0x%02X]", assignment.bus, assignment.input);
+    return String(label);
+  }
+  if (assignment.kind == SensorAssignment::Kind::Uart) {
+    return String(F("UART")) + String((int)assignment.bus);
+  }
+  if (spec.type == SensorType::AnalogPot || spec.type == SensorType::AS5600StringPotAnalog) {
+    long ain = -1;
+    if (spec.params.getInt("ain", ain) && ain >= 0) {
+      return String(F("AIN")) + String(ain);
+    }
+    // Older configurations can identify the input by GPIO rather than AIN.
+    if (assignment.kind == SensorAssignment::Kind::Gpio) {
+      if (board::gBoard) {
+        const auto& analog = board::gBoard->analog;
+        for (uint8_t i = 0; i < analog.count && i < board::BOARD_MAX_ANALOG_INPUTS; ++i) {
+          const auto& input = analog.inputs[i];
+          const int pin = input.source == board::AnalogSourceType::InternalGpio ? input.pin :
+              (input.source == board::AnalogSourceType::None ? analog.pins[i] : -1);
+          if (pin == assignment.input) return String(F("AIN")) + String((int)i);
+        }
+      }
+      return String(F("GPIO")) + String((int)assignment.input);
+    }
+  }
+  return F("Unassigned");
 }
 
 static bool analogInputConfigured_(const board::BoardProfile& bp, uint8_t ain) {
@@ -802,6 +851,7 @@ void registerConfigRoutes(WebServer& srv) {
     // ---------- GLOBALS ----------
     html += F("<div id='save-result'></div>");
     html += F("<h2>Configuration</h2>");
+    html += configurationNotice_();
     html += F("<form method='POST' action='/config'");
     html += F(" hx-post='/config' hx-target='#save-result' hx-swap='innerHTML'");
     html += F(" hx-sync='this:replace'>");
@@ -835,6 +885,11 @@ void registerConfigRoutes(WebServer& srv) {
     html += F("<label><input type='checkbox' name='omit_metadata' value='true'");
     if (cfg.omitMetadata) html += F(" checked");
     html += dis; html += F("> Omit log metadata JSON</label><br>");
+
+    html += F("<label><input type='checkbox' name='startup_log_to_sd' value='true'");
+    if (cfg.startupLogToSd) html += F(" checked");
+    html += dis; html += F("> Save startup diagnostics to SD</label><br>");
+    html += F("<small>Applies on the next restart. Keeps the latest 32 reports in /startup.</small><br>");
 
     html += F("<label>Timestamp mode: </label><select name='timestamp_mode'");
     html += dis; html += F("><option value='human'");
@@ -1038,14 +1093,10 @@ void registerConfigRoutes(WebServer& srv) {
     ChunkedHtmlResponse html(srv);
     html.begin(F("text/html"), F("no-store"));
     html += htmlHeader(F("Sensors"));
+    html += configurationNotice_();
 
     if (srv.hasArg("ok")) {
       html += F("<p style='background:#e7ffe7;border:1px solid #8bc34a;padding:8px;border-radius:6px'>Saved.</p>");
-    }
-    if (srv.hasArg("reboot")) {
-      html += F("<p style='background:#fff3cd;border:1px solid #ffe08a;padding:8px;border-radius:6px'>"
-                "Sensor add/delete changes are saved. Restart the logger to rebuild the live sensor set."
-                "</p>");
     }
     if (locked) {
       html += F("<p style='background:#fff3cd;border:1px solid #ffe08a;padding:8px;border-radius:6px'>"
@@ -1059,7 +1110,7 @@ void registerConfigRoutes(WebServer& srv) {
     if (listCount == 0) {
       html += F("<p><em>No sensors configured.</em></p>");
     } else {
-      html += F("<table><thead><tr><th>#</th><th>Name</th><th>Type</th><th>State</th><th>Output</th><th></th></tr></thead><tbody>");
+      html += F("<table><thead><tr><th>#</th><th>Name</th><th>Type</th><th>Input</th><th>State</th><th>Output</th><th></th></tr></thead><tbody>");
       for (uint8_t i = 0; i < listCount; ++i) {
         SensorSpec sp;
         if (!cfg.getSensorSpec(i, sp)) continue;
@@ -1072,6 +1123,8 @@ void registerConfigRoutes(WebServer& srv) {
         html += htmlEscape(String(sp.name));
         html += F("</td><td>");
         html += htmlEscape(String(SensorRegistry::typeLabel(sp.type)));
+        html += F("</td><td>");
+        html += htmlEscape(sensorInputLabel_(sp));
         html += F("</td><td>");
         html += sp.mutedDefault ? F("muted") : F("active");
         html += F("</td><td>");
@@ -1135,13 +1188,10 @@ void registerConfigRoutes(WebServer& srv) {
     ChunkedHtmlResponse html(srv);
     html.begin(F("text/html"), F("no-store"));
     html += htmlHeader(F("Sensor"));
+    html += configurationNotice_();
 
     if (srv.hasArg("ok")) {
       html += F("<p style='background:#e7ffe7;border:1px solid #8bc34a;padding:8px;border-radius:6px'>Saved.</p>");
-    }
-    if (srv.hasArg("reboot")) {
-      html += F("<p style='background:#fff3cd;border:1px solid #ffe08a;padding:8px;border-radius:6px'>"
-                "Restart the logger to rebuild the live sensor set.</p>");
     }
     if (locked) {
       html += F("<p style='background:#fff3cd;border:1px solid #ffe08a;padding:8px;border-radius:6px'>"
@@ -1613,7 +1663,7 @@ void registerConfigRoutes(WebServer& srv) {
         HttpFileSender::sendText(srv, 200, F("text/html"), F(""), F("no-store"));
       } else {
         HttpFileSender::sendText(srv, 200, F("text/html"),
-          F("<div class='alert-ok'>Saved.</div>"), F("no-store"));
+          String(F("<div class='alert-ok'>Saved.</div>")) + configurationNotice_(true), F("no-store"));
       }
       return;
     }
@@ -1684,6 +1734,7 @@ void registerConfigRoutes(WebServer& srv) {
     }
 
     tmp.omitMetadata = srv.hasArg("omit_metadata");
+    tmp.startupLogToSd = srv.hasArg("startup_log_to_sd");
 
     if (srv.hasArg("tz")) {
       String tz = srv.arg("tz"); tz.trim();
@@ -1916,7 +1967,7 @@ void registerConfigRoutes(WebServer& srv) {
     // Redirect back to GET with ok=1
     if (isHtmxRequest(srv)) {
       HttpFileSender::sendText(srv, 200, F("text/html"),
-        F("<div class='alert-ok'>Configuration saved.</div>"), F("no-store"));
+        String(F("<div class='alert-ok'>Configuration saved.</div>")) + configurationNotice_(true), F("no-store"));
       return;
     }
     srv.sendHeader("Location", "/config?ok=1&tab=" + submit);

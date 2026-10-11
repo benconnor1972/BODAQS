@@ -12,6 +12,8 @@
 #include "WiFiManager.h"
 #include "UploadModeManager.h"
 #include "DebugLog.h"
+#include "HomeRestartGesture.h"
+#include "DeviceRestart.h"
 
 #define BLOG(...) LOGD_TAG("BTN", __VA_ARGS__)
 
@@ -31,6 +33,7 @@ namespace {
   const LoggerConfig* s_cfg = nullptr;
   unsigned long s_lastEnterToggleMs = 0;
   bool s_navLeftPressStartedInMenu = false;
+  HomeRestartGesture s_homeRestart;
 
   struct Slot {
     ButtonActions::MarkOverrideHandle id;
@@ -123,6 +126,19 @@ namespace {
 
   // Dispatch from (buttonIndex, event) -> one or more actions
   void handleButtonBinding_(uint8_t buttonIndex, ButtonEvent ev) {
+    if (board::gBoard && buttonIndex < board::gBoard->buttons.count &&
+        strcmp(board::gBoard->buttons.btn[buttonIndex].id, "nav_enter") == 0) {
+      LoggingManager::refreshConfigurationStatus();
+      const bool prompt = !LoggingManager::isRunning() && !MenuSystem::isActive() && !UI::isModal() &&
+          !UploadModeManager::isActive() &&
+          LoggingManager::configurationIssue() == LoggingConfigIssue::RestartRequired;
+      const bool restart = s_homeRestart.update(prompt, ev == BUTTON_PRESSED, ev == BUTTON_RELEASED);
+      if (prompt) {
+        if (restart) DeviceRestart::restart();
+        return;
+      }
+    }
+
 #if defined(BODAQS_BRINGUP_DIAGNOSTICS)
     const char* buttonId = "(unknown)";
     if (board::gBoard && buttonIndex < board::gBoard->buttons.count) {
@@ -302,16 +318,8 @@ void ButtonActions::onToggleLogging(ButtonEvent event) {
       UI::status("Logging");
     } else {
       UI::println("Failed to start logging.", "", UI::TARGET_SERIAL, UI::LVL_ERROR);
-      const LoggingManager::StartFailureHint hint =
-          LoggingManager::startFailureHint();
-      if (hint == LoggingManager::StartFailureHint::RestartNow) {
-        UI::toastSequence("Log start\nfailed", "restart now", 1500, 2, 1);
-      } else if (hint == LoggingManager::StartFailureHint::UseBdqV2) {
-        UI::toastSequence("Log start\nfailed", "use BDQv2", 1500, 2, 1);
-      } else {
-        UI::toast("Log start\nfailed", 1500, 2);
-      }
-      UI::status("Ready");
+      // start() owns specific failure feedback. Persistent configuration
+      // prompts must survive; do not replace them with a generic failure toast.
     }
   } else {
     UI::println("Logging stopped.", "", UI::TARGET_SERIAL, UI::LVL_INFO);

@@ -5,6 +5,7 @@
 #include "ImuOrientation.h"
 #include "OutputTransform.h"   // keep lightweight; transform interface only
 #include "SensorRuntimeDiagnostics.h"
+#include "I2CStartupRecovery.h"
 
 class TransformRegistry;
 struct BdqV2StreamDescriptor;
@@ -232,6 +233,8 @@ public:
 
   // ----- Lifecycle -----
   virtual void begin() = 0;
+  virtual bool describeI2CStartup(I2CStartupStatus&) const { return false; }
+  virtual bool retryI2CStartup(bool) { return false; }
   virtual void loop() {}
   virtual void applyConfig(const LoggerConfig&) {}
   virtual void onLoggingStart() {}
@@ -335,6 +338,8 @@ public:
   // Re-apply a saved sensor spec to the live instance when the concrete type
   // is unchanged.
   virtual bool reconfigureFromSpec(const SensorSpec&) { return false; }
+  // Pure configuration comparison: no initialization or I2C operations.
+  virtual bool loggingRestartRequired(const SensorSpec&, char*, size_t) const { return false; }
 
   // -------- Output Transform integration --------
   void setSelectedTransformId(const String& id) {

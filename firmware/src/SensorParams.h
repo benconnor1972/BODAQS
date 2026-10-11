@@ -7,7 +7,8 @@
 #include <Arduino.h>
 
 struct ParamStore {
-  static const uint8_t MAX = 32;   // max params per sensor
+  // Retain existing entries plus retired experiment keys and editor markers.
+  static const uint8_t MAX = 36;
   char     keys[MAX][24];
   char     vals[MAX][32];
   uint8_t  count = 0;

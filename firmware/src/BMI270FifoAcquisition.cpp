@@ -195,7 +195,7 @@ bool BMI270FifoAcquisition::setGyroBiasMode(BMI270GyroBiasMode mode) {
   return device_.setGyroBiasMode(mode);
 }
 
-bool BMI270FifoAcquisition::begin() {
+bool BMI270FifoAcquisition::begin(bool allowBusRecovery) {
   if (initialized_) return true;
   ScopedOledTransferDeferral deferOled(device_.busIndex());
   sessionActive_.store(false, std::memory_order_release);
@@ -215,8 +215,12 @@ bool BMI270FifoAcquisition::begin() {
     // Start-up can encounter the same latched shared-wire state as a running
     // session. Give the bus one bounded clear/reinitialization opportunity
     // before this IMU is declared unavailable for the log.
-    if (device_.transportDiagnostics().failures == startupTransportFailures ||
-        !busCommunicationFailure_(device_.transportDiagnostics().lastFailure.stage) ||
+    const auto& diagnostics = device_.diagnostics();
+    const bool wrongIdentity = diagnostics.failureStep == BMI270DeviceStep::ProbeChipId &&
+        diagnostics.chipIdRead && !diagnostics.chipIdMatched;
+    const bool transportFailed = device_.transportDiagnostics().failures != startupTransportFailures &&
+        busCommunicationFailure_(device_.transportDiagnostics().lastFailure.stage);
+    if (!allowBusRecovery || (!wrongIdentity && !transportFailed) ||
         !I2CManager::recoverBus(device_.busIndex()) || !device_.begin()) {
       return false;
     }

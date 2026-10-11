@@ -55,6 +55,8 @@ namespace I2CBusScheduler {
   void start();
   void stop();
   bool isRunning();
+  // Transfer boosts apply only to acquisition workers.
+  bool isCurrentTask();
   bool liveBusLoad(uint8_t busIndex, LiveBusLoad& out);
 
   // True when every participating active client on the bus was serviced

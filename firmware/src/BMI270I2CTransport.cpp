@@ -6,6 +6,7 @@
 #include <bmi270.h>
 
 #include "I2CManager.h"
+#include "I2CTransferPriority.h"
 #include "esp_timer.h"
 
 namespace {
@@ -35,7 +36,27 @@ void BMI270I2CTransport::attach(struct bmi2_dev& device) {
 
 bool BMI270I2CTransport::probeChipId(uint8_t& chipId) {
   chipId = 0;
-  return read_(BMI2_CHIP_ID_ADDR, &chipId, 1) == BMI2_INTF_RET_SUCCESS;
+#if defined(BODAQS_I2C_STARTUP_DIAGNOSTICS)
+  // Diagnostic identity reads use the same HAL transaction as Wire, exposing
+  // its original ESP error instead of Wire's zero-length failure result.
+  const auto result = I2CManager::probeRegister(busIndex_, address_, BMI2_CHIP_ID_ADDR, 1);
+  lastProbeEspKnown_ = true;
+  lastProbeEspError_ = result.error;
+  lastProbeReceived_ = result.received;
+  if (!result.ok) {
+    recordFailure_(BMI270I2CFailureStage::RequestBytes,
+                   static_cast<int16_t>(result.error), BMI2_CHIP_ID_ADDR, 1, result.received);
+    return false;
+  }
+  chipId = result.bytes[0];
+  recordSuccess_();
+  return true;
+#else
+  lastProbeEspKnown_ = false;
+  const bool ok = read_(BMI2_CHIP_ID_ADDR, &chipId, 1) == BMI2_INTF_RET_SUCCESS;
+  lastProbeReceived_ = ok ? 1 : diagnostics_.lastFailure.receivedBytes;
+  return ok;
+#endif
 }
 
 void BMI270I2CTransport::resetDiagnostics() {
@@ -138,6 +159,7 @@ BMI2_INTF_RETURN_TYPE BMI270I2CTransport::read_(
 
   const uint64_t transferStartUs = static_cast<uint64_t>(esp_timer_get_time());
 
+  I2CTransferPriorityScope transferPriority;
   wire->beginTransmission(address_);
   if (wire->write(registerAddress) != 1) {
     const uint8_t result = wire->endTransmission(true);
@@ -231,6 +253,7 @@ BMI2_INTF_RETURN_TYPE BMI270I2CTransport::write_(
     return kTransportFailure;
   }
 
+  I2CTransferPriorityScope transferPriority;
   wire->beginTransmission(address_);
   if (wire->write(registerAddress) != 1) {
     const uint8_t result = wire->endTransmission(true);
@@ -287,8 +310,13 @@ bool BMI270I2CTransport::acquireLock_(
     diagnostics_.busLockWaitMaximumUs = waitedUs;
   }
   if (locked) {
-    const board::I2CProfile* busProfile = I2CManager::profile(busIndex_);
-    if (busProfile && busProfile->hz) wire->setClock(busProfile->hz);
+    const uint32_t hz = I2CManager::clockHz(busIndex_);
+    if (!hz || !wire->setClock(hz)) {
+      I2CManager::unlock(wire);
+      recordFailure_(BMI270I2CFailureStage::BusUnavailable, kTransportFailure,
+                     registerAddress, expectedBytes, 0);
+      return false;
+    }
     return true;
   }
   ++diagnostics_.busLockTimeouts;

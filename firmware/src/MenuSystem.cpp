@@ -1,3 +1,4 @@
+#include "DeviceRestart.h"
 #include "MenuSystem.h"
 #include "UI.h"
 #include "ConfigManager.h"
@@ -496,15 +497,7 @@ namespace {
           break;
         }
 
-        UI::toastModal("Restarting...", 800, 1);
-        deferUiFor(800);
-        DisplayManager::present();
-
-        LOGI_TAG("Menu", "Restarting via esp_restart()\n");
-        Serial.flush();
-        delay(150);
-        RTCManager_invalidateInternalTime();
-        esp_restart();
+        DeviceRestart::restart();
         break;
       }
 

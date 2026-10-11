@@ -679,17 +679,18 @@ void ConfigManager::setSampleRateHz(uint16_t hz, bool persist) {
   }
 }
 
-void ConfigManager::setLogFormat(LogFormat format, bool persist) {
+bool ConfigManager::setLogFormat(LogFormat format, bool persist) {
   LoggerConfig cfg = ConfigManager::get();
-  if (cfg.logFormat == format) return;
+  if (cfg.logFormat == format) return true;
   cfg.logFormat = format;
 
   if (persist) {
-    ConfigManager::save(cfg);
+    return ConfigManager::save(cfg);
   } else {
     s_cfg = cfg;
     g_cfg = s_cfg;
   }
+  return true;
 }
 
 void ConfigManager::setWifiMode(WiFiMode mode, bool persist) {
@@ -781,6 +782,7 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
   if (keyEquals(key, "sample_rate_hz")) { long v=strtol(val,nullptr,10); if (v>=1 && v<=2000) cfg.sampleRateHz=Rates::nearest((uint16_t)v); return true; }
   if (keyEquals(key, "log_format")) { LogFormat f; if (ConfigManager::parseLogFormat(val, f)) cfg.logFormat = f; return true; }
   if (keyEquals(key, "omit_metadata")) { bool b; if (ConfigManager::parseBool(String(val), b)) cfg.omitMetadata = b; return true; }
+  if (keyEquals(key, "startup_log_to_sd")) { bool b; if (ConfigManager::parseBool(String(val), b)) cfg.startupLogToSd = b; return true; }
   if (keyEquals(key, "timestamp_mode")) { if (!strcasecmp(val,"human")) cfg.timestampHuman=true; else if (!strcasecmp(val,"fast")) cfg.timestampHuman=false; return true; }
   if (keyEquals(key, "tz"))             { copyStrBounded(val, cfg.tz, sizeof(cfg.tz)); return true; }
   if (keyEquals(key, "debounce_ms"))    { long v=strtol(val,nullptr,10); if (v>=0 && v<=1000) cfg.debounceMs=(uint16_t)v; return true; }
@@ -1205,6 +1207,7 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
   kv_u("sample_rate_hz", (unsigned)cfg.sampleRateHz);
   kv("log_format", ConfigManager::logFormatKey(cfg.logFormat));
   kv_bool("omit_metadata", cfg.omitMetadata);
+  kv_bool("startup_log_to_sd", cfg.startupLogToSd);
   kv("timestamp_mode", cfg.timestampHuman ? "human" : "fast");
   kv("tz", cfg.tz);
   kv("ntp_servers", cfg.ntpServers);
@@ -1350,6 +1353,7 @@ void ConfigManager::print(const LoggerConfig& cfg) {
   LOGI("oledLoggingPolicy=%s\n",
        ConfigManager::oledLoggingPolicyKey(cfg.oledLoggingPolicy));
   LOGI("logLevel=%s\n", (cfg.logLevelOverride == 0xFF) ? "default" : Log_levelName((LogLevel)cfg.logLevelOverride));
+  LOGI("startupLogToSd=%s\n", cfg.startupLogToSd ? "true" : "false");
 
   LOGI("wifiMode=%s\n", ConfigManager::wifiModeKey(cfg.wifiMode));
   LOGI("wifiEnabledDefault=%s\n", cfg.wifiEnabledDefault ? "true" : "false");

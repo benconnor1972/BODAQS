@@ -13,6 +13,7 @@
 #include "BMI270Profile.h"
 #include "BdqV2Catalog.h"
 #include "LoggerLimits.h"
+#include "SensorAssignment.h"
 #include <cstring>
 #include "BoardSelect.h"
 #include "DebugLog.h"
@@ -29,6 +30,9 @@ static uint32_t s_sampleID = 0;
 namespace {
   //constexpr uint8_t MAX_SENSORS = 16;
   Sensor*             s_list[MAX_SENSORS] = { nullptr };
+  SensorAssignment    s_liveAssignment[MAX_SENSORS];
+  SensorType          s_liveType[MAX_SENSORS] = {};
+  bool                s_liveMutedDefault[MAX_SENSORS] = {};
   bool                s_loggingStarted[MAX_SENSORS] = {};
   bool                s_loggingStopped[MAX_SENSORS] = {};
   const LoggerConfig* s_cfg               = nullptr;
@@ -38,6 +42,22 @@ namespace {
   int firstFree() {
     for (int i = 0; i < (int)MAX_SENSORS; ++i) if (!s_list[i]) return i;
     return -1;
+  }
+
+  int liveIndex_(const SensorSpec& spec) {
+    for (int i = 0; i < MAX_SENSORS; ++i) {
+      if (s_list[i] && s_liveType[i] == spec.type &&
+          strcasecmp(s_list[i]->name(), spec.name) == 0) return i;
+    }
+    return -1;
+  }
+
+  bool configuredActive_(const SensorSpec& spec) {
+    const int i = liveIndex_(spec);
+    // Menu muting is a runtime override. A newly saved mute change wins until
+    // applied; unchanged saved defaults must not undo the menu override.
+    if (i >= 0 && spec.mutedDefault == s_liveMutedDefault[i]) return !s_list[i]->muted();
+    return !spec.mutedDefault;
   }
 
   void copyTimingText_(char* dst, size_t cap, const char* src) {
@@ -320,6 +340,7 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
 
     // Register with SensorManager (takes ownership, per your contract)
     SensorManager::registerSensor(s);
+    SensorManager::noteLiveConfiguration(s, sp);
 
     // ---- Calibration mask: supported (per type) ∧ allowed (per instance CSV) ----
     // 1) Supported per type
@@ -361,102 +382,116 @@ void loop() {
   for (auto* s : s_list) if (s) s->loop();
 }
 
+void noteLiveConfiguration(Sensor* sensor, const SensorSpec& spec) {
+  for (int i = 0; i < MAX_SENSORS; ++i) {
+    if (s_list[i] != sensor) continue;
+    s_liveType[i] = spec.type;
+    s_liveAssignment[i] = sensorAssignment(spec, board::gBoard);
+    s_liveMutedDefault[i] = spec.mutedDefault;
+    return;
+  }
+}
+
+LoggingConfigIssue configurationIssue(const LoggerConfig& cfg, char* error, size_t cap) {
+  if (error && cap) error[0] = '\0';
+  auto issue = [&](LoggingConfigIssue kind, const char* format, const char* a, const char* b = "") {
+    if (error && cap) snprintf(error, cap, format, a, b);
+    return kind;
+  };
+  // Conflicts take priority: rebooting cannot repair duplicate assignments.
+  for (uint8_t i = 0; i < cfg.sensorCount(); ++i) {
+    SensorSpec current;
+    if (!cfg.getSensorSpec(i, current)) continue;
+    const auto assignment = sensorAssignment(current, board::gBoard);
+    const bool active = configuredActive_(current);
+    if (active) {
+      if (const char* owner = assignmentOwner(assignment, board::gBoard)) {
+        return issue(LoggingConfigIssue::Conflict, "%s shares an I2C address with the %s", current.name, owner);
+      }
+    }
+    String currentId;
+    current.params.get("imu_id", currentId);
+    if (!currentId.length()) currentId = String(current.name) + "_001";
+    for (uint8_t j = 0; j < i; ++j) {
+      SensorSpec previous;
+      if (!cfg.getSensorSpec(j, previous)) continue;
+      if (current.name[0] && strcasecmp(current.name, previous.name) == 0)
+        return issue(LoggingConfigIssue::Conflict, "Duplicate sensor name '%s'", current.name);
+      if (!active || !configuredActive_(previous)) continue;
+      if (assignmentsConflict(assignment, sensorAssignment(previous, board::gBoard))) {
+        if (error && cap) {
+          if (assignment.kind == SensorAssignment::Kind::I2C)
+            snprintf(error, cap, "%s and %s share I2C bus %d address 0x%02X", previous.name, current.name, assignment.bus, assignment.input);
+          else snprintf(error, cap, "%s and %s share an input assignment", previous.name, current.name);
+        }
+        return LoggingConfigIssue::Conflict;
+      }
+      if (current.type == SensorType::BMI270ImuI2C && previous.type == current.type) {
+        String previousId;
+        previous.params.get("imu_id", previousId);
+        if (!previousId.length()) previousId = String(previous.name) + "_001";
+        if (currentId.equalsIgnoreCase(previousId))
+          return issue(LoggingConfigIssue::Conflict, "Duplicate imu_id '%s'", currentId.c_str());
+      }
+    }
+  }
+  for (uint8_t i = 0; i < cfg.sensorCount(); ++i) {
+    SensorSpec current;
+    if (!cfg.getSensorSpec(i, current)) continue;
+    if (!SensorRegistry::lookup(current.type))
+      return issue(LoggingConfigIssue::InvalidConfig, "%s has an unknown sensor type", current.name);
+    if (!configuredActive_(current)) continue;
+    const auto assignment = sensorAssignment(current, board::gBoard);
+    if (assignment.kind == SensorAssignment::Kind::None)
+      return issue(LoggingConfigIssue::InvalidConfig, "%s has no valid input assignment", current.name);
+    if (current.type == SensorType::BMI270ImuI2C && !BMI270ImuSensor::validateSpec(current, error, cap))
+      return LoggingConfigIssue::InvalidConfig;
+  }
+  for (uint8_t i = 0; i < cfg.sensorCount(); ++i) {
+    SensorSpec current;
+    if (!cfg.getSensorSpec(i, current) || !configuredActive_(current)) continue;
+    const int live = liveIndex_(current);
+    if (live < 0 || s_list[live]->muted() ||
+        !(s_liveAssignment[live] == sensorAssignment(current, board::gBoard)))
+      return issue(LoggingConfigIssue::RestartRequired, "%s differs from the running sensor; restart required", current.name);
+    if (s_list[live]->loggingRestartRequired(current, error, cap)) return LoggingConfigIssue::RestartRequired;
+  }
+  // Removed/type-changed/muted entries can leave a previously active object.
+  for (int i = 0; i < MAX_SENSORS; ++i) {
+    if (!s_list[i] || s_list[i]->muted()) continue;
+    bool retained = false;
+    for (uint8_t j = 0; j < cfg.sensorCount(); ++j) {
+      SensorSpec current;
+      if (cfg.getSensorSpec(j, current) && liveIndex_(current) == i && configuredActive_(current)) { retained = true; break; }
+    }
+    if (!retained) return issue(LoggingConfigIssue::RestartRequired, "%s is still active; restart required", s_list[i]->name());
+  }
+  return LoggingConfigIssue::None;
+}
+
+bool requiresBdqV2(const LoggerConfig& cfg) {
+  uint8_t count = 0;
+  for (uint8_t i = 0; i < cfg.sensorCount(); ++i) {
+    SensorSpec spec;
+    if (!cfg.getSensorSpec(i, spec) || spec.type != SensorType::BMI270ImuI2C || !configuredActive_(spec)) continue;
+    if (++count > 1) return true;
+    String name = "orientation_200";
+    spec.params.get("profile", name);
+    const auto* profile = BMI270Profile::find(name.c_str());
+    if (profile && profile->accelOdrHz != profile->gyroOdrHz) return true;
+  }
+  return false;
+}
+
 bool validateLoggingStart(
     const LoggerConfig& cfg,
     uint16_t effectiveRateHz,
     char* error,
     size_t errorCapacity) {
   if (error && errorCapacity) error[0] = '\0';
-  for (uint8_t i = 0; i < cfg.sensorCount(); ++i) {
-    SensorSpec current;
-    if (!cfg.getSensorSpec(i, current)) continue;
-    if (current.type == SensorType::Unknown) {
-      if (error && errorCapacity) {
-        snprintf(error, errorCapacity, "sensor%u has an unknown type", (unsigned)i);
-      }
-      return false;
-    }
-
-    for (uint8_t previousIndex = 0; previousIndex < i; ++previousIndex) {
-      SensorSpec previous;
-      if (!cfg.getSensorSpec(previousIndex, previous)) continue;
-      if (current.name[0] && strcasecmp(current.name, previous.name) == 0) {
-        if (error && errorCapacity) {
-          snprintf(error, errorCapacity, "duplicate sensor name '%s'", current.name);
-        }
-        return false;
-      }
-    }
-
-    if (current.type != SensorType::BMI270ImuI2C || current.mutedDefault) continue;
-    if (!BMI270ImuSensor::validateSpec(current, error, errorCapacity)) return false;
-    bool liveBmi270Found = false;
-    for (auto* sensor : s_list) {
-      if (sensor && strcasecmp(sensor->name(), current.name) == 0 &&
-          strcmp(sensor->label(), "BMI270 IMU (I2C)") == 0) {
-        liveBmi270Found = true;
-        break;
-      }
-    }
-    if (!liveBmi270Found) {
-      if (error && errorCapacity) {
-        snprintf(error, errorCapacity, "%s BMI270 is not active; restart required", current.name);
-      }
-      return false;
-    }
-
-    String currentImuId;
-    if (!current.params.get("imu_id", currentImuId) || !currentImuId.length()) {
-      currentImuId = String(current.name) + F("_001");
-    }
-    for (uint8_t previousIndex = 0; previousIndex < i; ++previousIndex) {
-      SensorSpec previous;
-      if (!cfg.getSensorSpec(previousIndex, previous) ||
-          previous.type != SensorType::BMI270ImuI2C || previous.mutedDefault) {
-        continue;
-      }
-      String previousImuId;
-      if (!previous.params.get("imu_id", previousImuId) || !previousImuId.length()) {
-        previousImuId = String(previous.name) + F("_001");
-      }
-      if (currentImuId.equalsIgnoreCase(previousImuId)) {
-        if (error && errorCapacity) {
-          snprintf(error, errorCapacity, "duplicate imu_id '%s'", currentImuId.c_str());
-        }
-        return false;
-      }
-
-      long currentBus = 1;
-      long currentAddress = BMI270Profile::kPrimaryAddress;
-      long previousBus = 1;
-      long previousAddress = BMI270Profile::kPrimaryAddress;
-      (void)current.params.getInt("i2c_bus", currentBus);
-      (void)current.params.getInt("i2c_addr", currentAddress);
-      (void)previous.params.getInt("i2c_bus", previousBus);
-      (void)previous.params.getInt("i2c_addr", previousAddress);
-      if (currentBus == previousBus && currentAddress == previousAddress) {
-        if (error && errorCapacity) {
-          snprintf(error, errorCapacity,
-                   "BMI270 sensors '%s' and '%s' share I2C bus/address",
-                   current.name, previous.name);
-        }
-        return false;
-      }
-    }
-  }
-
-  uint8_t liveBmi270Count = 0;
-  for (auto* sensor : s_list) {
-    if (sensor && !sensor->muted() && strcmp(sensor->label(), "BMI270 IMU (I2C)") == 0) {
-      ++liveBmi270Count;
-    }
-  }
-  if (liveBmi270Count > 1 &&
-      cfg.logFormat != LogFormat::BodaqsMultiStreamBinary) {
-    if (error && errorCapacity) {
-      snprintf(error, errorCapacity,
-               "multiple BMI270 IMUs need BDQ v2 logging");
-    }
+  if (configurationIssue(cfg, error, errorCapacity) != LoggingConfigIssue::None) return false;
+  if (requiresBdqV2(cfg) && cfg.logFormat != LogFormat::BodaqsMultiStreamBinary) {
+    if (error && errorCapacity) snprintf(error, errorCapacity, "IMU configuration requires BDQ v2 logging");
     return false;
   }
 

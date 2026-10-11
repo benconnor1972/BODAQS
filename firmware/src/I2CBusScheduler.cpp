@@ -7,6 +7,7 @@
 #include "I2CSchedulePlan.h"
 #include "DebugLog.h"
 #include "I2CLowPriorityWindow.h"
+#include "I2CTransferPriority.h"
 #include "esp_timer.h"
 
 #include <atomic>
@@ -433,7 +434,8 @@ void waitUntil_(uint64_t targetUs) {
 #if defined(ESP32)
 void taskFn_(void* arg) {
   const uint8_t bus = (uint8_t)(uintptr_t)arg;
-  I2CSCHED_LOGI("bus%u scheduler started\n", (unsigned)bus);
+  I2CSCHED_LOGI("bus%u scheduler started policy=fixed_two_deferral fifo_service=whole base_priority=%u transfer_priority=%u\n",
+                (unsigned)bus, (unsigned)kTaskPriority, (unsigned)BODAQS_I2C_TRANSFER_PRIORITY);
 
   uint64_t nowUs = (uint64_t)esp_timer_get_time();
   initializeBusSchedule_(bus, nowUs);
@@ -704,6 +706,16 @@ void stop() {
                   (unsigned long)kStopWaitMs);
   }
 #endif
+}
+
+bool isCurrentTask() {
+#if defined(ESP32)
+  const TaskHandle_t current = xTaskGetCurrentTaskHandle();
+  for (uint8_t bus = 0; bus < kMaxBuses; ++bus) {
+    if (s_tasks[bus] == current && s_run[bus]) return true;
+  }
+#endif
+  return false;
 }
 
 bool isRunning() {

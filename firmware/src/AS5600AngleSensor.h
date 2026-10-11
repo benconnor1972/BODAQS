@@ -39,6 +39,8 @@ public:
   explicit AS5600AngleSensor(const Params& p);
 
   void begin() override;
+  bool describeI2CStartup(I2CStartupStatus& out) const override;
+  bool retryI2CStartup(bool allowBusRecovery) override;
   void loop() override {}
   void applyConfig(const LoggerConfig&) override {}
   void onLoggingStart() override;
@@ -106,6 +108,8 @@ public:
   static Sensor* create(const char* instanceName, const ParamPack& params, bool mutedDefault);
 
 private:
+  void beginImpl_(bool allowBusRecovery);
+  bool probeWithRetries_(bool allowBusRecovery) const;
   struct OutputSample {
     uint8_t agc = 0;
     uint8_t status = 0;
@@ -253,7 +257,7 @@ private:
   mutable uint32_t m_asyncNextSeq = 0;
   mutable uint32_t m_asyncLastLoggedSeq = 0;
   mutable AsyncSnapshot m_asyncSnapshot;
-  static constexpr uint16_t kBdqV2QueueCapacity = 1024;
+  static constexpr uint16_t kBdqV2QueueCapacity = 2048;
   mutable BdqV2StreamQueue<
       AS5600BdqV2::kRecordSizeBytes,
       kBdqV2QueueCapacity,

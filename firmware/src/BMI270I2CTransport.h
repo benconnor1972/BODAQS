@@ -64,6 +64,9 @@ public:
   void configure(uint8_t busIndex, uint8_t address);
   void attach(struct bmi2_dev& device);
   bool probeChipId(uint8_t& chipId);
+  uint16_t lastProbeReceived() const { return lastProbeReceived_; }
+  int32_t lastProbeEspError() const { return lastProbeEspError_; }
+  bool lastProbeEspKnown() const { return lastProbeEspKnown_; }
 
   uint8_t busIndex() const { return busIndex_; }
   uint8_t address() const { return address_; }
@@ -111,4 +114,7 @@ private:
   BMI270I2CTransportDiagnostics diagnostics_;
   BMI270I2CReadTiming lastReadTiming_;
   TwoWire* transactionWire_ = nullptr;
+  uint16_t lastProbeReceived_ = 0;
+  int32_t lastProbeEspError_ = 0;
+  bool lastProbeEspKnown_ = false;
 };
