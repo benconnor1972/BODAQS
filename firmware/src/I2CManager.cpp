@@ -1,5 +1,8 @@
+#include "StartupLog.h"
 #include "I2CManager.h"
 #include "DebugLog.h"
+#include "esp32-hal-i2c.h"
+#include "I2CBusScheduler.h"
 #include <atomic>
 #if defined(ESP32)
 #include "freertos/FreeRTOS.h"
@@ -14,6 +17,7 @@ namespace {
   TwoWire* s_buses[board::BOARD_MAX_I2C_BUSES] = { &Wire, &s_wire1 };
   const board::I2CProfile* s_profiles[board::BOARD_MAX_I2C_BUSES] = { nullptr, nullptr };
   bool s_available[board::BOARD_MAX_I2C_BUSES] = { false, false };
+  uint32_t s_startupClockOverride[board::BOARD_MAX_I2C_BUSES] {};
   size_t s_bufferCapacity[board::BOARD_MAX_I2C_BUSES] = {
     I2C_BUFFER_LENGTH,
     I2C_BUFFER_LENGTH
@@ -41,6 +45,7 @@ void I2CManager::begin(const board::BoardProfile& bp) {
   for (uint8_t i = 0; i < board::BOARD_MAX_I2C_BUSES; ++i) {
     s_profiles[i] = nullptr;
     s_available[i] = false;
+    s_startupClockOverride[i] = 0;
   }
 
   const uint8_t count = (bp.i2c_count < board::BOARD_MAX_I2C_BUSES)
@@ -52,6 +57,10 @@ void I2CManager::begin(const board::BoardProfile& bp) {
     s_profiles[i] = &cfg;
 #if defined(ESP32)
     if (!s_mutexes[i]) s_mutexes[i] = xSemaphoreCreateMutex();
+    if (!s_mutexes[i]) {
+      I2C_LOGW("bus%u unavailable: mutex allocation failed\n", (unsigned)i);
+      continue;
+    }
 #endif
 
     if (!cfg.present) {
@@ -73,8 +82,14 @@ void I2CManager::begin(const board::BoardProfile& bp) {
     }
 
     const uint32_t hz = cfg.hz ? cfg.hz : 100000UL;
-    w->begin(cfg.sda, cfg.scl);
-    w->setClock(hz);
+    const bool started = w->begin(cfg.sda, cfg.scl, hz);
+    const bool clockOk = started && w->setClock(hz) && w->getClock() == hz;
+    if (!clockOk) {
+      w->end();
+      I2C_LOGW("bus%u unavailable: controller=%u clock=%u\n",
+               (unsigned)i, started ? 1u : 0u, clockOk ? 1u : 0u);
+      continue;
+    }
     s_available[i] = true;
 
     I2C_LOGI("bus%u ready: SDA=%d SCL=%d hz=%lu\n",
@@ -128,20 +143,77 @@ bool I2CManager::setTransactionTimeout(uint8_t busIndex, uint16_t timeoutMs) {
   return true;
 }
 
-bool I2CManager::recoverBus(uint8_t busIndex) {
-  if (busIndex >= board::BOARD_MAX_I2C_BUSES || !s_available[busIndex]) return false;
+uint32_t I2CManager::clockHz(uint8_t busIndex) {
+  if (busIndex >= board::BOARD_MAX_I2C_BUSES) return 0;
+  if (s_startupClockOverride[busIndex]) return s_startupClockOverride[busIndex];
+  const auto* cfg = s_profiles[busIndex];
+  return cfg ? (cfg->hz ? cfg->hz : 100000UL) : 0;
+}
+
+bool I2CManager::setStartupClockOverride(uint8_t busIndex, uint32_t hz) {
+  if (busIndex >= board::BOARD_MAX_I2C_BUSES || !s_available[busIndex] ||
+      I2CBusScheduler::isRunning()) return false;
+  TwoWire* wire = s_buses[busIndex];
+  if (!lock(wire, 200)) {
+    if (hz == 0) {
+      s_startupClockOverride[busIndex] = 0;
+      s_available[busIndex] = false;
+    }
+    return false;
+  }
+  const uint32_t previous = s_startupClockOverride[busIndex];
+  s_startupClockOverride[busIndex] = hz;
+  const uint32_t effective = clockHz(busIndex);
+  const bool ok = wire->setClock(effective) && wire->getClock() == effective;
+  if (!ok) {
+    s_startupClockOverride[busIndex] = hz == 0 ? 0 : previous;
+    // Never resume acquisition at an unintended diagnostic speed.
+    if (hz == 0) s_available[busIndex] = false;
+  }
+  unlock(wire);
+  return ok;
+}
+
+I2CManager::RegisterProbeResult I2CManager::probeRegister(
+    uint8_t busIndex, uint8_t address, uint8_t reg, uint8_t length) {
+  RegisterProbeResult out;
+  out.error = ESP_ERR_INVALID_ARG;
+  if (address == 0 || address > 0x7F || length == 0 || length > sizeof(out.bytes)) return out;
+  TwoWire* wire = bus(busIndex);
+  out.error = ESP_ERR_INVALID_STATE;
+  if (!wire) return out;
+  out.error = ESP_ERR_TIMEOUT;
+  if (!lock(wire, 200)) return out;
+  size_t received = 0;
+  const uint32_t hz = clockHz(busIndex);
+  out.error = ESP_FAIL;
+  if (wire->setClock(hz) && wire->getClock() == hz) {
+    out.error = i2cWriteReadNonStop(busIndex, address, &reg, 1, out.bytes,
+                                   length, wire->getTimeOut(), &received);
+  }
+  out.received = static_cast<uint16_t>(received);
+  out.ok = out.error == ESP_OK && received == length;
+  unlock(wire);
+  return out;
+}
+
+bool I2CManager::recoverBus(uint8_t busIndex, bool force) {
+  if (busIndex >= board::BOARD_MAX_I2C_BUSES) return false;
+  if (force && I2CBusScheduler::isRunning()) return false;
   TwoWire* wire = s_buses[busIndex];
   const board::I2CProfile* cfg = s_profiles[busIndex];
-  if (!wire || !cfg || cfg->sda < 0 || cfg->scl < 0) return false;
+  if (!wire || !cfg || !cfg->present || cfg->sda < 0 || cfg->scl < 0) return false;
   if (!lock(wire, 200)) {
     I2C_LOGW("bus%u recovery deferred: mutex busy\n", (unsigned)busIndex);
     return false;
   }
 
   const uint32_t nowMs = millis();
-  if (s_recoveryAttemptKnown[busIndex] &&
+  if (!force && s_recoveryAttemptKnown[busIndex] &&
       (uint32_t)(nowMs - s_recovery[busIndex].lastAttemptMs) < kRecoveryCooldownMs) {
     const bool previousOk = s_lastRecoveryOk[busIndex];
+    I2C_LOGW("bus%u recovery skipped: cooldown previous_controller_ok=%u\n",
+             (unsigned)busIndex, previousOk ? 1u : 0u);
     unlock(wire);
     return previousOk;
   }
@@ -190,15 +262,18 @@ bool I2CManager::recoverBus(uint8_t busIndex) {
   delayMicroseconds(5);
   status.sdaLowAfter = digitalRead((uint8_t)cfg->sda) == LOW;
   status.sclLowAfter = digitalRead((uint8_t)cfg->scl) == LOW;
-  const bool started = wire->begin(cfg->sda, cfg->scl);
+  const uint32_t hz = clockHz(busIndex);
+  const bool started = wire->begin(cfg->sda, cfg->scl, hz);
+  const bool clockOk = started && wire->setClock(hz) && wire->getClock() == hz;
   bool bufferOk = false;
   if (started) {
-    wire->setClock(cfg->hz ? cfg->hz : 100000UL);
     wire->setTimeOut(s_transactionTimeoutMs[busIndex]);
     bufferOk = wire->setBufferSize(s_bufferCapacity[busIndex]) >=
         s_bufferCapacity[busIndex];
   }
-  const bool ok = started && bufferOk && !status.sdaLowAfter && !status.sclLowAfter;
+  const bool ok = clockOk && bufferOk && !status.sdaLowAfter && !status.sclLowAfter;
+  s_available[busIndex] = ok;
+  if (!ok) wire->end();
   s_lastRecoveryOk[busIndex] = ok;
   if (ok) {
     ++status.successes;
@@ -207,11 +282,18 @@ bool I2CManager::recoverBus(uint8_t busIndex) {
   } else {
     ++status.failures;
   }
-  I2C_LOGW("bus%u recovery %s pre_sda=%u pre_scl=%u post_sda=%u post_scl=%u pulses=%u controller=%u buffer=%u\n",
-           (unsigned)busIndex, ok ? "ready" : "failed",
+  I2C_LOGW("bus%u recovery %s pre_sda_low=%u pre_scl_low=%u post_sda_low=%u post_scl_low=%u pulses=%u controller=%u buffer=%u clock=%u hz=%lu device_response=unchecked\n",
+           (unsigned)busIndex, ok ? "controller_ready" : "failed",
            status.sdaLowBefore ? 1u : 0u, status.sclLowBefore ? 1u : 0u,
            status.sdaLowAfter ? 1u : 0u, status.sclLowAfter ? 1u : 0u,
-           (unsigned)status.clockPulses, started ? 1u : 0u, bufferOk ? 1u : 0u);
+           (unsigned)status.clockPulses, started ? 1u : 0u, bufferOk ? 1u : 0u,
+           clockOk ? 1u : 0u, (unsigned long)hz);
+  StartupLog::recordf("[I2C] bus%u recovery %s pre_sda_low=%u pre_scl_low=%u post_sda_low=%u post_scl_low=%u pulses=%u controller=%u buffer=%u clock=%u hz=%lu device_response=unchecked\n",
+           (unsigned)busIndex, ok ? "controller_ready" : "failed",
+           status.sdaLowBefore ? 1u : 0u, status.sclLowBefore ? 1u : 0u,
+           status.sdaLowAfter ? 1u : 0u, status.sclLowAfter ? 1u : 0u,
+           (unsigned)status.clockPulses, started ? 1u : 0u, bufferOk ? 1u : 0u,
+           clockOk ? 1u : 0u, (unsigned long)hz);
   unlock(wire);
   return ok;
 }
@@ -241,7 +323,7 @@ bool I2CManager::lock(TwoWire* wire, uint32_t timeoutMs) {
   const int idx = busIndexFor_(wire);
   if (idx < 0) return false;
   SemaphoreHandle_t m = s_mutexes[idx];
-  if (!m) return true;
+  if (!m) return false;
   TickType_t ticks = pdMS_TO_TICKS(timeoutMs ? timeoutMs : 1);
   if (ticks == 0) ticks = 1;
   return xSemaphoreTake(m, ticks) == pdTRUE;

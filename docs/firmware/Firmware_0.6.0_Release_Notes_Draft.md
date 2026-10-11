@@ -38,6 +38,34 @@ mixed-rate FIFO handling, dynamically sized queues, and stronger FIFO, I2C, and
 timing diagnostics. The I2C scheduler and recovery paths have also been improved
 for shared-bus, multi-sensor operation.
 
+## Logging Stability Fixes Added on 5 October 2026
+
+Serial traces from an A8 identified two independent reboot causes: CPU 0 idle
+starvation while two external ADC workers polled for conversions, and a
+`loopTask` stack overflow during BDQ v1 final-summary serialization.
+
+- External ADC workers now block on DRDY GPIO interrupt notifications during
+  conversions. Ready-level checks cover early completion and missed edges;
+  waits retain a bounded timeout. Startup and hardware without a DRDY pin
+  retain their existing synchronous or polling paths.
+- BDQ v1, BDQ v2, and CSV finalization use separate non-inlined helpers. Large
+  diagnostics scratch objects in the binary and CSV serializers use static
+  storage, and `loopTask` has 16 KiB of stack instead of 8 KiB.
+- Added host checks for early DRDY completion, completion between checking and
+  blocking, spurious wakeups, timeout, timer wraparound, and tick rounding.
+
+Validation of these fixes: the host suite passed, including all eight new ADC
+wait checks, and the A8, RC3, and Prototype F production builds passed. In the
+rebuilt A8 ELF, `StorageManager_stopLog()` uses a 48-byte frame, its BDQ v1
+helper uses 368 bytes, and the runtime diagnostics serializer uses 80 bytes
+(previously 2,464). The compiled loop stack size is 16,384 bytes.
+
+Hardware acceptance must include extended runs with one pot on each A8 ADC
+(`ain0` and `ain4`) at 500 Hz and 1000 Hz, plus repeated start/stop cycles in
+BDQ v1, BDQ v2, and CSV. Check sample freshness, missing slots, final summaries
+or CSV sidecars, and the serial log for resets. Host checks cannot reproduce
+the physical GPIO interrupt timing or establish the runtime stack watermark.
+
 ## Sample Rates and A8 ADC Capacity
 
 The permitted logger rates are now:
@@ -93,6 +121,9 @@ before routine deployment.
   effective scheduler cadence of approximately 700.28 Hz.
 
 ## Release Images
+
+The packaged images and hashes below predate the 5 October stability fixes.
+They must be regenerated before distributing firmware with those fixes.
 
 The release directory contains application, bootloader, partition, and combined
 full-flash images for all three supported boards:

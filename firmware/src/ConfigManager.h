@@ -51,6 +51,7 @@ struct LoggerConfig {
   bool     timestampHuman   = true;
   LogFormat logFormat       = LogFormat::BodaqsStandard;
   bool     omitMetadata     = false;
+  bool     startupLogToSd   = false; // capture on next boot, before acquisition
   char     tz[64]           = "UTC";
   char     ntpServers[128]  = "";
   char     timeCheckUrl[96] = "";
@@ -174,7 +175,7 @@ class ConfigManager {
     static bool    getSensorSpec(uint8_t i, SensorSpec& out);   // copy-out by index
     static int8_t  findSensorByName(const char* name);          // -1 if not found
     static void setSampleRateHz(uint16_t hz, bool persist = true);
-    static void setLogFormat(LogFormat format, bool persist = true);
+    static bool setLogFormat(LogFormat format, bool persist = true);
     static const char* logFormatKey(LogFormat format);
     static const char* logFormatLabel(LogFormat format);
     static bool parseLogFormat(const char* text, LogFormat& out);

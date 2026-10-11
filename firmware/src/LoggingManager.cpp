@@ -57,14 +57,8 @@ namespace {
     s_stopContext.analogRailFault = PowerManager::analogRailFaultActive();
   }
 
-  void classifyStartFailure_(const char* error) {
-    if (!error) return;
-    if (strstr(error, "restart required")) {
-      s_startFailureHint = LoggingManager::StartFailureHint::RestartNow;
-    } else if (strstr(error, "BDQ v2")) {
-      s_startFailureHint = LoggingManager::StartFailureHint::UseBdqV2;
-    }
-  }
+  LoggingConfigIssue s_configurationIssue = LoggingConfigIssue::None;
+  char s_configurationDetail[160] = {};
   uint32_t        s_intervalUs    = 1000000;
   uint64_t        s_t0UnixUs      = 0;
   uint32_t        s_sampleCount   = 0;
@@ -316,10 +310,34 @@ void LoggingManager::begin(const LoggerConfig* cfg) {
   s_t0UnixUs    = 0;
   s_sampleCount = 0;
   s_markHead = s_markTail = 0;
+  refreshConfigurationStatus();
 
 #if defined(ESP32)
   resetLateStats_();
 #endif
+}
+
+void LoggingManager::refreshConfigurationStatus() {
+  if (!s_cfg || s_running) return;
+  char detail[sizeof(s_configurationDetail)] = {};
+  const auto issue = SensorManager::configurationIssue(*s_cfg, detail, sizeof(detail));
+  if (issue != s_configurationIssue || strcmp(detail, s_configurationDetail) != 0) {
+    LOGGING_LOGI("configuration status=%u detail=%s\n", (unsigned)issue, detail);
+    s_configurationIssue = issue;
+    snprintf(s_configurationDetail, sizeof(s_configurationDetail), "%s", detail);
+  }
+}
+
+LoggingConfigIssue LoggingManager::configurationIssue() { return s_configurationIssue; }
+const char* LoggingManager::configurationDetail() { return s_configurationDetail; }
+
+void LoggingManager::loop() {
+  if (s_running) return;
+  static uint32_t lastCheckMs = 0;
+  const uint32_t now = millis();
+  if ((uint32_t)(now - lastCheckMs) < 250) return;
+  lastCheckMs = now;
+  refreshConfigurationStatus();
 }
 
 bool LoggingManager::start() {
@@ -350,6 +368,27 @@ bool LoggingManager::start() {
     return false;
   }
 
+  refreshConfigurationStatus();
+  if (s_configurationIssue != LoggingConfigIssue::None) {
+    s_startFailureHint = s_configurationIssue == LoggingConfigIssue::RestartRequired
+        ? StartFailureHint::RestartNow
+        : (s_configurationIssue == LoggingConfigIssue::Conflict ? StartFailureHint::ConfigConflict : StartFailureHint::None);
+    LOGGING_LOGW("start refused: %s\n", s_configurationDetail);
+    if (s_configurationIssue == LoggingConfigIssue::InvalidConfig) UI::toast("Sensor config\nPlease review", 1800, 1);
+    return false;
+  }
+  if (SensorManager::requiresBdqV2(*s_cfg) && s_cfg->logFormat != LogFormat::BodaqsMultiStreamBinary) {
+    if (!ConfigManager::setLogFormat(LogFormat::BodaqsMultiStreamBinary)) {
+      UI::toast("Config save failed", 1800, 1);
+      UI::status("SD error");
+      LOGGING_LOGW("start refused: could not save automatic BDQ v2 selection\n");
+      return false;
+    }
+    LOGGING_LOGI("log format automatically changed to BDQ v2 and saved\n");
+    UI::toast("Format changed\nto BDQ v2", 1600, 1);
+    UI::loop();
+  }
+
   // Pick up any sample-rate changes that were applied while logging was idle.
   s_intervalUs = StorageManager_getSampleIntervalUs();
 
@@ -368,7 +407,6 @@ bool LoggingManager::start() {
   I2CManager::resetRecoveryStats();
   char sensorError[128] = {0};
   if (!SensorManager::validateLoggingStart(*s_cfg, effectiveRateHz, sensorError, sizeof(sensorError))) {
-    classifyStartFailure_(sensorError);
     UI::toast("Sensor config", 1800, 1);
     UI::status("Sensor config");
     LOGGING_LOGW("start refused: %s\n", sensorError[0] ? sensorError : "sensor validation failed");
@@ -428,7 +466,6 @@ bool LoggingManager::start() {
       effectiveRateHz, SensorManager::activeCount());
   AnalogInputManager::onLoggingStart();
   if (!SensorManager::onLoggingStart(sensorError, sizeof(sensorError))) {
-    classifyStartFailure_(sensorError);
     captureStopContext_(StopReason::StartFailure, "sensor_start_failed");
     AnalogInputManager::onLoggingStop();
     SensorManager::onLoggingStop();

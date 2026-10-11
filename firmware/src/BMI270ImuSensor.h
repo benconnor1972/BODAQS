@@ -41,6 +41,8 @@ public:
   explicit BMI270ImuSensor(const Params& params);
 
   void begin() override;
+  bool describeI2CStartup(I2CStartupStatus& out) const override;
+  bool retryI2CStartup(bool allowBusRecovery) override;
   bool muted() const override { return muted_; }
   void setMuted(bool muted) override { muted_ = muted; }
   SensorSampleMode sampleMode() const override { return SensorSampleMode::Asynchronous; }
@@ -55,6 +57,7 @@ public:
   const char* label() const override { return "BMI270 IMU (I2C)"; }
   const char* name() const override { return params_.name; }
   bool reconfigureFromSpec(const SensorSpec& spec) override;
+  bool loggingRestartRequired(const SensorSpec& spec, char* error, size_t capacity) const override;
 
   bool prepareLoggingStart(
       const LoggerConfig& config,
@@ -92,7 +95,7 @@ public:
 private:
   static bool loadParams_(Params& out, const char* instanceName, const ParamPack& params);
   bool initializationHealthy_() const;
-  bool ensureInitialized_(char* error, size_t errorCapacity);
+  bool ensureInitialized_(char* error, size_t errorCapacity, bool allowBusRecovery = true);
   bool popBdqV2Record_(uint8_t* destination, size_t capacity);
   static size_t pendingBdqV2Records_(const void* context);
   static size_t pendingBdqV2Observations_(const void* context);

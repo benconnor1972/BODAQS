@@ -336,7 +336,26 @@ BMI270ImuSensor::BMI270ImuSensor(const Params& params)
 }
 
 void BMI270ImuSensor::begin() {
+  BMI270_SENSOR_LOGI("FIFO service sensor=%s mode=whole policy=fixed_two_deferral slice_bytes=0\n", params_.name);
   (void)ensureInitialized_(nullptr, 0);
+}
+
+bool BMI270ImuSensor::describeI2CStartup(I2CStartupStatus& out) const {
+  const auto& diagnostics = acquisition_.device().diagnostics();
+  out = I2CStartupStatus{};
+  out.kind = I2CStartupKind::BMI270;
+  out.busIndex = params_.busIndex;
+  out.address = params_.address;
+  out.ready = initializationHealthy_();
+  out.step = static_cast<uint8_t>(diagnostics.failureStep);
+  out.result = diagnostics.lastApiResult;
+  out.chipRead = diagnostics.chipIdRead;
+  out.chip = diagnostics.chipId;
+  return true;
+}
+
+bool BMI270ImuSensor::retryI2CStartup(bool allowBusRecovery) {
+  return ensureInitialized_(nullptr, 0, allowBusRecovery);
 }
 
 bool BMI270ImuSensor::reconfigureFromSpec(const SensorSpec& spec) {
@@ -390,12 +409,13 @@ bool BMI270ImuSensor::initializationHealthy_() const {
   const bool validState =
       diagnostics.state == BMI270DeviceState::Ready ||
       diagnostics.state == BMI270DeviceState::Suspended;
-  return initialized_ && validState && diagnostics.chipIdRead &&
+  return initialized_ && I2CManager::available(params_.busIndex) &&
+      validState && diagnostics.chipIdRead &&
       diagnostics.chipIdMatched && diagnostics.driverInitialized &&
       diagnostics.configurationReadOk && diagnostics.configurationMatched;
 }
 
-bool BMI270ImuSensor::ensureInitialized_(char* error, size_t errorCapacity) {
+bool BMI270ImuSensor::ensureInitialized_(char* error, size_t errorCapacity, bool allowBusRecovery) {
   if (initializationHealthy_()) return true;
   if (initialized_ ||
       acquisition_.device().state() != BMI270DeviceState::Uninitialized) {
@@ -413,7 +433,7 @@ bool BMI270ImuSensor::ensureInitialized_(char* error, size_t errorCapacity) {
     initialized_ = false;
   }
   lastInitializationAttemptUptimeMs_ = millis();
-  initialized_ = acquisition_.begin();
+  initialized_ = acquisition_.begin(allowBusRecovery);
   if (initialized_) {
     BMI270_SENSOR_LOGI(
         "initialization ready sensor=%s bus=%u address=0x%02X\n",
@@ -809,27 +829,8 @@ bool BMI270ImuSensor::describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out) 
   return true;
 }
 
-bool BMI270ImuSensor::validateLoggingStart(
-    const LoggerConfig& config,
-    uint16_t effectiveRateHz,
-    char* error,
-    size_t errorCapacity) const {
-  if (muted_) return true;
-  if (acquisition_.mixedRate() &&
-      config.logFormat != LogFormat::BodaqsMultiStreamBinary) {
-    return fail_(error, errorCapacity,
-                 "%s mixed-rate BMI270 profile requires BDQ v2 logging",
-                 params_.name);
-  }
-  const int8_t specIndex = config.findSensorByName(params_.name);
-  SensorSpec spec;
+bool BMI270ImuSensor::loggingRestartRequired(const SensorSpec& spec, char* error, size_t errorCapacity) const {
   Params configured;
-  if (specIndex < 0 || !config.getSensorSpec(static_cast<uint8_t>(specIndex), spec) ||
-      spec.type != SensorType::BMI270ImuI2C) {
-    return fail_(error, errorCapacity,
-                 "%s live BMI270 does not match configuration; restart required",
-                 params_.name);
-  }
   loadParams_(configured, spec.name, spec.params);
   if (configured.busIndex != params_.busIndex || configured.address != params_.address ||
       strcmp(configured.imuId, params_.imuId) != 0 ||
@@ -844,10 +845,35 @@ bool BMI270ImuSensor::validateLoggingStart(
       configured.gyroBiasMode != params_.gyroBiasMode ||
       configured.iocDiagnostics != params_.iocDiagnostics ||
       strcmp(configured.calibrationRef, params_.calibrationRef) != 0) {
-    return fail_(error, errorCapacity,
+    fail_(error, errorCapacity,
                  "%s BMI270 configuration changed; restart required",
                  params_.name);
+    return true;
   }
+  return false;
+}
+
+bool BMI270ImuSensor::validateLoggingStart(
+    const LoggerConfig& config,
+    uint16_t effectiveRateHz,
+    char* error,
+    size_t errorCapacity) const {
+  if (muted_) return true;
+  if (acquisition_.mixedRate() &&
+      config.logFormat != LogFormat::BodaqsMultiStreamBinary) {
+    return fail_(error, errorCapacity,
+                 "%s mixed-rate BMI270 profile requires BDQ v2 logging",
+                 params_.name);
+  }
+  const int8_t specIndex = config.findSensorByName(params_.name);
+  SensorSpec spec;
+  if (specIndex < 0 || !config.getSensorSpec(static_cast<uint8_t>(specIndex), spec) ||
+      spec.type != SensorType::BMI270ImuI2C) {
+    return fail_(error, errorCapacity,
+                 "%s live BMI270 does not match configuration; restart required",
+                 params_.name);
+  }
+  if (loggingRestartRequired(spec, error, errorCapacity)) return false;
   const uint16_t resolvedOutputRate =
       config.logFormat == LogFormat::BodaqsMultiStreamBinary
       ? acquisition_.nativeRateHz()
@@ -1298,6 +1324,8 @@ bool BMI270ImuSensor::loadParams_(
     Params& out,
     const char* instanceName,
     const ParamPack& params) {
+  // Retired fifo_service_mode/fifo_slice_bytes entries are ignored: existing
+  // bench configurations always resume whole-FIFO service.
   out = Params{};
   copyField_(out.name, sizeof(out.name), instanceName && *instanceName ? instanceName : "frame_imu");
   snprintf(out.imuId, sizeof(out.imuId), "%s_001", out.name);

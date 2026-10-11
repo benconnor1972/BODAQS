@@ -1,4 +1,5 @@
 #include "AnalogInputManager.h"
+#include "AdcReadyWait.h"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -72,10 +73,26 @@ struct AdsDevice {
   uint8_t nextAsyncChannel = 0;
 #if defined(ESP32)
   TaskHandle_t asyncTask = nullptr;
+  TaskHandle_t drdyTask = nullptr;
   volatile bool asyncRun = false;
   volatile bool asyncRunning = false;
 #endif
 };
+
+#if defined(ESP32)
+portMUX_TYPE s_drdyMux = portMUX_INITIALIZER_UNLOCKED;
+
+void ARDUINO_ISR_ATTR adsReadyIsr_(void* arg) {
+  AdsDevice& dev = *static_cast<AdsDevice*>(arg);
+  BaseType_t higherPriorityTaskWoken = pdFALSE;
+  portENTER_CRITICAL_ISR(&s_drdyMux);
+  if (dev.drdyTask) {
+    vTaskNotifyGiveFromISR(dev.drdyTask, &higherPriorityTaskWoken);
+  }
+  portEXIT_CRITICAL_ISR(&s_drdyMux);
+  if (higherPriorityTaskWoken) portYIELD_FROM_ISR();
+}
+#endif
 
 const board::BoardProfile* s_board = nullptr;
 AdsDevice s_ads[board::BOARD_MAX_EXTERNAL_ADCS];
@@ -292,6 +309,23 @@ bool adsWaitReady_(const AdsDevice& dev, uint32_t timeoutUs,
 
   const int readyLevel = dev.cfg.drdy_active_low ? LOW : HIGH;
   const uint32_t start = micros();
+#if defined(ESP32)
+  if (dev.drdyTask == xTaskGetCurrentTaskHandle()) {
+    // A notification received before entering the wait remains pending. Check
+    // the level too, so an already-completed conversion needs no new edge.
+    const auto result = AdcReadyWait::wait(
+        timeoutUs, []() { return micros(); },
+        [&]() { return digitalRead((uint8_t)dev.cfg.drdy_pin) == readyLevel; },
+        [](uint32_t remainingUs) {
+          // Round up: sub-millisecond conversions must really block.
+          (void)ulTaskNotifyTake(pdTRUE, static_cast<TickType_t>(
+              AdcReadyWait::timeoutTicks(remainingUs, configTICK_RATE_HZ)));
+        });
+    if (elapsedUs) *elapsedUs = result.elapsedUs;
+    if (readyImmediately) *readyImmediately = result.ready && result.elapsedUs < 25UL;
+    return result.ready;
+  }
+#endif
   const uint16_t sps = dev.dataRateSps ? dev.dataRateSps : 20;
   uint32_t fastPollUs = (1000000UL / sps) + 250UL;
   if (fastPollUs > kFastDrdyPollMaxUs) fastPollUs = kFastDrdyPollMaxUs;
@@ -361,6 +395,13 @@ bool readAdsChannelLive_(uint8_t adcIndex, uint8_t channel, int32_t& outCounts) 
   uint32_t t0 = micros();
 #endif
   if (!configureAdsChannel_(dev, channel)) return false;
+#if defined(ESP32)
+  if (dev.drdyTask == xTaskGetCurrentTaskHandle()) {
+    // Discard the previous conversion's notification before issuing START;
+    // never clear it after START, which could lose a fast completion.
+    (void)ulTaskNotifyTake(pdTRUE, 0);
+  }
+#endif
 #if BODAQS_TIMING_INSTRUMENTATION
   TimingStats_record(adcStats.configUs, (uint32_t)(micros() - t0));
 
@@ -562,6 +603,15 @@ void adcTaskFn_(void* arg) {
   }
 
   AdsDevice& dev = s_ads[adc];
+  if (dev.cfg.drdy_pin >= 0) {
+    // The shared GPIO ISR may run on the other core. Protect its target
+    // through registration and shutdown, before this worker deletes itself.
+    portENTER_CRITICAL(&s_drdyMux);
+    dev.drdyTask = xTaskGetCurrentTaskHandle();
+    portEXIT_CRITICAL(&s_drdyMux);
+    attachInterruptArg((uint8_t)dev.cfg.drdy_pin, adsReadyIsr_, &dev,
+                       dev.cfg.drdy_active_low ? FALLING : RISING);
+  }
   dev.asyncRunning = true;
   if (adc < ExternalAdcTimingStats::kMaxAdcs) {
     s_timingStats.adc[adc].asyncRunning = true;
@@ -601,6 +651,12 @@ void adcTaskFn_(void* arg) {
     }
   }
 
+  if (dev.drdyTask) {
+    portENTER_CRITICAL(&s_drdyMux);
+    dev.drdyTask = nullptr;
+    portEXIT_CRITICAL(&s_drdyMux);
+    detachInterrupt((uint8_t)dev.cfg.drdy_pin);
+  }
   dev.asyncRunning = false;
   dev.asyncTask = nullptr;
   if (adc < ExternalAdcTimingStats::kMaxAdcs) {

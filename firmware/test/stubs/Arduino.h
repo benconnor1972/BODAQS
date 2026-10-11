@@ -67,6 +67,14 @@ public:
     // Constructors
     String() : buf_(nullptr), len_(0), cap_(0) {}
     String(const char* s) : buf_(nullptr), len_(0), cap_(0) { copy_(s); }
+    String(long value) : String() {
+        char text[32]; snprintf(text, sizeof(text), "%ld", value); copy_(text);
+    }
+    String(int value) : String(static_cast<long>(value)) {}
+    String(unsigned int value) : String(static_cast<long>(value)) {}
+    String(double value, unsigned char digits = 2) : String() {
+        char text[64]; snprintf(text, sizeof(text), "%.*f", int(digits), value); copy_(text);
+    }
     String(const String& other) : buf_(nullptr), len_(0), cap_(0) {
         copy_(other.c_str(), other.length());
     }
@@ -104,6 +112,10 @@ public:
 
     // Access
     const char* c_str() const { return buf_ ? buf_ : ""; }
+    void toCharArray(char* out, size_t capacity) const {
+        if (!out || !capacity) return;
+        snprintf(out, capacity, "%s", c_str());
+    }
     char operator[](int idx) const { return buf_ ? buf_[idx] : '\0'; }
     char& operator[](int idx) {
         static char dummy = '\0';

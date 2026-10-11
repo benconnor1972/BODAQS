@@ -24,10 +24,17 @@
 #include "UploadModeManager.h"
 #include "BoardSelect.h"
 #include "I2CManager.h"
+#include "I2CStartupDiagnostics.h"
+#include "StartupLog.h"
+#include "FirmwareInfo.h"
+#include "esp_system.h"
 #include "AnalogInputManager.h"
 #include "IndicatorManager.h"
 #include "PowerManager.h"
 #include "BoardProfile.h"
+#if defined(BODAQS_BMI270_I2C_PROBE)
+#include "BMI270I2CProbe.h"
+#endif
 #if defined(BODAQS_AS5048_LIBRARY_PROBE)
 #include "AS5048LibraryProbe.h"
 #endif
@@ -40,6 +47,9 @@
 
 #include "FS.h"
 #include "SD_MMC.h"
+
+// Finalization includes nested metadata serializers and libc formatting.
+SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
 #define PROBE(msg) do { LOGI(msg); delay(2); } while(0)
 #define BOOT_LOGW(...) LOGW_TAG("BOOT", __VA_ARGS__)
@@ -281,6 +291,30 @@ void setup() {
 
   applyLogSettings_(g_cfg);
   BOOT_LOGI("SETUP: A ButtonBindingTable::initFromConfig\n");
+  if (StartupLog::begin(g_cfg.startupLogToSd)) {
+    StartupLog::recordf("[STARTUP-REPORT] firmware=%s name=%s board=%s reset_reason=%u logger=%s primary_hz=%u log_format=%s policy=fixed_two_deferral\n",
+                       BODAQS_FW_VERSION, BODAQS_FW_NAME, gBoard->name,
+                       (unsigned)esp_reset_reason(), g_cfg.loggerName,
+                       (unsigned)g_cfg.sampleRateHz, ConfigManager::logFormatKey(g_cfg.logFormat));
+    for (uint8_t bus = 0; bus < gBoard->i2c_count && bus < board::BOARD_MAX_I2C_BUSES; ++bus) {
+      const auto& profile = gBoard->i2c[bus];
+      StartupLog::recordf("[STARTUP-REPORT] bus=%u present=%u sda=%d scl=%d configured_hz=%lu\n",
+                         (unsigned)bus, profile.present ? 1u : 0u,
+                         (int)profile.sda, (int)profile.scl, (unsigned long)profile.hz);
+    }
+    for (uint8_t index = 0; index < g_cfg.sensorN && index < MAX_SENSORS; ++index) {
+      const SensorSpec& sensor = g_cfg.sensors[index];
+      StartupLog::recordf("[STARTUP-REPORT] configured_sensor=%u name=%s type=%u muted=%u\n",
+                         (unsigned)index, sensor.name, (unsigned)sensor.type,
+                         sensor.mutedDefault ? 1u : 0u);
+      for (const char* key : {"i2c_bus", "i2c_addr", "profile", "fifo_poll_rate_hz", "async_rate_hz", "slow_filter"}) {
+        char value[64];
+        if (sensor.params.get(key, value, sizeof(value))) {
+          StartupLog::recordf("[STARTUP-REPORT] sensor=%u %s=%s\n", (unsigned)index, key, value);
+        }
+      }
+    }
+  }
   ButtonBindingTable::initFromConfig(ConfigManager::get());
   BOOT_LOGI("SETUP: A done\n");
   RTCManager_setHumanReadable(g_cfg.timestampHuman);
@@ -399,6 +433,15 @@ void setup() {
 
     BOOT_LOGI("SETUP: ALL DONE\n");
 
+  I2CStartupDiagnostics::run();
+  StartupLog::finish();
+  PowerManager::noteActivity();
+
+#if defined(BODAQS_BMI270_I2C_PROBE)
+  BMI270I2CProbe::run(g_cfg);
+  PowerManager::noteActivity();
+#endif
+
 }
 
 void loop() {
@@ -419,6 +462,7 @@ void loop() {
   ButtonManager_loop();
   StorageManager_loop();       
   WebServerManager::loop();
+  LoggingManager::loop();
   UI::loop();
   MenuSystem::loop();
   PowerManager::loop();

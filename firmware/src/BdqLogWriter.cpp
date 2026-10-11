@@ -749,6 +749,7 @@ void appendI2CSchedulerTiming_(JsonOutput& out,
     appendKeyUInt_(out, depth + 3, "priority_service_count", c.priorityServiceCount);
     appendKeyUInt_(out, depth + 3, "priority_deferral_count", c.priorityDeferralCount);
     appendKeyUInt_(out, depth + 3, "priority_deferral_maximum_us", c.priorityDeferralMaximumUs);
+    appendKeyString_(out, depth + 3, "scheduling_policy", "fixed_two_deferral");
     appendKeyUInt_(out, depth + 3, "row_uses", c.rowUses);
     appendKeyUInt_(out, depth + 3, "row_fresh", c.rowFresh);
     appendKeyUInt_(out, depth + 3, "row_reused", c.rowReused);
@@ -858,7 +859,8 @@ void appendRuntimeFailure_(JsonOutput& out,
 void appendRuntimeDiagnostics_(JsonOutput& out, uint8_t depth, bool comma = true) {
   uint8_t sensorCount = 0;
   const uint8_t registered = SensorManager::count();
-  SensorRuntimeDiagnostics diagnostics;
+  // The writer runs serially; keep this large scratch object off loopTask.
+  static SensorRuntimeDiagnostics diagnostics;
   for (uint8_t i = 0; i < registered; ++i) {
     if (SensorManager::describeRuntimeDiagnosticsAt(i, diagnostics) && diagnostics.present) {
       ++sensorCount;
@@ -1342,6 +1344,8 @@ void appendImuConfigObject_(
   appendKeyString_(out, depth + 2, "mode", "header");
   appendKeyString_(out, depth + 2, "content", "accel,gyro,sensor_time");
   appendKeyUInt_(out, depth + 2, "poll_rate_hz", imu.fifoPollRateHz);
+  appendKeyString_(out, depth + 2, "service_mode", "whole");
+  appendKeyUInt_(out, depth + 2, "slice_bytes", 0);
   appendKeyUInt_(out, depth + 2, "watermark", imu.fifoWatermark);
   appendKeyUInt_(out, depth + 2, "effective_config", imu.fifoConfig, false);
   appendIndent_(out, depth + 1);

@@ -10,6 +10,7 @@
 # ─────────────────────────────────────────────────────────────────
 
 CXX      = g++
+PYTHON   ?= python
 CXXFLAGS = -std=gnu++2a -I stubs -I ../src -Wall -Wno-unused
 CXXFLAGS += '-DBODAQS_FW_VERSION="0.4.1"' '-DBODAQS_FW_NAME="BODAQS"'
 
@@ -30,6 +31,10 @@ TEST_BIN = test_runner
 test: $(TEST_BIN)
 	@echo "Running tests..."
 	./$(TEST_BIN)
+	$(PYTHON) ../tools/test_i2c_schedule_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_i2c_startup_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_startup_log_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_logging_start_runtime.py --compiler "$(CXX)"
 	@echo "All tests passed."
 
 $(TEST_BIN): $(PROD_SRCS) $(STUB_SRCS) $(TEST_SRCS)

@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include "Sensor.h"
 #include "TimingStats.h"
+#include "LoggingStartStatus.h"
 
 struct LoggerConfig;
 struct BdqV2StreamDescriptor;
@@ -27,6 +28,9 @@ namespace SensorManager {
   void finalizeBegin();
   void applyConfig(const LoggerConfig& cfg);
   void loop();
+  void noteLiveConfiguration(Sensor* sensor, const SensorSpec& spec);
+  LoggingConfigIssue configurationIssue(const LoggerConfig& cfg, char* error, size_t capacity);
+  bool requiresBdqV2(const LoggerConfig& cfg);
   bool validateLoggingStart(const LoggerConfig& cfg, uint16_t effectiveRateHz, char* error, size_t errorCapacity);
   bool onLoggingStart(char* error = nullptr, size_t errorCapacity = 0);
   void onLoggingStop();

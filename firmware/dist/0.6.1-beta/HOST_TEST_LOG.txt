@@ -1,0 +1,169 @@
+make: Entering directory '/c/Users/benco/dev/BODAQS/firmware/test'
+Running tests...
+./test_runner
+Running stub tests...
+
+T2: String operations
+  passed
+
+T3: WebServer mock state
+  passed
+
+T4: SD_MMC mock file map
+  passed
+
+T5: HtmlUtil integration
+  passed
+
+79 passed, 0 failed
+
+Running HtmlUtil baseline tests...
+
+T1: htmlHeader includes htmx script with content hash
+  passed
+
+T2: htmlHeader includes app.css link with content hash
+  passed
+
+T3: htmlHeader does NOT contain inline style
+  passed
+
+T4: htmlHeader still includes navbar
+  passed
+
+T5: htmlHeader still includes titlebar
+  passed
+
+T6: htmlFragment returns body only
+  passed
+
+T7: htmlFragment has no html wrapper
+  passed
+
+T8: isHtmxRequest true
+  passed
+
+T9: isHtmxRequest false when absent
+  passed
+
+T10: isHtmxRequest false when other value
+  passed
+
+T11: htmlRespond fragment mode
+  passed
+
+T12: htmlRespond full page mode
+  passed
+
+T13: Cache key is content-based, not firmware-version-based
+  passed
+
+T14: htmlFooter returns closing tags
+  passed
+
+T15: htmlEscape escapes special characters
+  passed
+
+test_htmlutil: 16 tests passed
+
+79 passed, 0 failed
+
+Running Routes_Static tests...
+
+T1: Serves htmx.min.js with correct content type
+  passed
+
+T2: Serves app.css with correct content type
+  passed
+
+T3: Works without query string
+  passed
+
+T4: Path traversal blocked (..)
+  passed
+
+T5: Subdirectory blocked (/)
+  passed
+
+T6: Backslash blocked (\)
+  passed
+
+T7: Empty filename blocked
+  passed
+
+T8: Unknown file returns 404
+  passed
+
+T9: Cache-Control header present
+  passed
+
+T10: Response body contains asset data
+  passed
+
+test_routes_static: 17 tests passed
+
+79 passed, 0 failed
+
+Running Fragments tests...
+
+T1: Success fragment format
+  passed
+
+T2: Error fragment format
+  passed
+
+T3: Warning fragment format
+  passed
+
+T4: No HTML wrapper in fragments
+  passed
+
+T5: Fragment size under 2KB
+  passed
+
+test_fragments: 5 tests passed
+
+Running BMI270 profile tests...
+
+BMI270 profile: 54 passed, 0 failed
+
+Running BMI270 FIFO tests...
+
+BMI270 FIFO: 116 passed, 0 failed
+
+Running BDQ v2 format tests...
+
+BDQ v2 format: 27 passed, 0 failed
+
+Running BDQ v2 writer tests...
+
+BDQ v2 writer: 66 passed, 0 failed
+
+Running rate/cadence tests...
+
+Rates: 17 passed, 0 failed
+
+Running board profile tests...
+
+Board profiles: 5 passed, 0 failed
+
+Running ADC ready wait tests...
+
+ADC ready wait: 8 passed, 0 failed
+
+Running I2C transfer priority tests...
+
+I2C transfer priority: 11 passed, 0 failed
+I2C startup: 27 passed, 0 failed
+
+79 passed, 0 failed
+python ../tools/test_i2c_schedule_runtime.py --compiler "g++"
+Two-deferral production scheduler: 24 checks, 0 failures
+python ../tools/test_i2c_startup_runtime.py --compiler "g++"
+Startup production runtime: 46 passed, 0 failed
+python ../tools/test_startup_log_runtime.py --compiler "g++"
+Startup report production runtime: 70 checks, 0 failures
+python ../tools/test_logging_start_runtime.py --compiler "g++"
+Logging start runtime: 116 checks passed
+All tests passed.
+make: Leaving directory '/c/Users/benco/dev/BODAQS/firmware/test'

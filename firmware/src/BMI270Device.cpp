@@ -1,3 +1,4 @@
+#include "StartupLog.h"
 #include "BMI270Device.h"
 
 #include <Arduino.h>
@@ -92,7 +93,24 @@ bool BMI270Device::begin() {
 
   for (uint8_t attempt = 0; attempt < BMI270Profile::kInitializationAttempts; ++attempt) {
     ++diagnostics_.initializationAttempts;
-    if (initializeOnce_()) {
+    const bool initialized = initializeOnce_();
+    bool traceAttempt = !initialized || StartupLog::active();
+#if defined(BODAQS_I2C_STARTUP_DIAGNOSTICS)
+    traceAttempt = true;
+#endif
+    if (traceAttempt) {
+      const auto& failure = transport_.diagnostics().lastFailure;
+      StartupLog::printf("[I2C-STARTUP] imu_attempt uptime_ms=%lu bus=%u addr=0x%02X attempt=%lu ok=%u step=%u api=%d chip_read=%u chip=0x%02X expected=0x24 probe_received=%u probe_esp_known=%u probe_esp=%ld transport_stage=%u transport_result=%d\n",
+                    (unsigned long)millis(), (unsigned)busIndex(), (unsigned)address(),
+                    (unsigned long)diagnostics_.initializationAttempts, initialized ? 1u : 0u,
+                    (unsigned)diagnostics_.failureStep, (int)diagnostics_.lastApiResult,
+                    diagnostics_.chipIdRead ? 1u : 0u, (unsigned)diagnostics_.chipId,
+                    (unsigned)transport_.lastProbeReceived(), transport_.lastProbeEspKnown() ? 1u : 0u,
+                    (long)transport_.lastProbeEspError(),
+                    transport_.diagnostics().lastOperationOk ? 0u : (unsigned)failure.stage,
+                    transport_.diagnostics().lastOperationOk ? 0 : (int)failure.resultCode);
+    }
+    if (initialized) {
       setState_(BMI270DeviceState::Ready);
       BMI270_LOGI(
           "ready bus=%u addr=0x%02X chip=0x%02X profile=%s accel_hz=%u gyro_hz=%u\n",

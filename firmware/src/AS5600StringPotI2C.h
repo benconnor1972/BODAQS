@@ -21,6 +21,8 @@ public:
   explicit AS5600StringPotI2C(const Params& p);
 
   void begin() override;
+  bool describeI2CStartup(I2CStartupStatus& out) const override;
+  bool retryI2CStartup(bool allowBusRecovery) override;
   void onLoggingStart() override;
   void onLoggingStop() override;
   void onLoggingFinalized() override;
@@ -52,6 +54,8 @@ protected:
   int readWrappedCountsOnce() const override;
 
 private:
+  void beginImpl_(bool allowBusRecovery);
+  bool probeWithRetries_(bool allowBusRecovery) const;
   struct OutputSample {
     uint8_t status = 0;
     uint8_t agc = 0;

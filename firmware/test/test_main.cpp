@@ -18,6 +18,7 @@
 
 // Defined in test_htmlutil.cpp
 int runHtmlUtilTests();
+int runI2CStartupTests();
 
 // Defined in test_routes_static.cpp
 int runRoutesStaticTests();
@@ -40,6 +41,8 @@ int runBdqV2WriterTests();
 // Defined in test_rates.cpp
 int runRateTests();
 int runBoardProfileTests();
+int runAdcReadyWaitTests();
+int runI2CTransferPriorityTests();
 
 static int tests_passed = 0;
 static int tests_failed = 0;
@@ -320,6 +323,13 @@ int main() {
 
     printf("\nRunning board profile tests...\n\n");
     tests_failed += runBoardProfileTests();
+
+    printf("\nRunning ADC ready wait tests...\n\n");
+    tests_failed += runAdcReadyWaitTests();
+
+    printf("\nRunning I2C transfer priority tests...\n\n");
+    tests_failed += runI2CTransferPriorityTests();
+    tests_failed += runI2CStartupTests();
 
     printf("\n%d passed, %d failed\n", tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;

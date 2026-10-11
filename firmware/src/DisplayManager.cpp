@@ -358,6 +358,15 @@ namespace {
       DisplayManager::drawText(0, 34, "MODE", 2);
     } else if (logging) {
       renderLoggingHud_(hz, act);
+    } else if (LoggingManager::configurationIssue() == LoggingConfigIssue::RestartRequired) {
+      DisplayManager::drawText(0, 18, "Restart required", 1);
+      DisplayManager::drawText(0, 34, "Press Enter", 1);
+    } else if (LoggingManager::configurationIssue() == LoggingConfigIssue::Conflict) {
+      DisplayManager::drawText(0, 18, "Config conflict", 1);
+      DisplayManager::drawText(0, 34, "Please review", 1);
+    } else if (LoggingManager::configurationIssue() == LoggingConfigIssue::InvalidConfig) {
+      DisplayManager::drawText(0, 18, "Sensor config", 1);
+      DisplayManager::drawText(0, 34, "Please review", 1);
     } else {
       DisplayManager::drawText(0, 16, String(hz) + " Hz", 2);
       DisplayManager::drawText(

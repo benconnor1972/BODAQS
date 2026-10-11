@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include "ConfigManager.h"
 #include "TimingStats.h"
+#include "LoggingStartStatus.h"
 
 class AnalogPotSensor; // fwd
 
@@ -28,7 +29,7 @@ namespace LoggingManager {
   enum class StartFailureHint : uint8_t {
     None = 0,
     RestartNow,
-    UseBdqV2,
+    ConfigConflict,
   };
 
   struct RuntimeStats {
@@ -46,6 +47,9 @@ namespace LoggingManager {
 
   void begin(const LoggerConfig* cfg);
   bool start();
+  void refreshConfigurationStatus();
+  LoggingConfigIssue configurationIssue();
+  const char* configurationDetail();
   StartFailureHint startFailureHint();
   void stop(
       StopReason reason = StopReason::Unspecified,

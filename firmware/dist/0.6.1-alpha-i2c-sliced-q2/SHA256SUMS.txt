@@ -1,0 +1,4 @@
+e1a31317e23ce3d48b6a1c2adeaf6781a6d0a457e383a36ebddda9b621071314  bodaqs_v1RC3-i2c-sliced-q2.bin
+e01a2300de23c8d601e9f2a37684b5dbc83ae37132d5a8833e23520afd895f92  bodaqs_v1RC3-i2c-sliced-q2-bootloader.bin
+6a88d59601a83a16a19a08114b59d338324b8dec267d8b43e5d61ad56ec92102  bodaqs_v1RC3-i2c-sliced-q2-partitions.bin
+010afa8fb574c6d1ffbe841a08e986dce840f3934accfd51ba623fc15b3f5664  bodaqs_v1RC3-i2c-sliced-q2-full.bin

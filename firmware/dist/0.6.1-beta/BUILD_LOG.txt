@@ -1,0 +1,1245 @@
+[WinError 3] The system cannot find the path specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\lib566\\Wire' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\lib566\Wire`
+[WinError 3] The system cannot find the path specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\lib566\\Wire' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\lib566\Wire`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\lib566' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\lib566`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\lib593\\WiFi\\WiFiAP.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\lib593\WiFi\WiFiAP.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\lib593\\WiFi\\WiFiAP.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\lib593\WiFi\WiFiAP.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\lib593\\WiFi\\WiFiClient.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\lib593\WiFi\WiFiClient.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\lib593\\WiFi\\WiFiClient.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\lib593\WiFi\WiFiClient.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\lib593\\WiFi\\WiFiGeneric.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\lib593\WiFi\WiFiGeneric.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\lib593\\WiFi\\WiFiGeneric.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\lib593\WiFi\WiFiGeneric.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\lib593\\WiFi\\WiFiMulti.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\lib593\WiFi\WiFiMulti.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\liba59\\WebServer\\Parsing.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\liba59\WebServer\Parsing.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\liba59\\WebServer\\WebServer.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\liba59\WebServer\WebServer.cpp.d`
+[WinError 3] The system cannot find the path specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\liba59\\WebServer\\WebServer.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\liba59\WebServer\WebServer.cpp.o`
+[WinError 3] The system cannot find the path specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\liba59\\WebServer' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\liba59\WebServer`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\liba59' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\liba59`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\libaee\\Adafruit GFX Library\\Adafruit_GFX.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\libaee\Adafruit GFX Library\Adafruit_GFX.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\libaee\\Adafruit GFX Library\\Adafruit_GrayOLED.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\libaee\Adafruit GFX Library\Adafruit_GrayOLED.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\libaee\\Adafruit GFX Library\\Adafruit_GrayOLED.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\libaee\Adafruit GFX Library\Adafruit_GrayOLED.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\libaee\\Adafruit GFX Library\\Adafruit_SPITFT.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\libaee\Adafruit GFX Library\Adafruit_SPITFT.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\libaee\\Adafruit GFX Library\\Adafruit_SPITFT.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\libaee\Adafruit GFX Library\Adafruit_SPITFT.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\libaee\\Adafruit GFX Library\\glcdfont.c.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\libaee\Adafruit GFX Library\glcdfont.c.d`
+[WinError 3] The system cannot find the path specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\libaee\\Adafruit GFX Library\\glcdfont.c.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\libaee\Adafruit GFX Library\glcdfont.c.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\libaee\\Adafruit GFX Library' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\libaee\Adafruit GFX Library`
+[WinError 3] The system cannot find the path specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\libaee\\libAdafruit GFX Library.a' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\libaee\libAdafruit GFX Library.a`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\libaee' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\libaee`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\AnalogInputManager.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\AnalogInputManager.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\AnalogPotSensor.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\AnalogPotSensor.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\AnalogPotSensor.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\AnalogPotSensor.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\AS5048BAngleSensor.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\AS5048BAngleSensor.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\AS5048BAngleSensor.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\AS5048BAngleSensor.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\AS5048LibraryProbe.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\AS5048LibraryProbe.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\AS5048LibraryProbe.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\AS5048LibraryProbe.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\AS5600AngleSensor.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\AS5600AngleSensor.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\AS5600AngleSensor.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\AS5600AngleSensor.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\BMI270FifoAcquisition.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\BMI270FifoAcquisition.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\BMI270FifoAcquisition.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\BMI270FifoAcquisition.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\BMI270FifoParser.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\BMI270FifoParser.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\BMI270FifoParser.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\BMI270FifoParser.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\BMI270I2CProbe.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\BMI270I2CProbe.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\BMI270I2CProbe.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\BMI270I2CProbe.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\BMI270I2CTransport.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\BMI270I2CTransport.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\BMI270I2CTransport.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\BMI270I2CTransport.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\BMI270ImuSensor.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\BMI270ImuSensor.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\BMI270ImuSensor.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\BMI270ImuSensor.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\BoardProfile.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\BoardProfile.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\BoardProfile.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\BoardProfile.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\BoardSelect.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\BoardSelect.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\BoardSelect.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\BoardSelect.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\ButtonActions.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\ButtonActions.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\ButtonActions.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\ButtonActions.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\ButtonBindingTable.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\ButtonBindingTable.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\ButtonManager.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\ButtonManager.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\ButtonManager.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\ButtonManager.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\CalCapture.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\CalCapture.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\CalCapture.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\CalCapture.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\Calibration.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\Calibration.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\Calibration.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\Calibration.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\CalibrationWizard.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\CalibrationWizard.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\CalibrationWizard.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\CalibrationWizard.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\CaptureUtils.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\CaptureUtils.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\DisplayManager.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\DisplayManager.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\DisplayManager.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\DisplayManager.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\GpsUartProbe.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\GpsUartProbe.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\GpsUartProbe.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\GpsUartProbe.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\HtmlUtil.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\HtmlUtil.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\HtmlUtil.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\HtmlUtil.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\HttpFileSender.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\HttpFileSender.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\HttpFileSender.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\HttpFileSender.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\I2CBusScheduler.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\I2CBusScheduler.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\I2CManager.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\I2CManager.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\MenuSystem.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\MenuSystem.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\MenuSystem.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\MenuSystem.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\PowerManager.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\PowerManager.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\PowerManager.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\PowerManager.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\Routes_Api.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\Routes_Api.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\Routes_Api.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\Routes_Api.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\Routes_Config.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\Routes_Config.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\Routes_Config.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\Routes_Config.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\Routes_Files.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\Routes_Files.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\Routes_Files.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\Routes_Files.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\Routes_Static.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\Routes_Static.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\Routes_Static.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\Routes_Static.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\Routes_Transforms.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\Routes_Transforms.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\Sensor.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\Sensor.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\Sensor.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\Sensor.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\SensorAssignment.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\SensorAssignment.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\SensorAssignment.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\SensorAssignment.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\SensorManager.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\SensorManager.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\SensorManager.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\SensorManager.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\SensorParams.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\SensorParams.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\SensorParams.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\SensorParams.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\StartupLog.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\StartupLog.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\StartupLog.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\StartupLog.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\StorageManager.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\StorageManager.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\StorageManager.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\StorageManager.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\TransformRegistry.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\TransformRegistry.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\TransformRegistry.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\TransformRegistry.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\UI.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\UI.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\UI.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\UI.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\UploadAckIndex.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\UploadAckIndex.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\UploadAckIndex.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\UploadAckIndex.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\UploadModeManager.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\UploadModeManager.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\UploadModeManager.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\UploadModeManager.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\UploadSessionCleanup.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\UploadSessionCleanup.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\UploadSessionCleanup.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\UploadSessionCleanup.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\UploadSessionScanner.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\UploadSessionScanner.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\UploadSessionScanner.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\UploadSessionScanner.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\WebServerManager.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\WebServerManager.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\WebServerManager.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\WebServerManager.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\WiFiManager.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\WiFiManager.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\WiFiManager.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\WiFiManager.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\ZipArchiveWriter.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\ZipArchiveWriter.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src\\ZipArchiveWriter.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src\ZipArchiveWriter.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\\src' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs\src`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\bodaqs_s3_mini_n4r2_rc3_sensor_inputs' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\bodaqs_s3_mini_n4r2_rc3_sensor_inputs`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\project.checksum' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\project.checksum`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\AnalogInputManager.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AnalogInputManager.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\AnalogInputManager.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AnalogInputManager.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\AnalogPotSensor.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AnalogPotSensor.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\AnalogPotSensor.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AnalogPotSensor.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\AS5048BAngleSensor.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AS5048BAngleSensor.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\AS5048BAngleSensor.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AS5048BAngleSensor.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\AS5048LibraryProbe.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AS5048LibraryProbe.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\AS5048LibraryProbe.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AS5048LibraryProbe.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\AS5600AngleSensor.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AS5600AngleSensor.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\AS5600AngleSensor.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AS5600AngleSensor.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\AS5600StringPotAnalog.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AS5600StringPotAnalog.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\AS5600StringPotI2C.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AS5600StringPotI2C.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\AS5600StringPotI2C.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AS5600StringPotI2C.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\AS5600StringPotSensorBase.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AS5600StringPotSensorBase.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\AS5600StringPotSensorBase.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AS5600StringPotSensorBase.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\BdqLogWriter.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BdqLogWriter.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\BdqLogWriter.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BdqLogWriter.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\BdqV2Catalog.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BdqV2Catalog.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\BdqV2Catalog.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BdqV2Catalog.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\BdqV2PrimaryStream.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BdqV2PrimaryStream.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\BdqV2PrimaryStream.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BdqV2PrimaryStream.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\BdqV2Writer.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BdqV2Writer.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\BdqV2Writer.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BdqV2Writer.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\BMI270Device.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BMI270Device.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\BMI270Device.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BMI270Device.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\BMI270FifoAcquisition.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BMI270FifoAcquisition.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\BMI270FifoAcquisition.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BMI270FifoAcquisition.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\BMI270I2CTransport.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BMI270I2CTransport.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\BMI270I2CTransport.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BMI270I2CTransport.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\BMI270ImuSensor.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BMI270ImuSensor.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\BMI270ImuSensor.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BMI270ImuSensor.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\BoardProfile.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BoardProfile.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\BoardProfile.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BoardProfile.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\BoardSelect.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BoardSelect.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\BoardSelect.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BoardSelect.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\ButtonActions.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\ButtonActions.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\ButtonActions.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\ButtonActions.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\GpsUartProbe.cpp.d' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\GpsUartProbe.cpp.d`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\src\\GpsUartProbe.cpp.o' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\GpsUartProbe.cpp.o`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\tmpr2f67emx.tmp' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\tmpr2f67emx.tmp`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\tmpr6uu8e_s.tmp' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\tmpr6uu8e_s.tmp`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\tmpu26p1fqc.tmp' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\tmpu26p1fqc.tmp`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\tmpuimm5b8m.tmp' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\tmpuimm5b8m.tmp`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\tmpw3kwvg7d.tmp' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\tmpw3kwvg7d.tmp`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\tmpwypgtl7v.tmp' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\tmpwypgtl7v.tmp`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\tmpyqxvuv0p.tmp' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\tmpyqxvuv0p.tmp`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f\\tmpz14rztza.tmp' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\tmpz14rztza.tmp`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build\\thingplus_s3_usb_cdcserial_bodaqs_4f' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f`
+[WinError 2] The system cannot find the file specified: 'C:\\Users\\benco\\dev\\BODAQS\\firmware\\.pio\\build' 
+Please manually remove the file `C:\Users\benco\dev\BODAQS\firmware\.pio\build`
+Can not remove temporary directory `C:\Users\benco\dev\BODAQS\firmware\.pio\build`. Please remove it manually to avoid build issues
+Processing thingplus_s3_usb_cdcserial_bodaqs_4f (platform: espressif32; board: sparkfun_esp32s3_thing_plus; framework: arduino)
+--------------------------------------------------------------------------------
+Removing unused dependencies...
+Library Manager: Removing ArduinoJson @ 7.4.3
+Library Manager: ArduinoJson@7.4.3 has been removed!
+Library Manager: Removing SparkFun u-blox GNSS v3 @ 3.1.14
+Library Manager: SparkFun u-blox GNSS v3@3.1.14 has been removed!
+Library Manager: Removing Adafruit SSD1306 @ 2.5.16
+Library Manager: Removing dependencies...
+Library Manager: Removing Adafruit GFX Library @ 1.12.6
+Library Manager: Removing dependencies...
+Library Manager: Removing Adafruit BusIO @ 1.17.4
+Library Manager: Adafruit BusIO@1.17.4 has been removed!
+Library Manager: Adafruit GFX Library@1.12.6 has been removed!
+Library Manager: Adafruit SSD1306@2.5.16 has been removed!
+Library Manager: Installing adafruit/Adafruit BusIO @ 1.17.4
+Unpacking 0% 10% 20% 30% 40% 50% 60% 70% 80% 90% 100%
+Library Manager: Adafruit BusIO@1.17.4 has been installed!
+Library Manager: Installing adafruit/Adafruit GFX Library @ 1.12.6
+Unpacking 0% 10% 20% 30% 40% 50% 60% 70% 80% 90% 100%
+Library Manager: Adafruit GFX Library@1.12.6 has been installed!
+Library Manager: Resolving dependencies...
+Library Manager: Installing adafruit/Adafruit SSD1306 @ 2.5.17
+Unpacking 0% 10% 20% 30% 40% 50% 60% 70% 80% 90% 100%
+Library Manager: Adafruit SSD1306@2.5.17 has been installed!
+Library Manager: Resolving dependencies...
+Library Manager: Installing bblanchon/ArduinoJson @ 7.4.3
+Unpacking 0% 10% 20% 30% 40% 50% 60% 70% 80% 90% 100%
+Library Manager: ArduinoJson@7.4.3 has been installed!
+Library Manager: Installing sparkfun/SparkFun u-blox GNSS v3 @ 3.1.15
+Unpacking 0% 10% 20% 30% 40% 50% 60% 70% 80% 90% 100%
+Library Manager: SparkFun u-blox GNSS v3@3.1.15 has been installed!
+Verbose mode can be enabled via `-v, --verbose` option
+CONFIGURATION: https://docs.platformio.org/page/boards/espressif32/sparkfun_esp32s3_thing_plus.html
+PLATFORM: Espressif 32 (6.13.0) > SparkFun ESP32-S3 Thing Plus (custom)
+HARDWARE: ESP32S3 240MHz, 320KB RAM, 1.25MB Flash
+DEBUG: Current (cmsis-dap) External (cmsis-dap, esp-bridge, esp-builtin, esp-prog, iot-bus-jtag, jlink, minimodule, olimex-arm-usb-ocd, olimex-arm-usb-ocd-h, olimex-arm-usb-tiny-h, olimex-jtag-tiny, tumpa)
+PACKAGES: 
+ - framework-arduinoespressif32 @ 3.20017.241212+sha.dcc1105b 
+ - tool-esptoolpy @ 2.41100.0 (4.11.0) 
+ - toolchain-riscv32-esp @ 8.4.0+2021r2-patch5 
+ - toolchain-xtensa-esp32s3 @ 8.4.0+2021r2-patch5
+LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
+LDF Modes: Finder ~ chain, Compatibility ~ soft
+Found 39 compatible libraries
+Scanning dependencies...
+Dependency Graph
+|-- Adafruit BusIO @ 1.17.4
+|-- Adafruit GFX Library @ 1.12.6
+|-- Adafruit SSD1306 @ 2.5.17
+|-- ArduinoJson @ 7.4.3
+|-- SparkFun u-blox GNSS v3 @ 3.1.15
+|-- BMI270_SensorAPI @ 0.0.0+20260818112900.sha.41129fc
+|-- Wire @ 2.0.0
+|-- SPI @ 2.0.0
+|-- WiFi @ 2.0.0
+|-- WebServer @ 2.0.0
+|-- SD_MMC @ 2.0.0
+|-- HTTPClient @ 2.0.0
+|-- FS @ 2.0.0
+|-- ESPmDNS @ 2.0.0
+Building in release mode
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AS5048BAngleSensor.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AS5048LibraryProbe.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AS5600AngleSensor.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AS5600StringPotAnalog.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AS5600StringPotI2C.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AS5600StringPotSensorBase.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AnalogInputManager.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\AnalogPotSensor.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BMI270Device.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BMI270FifoAcquisition.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BMI270FifoParser.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BMI270I2CProbe.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BMI270I2CTransport.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BMI270ImuSensor.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BdqLogWriter.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BdqV2Catalog.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BdqV2PrimaryStream.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BdqV2Writer.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BoardProfile.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\BoardSelect.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\ButtonActions.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\ButtonBindingTable.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\ButtonManager.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\CalCapture.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\Calibration.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\CalibrationWizard.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\CaptureUtils.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\ConfigManager.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\DANF10NGpsSensor.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\DebugLog.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\DeviceRestart.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\DisplayManager.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\GpsUartProbe.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\HtmlUtil.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\HttpFileSender.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\I2CBusScheduler.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\I2CManager.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\I2CStartupDiagnostics.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\IndicatorManager.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\LogMetadataWriter.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\LoggingManager.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\MenuSystem.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\PowerManager.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\RTCManager.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\Routes_Api.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\Routes_Config.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\Routes_Files.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\Routes_Static.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\Routes_Transforms.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\Sensor.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\SensorAssignment.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\SensorManager.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\SensorParams.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\SensorRegistry.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\StartupLog.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\StorageManager.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\TransformRegistry.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\UI.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\UploadAckIndex.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\UploadModeManager.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\UploadSessionCleanup.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\UploadSessionScanner.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\WebServerManager.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\WiFiManager.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\ZipArchiveWriter.cpp.o
+src/Routes_Transforms.cpp: In function 'void addTransformsFromDirMMC_(const char*, ArduinoJson::V743PB22::JsonArray)':
+src/Routes_Transforms.cpp:70:46: warning: 'ArduinoJson::V743PB22::JsonObject ArduinoJson::V743PB22::JsonArray::createNestedObject() const' is deprecated: use add<JsonObject>() instead [-Wdeprecated-declarations]
+     JsonObject o = outArr.createNestedObject();
+                                              ^
+In file included from .pio/libdeps/thingplus_s3_usb_cdcserial_bodaqs_4f/ArduinoJson/src/ArduinoJson.hpp:65,
+                 from .pio/libdeps/thingplus_s3_usb_cdcserial_bodaqs_4f/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/Routes_Transforms.cpp:3:
+.pio/libdeps/thingplus_s3_usb_cdcserial_bodaqs_4f/ArduinoJson/src/ArduinoJson/compatibility.hpp:140:19: note: declared here
+ inline JsonObject JsonArray::createNestedObject() const {
+                   ^~~~~~~~~
+src/Routes_Transforms.cpp: In lambda function:
+src/Routes_Transforms.cpp:108:26: warning: 'DynamicJsonDocument' is deprecated: use JsonDocument instead [-Wdeprecated-declarations]
+   DynamicJsonDocument doc(4096);
+                          ^
+In file included from .pio/libdeps/thingplus_s3_usb_cdcserial_bodaqs_4f/ArduinoJson/src/ArduinoJson.hpp:65,
+                 from .pio/libdeps/thingplus_s3_usb_cdcserial_bodaqs_4f/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/Routes_Transforms.cpp:3:
+.pio/libdeps/thingplus_s3_usb_cdcserial_bodaqs_4f/ArduinoJson/src/ArduinoJson/compatibility.hpp:125:58: note: declared here
+ class ARDUINOJSON_DEPRECATED("use JsonDocument instead") DynamicJsonDocument
+                                                          ^~~~~~~~~~~~~~~~~~~
+src/Routes_Transforms.cpp:109:50: warning: 'ArduinoJson::V743PB22::JsonArray ArduinoJson::V743PB22::JsonDocument::createNestedArray(TChar*) [with TChar = const char]' is deprecated: use doc[key].to<JsonArray>() instead [-Wdeprecated-declarations]
+   JsonArray items = doc.createNestedArray("items");
+                                                  ^
+In file included from .pio/libdeps/thingplus_s3_usb_cdcserial_bodaqs_4f/ArduinoJson/src/ArduinoJson.hpp:42,
+                 from .pio/libdeps/thingplus_s3_usb_cdcserial_bodaqs_4f/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/Routes_Transforms.cpp:3:
+.pio/libdeps/thingplus_s3_usb_cdcserial_bodaqs_4f/ArduinoJson/src/ArduinoJson/Document/JsonDocument.hpp:356:13: note: declared here
+   JsonArray createNestedArray(TChar* key) {
+             ^~~~~~~~~~~~~~~~~
+src/Routes_Transforms.cpp:113:45: warning: 'ArduinoJson::V743PB22::JsonObject ArduinoJson::V743PB22::JsonArray::createNestedObject() const' is deprecated: use add<JsonObject>() instead [-Wdeprecated-declarations]
+     JsonObject o = items.createNestedObject();
+                                             ^
+In file included from .pio/libdeps/thingplus_s3_usb_cdcserial_bodaqs_4f/ArduinoJson/src/ArduinoJson.hpp:65,
+                 from .pio/libdeps/thingplus_s3_usb_cdcserial_bodaqs_4f/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/Routes_Transforms.cpp:3:
+.pio/libdeps/thingplus_s3_usb_cdcserial_bodaqs_4f/ArduinoJson/src/ArduinoJson/compatibility.hpp:140:19: note: declared here
+ inline JsonObject JsonArray::createNestedObject() const {
+                   ^~~~~~~~~
+src/Routes_Transforms.cpp:127:45: warning: 'ArduinoJson::V743PB22::JsonObject ArduinoJson::V743PB22::JsonArray::createNestedObject() const' is deprecated: use add<JsonObject>() instead [-Wdeprecated-declarations]
+     JsonObject o = items.createNestedObject();
+                                             ^
+In file included from .pio/libdeps/thingplus_s3_usb_cdcserial_bodaqs_4f/ArduinoJson/src/ArduinoJson.hpp:65,
+                 from .pio/libdeps/thingplus_s3_usb_cdcserial_bodaqs_4f/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/Routes_Transforms.cpp:3:
+.pio/libdeps/thingplus_s3_usb_cdcserial_bodaqs_4f/ArduinoJson/src/ArduinoJson/compatibility.hpp:140:19: note: declared here
+ inline JsonObject JsonArray::createNestedObject() const {
+                   ^~~~~~~~~
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\src\main.cpp.o
+Building .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\bootloader.bin
+esptool.py v4.11.0
+Creating esp32s3 image...
+Merged 1 ELF section
+Successfully created esp32s3 image.
+Generating partitions .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\partitions.bin
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib566\Wire\Wire.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\libef4\SPI\SPI.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\libe56\Adafruit BusIO\Adafruit_BusIO_Register.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\libe56\Adafruit BusIO\Adafruit_GenericDevice.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\libe56\Adafruit BusIO\Adafruit_I2CDevice.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\libe56\Adafruit BusIO\Adafruit_SPIDevice.cpp.o
+src/TransformRegistry.cpp: In member function 'bool TransformRegistry::loadPoly_fs(const String&, const String&, fs::FS&)':
+src/TransformRegistry.cpp:164:3: warning: 'template<unsigned int N> class ArduinoJson::V743PB22::StaticJsonDocument' is deprecated: use JsonDocument instead [-Wdeprecated-declarations]
+   StaticJsonDocument<2048> doc;
+   ^~~~~~~~~~~~~~~~~~
+In file included from .pio/libdeps/thingplus_s3_usb_cdcserial_bodaqs_4f/ArduinoJson/src/ArduinoJson.hpp:65,
+                 from .pio/libdeps/thingplus_s3_usb_cdcserial_bodaqs_4f/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/TransformRegistry.cpp:2:
+.pio/libdeps/thingplus_s3_usb_cdcserial_bodaqs_4f/ArduinoJson/src/ArduinoJson/compatibility.hpp:63:58: note: declared here
+ class ARDUINOJSON_DEPRECATED("use JsonDocument instead") StaticJsonDocument
+                                                          ^~~~~~~~~~~~~~~~~~
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib766\Adafruit GFX Library\Adafruit_GFX.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib766\Adafruit GFX Library\Adafruit_GrayOLED.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib766\Adafruit GFX Library\Adafruit_SPITFT.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib766\Adafruit GFX Library\glcdfont.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib3ae\Adafruit SSD1306\Adafruit_SSD1306.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib4a1\SparkFun u-blox GNSS v3\sfe_bus.cpp.o
+Archiving .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\libef4\libSPI.a
+Archiving .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib566\libWire.a
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib4a1\SparkFun u-blox GNSS v3\u-blox_GNSS.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib5e6\BMI270_SensorAPI\bmi2.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib5e6\BMI270_SensorAPI\bmi270.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib593\WiFi\WiFi.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib593\WiFi\WiFiAP.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib593\WiFi\WiFiClient.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib593\WiFi\WiFiGeneric.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib593\WiFi\WiFiMulti.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib593\WiFi\WiFiSTA.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib593\WiFi\WiFiScan.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib593\WiFi\WiFiServer.cpp.o
+Archiving .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\libe56\libAdafruit BusIO.a
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib593\WiFi\WiFiUdp.cpp.o
+Archiving .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib5e6\libBMI270_SensorAPI.a
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib162\FS\FS.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib162\FS\vfs_api.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\liba59\WebServer\Parsing.cpp.o
+Archiving .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib766\libAdafruit GFX Library.a
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\liba59\WebServer\WebServer.cpp.o
+Archiving .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib3ae\libAdafruit SSD1306.a
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\liba59\WebServer\detail\mimetable.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib876\SD_MMC\SD_MMC.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\libd8f\WiFiClientSecure\WiFiClientSecure.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\libd8f\WiFiClientSecure\esp_crt_bundle.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\libd8f\WiFiClientSecure\ssl_client.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib2a2\HTTPClient\HTTPClient.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib7b6\ESPmDNS\ESPmDNS.cpp.o
+Archiving .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib593\libWiFi.a
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\Esp.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\FirmwareMSC.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\FunctionalInterrupt.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\HWCDC.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\HardwareSerial.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\IPAddress.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\IPv6Address.cpp.o
+Archiving .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib162\libFS.a
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\MD5Builder.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\Print.cpp.o
+Archiving .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\liba59\libWebServer.a
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\Stream.cpp.o
+Archiving .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib4a1\libSparkFun u-blox GNSS v3.a
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\StreamString.cpp.o
+Archiving .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib876\libSD_MMC.a
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\Tone.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\USB.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\USBCDC.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\USBMSC.cpp.o
+Archiving .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\libd8f\libWiFiClientSecure.a
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\WMath.cpp.o
+Archiving .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib7b6\libESPmDNS.a
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\WString.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\base64.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\cbuf.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\esp32-hal-adc.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\esp32-hal-bt.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\esp32-hal-cpu.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\esp32-hal-dac.c.o
+Archiving .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\lib2a2\libHTTPClient.a
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\esp32-hal-gpio.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\esp32-hal-i2c-slave.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\esp32-hal-i2c.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\esp32-hal-ledc.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\esp32-hal-matrix.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\esp32-hal-misc.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\esp32-hal-psram.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\esp32-hal-rgb-led.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\esp32-hal-rmt.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\esp32-hal-sigmadelta.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\esp32-hal-spi.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\esp32-hal-time.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\esp32-hal-timer.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\esp32-hal-tinyusb.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\esp32-hal-touch.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\esp32-hal-uart.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\firmware_msc_fat.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\libb64\cdecode.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\libb64\cencode.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\main.cpp.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\stdlib_noniso.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\wiring_pulse.c.o
+Compiling .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\FrameworkArduino\wiring_shift.c.o
+Archiving .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\libFrameworkArduino.a
+Linking .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\firmware.elf
+Retrieving maximum program size .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\firmware.elf
+Checking size .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\firmware.elf
+Advanced Memory Usage is available via "PlatformIO Home > Project Inspect"
+RAM:   [=====     ]  53.7% (used 175880 bytes from 327680 bytes)
+Flash: [========= ]  88.2% (used 1849253 bytes from 2097152 bytes)
+Building .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\firmware.bin with action:
+  "$PYTHONEXE" "$OBJCOPY" --chip esp32s3 elf2image --flash_mode ${__get_board_flash_mode(__env__)} --flash_freq ${__get_board_f_image(__env__)} --flash_size 4MB --elf-sha256-offset 0xb0 -o $TARGET $SOURCES
+Building .pio\build\thingplus_s3_usb_cdcserial_bodaqs_4f\firmware.bin
+esptool.py v4.11.0
+Creating esp32s3 image...
+Merged 3 ELF sections
+Successfully created esp32s3 image.
+========================= [SUCCESS] Took 72.36 seconds =========================
+
+Processing bodaqs_s3_mini_n4r2 (platform: espressif32; board: bodaqs_s3_mini_n4r2; framework: arduino)
+--------------------------------------------------------------------------------
+Removing unused dependencies...
+Library Manager: Removing ArduinoJson @ 7.4.3
+Library Manager: ArduinoJson@7.4.3 has been removed!
+Library Manager: Removing SparkFun u-blox GNSS v3 @ 3.1.14
+Library Manager: SparkFun u-blox GNSS v3@3.1.14 has been removed!
+Library Manager: Removing Adafruit SSD1306 @ 2.5.17
+Library Manager: Removing dependencies...
+Library Manager: Removing Adafruit GFX Library @ 1.12.6
+Library Manager: Removing dependencies...
+Library Manager: Removing Adafruit BusIO @ 1.17.4
+Library Manager: Adafruit BusIO@1.17.4 has been removed!
+Library Manager: Adafruit GFX Library@1.12.6 has been removed!
+Library Manager: Adafruit SSD1306@2.5.17 has been removed!
+Library Manager: Installing adafruit/Adafruit BusIO @ 1.17.4
+Unpacking 0% 10% 20% 30% 40% 50% 60% 70% 80% 90% 100%
+Library Manager: Adafruit BusIO@1.17.4 has been installed!
+Library Manager: Installing adafruit/Adafruit GFX Library @ 1.12.6
+Unpacking 0% 10% 20% 30% 40% 50% 60% 70% 80% 90% 100%
+Library Manager: Adafruit GFX Library@1.12.6 has been installed!
+Library Manager: Resolving dependencies...
+Library Manager: Installing adafruit/Adafruit SSD1306 @ 2.5.17
+Unpacking 0% 10% 20% 30% 40% 50% 60% 70% 80% 90% 100%
+Library Manager: Adafruit SSD1306@2.5.17 has been installed!
+Library Manager: Resolving dependencies...
+Library Manager: Installing bblanchon/ArduinoJson @ 7.4.3
+Unpacking 0% 10% 20% 30% 40% 50% 60% 70% 80% 90% 100%
+Library Manager: ArduinoJson@7.4.3 has been installed!
+Library Manager: Installing sparkfun/SparkFun u-blox GNSS v3 @ 3.1.15
+Unpacking 0% 10% 20% 30% 40% 50% 60% 70% 80% 90% 100%
+Library Manager: SparkFun u-blox GNSS v3@3.1.15 has been installed!
+Verbose mode can be enabled via `-v, --verbose` option
+CONFIGURATION: https://docs.platformio.org/page/boards/espressif32/bodaqs_s3_mini_n4r2.html
+PLATFORM: Espressif 32 (6.13.0) > BODAQS A8 ESP32-S3 Mini N4R2
+HARDWARE: ESP32S3 240MHz, 320KB RAM, 4MB Flash
+DEBUG: Current (esp-builtin) On-board (esp-builtin) External (cmsis-dap, esp-bridge, esp-prog, iot-bus-jtag, jlink, minimodule, olimex-arm-usb-ocd, olimex-arm-usb-ocd-h, olimex-arm-usb-tiny-h, olimex-jtag-tiny, tumpa)
+PACKAGES: 
+ - framework-arduinoespressif32 @ 3.20017.241212+sha.dcc1105b 
+ - tool-esptoolpy @ 2.41100.0 (4.11.0) 
+ - toolchain-riscv32-esp @ 8.4.0+2021r2-patch5 
+ - toolchain-xtensa-esp32s3 @ 8.4.0+2021r2-patch5
+LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
+LDF Modes: Finder ~ chain, Compatibility ~ soft
+Found 39 compatible libraries
+Scanning dependencies...
+Dependency Graph
+|-- Adafruit BusIO @ 1.17.4
+|-- Adafruit GFX Library @ 1.12.6
+|-- Adafruit SSD1306 @ 2.5.17
+|-- ArduinoJson @ 7.4.3
+|-- SparkFun u-blox GNSS v3 @ 3.1.15
+|-- BMI270_SensorAPI @ 0.0.0+20260809162005.sha.41129fc
+|-- Wire @ 2.0.0
+|-- SPI @ 2.0.0
+|-- WiFi @ 2.0.0
+|-- WebServer @ 2.0.0
+|-- SD_MMC @ 2.0.0
+|-- HTTPClient @ 2.0.0
+|-- FS @ 2.0.0
+|-- ESPmDNS @ 2.0.0
+Building in release mode
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\AS5048BAngleSensor.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\AS5048LibraryProbe.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\AS5600AngleSensor.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\AS5600StringPotAnalog.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\AS5600StringPotI2C.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\AS5600StringPotSensorBase.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\AnalogInputManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\AnalogPotSensor.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BMI270Device.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BMI270FifoAcquisition.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BMI270FifoParser.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BMI270I2CProbe.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BMI270I2CTransport.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BMI270ImuSensor.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BdqLogWriter.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BdqV2Catalog.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BdqV2PrimaryStream.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BdqV2Writer.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BoardProfile.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BoardSelect.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\ButtonActions.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\ButtonBindingTable.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\ButtonManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\CalCapture.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\Calibration.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\CalibrationWizard.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\CaptureUtils.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\ConfigManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\DANF10NGpsSensor.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\DebugLog.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\DeviceRestart.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\DisplayManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\GpsUartProbe.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\HtmlUtil.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\HttpFileSender.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\I2CBusScheduler.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\I2CManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\I2CStartupDiagnostics.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\IndicatorManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\LogMetadataWriter.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\LoggingManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\MenuSystem.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\PowerManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\RTCManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\Routes_Api.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\Routes_Config.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\Routes_Files.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\Routes_Static.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\Routes_Transforms.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\Sensor.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\SensorAssignment.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\SensorManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\SensorParams.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\SensorRegistry.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\StartupLog.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\StorageManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\TransformRegistry.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\UI.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\UploadAckIndex.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\UploadModeManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\UploadSessionCleanup.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\UploadSessionScanner.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\WebServerManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\WiFiManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\ZipArchiveWriter.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\main.cpp.o
+src/Routes_Transforms.cpp: In function 'void addTransformsFromDirMMC_(const char*, ArduinoJson::V743PB22::JsonArray)':
+src/Routes_Transforms.cpp:70:46: warning: 'ArduinoJson::V743PB22::JsonObject ArduinoJson::V743PB22::JsonArray::createNestedObject() const' is deprecated: use add<JsonObject>() instead [-Wdeprecated-declarations]
+     JsonObject o = outArr.createNestedObject();
+                                              ^
+In file included from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.hpp:65,
+                 from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/Routes_Transforms.cpp:3:
+.pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson/compatibility.hpp:140:19: note: declared here
+ inline JsonObject JsonArray::createNestedObject() const {
+                   ^~~~~~~~~
+src/Routes_Transforms.cpp: In lambda function:
+src/Routes_Transforms.cpp:108:26: warning: 'DynamicJsonDocument' is deprecated: use JsonDocument instead [-Wdeprecated-declarations]
+   DynamicJsonDocument doc(4096);
+                          ^
+In file included from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.hpp:65,
+                 from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/Routes_Transforms.cpp:3:
+.pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson/compatibility.hpp:125:58: note: declared here
+ class ARDUINOJSON_DEPRECATED("use JsonDocument instead") DynamicJsonDocument
+                                                          ^~~~~~~~~~~~~~~~~~~
+src/Routes_Transforms.cpp:109:50: warning: 'ArduinoJson::V743PB22::JsonArray ArduinoJson::V743PB22::JsonDocument::createNestedArray(TChar*) [with TChar = const char]' is deprecated: use doc[key].to<JsonArray>() instead [-Wdeprecated-declarations]
+   JsonArray items = doc.createNestedArray("items");
+                                                  ^
+In file included from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.hpp:42,
+                 from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/Routes_Transforms.cpp:3:
+.pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson/Document/JsonDocument.hpp:356:13: note: declared here
+   JsonArray createNestedArray(TChar* key) {
+             ^~~~~~~~~~~~~~~~~
+src/Routes_Transforms.cpp:113:45: warning: 'ArduinoJson::V743PB22::JsonObject ArduinoJson::V743PB22::JsonArray::createNestedObject() const' is deprecated: use add<JsonObject>() instead [-Wdeprecated-declarations]
+     JsonObject o = items.createNestedObject();
+                                             ^
+In file included from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.hpp:65,
+                 from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/Routes_Transforms.cpp:3:
+.pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson/compatibility.hpp:140:19: note: declared here
+ inline JsonObject JsonArray::createNestedObject() const {
+                   ^~~~~~~~~
+src/Routes_Transforms.cpp:127:45: warning: 'ArduinoJson::V743PB22::JsonObject ArduinoJson::V743PB22::JsonArray::createNestedObject() const' is deprecated: use add<JsonObject>() instead [-Wdeprecated-declarations]
+     JsonObject o = items.createNestedObject();
+                                             ^
+In file included from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.hpp:65,
+                 from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/Routes_Transforms.cpp:3:
+.pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson/compatibility.hpp:140:19: note: declared here
+ inline JsonObject JsonArray::createNestedObject() const {
+                   ^~~~~~~~~
+Building .pio\build\bodaqs_s3_mini_n4r2\bootloader.bin
+esptool.py v4.11.0
+Creating esp32s3 image...
+Merged 1 ELF section
+Successfully created esp32s3 image.
+Generating partitions .pio\build\bodaqs_s3_mini_n4r2\partitions.bin
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib566\Wire\Wire.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\libef4\SPI\SPI.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\libab2\Adafruit BusIO\Adafruit_BusIO_Register.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\libab2\Adafruit BusIO\Adafruit_GenericDevice.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\libab2\Adafruit BusIO\Adafruit_I2CDevice.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\libab2\Adafruit BusIO\Adafruit_SPIDevice.cpp.o
+src/TransformRegistry.cpp: In member function 'bool TransformRegistry::loadPoly_fs(const String&, const String&, fs::FS&)':
+src/TransformRegistry.cpp:164:3: warning: 'template<unsigned int N> class ArduinoJson::V743PB22::StaticJsonDocument' is deprecated: use JsonDocument instead [-Wdeprecated-declarations]
+   StaticJsonDocument<2048> doc;
+   ^~~~~~~~~~~~~~~~~~
+In file included from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.hpp:65,
+                 from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/TransformRegistry.cpp:2:
+.pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson/compatibility.hpp:63:58: note: declared here
+ class ARDUINOJSON_DEPRECATED("use JsonDocument instead") StaticJsonDocument
+                                                          ^~~~~~~~~~~~~~~~~~
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib708\Adafruit GFX Library\Adafruit_GFX.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib708\Adafruit GFX Library\Adafruit_GrayOLED.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib708\Adafruit GFX Library\Adafruit_SPITFT.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib708\Adafruit GFX Library\glcdfont.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\libbca\Adafruit SSD1306\Adafruit_SSD1306.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\liba43\SparkFun u-blox GNSS v3\sfe_bus.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\liba43\SparkFun u-blox GNSS v3\u-blox_GNSS.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\libf1b\BMI270_SensorAPI\bmi2.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\libf1b\BMI270_SensorAPI\bmi270.c.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\lib566\libWire.a
+Archiving .pio\build\bodaqs_s3_mini_n4r2\libef4\libSPI.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib593\WiFi\WiFi.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib593\WiFi\WiFiAP.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib593\WiFi\WiFiClient.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib593\WiFi\WiFiGeneric.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib593\WiFi\WiFiMulti.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib593\WiFi\WiFiSTA.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib593\WiFi\WiFiScan.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib593\WiFi\WiFiServer.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\libab2\libAdafruit BusIO.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib593\WiFi\WiFiUdp.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\libf1b\libBMI270_SensorAPI.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib162\FS\FS.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib162\FS\vfs_api.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\liba59\WebServer\Parsing.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\lib708\libAdafruit GFX Library.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\liba59\WebServer\WebServer.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\libbca\libAdafruit SSD1306.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\liba59\WebServer\detail\mimetable.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib876\SD_MMC\SD_MMC.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\libd8f\WiFiClientSecure\WiFiClientSecure.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\libd8f\WiFiClientSecure\esp_crt_bundle.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\libd8f\WiFiClientSecure\ssl_client.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib2a2\HTTPClient\HTTPClient.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib7b6\ESPmDNS\ESPmDNS.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\lib593\libWiFi.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\Esp.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\FirmwareMSC.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\FunctionalInterrupt.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\HWCDC.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\HardwareSerial.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\IPAddress.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\IPv6Address.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\lib162\libFS.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\MD5Builder.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\Print.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\liba59\libWebServer.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\Stream.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\liba43\libSparkFun u-blox GNSS v3.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\StreamString.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\lib876\libSD_MMC.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\Tone.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\USB.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\USBCDC.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\USBMSC.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\libd8f\libWiFiClientSecure.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\WMath.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\lib7b6\libESPmDNS.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\WString.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\base64.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\cbuf.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-adc.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-bt.c.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\lib2a2\libHTTPClient.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-cpu.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-dac.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-gpio.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-i2c-slave.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-i2c.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-ledc.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-matrix.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-misc.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-psram.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-rgb-led.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-rmt.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-sigmadelta.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-spi.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-time.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-timer.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-tinyusb.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-touch.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-uart.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\firmware_msc_fat.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\libb64\cdecode.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\libb64\cencode.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\main.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\stdlib_noniso.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\wiring_pulse.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\wiring_shift.c.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\libFrameworkArduino.a
+Linking .pio\build\bodaqs_s3_mini_n4r2\firmware.elf
+Retrieving maximum program size .pio\build\bodaqs_s3_mini_n4r2\firmware.elf
+Checking size .pio\build\bodaqs_s3_mini_n4r2\firmware.elf
+Advanced Memory Usage is available via "PlatformIO Home > Project Inspect"
+RAM:   [=====     ]  53.8% (used 176140 bytes from 327680 bytes)
+Flash: [========= ]  88.3% (used 1851413 bytes from 2097152 bytes)
+Building .pio\build\bodaqs_s3_mini_n4r2\firmware.bin with action:
+  "$PYTHONEXE" "$OBJCOPY" --chip esp32s3 elf2image --flash_mode ${__get_board_flash_mode(__env__)} --flash_freq ${__get_board_f_image(__env__)} --flash_size 4MB --elf-sha256-offset 0xb0 -o $TARGET $SOURCES
+Building .pio\build\bodaqs_s3_mini_n4r2\firmware.bin
+esptool.py v4.11.0
+Creating esp32s3 image...
+Merged 3 ELF sections
+Successfully created esp32s3 image.
+========================= [SUCCESS] Took 69.62 seconds =========================
+
+Processing bodaqs_s3_mini_n4r2_rc3 (platform: espressif32; board: bodaqs_s3_mini_n4r2; framework: arduino)
+--------------------------------------------------------------------------------
+Removing unused dependencies...
+Library Manager: Removing ArduinoJson @ 7.4.3
+Library Manager: ArduinoJson@7.4.3 has been removed!
+Library Manager: Removing SparkFun u-blox GNSS v3 @ 3.1.15
+Library Manager: SparkFun u-blox GNSS v3@3.1.15 has been removed!
+Library Manager: Removing Adafruit SSD1306 @ 2.5.17
+Library Manager: Removing dependencies...
+Library Manager: Removing Adafruit GFX Library @ 1.12.6
+Library Manager: Removing dependencies...
+Library Manager: Removing Adafruit BusIO @ 1.17.4
+Library Manager: Adafruit BusIO@1.17.4 has been removed!
+Library Manager: Adafruit GFX Library@1.12.6 has been removed!
+Library Manager: Adafruit SSD1306@2.5.17 has been removed!
+Library Manager: Installing adafruit/Adafruit BusIO @ 1.17.4
+Unpacking 0% 10% 20% 30% 40% 50% 60% 70% 80% 90% 100%
+Library Manager: Adafruit BusIO@1.17.4 has been installed!
+Library Manager: Installing adafruit/Adafruit GFX Library @ 1.12.6
+Unpacking 0% 10% 20% 30% 40% 50% 60% 70% 80% 90% 100%
+Library Manager: Adafruit GFX Library@1.12.6 has been installed!
+Library Manager: Resolving dependencies...
+Library Manager: Installing adafruit/Adafruit SSD1306 @ 2.5.17
+Unpacking 0% 10% 20% 30% 40% 50% 60% 70% 80% 90% 100%
+Library Manager: Adafruit SSD1306@2.5.17 has been installed!
+Library Manager: Resolving dependencies...
+Library Manager: Installing bblanchon/ArduinoJson @ 7.4.3
+Unpacking 0% 10% 20% 30% 40% 50% 60% 70% 80% 90% 100%
+Library Manager: ArduinoJson@7.4.3 has been installed!
+Library Manager: Installing sparkfun/SparkFun u-blox GNSS v3 @ 3.1.15
+Unpacking 0% 10% 20% 30% 40% 50% 60% 70% 80% 90% 100%
+Library Manager: SparkFun u-blox GNSS v3@3.1.15 has been installed!
+Verbose mode can be enabled via `-v, --verbose` option
+CONFIGURATION: https://docs.platformio.org/page/boards/espressif32/bodaqs_s3_mini_n4r2.html
+PLATFORM: Espressif 32 (6.13.0) > BODAQS A8 ESP32-S3 Mini N4R2
+HARDWARE: ESP32S3 240MHz, 320KB RAM, 4MB Flash
+DEBUG: Current (esp-builtin) On-board (esp-builtin) External (cmsis-dap, esp-bridge, esp-prog, iot-bus-jtag, jlink, minimodule, olimex-arm-usb-ocd, olimex-arm-usb-ocd-h, olimex-arm-usb-tiny-h, olimex-jtag-tiny, tumpa)
+PACKAGES: 
+ - framework-arduinoespressif32 @ 3.20017.241212+sha.dcc1105b 
+ - tool-esptoolpy @ 2.41100.0 (4.11.0) 
+ - toolchain-riscv32-esp @ 8.4.0+2021r2-patch5 
+ - toolchain-xtensa-esp32s3 @ 8.4.0+2021r2-patch5
+LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
+LDF Modes: Finder ~ chain, Compatibility ~ soft
+Found 39 compatible libraries
+Scanning dependencies...
+Dependency Graph
+|-- Adafruit BusIO @ 1.17.4
+|-- Adafruit GFX Library @ 1.12.6
+|-- Adafruit SSD1306 @ 2.5.17
+|-- ArduinoJson @ 7.4.3
+|-- SparkFun u-blox GNSS v3 @ 3.1.15
+|-- BMI270_SensorAPI @ 0.0.0+20261009210453.sha.41129fc
+|-- Wire @ 2.0.0
+|-- SPI @ 2.0.0
+|-- WiFi @ 2.0.0
+|-- WebServer @ 2.0.0
+|-- SD_MMC @ 2.0.0
+|-- HTTPClient @ 2.0.0
+|-- FS @ 2.0.0
+|-- ESPmDNS @ 2.0.0
+Building in release mode
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\AS5048BAngleSensor.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\AS5048LibraryProbe.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\AS5600AngleSensor.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\AS5600StringPotAnalog.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\AS5600StringPotI2C.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\AS5600StringPotSensorBase.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\AnalogInputManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\AnalogPotSensor.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\BMI270Device.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\BMI270FifoAcquisition.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\BMI270FifoParser.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\BMI270I2CProbe.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\BMI270I2CTransport.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\BMI270ImuSensor.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\BdqLogWriter.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\BdqV2Catalog.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\BdqV2PrimaryStream.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\BdqV2Writer.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\BoardProfile.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\BoardSelect.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\ButtonActions.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\ButtonBindingTable.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\ButtonManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\CalCapture.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\Calibration.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\CalibrationWizard.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\CaptureUtils.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\ConfigManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\DANF10NGpsSensor.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\DebugLog.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\DeviceRestart.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\DisplayManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\GpsUartProbe.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\HtmlUtil.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\HttpFileSender.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\I2CBusScheduler.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\I2CManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\I2CStartupDiagnostics.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\IndicatorManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\LogMetadataWriter.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\LoggingManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\MenuSystem.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\PowerManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\RTCManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\Routes_Api.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\Routes_Config.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\Routes_Files.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\Routes_Static.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\Routes_Transforms.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\Sensor.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\SensorAssignment.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\SensorManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\SensorParams.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\SensorRegistry.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\StartupLog.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\StorageManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\TransformRegistry.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\UI.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\UploadAckIndex.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\UploadModeManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\UploadSessionCleanup.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\UploadSessionScanner.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\WebServerManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\WiFiManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\ZipArchiveWriter.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\src\main.cpp.o
+src/Routes_Transforms.cpp: In function 'void addTransformsFromDirMMC_(const char*, ArduinoJson::V743PB22::JsonArray)':
+src/Routes_Transforms.cpp:70:46: warning: 'ArduinoJson::V743PB22::JsonObject ArduinoJson::V743PB22::JsonArray::createNestedObject() const' is deprecated: use add<JsonObject>() instead [-Wdeprecated-declarations]
+     JsonObject o = outArr.createNestedObject();
+                                              ^
+In file included from .pio/libdeps/bodaqs_s3_mini_n4r2_rc3/ArduinoJson/src/ArduinoJson.hpp:65,
+                 from .pio/libdeps/bodaqs_s3_mini_n4r2_rc3/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/Routes_Transforms.cpp:3:
+.pio/libdeps/bodaqs_s3_mini_n4r2_rc3/ArduinoJson/src/ArduinoJson/compatibility.hpp:140:19: note: declared here
+ inline JsonObject JsonArray::createNestedObject() const {
+                   ^~~~~~~~~
+src/Routes_Transforms.cpp: In lambda function:
+src/Routes_Transforms.cpp:108:26: warning: 'DynamicJsonDocument' is deprecated: use JsonDocument instead [-Wdeprecated-declarations]
+   DynamicJsonDocument doc(4096);
+                          ^
+In file included from .pio/libdeps/bodaqs_s3_mini_n4r2_rc3/ArduinoJson/src/ArduinoJson.hpp:65,
+                 from .pio/libdeps/bodaqs_s3_mini_n4r2_rc3/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/Routes_Transforms.cpp:3:
+.pio/libdeps/bodaqs_s3_mini_n4r2_rc3/ArduinoJson/src/ArduinoJson/compatibility.hpp:125:58: note: declared here
+ class ARDUINOJSON_DEPRECATED("use JsonDocument instead") DynamicJsonDocument
+                                                          ^~~~~~~~~~~~~~~~~~~
+src/Routes_Transforms.cpp:109:50: warning: 'ArduinoJson::V743PB22::JsonArray ArduinoJson::V743PB22::JsonDocument::createNestedArray(TChar*) [with TChar = const char]' is deprecated: use doc[key].to<JsonArray>() instead [-Wdeprecated-declarations]
+   JsonArray items = doc.createNestedArray("items");
+                                                  ^
+In file included from .pio/libdeps/bodaqs_s3_mini_n4r2_rc3/ArduinoJson/src/ArduinoJson.hpp:42,
+                 from .pio/libdeps/bodaqs_s3_mini_n4r2_rc3/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/Routes_Transforms.cpp:3:
+.pio/libdeps/bodaqs_s3_mini_n4r2_rc3/ArduinoJson/src/ArduinoJson/Document/JsonDocument.hpp:356:13: note: declared here
+   JsonArray createNestedArray(TChar* key) {
+             ^~~~~~~~~~~~~~~~~
+src/Routes_Transforms.cpp:113:45: warning: 'ArduinoJson::V743PB22::JsonObject ArduinoJson::V743PB22::JsonArray::createNestedObject() const' is deprecated: use add<JsonObject>() instead [-Wdeprecated-declarations]
+     JsonObject o = items.createNestedObject();
+                                             ^
+In file included from .pio/libdeps/bodaqs_s3_mini_n4r2_rc3/ArduinoJson/src/ArduinoJson.hpp:65,
+                 from .pio/libdeps/bodaqs_s3_mini_n4r2_rc3/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/Routes_Transforms.cpp:3:
+.pio/libdeps/bodaqs_s3_mini_n4r2_rc3/ArduinoJson/src/ArduinoJson/compatibility.hpp:140:19: note: declared here
+ inline JsonObject JsonArray::createNestedObject() const {
+                   ^~~~~~~~~
+src/Routes_Transforms.cpp:127:45: warning: 'ArduinoJson::V743PB22::JsonObject ArduinoJson::V743PB22::JsonArray::createNestedObject() const' is deprecated: use add<JsonObject>() instead [-Wdeprecated-declarations]
+     JsonObject o = items.createNestedObject();
+                                             ^
+In file included from .pio/libdeps/bodaqs_s3_mini_n4r2_rc3/ArduinoJson/src/ArduinoJson.hpp:65,
+                 from .pio/libdeps/bodaqs_s3_mini_n4r2_rc3/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/Routes_Transforms.cpp:3:
+.pio/libdeps/bodaqs_s3_mini_n4r2_rc3/ArduinoJson/src/ArduinoJson/compatibility.hpp:140:19: note: declared here
+ inline JsonObject JsonArray::createNestedObject() const {
+                   ^~~~~~~~~
+Building .pio\build\bodaqs_s3_mini_n4r2_rc3\bootloader.bin
+esptool.py v4.11.0
+Creating esp32s3 image...
+Merged 1 ELF section
+Successfully created esp32s3 image.
+Generating partitions .pio\build\bodaqs_s3_mini_n4r2_rc3\partitions.bin
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib566\Wire\Wire.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\libef4\SPI\SPI.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib1d1\Adafruit BusIO\Adafruit_BusIO_Register.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib1d1\Adafruit BusIO\Adafruit_GenericDevice.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib1d1\Adafruit BusIO\Adafruit_I2CDevice.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib1d1\Adafruit BusIO\Adafruit_SPIDevice.cpp.o
+src/TransformRegistry.cpp: In member function 'bool TransformRegistry::loadPoly_fs(const String&, const String&, fs::FS&)':
+src/TransformRegistry.cpp:164:3: warning: 'template<unsigned int N> class ArduinoJson::V743PB22::StaticJsonDocument' is deprecated: use JsonDocument instead [-Wdeprecated-declarations]
+   StaticJsonDocument<2048> doc;
+   ^~~~~~~~~~~~~~~~~~
+In file included from .pio/libdeps/bodaqs_s3_mini_n4r2_rc3/ArduinoJson/src/ArduinoJson.hpp:65,
+                 from .pio/libdeps/bodaqs_s3_mini_n4r2_rc3/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/TransformRegistry.cpp:2:
+.pio/libdeps/bodaqs_s3_mini_n4r2_rc3/ArduinoJson/src/ArduinoJson/compatibility.hpp:63:58: note: declared here
+ class ARDUINOJSON_DEPRECATED("use JsonDocument instead") StaticJsonDocument
+                                                          ^~~~~~~~~~~~~~~~~~
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\libd12\Adafruit GFX Library\Adafruit_GFX.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\libd12\Adafruit GFX Library\Adafruit_GrayOLED.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\libd12\Adafruit GFX Library\Adafruit_SPITFT.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\libd12\Adafruit GFX Library\glcdfont.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib2b9\Adafruit SSD1306\Adafruit_SSD1306.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib659\SparkFun u-blox GNSS v3\sfe_bus.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2_rc3\libef4\libSPI.a
+Archiving .pio\build\bodaqs_s3_mini_n4r2_rc3\lib566\libWire.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib659\SparkFun u-blox GNSS v3\u-blox_GNSS.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib6d9\BMI270_SensorAPI\bmi2.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib6d9\BMI270_SensorAPI\bmi270.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib593\WiFi\WiFi.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib593\WiFi\WiFiAP.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib593\WiFi\WiFiClient.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib593\WiFi\WiFiGeneric.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib593\WiFi\WiFiMulti.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib593\WiFi\WiFiSTA.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib593\WiFi\WiFiScan.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib593\WiFi\WiFiServer.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2_rc3\lib1d1\libAdafruit BusIO.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib593\WiFi\WiFiUdp.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2_rc3\lib6d9\libBMI270_SensorAPI.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib162\FS\FS.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib162\FS\vfs_api.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\liba59\WebServer\Parsing.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2_rc3\libd12\libAdafruit GFX Library.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\liba59\WebServer\WebServer.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2_rc3\lib2b9\libAdafruit SSD1306.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\liba59\WebServer\detail\mimetable.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib876\SD_MMC\SD_MMC.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\libd8f\WiFiClientSecure\WiFiClientSecure.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\libd8f\WiFiClientSecure\esp_crt_bundle.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\libd8f\WiFiClientSecure\ssl_client.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib2a2\HTTPClient\HTTPClient.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\lib7b6\ESPmDNS\ESPmDNS.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2_rc3\lib593\libWiFi.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\Esp.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\FirmwareMSC.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\FunctionalInterrupt.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\HWCDC.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\HardwareSerial.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\IPAddress.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\IPv6Address.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2_rc3\lib162\libFS.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\MD5Builder.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\Print.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2_rc3\liba59\libWebServer.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\Stream.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2_rc3\lib659\libSparkFun u-blox GNSS v3.a
+Archiving .pio\build\bodaqs_s3_mini_n4r2_rc3\lib876\libSD_MMC.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\StreamString.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\Tone.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\USB.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\USBCDC.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\USBMSC.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2_rc3\libd8f\libWiFiClientSecure.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\WMath.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2_rc3\lib7b6\libESPmDNS.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\WString.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\base64.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\cbuf.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\esp32-hal-adc.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\esp32-hal-bt.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\esp32-hal-cpu.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\esp32-hal-dac.c.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2_rc3\lib2a2\libHTTPClient.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\esp32-hal-gpio.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\esp32-hal-i2c-slave.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\esp32-hal-i2c.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\esp32-hal-ledc.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\esp32-hal-matrix.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\esp32-hal-misc.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\esp32-hal-psram.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\esp32-hal-rgb-led.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\esp32-hal-rmt.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\esp32-hal-sigmadelta.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\esp32-hal-spi.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\esp32-hal-time.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\esp32-hal-timer.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\esp32-hal-tinyusb.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\esp32-hal-touch.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\esp32-hal-uart.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\firmware_msc_fat.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\libb64\cdecode.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\libb64\cencode.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\main.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\stdlib_noniso.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\wiring_pulse.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2_rc3\FrameworkArduino\wiring_shift.c.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2_rc3\libFrameworkArduino.a
+Linking .pio\build\bodaqs_s3_mini_n4r2_rc3\firmware.elf
+Retrieving maximum program size .pio\build\bodaqs_s3_mini_n4r2_rc3\firmware.elf
+Checking size .pio\build\bodaqs_s3_mini_n4r2_rc3\firmware.elf
+Advanced Memory Usage is available via "PlatformIO Home > Project Inspect"
+RAM:   [=====     ]  53.8% (used 176140 bytes from 327680 bytes)
+Flash: [========= ]  88.3% (used 1851413 bytes from 2097152 bytes)
+Building .pio\build\bodaqs_s3_mini_n4r2_rc3\firmware.bin with action:
+  "$PYTHONEXE" "$OBJCOPY" --chip esp32s3 elf2image --flash_mode ${__get_board_flash_mode(__env__)} --flash_freq ${__get_board_f_image(__env__)} --flash_size 4MB --elf-sha256-offset 0xb0 -o $TARGET $SOURCES
+Building .pio\build\bodaqs_s3_mini_n4r2_rc3\firmware.bin
+esptool.py v4.11.0
+Creating esp32s3 image...
+Merged 3 ELF sections
+Successfully created esp32s3 image.
+========================= [SUCCESS] Took 69.38 seconds =========================
+
+Environment                           Status    Duration
+------------------------------------  --------  ------------
+thingplus_s3_usb_cdcserial_bodaqs_4f  SUCCESS   00:01:12.359
+bodaqs_s3_mini_n4r2                   SUCCESS   00:01:09.615
+bodaqs_s3_mini_n4r2_rc3               SUCCESS   00:01:09.382
+========================= 3 succeeded in 00:03:31.356 =========================
