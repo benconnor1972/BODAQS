@@ -92,6 +92,7 @@ jobs:
       - name: Test Python packages
         env:
           MPLBACKEND: Agg
+          PYTHONPATH: ${{ github.workspace }}/analysis
         run: python -m pytest analysis/tests -q
       - name: Build and smoke-test Windows installer
         run: >-
@@ -160,6 +161,7 @@ jobs:
       - name: Test Python packages
         env:
           MPLBACKEND: Agg
+          PYTHONPATH: ${{ github.workspace }}/analysis
         run: python -m pytest analysis/tests -q
       - name: Build unsigned macOS app
         run: >-
@@ -345,6 +347,7 @@ jobs:
       - name: Test Python packages
         env:
           MPLBACKEND: Agg
+          PYTHONPATH: ${{ github.workspace }}/analysis
         run: python -m pytest analysis/tests -q
       - name: Build and smoke-test Linux archive
         run: >-
