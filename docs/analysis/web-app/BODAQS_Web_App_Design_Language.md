@@ -41,7 +41,10 @@ either update the code or update this document as part of the same change.
 
 ## Core Tokens
 
-Use the CSS custom properties rather than one-off values.
+Use the CSS custom properties rather than one-off values. Replace literal
+font sizes and weights with an applicable role token when the values match.
+Do not round a deliberate value to the nearest token; values without a matching
+token retain their existing appearance until separately reviewed.
 
 ### Colors
 
@@ -78,9 +81,63 @@ Use the CSS custom properties rather than one-off values.
 | `--text-caption` | `11px` | Metadata, helper summaries, compact buttons. |
 | `--text-label` | `10px` | Uppercase form labels and table headers. |
 | `--text-micro` | `9px` | Very dense labels only. |
+| `--text-chart-axis` | `11px` | Chart axis ticks and titles across SVG, canvas and uPlot. |
 
 Use `--weight-semibold` for headings and important labels. Avoid heavy/bold
 text in metadata boxes unless it is a true status or action.
+
+### Headings and Section Labels
+
+Use sentence case for authored section labels, modal titles, analysis drawer
+headings and modal headings. Preserve proper nouns and acronyms, including
+BODAQS Workbench, Study Set, GPS, QA, FIT, JSON and sensor model identifiers.
+Preserve user-provided session, track, grouping and Study Set names exactly;
+do not run arbitrary record names through a lowercase/titlecase transform.
+
+Examples: `Library selector`, `Select and filter`, `Filter manager`, `New track`,
+`GPS path`, `Simple suspension analysis`, and `Study Set builder`. Built-in
+analysis view headings use sentence case even if older API metadata contains
+the former title-case display name. Metadata and form labels/table headers keep
+their separate uppercase label convention.
+
+Headings/section labels use `--weight-semibold`; analysis scope/hero titles use
+`--text-analysis-title` (17px), and modal titles use `--text-modal-title` (18px).
+True statuses retain their existing heavy weights and uppercase styling for now;
+the sentence-case heading rule does not apply to readiness/warning/status badges.
+
+### Field Labels and Entered Values
+
+Labels identify fields; entered values have their own typography. Controls must
+set their font family, size and weight explicitly rather than copying the font
+of an enclosing label.
+
+| Role | Font | Size | Weight | Capitalization |
+| --- | --- | --- | --- | --- |
+| Field label | `--font-ui` | `--text-label` (10px) | `--weight-semibold` (650) | Uppercase. |
+| Entered/selected value | `--font-ui` | `--text-body` (12px) | `--weight-regular` (400) | Preserve exactly; `text-transform: none`. |
+| Checkbox/radio option text | `--font-ui` | `--text-body` (12px) | `--weight-regular` (400) | Sentence case for authored text; preserve user-provided names. |
+| Helper text | `--font-ui` | `--text-caption` (11px) | `--weight-regular` (400) | Sentence case. |
+| Ordinary metadata label | `--font-ui` | `--text-label` (10px) | `--weight-semibold` (650) | Existing uppercase metadata-label pattern. |
+| Ordinary metadata value | `--font-ui` | `--text-caption` (11px) | `--weight-regular` (400) | Preserve the value. |
+
+Placeholders use the entered-value typography with `--muted` color, rather
+than bold or smaller text. Advanced JSON is the exception: it uses `--font-code`
+(`ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace`) at
+12px regular weight. Ordinary multiline notes, explanations and tag names use
+the UI font.
+
+Record names in selection lists may retain semibold emphasis; checkbox option
+labels must not make their entire contents bold. Status badges keep their own
+meaningful emphasis. Do not use ordinary metadata-value styling as a blanket
+reset for nested badges or chart readouts.
+
+Modal actions use the shared action classes at 12px semibold. Compact actions
+and context-menu commands use 11px semibold. Saved filter/scenario and Track
+Manager list names use 12px semibold.
+
+The shared form/metadata rules at the end of `App.css` override older
+feature-specific inherited fonts. New controls should follow these rules rather
+than introduce another local typography override.
 
 ### Geometry And Spacing
 
@@ -200,6 +257,16 @@ Maps should be functional, not decorative.
 
 Charts should prioritize comparability and quick interpretation.
 
+Axis tick labels and axis titles use `--text-chart-axis` (11px) and `--font-ui`
+across altitude, spatial, distribution, phase and signal charts. Canvas and
+uPlot read these CSS tokens as well; raster fallback must not select a separate
+system font. There are no size exceptions among those chart axes.
+
+Cumulative-chart tooltip titles and values use at least `--text-micro` (9px).
+The compact time-window overview is a separate approved density exception:
+its existing text, including 6px tick labels, is retained. Other chart-axis
+labels follow the 11px rule.
+
 - Front series use BODAQS teal.
 - Rear series use black/dark neutral.
 - Axes and gridlines should be quiet; data marks should carry the visual weight.
@@ -240,7 +307,9 @@ only when they help explain the capability boundary.
 ## Helper Text
 
 Helper text should not permanently occupy layout space. Use an info marker near
-the relevant title or control.
+the relevant title or control. Markers must expose their explanation on hover
+and keyboard focus, without triggering an enclosing control. Keep actionable
+warnings, errors, empty states and live counts visible.
 
 When helper text is added or changed, update:
 

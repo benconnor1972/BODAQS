@@ -24,6 +24,7 @@ from bodaqs_analysis.route_geometry import denoise_route_coordinates
 from .errors import InvalidRequestError
 from .ids import derive_object_id, make_session_key, make_session_ref_id
 from .models import library_payload
+from .session_annotations import session_user_annotation_summary
 
 
 LIBRARY_DEFINITION_FILENAME = "library_definition.json"
@@ -219,6 +220,7 @@ def _build_session_catalog_row(
         "timestamps": _timestamp_summary(run_manifest, session_meta),
         "note_status": note_status,
         "note_fields": note_fields,
+        "user_annotations": session_user_annotation_summary(store, run_id, session_id),
         "qc_summary": _qc_summary(session_meta, session_manifest),
         "summary": _session_summary(session_manifest, gps_summary=gps_summary),
         "provenance": provenance,

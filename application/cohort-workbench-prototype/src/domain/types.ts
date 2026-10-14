@@ -1,7 +1,7 @@
 export type NoteStatus = 'missing' | 'draft' | 'edited'
 export type QcLevel = 'ok' | 'warning' | 'alert'
 export type SortDirection = 'asc' | 'desc'
-export type SessionInspectionTab = 'note' | 'qc' | 'gps' | 'signals' | 'metadata'
+export type SessionInspectionTab = 'note' | 'qc' | 'gps' | 'video' | 'signals' | 'metadata' | 'annotations'
 export type StudySetModalMode = 'view' | 'analyze'
 export type GpsQuality = 'absent' | 'limited' | 'usable' | 'invalid'
 export type GpsSourceKind = 'logger_sensor' | 'fit_enrichment' | 'imported_route' | 'unknown'
@@ -94,6 +94,7 @@ export type LibraryRecord = {
 }
 
 export type SessionRecord = {
+  userAnnotations?: SessionUserAnnotations
   libraryId: string
   runId: string
   runName: string
@@ -182,6 +183,17 @@ export type SessionNoteRecord = {
   createdAtUtc: string
   updatedAtUtc: string
 }
+
+export type SessionUserIssue = { flagged: boolean; explanation: string }
+export type SessionUserAnnotations = {
+  present: boolean
+  revision: number | null
+  tags: string[]
+  gpsIssue: SessionUserIssue | null
+  qaIssue: SessionUserIssue | null
+  warnings: string[]
+}
+export type SessionUserAnnotationRecord = SessionUserAnnotations & { sessionRef: StudySessionRef }
 
 export type SessionVideoAttachmentRecord = {
   attachmentId: string
@@ -648,6 +660,23 @@ export type ScenarioEvaluationRequest = {
   options?: { includeCriterionDiagnostics?: boolean }
 }
 
+export type ScenarioSessionQuery = {
+  queryId: string
+  status: 'queued' | 'running' | 'completed' | 'cancelled' | 'failed'
+  candidateSessionCount: number
+  processedSessionCount: number
+  matchedSessionCount: number
+  unavailableSessionCount: number
+  partialSessionCount: number
+  error: string | null
+}
+
+export type ScenarioSessionQueryPage = {
+  results: Array<{ sessionRef: StudySessionRef; matchedDurationS: number }>
+  nextOffset: number | null
+  resultCount: number
+}
+
 export type ScenarioCriterionDiagnostic = {
   criterionId: string
   status: string
@@ -803,6 +832,7 @@ export type EventAnnotationRecord = {
 }
 
 export type ColumnId =
+  | 'tags'
   | 'name'
   | 'runName'
   | 'started'
@@ -828,7 +858,7 @@ export type ColumnId =
 
 export type ModalState =
   | { kind: 'session'; tab: SessionInspectionTab; session: SessionRecord }
-  | { kind: 'signal-inspector'; session: SessionRecord; initialWindow?: { startS: number; endS: number } | null }
+  | { kind: 'signal-inspector'; session: SessionRecord; initialWindow?: { startS: number; endS: number } | null; browseVideoOnOpen?: boolean }
   | { kind: 'track'; track: TrackRecord }
   | { kind: 'analysis-launcher'; studySet: StudySet }
   | { kind: 'study-set'; studySet: StudySet; mode: StudySetModalMode }

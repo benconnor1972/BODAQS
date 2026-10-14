@@ -31,6 +31,11 @@ from .catalog import (
     discover_libraries,
     get_session_gps_points,
 )
+from .signal_catalog import (
+    LIBRARY_SIGNAL_CATALOG_SCHEMA,
+    LIBRARY_SIGNAL_CATALOG_VERSION,
+    build_library_signal_catalog,
+)
 from .errors import (
     AnalysisViewNotFoundError,
     BookmarkNotFoundError,
@@ -151,6 +156,12 @@ from .session_videos import (
     resolve_session_video_attachment,
     save_session_video_attachments,
 )
+from .session_annotations import (
+    SESSION_USER_ANNOTATIONS_SCHEMA,
+    SESSION_USER_ANNOTATIONS_VERSION,
+    load_session_user_annotations,
+    save_session_user_annotations,
+)
 from .sessions import delete_session
 from .study_sets import (
     STUDY_SET_SCHEMA,
@@ -209,6 +220,8 @@ __all__ = [
     "LibraryAdapter",
     "LibraryApiError",
     "LibraryNotFoundError",
+    "LIBRARY_SIGNAL_CATALOG_SCHEMA",
+    "LIBRARY_SIGNAL_CATALOG_VERSION",
     "RevisionConflictError",
     "SessionDeleteConflictError",
     "SessionDeleteFailedError",
@@ -289,6 +302,7 @@ __all__ = [
     "derive_object_id",
     "discover_libraries",
     "build_session_catalog",
+    "build_library_signal_catalog",
     "export_library_fixture",
     "evaluate_analysis_view_adequacy",
     "get_analysis_view",
@@ -307,6 +321,10 @@ __all__ = [
     "load_session_filter",
     "load_session_note",
     "load_session_video_attachments",
+    "load_session_user_annotations",
+    "save_session_user_annotations",
+    "SESSION_USER_ANNOTATIONS_SCHEMA",
+    "SESSION_USER_ANNOTATIONS_VERSION",
     "load_study_set",
     "load_track",
     "load_track_match",

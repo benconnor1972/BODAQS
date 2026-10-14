@@ -687,7 +687,7 @@ export function TrackManagerModal({
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section className="modal track-manager-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
         <div className="modal-header">
-          <h2>{mode === 'new' ? 'New Track' : 'Track Manager'}</h2>
+          <h2>{mode === 'new' ? 'New track' : 'Track manager'}</h2>
           <IconButton label="Close" onClick={onClose} icon={<X size={18} />} />
         </div>
         <div className="modal-content track-manager-modal-content">

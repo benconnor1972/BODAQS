@@ -44,6 +44,7 @@ export function tableFilterLabel(
 }
 
 function tableFilterValues(session: SessionRecord, columnId: ColumnId, libraries: LibraryRecord[]) {
+  if (columnId === 'tags') return session.userAnnotations?.tags ?? []
   if (columnId === 'signals') {
     return session.signals
   }

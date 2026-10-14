@@ -139,13 +139,15 @@ Leaf predicate:
 Recommended leaf operators:
 
 ```text
-eq | in | contains | present
+eq | in | all | contains | present
 ```
 
 Operator semantics:
 
 - `eq`: field value equals `value` after normalisation appropriate to the field.
 - `in`: field value equals any item in `value`.
+- `all`: supported only for `tags`; every requested tag must occur in the
+  session's tag list. The requested list must be non-empty.
 - `contains`: text or list field contains `value`.
 - `present`: field has a non-empty value, or equals the boolean `value` if one
   is supplied.
@@ -157,6 +159,21 @@ trackpoint-match predicates, and signal-content predicates.
 ---
 
 ## 5. Initial Field Names
+
+User annotations add `tags`, `user.gps_issue` and `user.qa_issue` without changing
+the meaning of generated GPS/QA fields. `tags` supports `eq` (one whole tag),
+`in` (any requested whole tag), `all` (all requested whole tags) and `present`.
+Tag matching is case insensitive. The service trims, case-folds, deduplicates
+and sorts persisted tag values, with the annotation tag size/count limits.
+Substring `contains` is not supported for tags. The visual builder accepts one
+tag per line; names can contain spaces or commas.
+
+Both user issue fields support `eq` with boolean true/false. The API also accepts
+the visual builder's strings `"true"`/`"false"` and persists actual booleans.
+Missing annotation files mean false. Invalid annotation files mean unknown,
+which matches neither true nor false. User reports never overwrite automatic
+`gps.quality` or `qc.level`. The selector also supports temporary any/all tag
+filters and issue filters, with a Save as filter handoff to the persisted editor.
 
 Initial catalog-backed fields:
 

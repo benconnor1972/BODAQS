@@ -11,6 +11,7 @@ import type {
   TrackRecord,
 } from '../domain/types'
 import { IconButton } from './Common'
+import { analysisHeading } from '../domain/headingTypography'
 
 type AnalysisLauncherItem = {
   view: AnalysisViewRecord
@@ -218,7 +219,7 @@ function AnalysisViewCard({ checked, item, onOpen, onSelectedChange }: {
           />
           <div>
             <p className="analysis-view-category">{item.view.category || 'Analysis'}</p>
-            <h3>{item.view.displayName}</h3>
+            <h3>{analysisHeading(item.view.displayName)}</h3>
           </div>
         </div>
         <div className="analysis-view-card-header-actions">

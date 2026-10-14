@@ -11,6 +11,7 @@ import { GpsRoutePreview } from './GpsRoutePreview'
 import { GpsBadge, NoteBadge, QcBadge } from './StatusBadges'
 import { SignalInspector } from './SignalInspector'
 import { SuspensionVisualization } from './SuspensionVisualization'
+import { SessionVideoInfo } from './SessionVideoInfo'
 
 export function Modal({
   state,
@@ -282,10 +283,14 @@ function modalClassName(state: NonNullable<ModalState>) {
 
 function modalTitle(state: NonNullable<ModalState>) {
   if (state.kind === 'signal-inspector') {
-    return `${state.session.name}: Signal Inspector`
+    return `${state.session.name}: Signal inspector`
   }
   if (state.kind === 'session') {
-    return `${state.session.name}: ${state.tab}`
+    const label = {
+      note: 'Note', qc: 'QA', gps: 'GPS', video: 'Video',
+      signals: 'Signals', metadata: 'Metadata', annotations: 'Flags and tags',
+    }[state.tab]
+    return `${state.session.name}: ${label}`
   }
   if (state.kind === 'track') {
     return state.track.name
@@ -294,7 +299,7 @@ function modalTitle(state: NonNullable<ModalState>) {
     return `Analyze ${state.studySet.displayName || 'Study Set'}`
   }
   if (state.mode === 'analyze') {
-    return 'Simple Suspension Analysis'
+    return 'Simple suspension analysis'
   }
   return `View ${state.studySet.displayName || 'Study Set'}`
 }
@@ -318,12 +323,16 @@ function modalContent(
         session={state.session}
         dataSource={dataSource}
         initialWindow={state.initialWindow ?? null}
+        browseVideoOnOpen={state.browseVideoOnOpen}
         onBookmarksChanged={onSessionBookmarksChanged}
       />
     )
   }
 
   if (state.kind === 'session') {
+    if (state.tab === 'video') {
+      return <SessionVideoInfo session={state.session} dataSource={dataSource} onOpenInspector={() => onOpenSignalInspector(state.session)} />
+    }
     if (state.tab === 'note') {
       return (
         <dl className="detail-list">
@@ -343,6 +352,7 @@ function modalContent(
     if (state.tab === 'qc') {
       return (
         <div>
+          <UserIssueInfo session={state.session} kind="qaIssue" />
           <QcBadge session={state.session} />
           {state.session.qcAlerts.length === 0 ? (
             <p className="modal-note">No QC warnings recorded in this fixture.</p>
@@ -361,6 +371,7 @@ function modalContent(
       const primarySource = summary.sources[0]
       return (
         <div>
+          <UserIssueInfo session={state.session} kind="gpsIssue" />
           <dl className="detail-list">
             <dt>GPS status</dt>
             <dd>
@@ -393,7 +404,7 @@ function modalContent(
             </ul>
           )}
           <section className="modal-section gps-modal-preview">
-            <h3>GPS Path</h3>
+            <h3>GPS path</h3>
             <GpsRoutePreview
               session={state.session}
               dataSource={dataSource}
@@ -409,6 +420,7 @@ function modalContent(
       <dl className="detail-list">
         <dt>Library</dt>
         <dd>{libraryName(libraries, state.session.libraryId)}</dd>
+        <dt>Tags</dt><dd>{state.session.userAnnotations?.tags.join(', ') || 'None'}</dd>
         <dt>Run</dt>
         <dd>{state.session.runName}</dd>
         <dt>Started</dt>
@@ -426,7 +438,7 @@ function modalContent(
         <dt>Source archive</dt>
         <dd>{state.session.sourceArchive}</dd>
         <dt>Signals</dt>
-        <dd>{state.session.signals.join(', ')}</dd>
+        <dd><MetadataSignals session={state.session} /></dd>
       </dl>
     )
   }
@@ -516,6 +528,36 @@ function modalContent(
       }}
     />
   )
+}
+
+function MetadataSignals({ session }: { session: SessionRecord }) {
+  const groups = new Map<string, string[]>()
+  const signals = session.availableSignals?.length
+    ? session.availableSignals.map((signal) => ({ stream: signal.streamName || 'primary', column: signal.column }))
+    : session.signals.map((column) => ({ stream: 'primary', column }))
+  for (const { stream, column } of signals) {
+    const columns = groups.get(stream) ?? []
+    if (!columns.includes(column)) columns.push(column)
+    groups.set(stream, columns)
+  }
+  if (!groups.size) return <>None</>
+  return (
+    <div className="metadata-signal-groups">
+      {[...groups].sort(([left], [right]) => left === 'primary' ? -1 : right === 'primary' ? 1 : left.localeCompare(right)).map(([stream, columns]) => (
+        <section key={stream}>
+          <h4>{stream === 'primary' ? 'Primary' : stream}</h4>
+          <ul>{columns.map((column) => <li key={column}>{column}</li>)}</ul>
+        </section>
+      ))}
+    </div>
+  )
+}
+
+function UserIssueInfo({ session, kind }: { session: SessionRecord; kind: 'gpsIssue' | 'qaIssue' }) {
+  const annotations = session.userAnnotations
+  if (annotations?.warnings.length) return <p className="modal-note">User annotations could not be read. Their issue status is unknown.</p>
+  const issue = annotations?.[kind]
+  return <section className="modal-section"><strong>User-reported {kind === 'gpsIssue' ? 'GPS' : 'QA'} issue: {issue?.flagged ? 'Flagged' : 'None flagged'}</strong>{issue?.explanation && <p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{issue.explanation}</p>}</section>
 }
 
 function StudySetView({

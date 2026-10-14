@@ -369,3 +369,127 @@ def test_scenario_http_evaluation_does_not_block_and_coalesces_identical_request
 
     asyncio.run(exercise())
     assert call_count == 1
+
+
+def test_scenario_session_search_thresholds_and_read_only(tmp_path: Path) -> None:
+    import time
+    libraries_root, _, ref = _library(tmp_path)
+    adapter = LibraryAdapter(libraries_root)
+    saved = adapter.create_scenario(_scenario())
+    expected = adapter.evaluate_scenario({"scenario": saved, "sessions": [ref]})["sessions"][0]["matched_duration_s"]
+    assert expected > 0
+    with TestClient(create_app(libraries_root, read_only=True)) as client:
+        for minimum, count in [(0, 1), (expected, 1), (expected + 1, 0)]:
+            response = client.post("/api/v1/scenario-session-queries", json={
+                "scenario_ref": {"scenario_id": saved["scenario_id"], "revision": saved["revision"]},
+                "sessions": [ref, ref], "minimum_total_duration_s": minimum,
+            })
+            assert response.status_code == 200, response.text
+            query = response.json()
+            for _ in range(200):
+                query = client.get(f"/api/v1/scenario-session-queries/{query['query_id']}").json()
+                if query["status"] not in {"queued", "running"}:
+                    break
+                time.sleep(0.01)
+            assert query["status"] == "completed"
+            assert query["candidate_session_count"] == 1
+            assert query["matched_session_count"] == count
+            page = client.get(f"/api/v1/scenario-session-queries/{query['query_id']}/results").json()
+            assert page["result_count"] == count
+            assert page["next_offset"] is None
+            if count:
+                assert page["results"][0]["matched_duration_s"] == expected
+                assert "episodes" not in page["results"][0]
+        bad = client.post("/api/v1/scenario-session-queries", json={
+            "scenario_ref": {"scenario_id": saved["scenario_id"], "revision": 999}, "sessions": [ref],
+        })
+        assert bad.status_code == 400
+
+
+def test_scenario_search_broad_scope_incomplete_and_cancellation() -> None:
+    from bodaqs_analysis.library_api_service.scenario_search import prepare_search, run_search
+    class Adapter:
+        calls = 0
+        def load_scenario(self, _):
+            return {"revision": 1}
+        def _library_root(self, _):
+            return Path(".")
+        def evaluate_scenario(self, request):
+            self.calls += 1
+            status = {1: "unavailable", 2: "partial"}.get(self.calls, "succeeded")
+            return {"sessions": [{"status": status, "episode_count": 1, "matched_duration_s": 5}]}
+    adapter = Adapter()
+    refs = [{"library_id": "lib", "run_id": "run", "session_id": str(i)} for i in range(40)]
+    payload = {"scenario_ref": {"scenario_id": "test", "revision": 1}, "sessions": refs, "minimum_total_duration_s": 5}
+    job = prepare_search(adapter, payload)
+    asyncio.run(run_search(job, adapter, asyncio.Semaphore(1)))
+    assert job["processed_session_count"] == 40
+    assert job["matched_session_count"] == 38
+    assert job["unavailable_session_count"] == job["partial_session_count"] == 1
+    job = prepare_search(adapter, payload)
+    job["status"] = "cancelled"
+    asyncio.run(run_search(job, adapter, asyncio.Semaphore(1)))
+    assert adapter.calls == 40
+    assert job["processed_session_count"] == 0
+    from bodaqs_analysis.library_api.errors import InvalidRequestError
+    for value in [-1, True, float("nan"), float("inf")]:
+        with pytest.raises(InvalidRequestError):
+            prepare_search(adapter, {**payload, "minimum_total_duration_s": value})
+    with pytest.raises(InvalidRequestError):
+        prepare_search(adapter, {**payload, "sessions": [{"library_id": "lib", "run_id": "../other", "session_id": "test"}]})
+
+
+def test_scenario_cache_tracks_registration_and_distance_dependencies(tmp_path: Path) -> None:
+    libraries_root, library_root, ref = _library(tmp_path)
+    adapter = LibraryAdapter(libraries_root)
+    request = {"scenario": _scenario("speed_mps", "gps_logger"), "sessions": [ref]}
+    first = adapter.evaluate_scenario(request)
+    store = ArtifactStore(library_root)
+    meta_path = store.path_session_meta(ref["run_id"], ref["session_id"])
+    metadata = json.loads(meta_path.read_text())
+    metadata["secondary_streams"] = {}
+    _write_json(meta_path, metadata)
+    second = adapter.evaluate_scenario(request)
+    assert second["evaluation_id"] != first["evaluation_id"]
+    assert second["sessions"][0]["status"] in {"unavailable", "partial"}
+    distance_path = store.path_session_stream_df(ref["run_id"], ref["session_id"], "spatial_context")
+    frame = pd.read_parquet(distance_path)
+    frame["distance_m"] *= 2
+    store.write_df(distance_path, frame)
+    third = adapter.evaluate_scenario(request)
+    assert third["evaluation_id"] != second["evaluation_id"]
+
+
+def test_scenario_search_api_pagination_bounds_and_capacity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+    libraries_root, _, ref = _library(tmp_path)
+    adapter = LibraryAdapter(libraries_root)
+    saved = adapter.create_scenario(_scenario())
+    app = create_app(libraries_root)
+    monkeypatch.setattr(app.state.adapter, "evaluate_scenario", lambda request: {"sessions": [{"status": "succeeded", "episode_count": 1, "matched_duration_s": 10}]})
+    refs = [{**ref, "session_id": str(i), "session_key": f"run-1::{i}"} for i in range(105)]
+    with TestClient(app) as client:
+        response = client.post("/api/v1/scenario-session-queries", json={"scenario_ref": {"scenario_id": saved["scenario_id"], "revision": 1}, "sessions": refs})
+        assert response.status_code == 200
+        query_id = response.json()["query_id"]
+        for _ in range(200):
+            record = client.get(f"/api/v1/scenario-session-queries/{query_id}").json()
+            if record["status"] == "completed":
+                break
+            time.sleep(0.01)
+        assert record["status"] == "completed"
+        page = client.get(f"/api/v1/scenario-session-queries/{query_id}/results").json()
+        assert len(page["results"]) == 100
+        assert page["next_offset"] == 100
+        page = client.get(f"/api/v1/scenario-session-queries/{query_id}/results?offset=100").json()
+        assert len(page["results"]) == 5
+        assert page["next_offset"] is None
+        assert client.get(f"/api/v1/scenario-session-queries/{query_id}/results?offset=-1").status_code == 400
+        assert client.get(f"/api/v1/scenario-session-queries/{query_id}/results?limit=501").status_code == 400
+        for i in range(4):
+            app.state.scenario_searches[f"active-{i}"] = {"status": "running", "created_at": time.monotonic()}
+        assert client.post("/api/v1/scenario-session-queries", json={}).status_code == 400
+        for i in range(4):
+            app.state.scenario_searches.pop(f"active-{i}")
+        app.state.scenario_searches[query_id]["created_at"] = time.monotonic() - 3601
+        assert client.get(f"/api/v1/scenario-session-queries/{query_id}").status_code == 404

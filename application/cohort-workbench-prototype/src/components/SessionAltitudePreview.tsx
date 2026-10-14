@@ -90,7 +90,7 @@ export function SessionAltitudePreview({
       <div className="module-header">
         <h2 className="module-heading">
           <Mountain size={16} aria-hidden="true" />
-          Altitude Profile
+          Altitude profile
           <InfoTip text="Preview the selected session GPS altitude against distance from the session start." />
         </h2>
         <div className="module-header-actions">

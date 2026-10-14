@@ -1,3 +1,4 @@
+import { chartAxisFont } from '../domain/chartTypography'
 import {
   Fragment,
   useEffect,
@@ -324,11 +325,13 @@ export function SignalInspector({
   session,
   dataSource,
   initialWindow = null,
+  browseVideoOnOpen = false,
   onBookmarksChanged,
 }: {
   session: SessionRecord
   dataSource: LibraryDataSource
   initialWindow?: { startS: number; endS: number } | null
+  browseVideoOnOpen?: boolean
   onBookmarksChanged?: (session: SessionRecord) => void
 }) {
   const durationS = Math.max(1, session.gpsSummary.sessionDurationS || session.durationMin * 60 || 1)
@@ -379,16 +382,17 @@ export function SignalInspector({
   const [savingBookmarkId, setSavingBookmarkId] = useState<string | null>(null)
   const [bookmarkMessage, setBookmarkMessage] = useState('')
   const [showMarks, setShowMarks] = useState(true)
-  const [sidebarOpen, setSidebarOpen] = useState(initialViewPreferences.sidebarOpen)
+  const [sidebarOpen, setSidebarOpen] = useState(browseVideoOnOpen || initialViewPreferences.sidebarOpen)
   const [controlsOpen, setControlsOpen] = useState(initialViewPreferences.controlsOpen)
   const [sidebarWidthPx, setSidebarWidthPx] = useState(initialViewPreferences.sidebarWidthPx)
   const [collapsedSidebarPanels, setCollapsedSidebarPanels] = useState<Record<SidebarPanelKey, boolean>>({
     ...initialViewPreferences.collapsedSidebarPanels,
+    ...(browseVideoOnOpen ? { video: false } : {}),
   })
   const [gpsMapHeightPx, setGpsMapHeightPx] = useState(initialViewPreferences.gpsMapHeightPx)
   const [videoHeightPx, setVideoHeightPx] = useState(initialViewPreferences.videoHeightPx)
   const [showEventDetails, setShowEventDetails] = useState(initialViewPreferences.showEventDetails)
-  const [videoSettingsCollapsed, setVideoSettingsCollapsed] = useState(initialViewPreferences.videoSettingsCollapsed)
+  const [videoSettingsCollapsed, setVideoSettingsCollapsed] = useState(browseVideoOnOpen ? false : initialViewPreferences.videoSettingsCollapsed)
   const [videoScrollWithPlayback, setVideoScrollWithPlayback] = useState(initialViewPreferences.videoScrollWithPlayback)
   const [loadState, setLoadState] = useState<LoadState>({
     status: 'idle',
@@ -1494,6 +1498,7 @@ export function SignalInspector({
             videoHeadTimeS={videoPlaybackSessionTimeS}
           />
           <SignalInspectorVideoPanel
+            browseVideoOnOpen={browseVideoOnOpen}
             activeVideo={activeVideo}
             activeVideoId={activeVideoId}
             activeWindow={requestWindow}
@@ -2048,6 +2053,7 @@ function SignalInspectorGpsPanel({
 }
 
 function SignalInspectorVideoPanel({
+  browseVideoOnOpen,
   activeVideo,
   activeVideoId,
   activeWindow,
@@ -2078,6 +2084,7 @@ function SignalInspectorVideoPanel({
   videoHeightPx,
   videoRef,
 }: {
+  browseVideoOnOpen: boolean
   activeVideo: SessionVideoAttachmentRecord | null
   activeVideoId: string
   activeWindow: { startS: number; endS: number }
@@ -2117,6 +2124,8 @@ function SignalInspectorVideoPanel({
   const [editPath, setEditPath] = useState('')
   const [browseMessage, setBrowseMessage] = useState('')
   const autoNewArmedRef = useRef(false)
+  const browseButtonRef = useRef<HTMLButtonElement | null>(null)
+  const autoBrowseStartedRef = useRef(false)
   const videoResizeRef = useRef<{ pointerId: number; startClientY: number; startHeightPx: number } | null>(null)
 
   useEffect(() => {
@@ -2152,6 +2161,15 @@ function SignalInspectorVideoPanel({
       setEditingNewVideo(false)
     }
   }, [attachments.length, editingNewVideo, state.status])
+
+  useEffect(() => {
+    if (!browseVideoOnOpen || autoBrowseStartedRef.current || state.status !== 'ready' || collapsed || settingsCollapsed) return
+    // Wait for the empty-session form to initialize before applying the selected path.
+    if (attachments.length === 0 && !editingNewVideo) return
+    if (!browseButtonRef.current) return
+    autoBrowseStartedRef.current = true
+    browseButtonRef.current.click()
+  }, [browseVideoOnOpen, state.status, collapsed, settingsCollapsed, attachments.length, editingNewVideo])
 
   useEffect(() => {
     function handlePointerMove(event: globalThis.PointerEvent) {
@@ -2410,7 +2428,7 @@ function SignalInspectorVideoPanel({
                     <input value={editPath} onChange={(event) => setEditPath(event.target.value)} placeholder="video.mp4" />
                   </label>
                   {onSelectVideoFile && (
-                    <button className="secondary" type="button" onClick={() => void browseForVideo()}>
+                    <button ref={browseButtonRef} className="secondary" type="button" onClick={() => void browseForVideo()}>
                       Browse...
                     </button>
                   )}
@@ -3424,8 +3442,8 @@ function signalUPlotOptions({
       stroke: '#5b6670',
       grid: { show: false },
       ticks: { stroke: '#9fb0ad', width: 1, size: 5 },
-      font: '10px Aptos, "IBM Plex Sans", "Segoe UI", sans-serif',
-      labelFont: '11px Aptos, "IBM Plex Sans", "Segoe UI", sans-serif',
+      font: chartAxisFont(),
+      labelFont: chartAxisFont(),
       size: compact ? 24 : undefined,
     },
     ...model.axisConfigs.map((axis, index): uPlot.Axis => ({
@@ -3437,8 +3455,8 @@ function signalUPlotOptions({
       grid: index === 0 ? { stroke: 'rgba(79, 116, 119, 0.15)', width: 1 } : { show: false },
       ticks: { stroke: '#9fb0ad', width: 1, size: 5 },
       size: compact ? 40 : index === 0 ? 52 : 48,
-      font: '10px Aptos, "IBM Plex Sans", "Segoe UI", sans-serif',
-      labelFont: '11px Aptos, "IBM Plex Sans", "Segoe UI", sans-serif',
+      font: chartAxisFont(),
+      labelFont: chartAxisFont(),
     })),
   ]
   const series: uPlot.Series[] = [
@@ -3817,7 +3835,7 @@ function navigatorUPlotOptions({
         stroke: '#5b6670',
         grid: { show: false },
         ticks: { stroke: '#9fb0ad', width: 1, size: 4 },
-        font: '10px Aptos, "IBM Plex Sans", "Segoe UI", sans-serif',
+        font: chartAxisFont(),
         size: 22,
       },
       { scale: 'primary', side: 3, show: false },

@@ -6,6 +6,7 @@ import {
   type ColumnDef,
 } from '@tanstack/react-table'
 import { Filter, LoaderCircle, X } from 'lucide-react'
+import { TagTiles } from './TagTiles'
 import { columnLabels, getColumnText, isInfoActionColumn } from '../domain/sessionCatalog'
 import { candidateId } from '../domain/studySets'
 import {
@@ -31,6 +32,7 @@ export type SessionColumnWidthId = ColumnId | 'rowActions'
 export type SessionColumnWidths = Partial<Record<SessionColumnWidthId, number>>
 
 const defaultColumnWidths: Record<ColumnId, number> = {
+  tags: 180,
   name: 230,
   runName: 160,
   started: 145,
@@ -56,6 +58,7 @@ const defaultColumnWidths: Record<ColumnId, number> = {
 }
 
 const minColumnWidths: Record<ColumnId, number> = {
+  tags: 60,
   name: 54,
   runName: 48,
   started: 54,
@@ -182,6 +185,7 @@ export function SessionTable({
       accessorFn: (session) => getColumnText(session, columnId, libraries),
       header: columnLabels[columnId],
       cell: (info) => {
+        if (columnId === 'tags') return <TagTiles tags={info.row.original.userAnnotations?.tags ?? []} />
         const session = info.row.original
         const sessionId = candidateId(session)
         if (columnId === 'name' && editingSessionId === sessionId) {
@@ -268,6 +272,13 @@ export function SessionTable({
   useEffect(() => {
     if (!contextMenu) {
       return
+    }
+
+    const menu = contextMenuRef.current
+    if (menu) {
+      const bounds = menu.getBoundingClientRect()
+      menu.style.left = `${Math.max(8, Math.min(contextMenu.x, window.innerWidth - bounds.width - 8))}px`
+      menu.style.top = `${Math.max(8, Math.min(contextMenu.y, window.innerHeight - bounds.height - 8))}px`
     }
 
     function handlePointerDown(event: PointerEvent) {
@@ -600,6 +611,15 @@ export function SessionTable({
           <button
             onClick={() => {
               setContextMenu(null)
+              onInspect(contextMenu.session, 'video')
+            }}
+            type="button"
+          >
+            {contextMenu.session.videoSummary.present ? 'View video info' : 'Add video'}
+          </button>
+          <button
+            onClick={() => {
+              setContextMenu(null)
               onInspect(contextMenu.session, 'metadata')
             }}
             type="button"
@@ -615,7 +635,17 @@ export function SessionTable({
           >
             View QA info
           </button>
+          <button type="button" onClick={() => { setContextMenu(null); onInspect(contextMenu.session, 'annotations') }}>Flag and tag...</button>
           <div className="session-row-context-menu-separator" />
+          <button
+            onClick={() => {
+              setContextMenu(null)
+              onInspect(contextMenu.session, 'note')
+            }}
+            type="button"
+          >
+            Edit note
+          </button>
           <button
             disabled={!onCopyNote}
             onClick={() => {

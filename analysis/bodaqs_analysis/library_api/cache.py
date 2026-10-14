@@ -7,6 +7,8 @@ import hashlib
 import json
 import os
 import time
+import uuid
+from contextlib import contextmanager
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +35,31 @@ class PersistentCacheRecord:
         if self.expires_at_epoch_s is None:
             return None
         return max(0.0, self.expires_at_epoch_s - time.time())
+
+
+class CacheBuildLocks:
+    """Coalesce concurrent builds by serializing cache lookup and population."""
+
+    def __init__(self) -> None:
+        self._guard = RLock()
+        self._locks: dict[str, tuple[RLock, int]] = {}
+
+    @contextmanager
+    def hold(self, namespace: str, key: str):
+        identity = f"{namespace}:{key}"
+        with self._guard:
+            lock, users = self._locks.get(identity, (RLock(), 0))
+            self._locks[identity] = (lock, users + 1)
+        try:
+            with lock:
+                yield
+        finally:
+            with self._guard:
+                _, users = self._locks[identity]
+                if users == 1:
+                    self._locks.pop(identity)
+                else:
+                    self._locks[identity] = (lock, users - 1)
 
 
 class InMemoryLruCache:
@@ -166,24 +193,27 @@ PERSISTENT_CACHE_ENTRY_VERSION = 1
 class PersistentJsonCache:
     """Small JSON-backed cache store for restart-friendly API payloads."""
 
+    _io_locks = CacheBuildLocks()
+
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root).expanduser()
 
     def get(self, namespace: str, key: str) -> PersistentCacheRecord | None:
         path = self._entry_path(namespace, key)
-        if not path.exists():
-            return None
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
-        record = self._record_from_payload(namespace, key, payload)
-        if record is None:
-            return None
-        if self._is_expired(record):
-            self._unlink_silent(path)
-            return None
-        return record
+        with self._io_locks.hold(str(path.parent.resolve()), path.name):
+            if not path.exists():
+                return None
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return None
+            record = self._record_from_payload(namespace, key, payload)
+            if record is None:
+                return None
+            if self._is_expired(record):
+                self._unlink_silent(path)
+                return None
+            return record
 
     def has(self, namespace: str, key: str) -> bool:
         return self.get(namespace, key) is not None
@@ -211,9 +241,13 @@ class PersistentJsonCache:
             "metadata": dict(metadata or {}),
             "value": copy.deepcopy(value),
         }
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        os.replace(tmp_path, path)
+        with self._io_locks.hold(str(path.parent.resolve()), path.name):
+            tmp_path = path.with_suffix(path.suffix + f".{uuid.uuid4().hex}.tmp")
+            try:
+                tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+                os.replace(tmp_path, path)
+            finally:
+                tmp_path.unlink(missing_ok=True)
 
     def prune_namespace(self, namespace: str, *, max_entries: int | None = None) -> dict[str, int]:
         namespace_dir = self._namespace_dir(namespace)

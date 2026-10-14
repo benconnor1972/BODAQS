@@ -747,12 +747,12 @@
 
 .track-analysis-spatial-chart-wrap text {
   fill: var(--muted);
-  font-size: 10px;
+  font-size: var(--text-label);
 }
 
 .track-analysis-spatial-histogram text {
   fill: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 .track-analysis-spatial-axis {
@@ -848,7 +848,7 @@
 }
 
 .track-analysis-spatial-histogram text.track-analysis-spatial-histogram-boundary {
-  font-size: 9px;
+  font-size: var(--text-micro);
 }
 
 @media (max-width: 1050px) {
@@ -1090,7 +1090,7 @@
 
 .track-analysis-altitude-trackpoint text {
   fill: var(--teal-strong);
-  font-size: 10px;
+  font-size: var(--text-label);
   font-weight: var(--weight-semibold);
 }
 
@@ -1622,7 +1622,7 @@
 .collapsed-root-row span {
   min-width: 0;
   overflow: hidden;
-  font-size: 12px;
+  font-size: var(--text-body);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1639,14 +1639,14 @@
 .collapsed-root-row .collapsed-root-count {
   flex: 0 0 auto;
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 650;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
 }
 
 .subtle,
 .empty-note {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-body);
 }
 
 .module-header-count {
@@ -1672,8 +1672,8 @@
   display: grid;
   gap: 5px;
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 650;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
   text-transform: uppercase;
 }
 
@@ -1697,7 +1697,7 @@
   margin: 0;
   padding: 7px 12px 2px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 .connection-note strong {
@@ -1738,18 +1738,18 @@
 }
 
 .check-row strong {
-  font-size: 12px;
-  font-weight: 650;
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
 }
 
 .check-row small {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 .check-row.compact {
   padding: 3px 4px;
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 .track-row {
@@ -1785,6 +1785,75 @@
 
 .track-row-summary:hover strong {
   color: var(--green);
+}
+
+.scenario-list-row {
+  display: grid;
+  width: 100%;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.scenario-list-row.selected {
+  background: var(--teal-soft);
+  box-shadow: inset 3px 0 var(--green);
+}
+
+.scenario-list-row strong {
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+
+.scenario-list-row small,
+.scenario-search-results small {
+  display: block;
+  font-size: var(--text-caption);
+  color: var(--muted);
+}
+
+.scenario-search-duration {
+  display: grid;
+  gap: var(--space-1);
+  margin: var(--space-3) 0;
+}
+
+.scenario-search-duration input {
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.library-scenarios-card .geo-card-title .inline-heading {
+  overflow: visible;
+}
+
+.scenario-search-results {
+  display: grid;
+  gap: var(--space-2);
+  max-height: 320px;
+  overflow: auto;
+}
+
+.scenario-search-results .match-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.cache-warming-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  color: var(--muted);
+  font-size: var(--text-caption);
 }
 
 .track-row > .icon-button {
@@ -1897,7 +1966,7 @@
 
 .column-order-title {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--text-label);
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -1927,8 +1996,8 @@
   gap: 6px;
   overflow: hidden;
   color: var(--ink);
-  font-size: 11px;
-  font-weight: 650;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1938,7 +2007,7 @@
   border: 1px solid #b8d7cb;
   border-radius: 999px;
   color: var(--green);
-  font-size: 9px;
+  font-size: var(--text-micro);
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -2170,6 +2239,8 @@ tbody tr.primary-row td:first-child {
 
 .session-row-context-menu {
   position: fixed;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   z-index: 80;
   display: grid;
   min-width: 154px;
@@ -2177,6 +2248,66 @@ tbody tr.primary-row td:first-child {
   border: var(--border-subtle);
   background: var(--surface);
   box-shadow: var(--shadow-popover);
+}
+
+.session-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.session-tag-tile {
+  max-width: 100%;
+  box-sizing: border-box;
+  border-color: var(--line);
+}
+.session-tag-tile > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.session-tag-tile button { flex-shrink: 0; }
+.session-annotation-form fieldset { min-width: 0; margin: 0; }
+.session-annotation-form textarea { min-height: 90px; }
+.note-editor-form .session-annotation-checkbox {
+  display: flex;
+  align-items: center;
+  text-transform: none;
+  color: var(--ink);
+}
+.note-editor-form .session-annotation-checkbox input {
+  width: 14px;
+  min-height: 14px;
+  height: 14px;
+  padding: 0;
+}
+.session-tag-entry { display: flex; gap: 8px; align-items: end; }
+.session-tag-entry label { flex: 1; min-width: 0; }
+@media (max-width: 600px) {
+  .session-annotation-modal .note-editor-summary,
+  .session-annotation-form { grid-template-columns: minmax(0, 1fr); }
+  .session-tag-entry { flex-wrap: wrap; }
+}
+.session-annotation-filters {
+  padding: 6px 10px;
+  border-bottom: var(--border-subtle);
+}
+.session-annotation-filters summary { cursor: pointer; }
+.session-annotation-filter-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+  padding-block: 8px;
+}
+.session-annotation-filter-controls > label { display: grid; gap: 4px; }
+.session-annotation-tag-options {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  max-height: 120px;
+  overflow: auto;
 }
 
 .session-row-context-menu button {
@@ -2638,7 +2769,7 @@ button {
   gap: 10px;
   padding: 12px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-body);
 }
 
 .placeholder-list p {
@@ -2654,6 +2785,7 @@ button {
 
 .filter-panel-scroll {
   display: grid;
+  align-content: start;
   gap: 8px;
   height: 118px;
   min-height: 96px;
@@ -2693,7 +2825,7 @@ button {
   gap: 7px;
   min-width: 0;
   color: var(--ink);
-  font-size: 12px;
+  font-size: var(--text-body);
 }
 
 .filter-stack-title strong {
@@ -2731,7 +2863,7 @@ button {
 
 .geo-filter-status-row small {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 .warning-text {
@@ -2742,11 +2874,12 @@ button {
   height: 30px;
   min-height: 30px;
   padding: 0 9px;
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 .filter-library {
   display: grid;
+  align-content: start;
   gap: 8px;
   max-height: 308px;
   overflow: auto;
@@ -2755,6 +2888,7 @@ button {
 
 .filter-category {
   display: grid;
+  align-content: start;
   gap: 2px;
   min-width: 0;
   margin: 0;
@@ -2765,8 +2899,8 @@ button {
 .filter-category legend {
   padding: 0 0 4px;
   color: var(--muted);
-  font-size: 10px;
-  font-weight: 900;
+  font-size: var(--text-label);
+  font-weight: var(--weight-heavy);
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -2815,7 +2949,7 @@ button {
 }
 
 .filter-list-summary strong {
-  font-size: 12px;
+  font-size: var(--text-body);
 }
 
 .map-empty {
@@ -2824,7 +2958,7 @@ button {
   gap: 8px;
   min-height: 292px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--text-section-title);
 }
 
 .gps-rail {
@@ -2838,7 +2972,7 @@ button {
   background: var(--surface);
   color: var(--ink);
   cursor: pointer;
-  font-weight: 800;
+  font-weight: var(--weight-bold);
   writing-mode: vertical-rl;
 }
 
@@ -2874,7 +3008,7 @@ button {
 
 .map-route-preview .maplibregl-ctrl-attrib {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--text-label);
 }
 
 .map-route-marker {
@@ -2888,7 +3022,7 @@ button {
   background: #ffffff;
   box-shadow: 0 4px 12px rgba(16, 24, 32, 0.22);
   color: var(--marker-color);
-  font-size: 10px;
+  font-size: var(--text-label);
   font-weight: 700;
   line-height: 1;
 }
@@ -2983,8 +3117,8 @@ button {
   border-top: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.68);
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 650;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
   text-transform: uppercase;
 }
 
@@ -3010,13 +3144,13 @@ button {
   border-top: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.64);
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-body);
 }
 
 .gps-route-status strong {
   color: var(--ink);
-  font-size: 11px;
-  font-weight: 900;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-heavy);
   text-transform: uppercase;
 }
 
@@ -3063,7 +3197,7 @@ button {
 
 .library-altitude-chart text {
   fill: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-body);
 }
 
 .library-altitude-axis-title {
@@ -3113,8 +3247,8 @@ button {
 
 .trackpoint-marker text {
   fill: var(--ink);
-  font-size: 10px;
-  font-weight: 900;
+  font-size: var(--text-label);
+  font-weight: var(--weight-heavy);
   paint-order: stroke;
   stroke: #fffaf0;
   stroke-width: 3px;
@@ -3154,8 +3288,8 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
-  font-weight: 650;
+  font-size: var(--text-section-title);
+  font-weight: var(--weight-semibold);
 }
 
 .geo-metrics {
@@ -3163,14 +3297,14 @@ button {
   grid-template-columns: 82px minmax(0, 1fr);
   gap: 4px 8px;
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-body);
 }
 
 .geo-metrics dt {
   color: var(--muted);
-  font-weight: 650;
+  font-weight: var(--weight-semibold);
   text-transform: uppercase;
-  font-size: 10px;
+  font-size: var(--text-label);
 }
 
 .geo-metrics dd {
@@ -3198,14 +3332,14 @@ button {
 
 .geo-metric strong {
   color: var(--green);
-  font-size: 16px;
+  font-size: var(--text-panel-title);
   line-height: 1;
 }
 
 .geo-metric span {
   color: var(--muted);
-  font-size: 10px;
-  font-weight: 650;
+  font-size: var(--text-label);
+  font-weight: var(--weight-semibold);
   text-transform: uppercase;
 }
 
@@ -3215,7 +3349,7 @@ button {
   border-radius: 5px;
   background: var(--surface-warm);
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 .track-create-form,
@@ -3232,8 +3366,8 @@ button {
   gap: 4px;
   min-width: 0;
   color: var(--muted);
-  font-size: 10px;
-  font-weight: 650;
+  font-size: var(--text-label);
+  font-weight: var(--weight-semibold);
   letter-spacing: 0.02em;
   text-transform: uppercase;
 }
@@ -3273,7 +3407,7 @@ button {
 .trackpoint-editor-header strong {
   min-width: 0;
   overflow: hidden;
-  font-size: 12px;
+  font-size: var(--text-body);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3281,7 +3415,7 @@ button {
 .compact-danger {
   min-height: 28px;
   padding: 4px 8px;
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 .trackpoint-list {
@@ -3296,7 +3430,7 @@ button {
   border: 1px solid var(--line);
   border-radius: 5px;
   background: rgba(255, 255, 255, 0.86);
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 .trackpoint-row span {
@@ -3321,7 +3455,7 @@ button {
   border-radius: 5px;
   background: rgba(77, 112, 168, 0.09);
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 .match-preview-list {
@@ -3340,7 +3474,7 @@ button {
   border: 1px solid var(--line);
   border-radius: 5px;
   background: rgba(255, 255, 255, 0.72);
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 .match-row strong,
@@ -3377,8 +3511,8 @@ button {
   align-items: center;
   gap: 8px;
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 650;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
   text-transform: uppercase;
 }
 
@@ -3444,7 +3578,7 @@ button {
   border: 1px solid;
   border-radius: 6px;
   background: #fff;
-  font-size: 11px;
+  font-size: var(--text-caption);
   font-weight: 700;
 }
 
@@ -3469,7 +3603,7 @@ button {
 
 .tracks-table,
 .saved-table {
-  font-size: 12px;
+  font-size: var(--text-body);
 }
 
 .saved-study-sets {
@@ -3485,7 +3619,7 @@ button {
 }
 
 .study-geo-support .saved-table {
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 .study-geo-support .saved-table th,
@@ -4161,6 +4295,27 @@ button {
   overflow-wrap: anywhere;
 }
 
+.metadata-signal-groups {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.metadata-signal-groups h4 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+}
+
+.metadata-signal-groups ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.metadata-signal-groups li + li {
+  margin-top: var(--space-1);
+}
+
 .alert-list {
   margin: 14px 0 0;
   padding-left: 20px;
@@ -4295,7 +4450,7 @@ button {
 
 .track-manager-list-item small {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 .filter-manager-modal {
@@ -4361,19 +4516,38 @@ button {
   align-items: start;
 }
 
+.scenario-column-picker,
+.scenario-meaning-picker,
+.scenario-meaning-fields {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(150px, 1fr) minmax(125px, 0.8fr) minmax(170px, 1.1fr);
+  gap: 8px;
+  min-width: 0;
+}
+
+.scenario-column-picker > button,
+.scenario-column-picker > p,
+.scenario-meaning-picker > p,
+.scenario-meaning-details {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
 .scenario-condition-grid label,
 .scenario-range-editor label {
   display: grid;
   gap: 4px;
   min-width: 0;
   color: var(--muted);
-  font-size: 10px;
-  font-weight: 900;
+  font-size: var(--text-label);
+  font-weight: var(--weight-heavy);
   letter-spacing: 0.03em;
   text-transform: uppercase;
 }
 
 .scenario-condition-grid select,
+.scenario-editor-form > .filter-manager-row select,
 .scenario-condition-grid input,
 .scenario-range-editor input {
   width: 100%;
@@ -4437,7 +4611,7 @@ button {
 }
 
 .filter-manager-list-header strong {
-  font-size: 12px;
+  font-size: var(--text-body);
 }
 
 .filter-manager-list-item {
@@ -4468,12 +4642,12 @@ button {
 }
 
 .filter-manager-list-item strong {
-  font-size: 12px;
+  font-size: var(--text-body);
 }
 
 .filter-manager-list-item small {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 .filter-manager-form {
@@ -4486,8 +4660,8 @@ button {
   display: grid;
   gap: 5px;
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-bold);
   text-transform: uppercase;
 }
 
@@ -4538,8 +4712,8 @@ button {
   gap: 4px;
   min-width: 0;
   color: var(--muted);
-  font-size: 10px;
-  font-weight: 900;
+  font-size: var(--text-label);
+  font-weight: var(--weight-heavy);
   letter-spacing: 0.03em;
   text-transform: uppercase;
 }
@@ -4588,7 +4762,7 @@ button {
 
 .condition-card-header strong {
   color: var(--green);
-  font-size: 12px;
+  font-size: var(--text-body);
 }
 
 .condition-main-grid {
@@ -4611,7 +4785,7 @@ button {
 .condition-help {
   margin: 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 .enum-picker {
@@ -4632,8 +4806,8 @@ button {
   background: var(--teal-soft);
   color: var(--teal-strong);
   cursor: pointer;
-  font-size: 11px;
-  font-weight: 650;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
   letter-spacing: 0;
   text-transform: none;
 }
@@ -4672,7 +4846,7 @@ button {
 .trackpoint-picker > strong {
   flex-basis: 100%;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 .filter-builder-footer {
@@ -4685,8 +4859,8 @@ button {
 .filter-manager-textarea {
   min-height: 260px;
   padding: 8px;
-  font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
-  font-size: 12px;
+  font-family: var(--font-code);
+  font-size: var(--text-body);
   line-height: 1.45;
   resize: vertical;
 }
@@ -4698,7 +4872,7 @@ button {
 .modal-kicker {
   margin: 3px 0 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-body);
 }
 
 .note-editor-content {
@@ -4758,8 +4932,8 @@ button {
   display: grid;
   gap: 5px;
   color: var(--muted);
-  font-size: 10px;
-  font-weight: 650;
+  font-size: var(--text-label);
+  font-weight: var(--weight-semibold);
   letter-spacing: 0.02em;
   text-transform: uppercase;
 }
@@ -4816,8 +4990,8 @@ button {
 .note-field-group legend {
   padding: 0 5px;
   color: var(--green);
-  font-size: 11px;
-  font-weight: 650;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
 }
 
 .note-field-grid {
@@ -4834,13 +5008,13 @@ button {
 
 .note-field-row em {
   color: #a05f18;
-  font-size: 9px;
+  font-size: var(--text-micro);
   font-style: normal;
 }
 
 .note-field-row small {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--text-label);
   font-weight: 600;
   letter-spacing: 0;
   text-transform: none;
@@ -4852,8 +5026,8 @@ button {
   gap: 8px;
   min-height: 30px;
   color: var(--ink);
-  font-size: 12px;
-  font-weight: 650;
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
   letter-spacing: 0;
   text-transform: none;
 }
@@ -4869,7 +5043,7 @@ button {
 
 .note-enum-picker .mini-check {
   display: inline-flex;
-  font-size: 11px;
+  font-size: var(--text-caption);
   letter-spacing: 0;
   text-transform: none;
 }
@@ -4882,7 +5056,7 @@ button {
 .note-editor-timestamp {
   margin: 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 .modal-actions {
@@ -4899,7 +5073,7 @@ button {
   border-radius: 7px;
   background: rgba(77, 112, 168, 0.09);
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-body);
 }
 
 .modal-status.warning {
@@ -5144,7 +5318,7 @@ button {
 
 .event-browser-chart text {
   fill: var(--muted);
-  font-size: 10px;
+  font-size: var(--text-label);
 }
 
 .event-chart-axis {
@@ -5233,7 +5407,7 @@ button {
 
 .suspension-viz-hero h3 {
   margin: 0;
-  font-size: var(--text-modal-title);
+  font-size: var(--text-analysis-title);
   font-weight: var(--weight-semibold);
 }
 
@@ -5866,7 +6040,7 @@ button {
 
 .viz-phase-axis-control > small {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 .viz-phase-range-slider {
@@ -7254,7 +7428,7 @@ button {
 
 .signal-inspector-altitude-chart text {
   fill: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-caption);
   font-weight: var(--weight-regular);
 }
 
@@ -8224,7 +8398,7 @@ button {
 .viz-layout-buttons small {
   color: inherit;
   font-size: var(--text-label);
-  font-weight: 400;
+  font-weight: var(--weight-regular);
 }
 
 .viz-sector-config {
@@ -8595,7 +8769,7 @@ button {
 
 .viz-phase-contour-level-legend text {
   fill: var(--muted);
-  font-size: 10px;
+  font-size: var(--text-label);
 }
 
 .viz-phase-conditional-chart,
@@ -8606,13 +8780,13 @@ button {
 
 .viz-phase-tail-label {
   fill: var(--muted);
-  font-size: 10px;
+  font-size: var(--text-label);
   font-weight: var(--weight-semibold);
 }
 
 .viz-phase-conditional-title {
   fill: var(--ink);
-  font-size: 12px;
+  font-size: var(--text-body);
   font-weight: var(--weight-semibold);
 }
 
@@ -8675,13 +8849,13 @@ button {
 
 .viz-cumulative-tooltip text {
   fill: var(--ink);
-  font-size: 7px;
+  font-size: var(--text-micro);
   font-weight: var(--weight-semibold);
 }
 
 .viz-cumulative-tooltip-title {
   fill: var(--muted);
-  font-size: 7px;
+  font-size: var(--text-micro);
   font-weight: var(--weight-bold);
 }
 
@@ -8907,6 +9081,9 @@ button {
   .scenario-editor-content,
   .filter-manager-row.two-columns,
   .scenario-condition-grid,
+  .scenario-column-picker,
+  .scenario-meaning-picker,
+  .scenario-meaning-fields,
   .viz-control-mode-row,
   .note-editor-form {
     grid-template-columns: 1fr;
@@ -8976,4 +9153,106 @@ button {
     max-width: none;
   }
 
+}
+
+/* Shared form typography: labels identify fields; controls display values.
+   Keep this after feature rules so older font: inherit declarations cannot
+   copy label size, weight or capitalization into entered values. */
+.app-shell label:has(:is(input, select, textarea)) {
+  font-family: var(--font-ui);
+  font-size: var(--text-label);
+  font-weight: var(--weight-semibold);
+  text-transform: uppercase;
+}
+
+.app-shell :is(input, select, textarea):not([type="checkbox"]):not([type="radio"]) {
+  font-family: var(--font-ui);
+  font-size: var(--text-body);
+  font-weight: var(--weight-regular);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.app-shell :is(input, textarea)::placeholder {
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: var(--text-body);
+  font-weight: var(--weight-regular);
+  text-transform: none;
+  opacity: 1;
+}
+
+/* JSON remains code; ordinary multiline tag and note inputs use the UI font. */
+.app-shell textarea.filter-manager-textarea:not([type="checkbox"]):not([type="radio"]) {
+  font-family: var(--font-code);
+}
+.app-shell textarea.filter-manager-textarea::placeholder {
+  font-family: var(--font-code);
+}
+
+.app-shell label:has(> input:is([type="checkbox"], [type="radio"])) {
+  font-family: var(--font-ui);
+  font-size: var(--text-body);
+  font-weight: var(--weight-regular);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.app-shell :is(.condition-help, .modal-note, .note-field-row small,
+  .scenario-editor-help, .viz-filter-hint) {
+  font-family: var(--font-ui);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-regular);
+  text-transform: none;
+}
+
+/* Ordinary metadata stays quiet. Nested status badges keep their own emphasis. */
+.app-shell :is(.detail-list, .analysis-scope-summary, .geo-metrics,
+  .signal-inspector-gps-summary, .signal-inspector-event-detail dl) dt {
+  font-size: var(--text-label);
+  font-weight: var(--weight-semibold);
+}
+.app-shell :is(.detail-list, .analysis-scope-summary, .geo-metrics,
+  .signal-inspector-gps-summary, .signal-inspector-event-detail dl) dd {
+  font-family: var(--font-ui);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-regular);
+}
+.app-shell :is(.alert-list, .modal-status) {
+  font-size: var(--text-body);
+  font-weight: var(--weight-regular);
+}
+
+.app-shell :is(.filter-manager-list-item, .track-manager-list-item) strong {
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+.app-shell .signal-inspector-bookmark-context-menu button {
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+}
+
+/* Sentence case applies to authored headings, not user-provided record names.
+   Field labels/table headers remain uppercase; status emphasis stays intact. */
+.app-shell :is(h1, h2, h3, h4, legend, .column-order-title,
+  .analysis-view-category, .analysis-requirement-tier > span,
+  .analysis-adequacy-tier-label, .viz-analysis-mode-control > strong,
+  .viz-mode-filter-control > strong, .viz-facet-control > strong,
+  .viz-filter-group > strong, .viz-signal-choice-panel > strong,
+  .viz-display-options > strong, .track-analysis-add-map-heading strong,
+  .track-analysis-spatial-range-table > strong, .event-browser-chart figcaption) {
+  text-transform: none;
+  font-weight: var(--weight-semibold);
+  letter-spacing: normal;
+}
+
+/* Axis ticks and titles share one size across SVG, canvas and uPlot charts.
+   The compact time-window overview intentionally retains its existing text. */
+.app-shell :is(.library-altitude-chart text, .signal-inspector-altitude-chart text,
+  .track-analysis-altitude-chart text, .track-analysis-spatial-chart-wrap text,
+  .track-analysis-spatial-histogram text, .event-browser-chart text,
+  .signal-inspector-axis-label, .signal-inspector-axis-title,
+  .viz-chart .viz-axis-label, .viz-chart .viz-axis-title) {
+  font-size: var(--text-chart-axis);
+  font-family: var(--font-ui);
 }

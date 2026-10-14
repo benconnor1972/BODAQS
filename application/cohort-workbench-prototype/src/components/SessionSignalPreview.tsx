@@ -1,3 +1,4 @@
+import { chartAxisFont } from '../domain/chartTypography'
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
@@ -95,7 +96,7 @@ export function SessionSignalPreview({
     <section className="module session-signal-preview-module">
       <div className="module-header">
         <h2 className="module-heading">
-          Signal Preview
+          Signal preview
           <InfoTip text="A read-only full-session preview of front and rear normalized wheel displacement for the primary selected session." />
         </h2>
         <div className="module-header-actions">
@@ -261,7 +262,7 @@ function previewPlotOptions(model: PreviewModel, width: number, height: number):
         stroke: '#5b6670',
         grid: { show: false },
         ticks: { stroke: '#9fb0ad', width: 1, size: 4 },
-        font: '10px Aptos, "IBM Plex Sans", "Segoe UI", sans-serif',
+        font: chartAxisFont(),
         size: 22,
       },
       { scale: 'y', side: 3, show: false },

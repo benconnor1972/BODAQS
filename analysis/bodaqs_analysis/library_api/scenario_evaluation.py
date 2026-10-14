@@ -21,7 +21,7 @@ from .timeseries import _parquet_columns, _read_json_object, _resolve_signal_req
 
 SCENARIO_EVALUATION_SCHEMA = "bodaqs.scenario_evaluation"
 SCENARIO_EVALUATION_VERSION = 1
-SCENARIO_EVALUATION_ALGORITHM_VERSION = 2
+SCENARIO_EVALUATION_ALGORITHM_VERSION = 3
 MAX_SESSIONS = 32
 MAX_EPISODES = 10_000
 MAX_INTERVALS_PER_STATE = 1_000_000
@@ -660,7 +660,11 @@ def _input_artifacts(
     ref: Mapping[str, str],
     scenario: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
-    streams = {"primary"} if scenario["eligibility_policy"]["activity"] == "require_active" else set()
+    # Session metadata registers secondary streams; spatial context is also read
+    # by the distance mapper, even for predicates on time-series streams.
+    streams = {"spatial_context"}
+    if scenario["eligibility_policy"]["activity"] == "require_active":
+        streams.add("primary")
     stack = [scenario["predicate"]]
     while stack:
         node = stack.pop()
@@ -670,7 +674,7 @@ def _input_artifacts(
             streams.add(str(node["series"]["stream_name"]))
 
     store = ArtifactStore(root)
-    paths: list[tuple[str, Path]] = []
+    paths: list[tuple[str, Path]] = [("session.metadata", store.path_session_meta(ref["run_id"], ref["session_id"]))]
     for stream in sorted(streams):
         if stream == "primary":
             paths.extend(

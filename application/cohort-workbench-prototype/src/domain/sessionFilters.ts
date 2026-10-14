@@ -15,6 +15,9 @@ export type SessionFilterField =
   | 'source.archive'
   | 'started'
   | 'trackpoint.crossing'
+  | 'tags'
+  | 'user.gps_issue'
+  | 'user.qa_issue'
 
 export type TrackpointCrossingFilterValue = {
   track_id?: string
@@ -53,7 +56,7 @@ export type SessionFilterPredicate =
     }
   | {
       field: Exclude<SessionFilterField, 'trackpoint.crossing'>
-      op: 'contains' | 'eq' | 'gte' | 'in' | 'lt' | 'present'
+      op: 'contains' | 'eq' | 'gte' | 'in' | 'all' | 'lt' | 'present'
       value?: boolean | string | string[]
     }
 
@@ -278,6 +281,10 @@ function sessionMatchesPredicate(
     const expected = Array.isArray(predicate.value) ? predicate.value.map(normalized) : [normalized(predicate.value)]
     return values.some((value) => expected.includes(normalized(value)))
   }
+  if (predicate.op === 'all') {
+    const expected = Array.isArray(predicate.value) ? predicate.value.map(normalized) : []
+    return expected.length > 0 && expected.every((tag) => values.some((value) => normalized(value) === tag))
+  }
   if (predicate.op === 'contains') {
     const expected = normalized(predicate.value)
     return values.some((value) => normalized(value).includes(expected))
@@ -300,6 +307,16 @@ function sessionMatchesPredicate(
 
 function fieldValues(session: SessionRecord, field: SessionFilterField): Array<boolean | string> {
   switch (field) {
+    case 'tags':
+      return session.userAnnotations?.tags ?? []
+    case 'user.gps_issue': {
+      const issue = session.userAnnotations?.gpsIssue
+      return issue === null ? [] : [issue?.flagged ?? false]
+    }
+    case 'user.qa_issue': {
+      const issue = session.userAnnotations?.qaIssue
+      return issue === null ? [] : [issue?.flagged ?? false]
+    }
     case 'bike':
       return [session.bike]
     case 'event.schema':

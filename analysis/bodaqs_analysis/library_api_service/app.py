@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
+from contextlib import asynccontextmanager
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +20,8 @@ from starlette.concurrency import run_in_threadpool
 from bodaqs_analysis.library_api import LibraryAdapter
 from bodaqs_analysis.library_api.cache import stable_cache_digest
 from bodaqs_analysis.library_api.errors import InvalidRequestError, LibraryApiError, ReadOnlyModeError
+from .scenario_search import prepare_search, public_search, run_search
+from .cache_warming import IdleCacheWarmer
 
 try:
     from bodaqs_library_service_build_version import SERVICE_VERSION as _PACKAGED_SERVICE_VERSION
@@ -82,16 +86,27 @@ def create_app(
         read_only=bool(read_only),
         demo_welcome_enabled=bool(demo_welcome_enabled),
     )
+    @asynccontextmanager
+    async def lifespan(service: FastAPI):
+        service.state.cache_warmer.start()
+        try:
+            yield
+        finally:
+            await asyncio.to_thread(service.state.cache_warmer.stop)
+
     app = FastAPI(
         title=SERVICE_NAME,
         version=SERVICE_API_VERSION,
         description="Local HTTP wrapper around processed BODAQS libraries.",
+        lifespan=lifespan,
     )
     app.state.config = config
     app.state.adapter = LibraryAdapter(config.libraries_root, write_catalog_revision=not config.read_only)
     app.state.trackpoint_query_threads = {}
     app.state.scenario_evaluation_tasks = {}
     app.state.scenario_evaluation_semaphore = None
+    app.state.scenario_searches = {}
+    app.state.cache_warmer = IdleCacheWarmer(lambda: app.state.adapter, read_only=config.read_only)
     app.state.analysis_tab_opener = analysis_tab_opener or webbrowser.open_new_tab
 
     app.add_middleware(
@@ -122,6 +137,33 @@ def create_app(
                 }
             },
         )
+
+    @app.middleware("http")
+    async def foreground_priority(request: Request, call_next):
+        path = request.url.path
+        lightweight = path in {
+            "/api/v1/health", "/api/v1/capabilities", "/api/v1/cache/diagnostics",
+            "/api/v1/cache/warming", "/api/v1/libraries/catalog-revisions",
+        } or (request.method in {"GET", "DELETE"} and (
+            path.startswith("/api/v1/scenario-session-queries/") or
+            path.startswith("/api/v1/trackpoint-match-queries/")))
+        if not path.startswith("/api/") or lightweight:
+            return await call_next(request)
+        async with app.state.cache_warmer.foreground():
+            return await call_next(request)
+
+    @app.get("/api/v1/cache/warming")
+    def cache_warming_status() -> dict[str, Any]:
+        return app.state.cache_warmer.status()
+
+    @app.post("/api/v1/cache/warming")
+    async def set_cache_warming(request: Request) -> dict[str, Any]:
+        _assert_writable(app)
+        body = _json_object_payload(await request.json())
+        if not isinstance(body.get("enabled"), bool):
+            raise InvalidRequestError("enabled must be a boolean.")
+        app.state.cache_warmer.set_enabled(body["enabled"])
+        return app.state.cache_warmer.status()
 
     @app.get("/api/v1/health")
     def health() -> dict[str, Any]:
@@ -237,6 +279,10 @@ def create_app(
     def get_catalog(library_id: str) -> dict[str, Any]:
         return _current_adapter(app).get_catalog(library_id)
 
+    @app.get("/api/v1/libraries/{library_id}/signal-catalog")
+    def get_signal_catalog(library_id: str) -> dict[str, Any]:
+        return _current_adapter(app).get_signal_catalog(library_id)
+
     @app.post("/api/v1/libraries/{library_id}/sessions/gps-summary")
     async def get_session_gps_summary(library_id: str, request: Request) -> dict[str, Any]:
         payload = await request.json()
@@ -263,6 +309,19 @@ def create_app(
         _assert_writable(app)
         payload = await request.json()
         return _current_adapter(app).save_session_notes(library_id, _json_object_payload(payload))
+
+    @app.get("/api/v1/libraries/{library_id}/runs/{run_id}/sessions/{session_id}/user-annotations")
+    def load_session_user_annotations(library_id: str, run_id: str, session_id: str) -> dict[str, Any]:
+        return _current_adapter(app).load_session_user_annotations(
+            library_id, _session_route_ref(library_id, run_id, session_id),
+        )
+
+    @app.put("/api/v1/libraries/{library_id}/runs/{run_id}/sessions/{session_id}/user-annotations")
+    async def save_session_user_annotations(library_id: str, run_id: str, session_id: str, request: Request) -> dict[str, Any]:
+        _assert_writable(app)
+        payload = _json_object_payload(await request.json())
+        payload.update(_session_route_ref(library_id, run_id, session_id))
+        return _current_adapter(app).save_session_user_annotations(library_id, payload)
 
     @app.get("/api/v1/libraries/{library_id}/runs/{run_id}/sessions/{session_id}/videos")
     def load_session_video_attachments(library_id: str, run_id: str, session_id: str) -> dict[str, Any]:
@@ -461,6 +520,58 @@ def create_app(
         _assert_writable(app)
         return _current_adapter(app).delete_scenario(scenario_id)
 
+    @app.post("/api/v1/scenario-session-queries")
+    async def create_scenario_search(request: Request) -> dict[str, Any]:
+        jobs = app.state.scenario_searches
+        for key, job in list(jobs.items()):
+            if job["status"] in {"completed", "cancelled", "failed"} and time.monotonic() - job["created_at"] > 3600:
+                jobs.pop(key)
+        if sum(job["status"] in {"queued", "running"} for job in jobs.values()) >= 4:
+            raise InvalidRequestError("Four scenario searches are already active; cancel or wait for one.")
+        if len(jobs) >= 32:
+            oldest = next((key for key, job in jobs.items() if job["status"] in {"completed", "cancelled", "failed"}), None)
+            if oldest is not None:
+                jobs.pop(oldest)
+        adapter = _current_adapter(app)
+        job = prepare_search(adapter, _json_object_payload(await request.json()))
+        jobs[job["query_id"]] = job
+        if app.state.scenario_evaluation_semaphore is None:
+            app.state.scenario_evaluation_semaphore = asyncio.Semaphore(1)
+        async def search():
+            async with app.state.cache_warmer.foreground():
+                await run_search(job, adapter, app.state.scenario_evaluation_semaphore)
+        job["task"] = asyncio.create_task(search())
+        return public_search(job)
+
+    def scenario_search_job(query_id: str) -> dict[str, Any]:
+        job = app.state.scenario_searches.get(query_id)
+        if job is not None and job["status"] in {"completed", "cancelled", "failed"} and time.monotonic() - job["created_at"] > 3600:
+            app.state.scenario_searches.pop(query_id)
+            job = None
+        if job is None:
+            raise HTTPException(status_code=404, detail="Scenario search expired or was not found.")
+        return job
+
+    @app.get("/api/v1/scenario-session-queries/{query_id}")
+    def load_scenario_search(query_id: str) -> dict[str, Any]:
+        return public_search(scenario_search_job(query_id))
+
+    @app.get("/api/v1/scenario-session-queries/{query_id}/results")
+    def scenario_search_results(query_id: str, offset: int = 0, limit: int = 100) -> dict[str, Any]:
+        if offset < 0 or not 1 <= limit <= 500:
+            raise InvalidRequestError("Invalid search result page.")
+        job = scenario_search_job(query_id)
+        results = job["results"]
+        next_offset = offset + limit if offset + limit < len(results) else None
+        return {"results": results[offset:offset + limit], "next_offset": next_offset, "result_count": len(results)}
+
+    @app.delete("/api/v1/scenario-session-queries/{query_id}")
+    def cancel_scenario_search(query_id: str) -> dict[str, Any]:
+        job = scenario_search_job(query_id)
+        if job["status"] in {"queued", "running"}:
+            job["status"] = "cancelled"
+        return public_search(job)
+
     @app.post("/api/v1/scenario-evaluations")
     async def evaluate_root_scenario(request: Request) -> dict[str, Any]:
         payload = await request.json()
@@ -479,8 +590,9 @@ def create_app(
                 app.state.scenario_evaluation_semaphore = semaphore
 
             async def evaluate() -> dict[str, Any]:
-                async with semaphore:
-                    return await run_in_threadpool(adapter.evaluate_scenario, scenario_request)
+                async with app.state.cache_warmer.foreground():
+                    async with semaphore:
+                        return await run_in_threadpool(adapter.evaluate_scenario, scenario_request)
 
             task = asyncio.create_task(evaluate())
             tasks[request_key] = task
@@ -872,6 +984,7 @@ def _capabilities_response(app: FastAPI) -> dict[str, Any]:
         "delete_study_sets",
         "delete_sessions",
         "write_session_notes",
+        "write_session_user_annotations",
         "write_session_video_attachments",
         "select_local_video_files",
         "write_session_descriptions",
@@ -1083,16 +1196,17 @@ def _start_trackpoint_query_worker(app: FastAPI, query_id: str) -> None:
     libraries_root = _current_config(app).libraries_root
     worker = threading.Thread(
         target=_run_trackpoint_query_worker,
-        args=(libraries_root, str(query_id)),
+        args=(libraries_root, str(query_id), app.state.cache_warmer),
         daemon=True,
     )
     threads[query_id] = worker
     worker.start()
 
 
-def _run_trackpoint_query_worker(libraries_root: Path, query_id: str) -> None:
+def _run_trackpoint_query_worker(libraries_root: Path, query_id: str, priority: IdleCacheWarmer) -> None:
     adapter = LibraryAdapter(libraries_root)
-    adapter.run_trackpoint_match_query(query_id)
+    with priority.foreground_sync():
+        adapter.run_trackpoint_match_query(query_id)
 
 
 def _expected_revision(payload: Any) -> int:

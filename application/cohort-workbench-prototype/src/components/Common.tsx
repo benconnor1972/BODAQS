@@ -1,5 +1,5 @@
 import { Info } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { useId, type ReactNode } from 'react'
 
 export function PanelTitle({
   icon,
@@ -49,12 +49,14 @@ export function IconButton({
 }
 
 export function InfoTip({ label = 'More information', text }: { label?: string; text: string }) {
+  const id = useId()
   return (
     <span className="info-tip">
-      <span className="info-tip-button" role="img" aria-label={label} title={text}>
+      <span className="info-tip-button" role="img" tabIndex={0} aria-label={label} aria-describedby={id} title={text}
+        onClick={(event) => { event.preventDefault(); event.stopPropagation() }}>
         <Info size={13} />
       </span>
-      <span className="info-tip-bubble" role="tooltip">
+      <span className="info-tip-bubble" role="tooltip" id={id}>
         {text}
       </span>
     </span>

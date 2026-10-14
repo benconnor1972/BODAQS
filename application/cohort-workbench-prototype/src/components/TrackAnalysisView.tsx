@@ -1897,7 +1897,7 @@ export function TrackAnalysisView({
                 icon={<Route size={15} />}
                 title="Tracks"
                 meta={`${activeTrackIds.size} visible / ${workingTracks.length} in scope / ${dirtyTrackCount} unsaved`}
-                info="Scratch tracks are temporary working copies created from session GPS. Save them to make root-scoped reusable tracks."
+                info="Scratch tracks are temporary working copies created from session GPS. Save them to make root-scoped reusable tracks. Click near a track path on the map to add a temporary trackpoint, or click near a GPS path to create a scratch track."
                 action={
                   <button
                     type="button"
@@ -2031,7 +2031,7 @@ export function TrackAnalysisView({
                   ))}
                 </div>
               ) : (
-                <p className="track-analysis-muted">No tracks yet. Click near an active GPS path to start a scratch track.</p>
+                <p className="track-analysis-muted">No tracks yet.</p>
               )}
               <button
                 aria-pressed={newScratchTrackArmed}
@@ -2171,11 +2171,7 @@ export function TrackAnalysisView({
                       ) : null,
                     ].filter(Boolean)
                   })
-                ) : selectedTrack ? (
-                  <p className="track-analysis-muted">Click near this track path on the map to add a temporary trackpoint.</p>
-                ) : (
-                  <p className="track-analysis-muted">Select a track, or click near a GPS path to create a scratch track.</p>
-                )}
+                ) : null}
               </div>
             </section>
 
@@ -2556,8 +2552,7 @@ function TrackAnalysisFindSessionsModal({
       <div className="modal track-analysis-add-modal" role="dialog" aria-modal="true" aria-label="Find sessions for analysis view">
         <div className="modal-header">
           <div>
-            <h2>Find sessions</h2>
-            <p>Find sessions that fit a selected track. Added sessions only affect this analysis view.</p>
+            <h2 className="inline-heading">Find sessions <InfoTip text="Find sessions that fit a selected track. Added sessions only affect this analysis view." /></h2>
           </div>
           <button className="icon-only" type="button" onClick={onClose} aria-label="Close">
             <X size={16} />
@@ -2848,9 +2843,7 @@ function TrackAnalysisVideoPanel({
           Add point at video head
         </button>
       </div>
-      <p className="track-analysis-muted">
-        Video remains attached to the session. Saved tracks are available only when the reference session has a trackpoint match.
-      </p>
+      <InfoTip label="About video trackpoint placement" text="Video remains attached to the session. Saved tracks are available only when the reference session has a trackpoint match." />
     </div>
   )
 }
@@ -2913,8 +2906,7 @@ function TrackAnalysisFindTracksModal({
       <div className="modal track-analysis-add-modal" role="dialog" aria-modal="true" aria-label="Find tracks for analysis view">
         <div className="modal-header">
           <div>
-            <h2>Find tracks</h2>
-            <p>Find saved tracks whose geometry overlaps the map viewport. Added tracks only affect this analysis view.</p>
+            <h2 className="inline-heading">Find tracks <InfoTip text="Find saved tracks whose geometry overlaps the map viewport. Added tracks only affect this analysis view." /></h2>
           </div>
           <button className="icon-only" type="button" onClick={onClose} aria-label="Close">
             <X size={16} />
@@ -2930,10 +2922,7 @@ function TrackAnalysisFindTracksModal({
 
         <div className="track-analysis-add-grid track-analysis-add-grid-single">
           <section className="track-analysis-add-card">
-            <h3>Tracks in map view</h3>
-            <p className="track-analysis-muted">
-              Pan or zoom the map above, then search for saved tracks that overlap its visible area.
-            </p>
+            <h3 className="inline-heading">Tracks in map view <InfoTip text="Pan or zoom the map above, then search for saved tracks that overlap its visible area." /></h3>
             <div className="track-analysis-add-actions">
               <button className="primary-action compact" type="button" onClick={findTracksInViewport}>
                 Find tracks
@@ -3198,8 +3187,7 @@ function TrackAnalysisAddToViewModal({
       <div className="modal track-analysis-add-modal" role="dialog" aria-modal="true" aria-label="Add sessions to analysis view">
         <div className="modal-header">
           <div>
-            <h2>Add to view</h2>
-            <p>Find sessions that fit a selected track. Added sessions only affect this analysis view.</p>
+            <h2 className="inline-heading">Add to view <InfoTip text="Find sessions that fit a selected track. Added sessions only affect this analysis view." /></h2>
           </div>
           <button className="icon-only" type="button" onClick={onClose} aria-label="Close">
             <X size={16} />
@@ -3304,10 +3292,7 @@ function TrackAnalysisAddToViewModal({
           </section>
 
           <section className="track-analysis-add-card">
-            <h3>Tracks in map view</h3>
-            <p className="track-analysis-muted">
-              Finds saved tracks whose geometry overlaps the current Track map viewport. Added tracks stay local to this analysis view.
-            </p>
+            <h3 className="inline-heading">Tracks in map view <InfoTip text="Finds saved tracks whose geometry overlaps the current track map viewport. Added tracks stay local to this analysis view." /></h3>
             <div className="track-analysis-add-actions">
               <button className="primary-action compact" type="button" onClick={findTracksInViewport}>
                 Find tracks
@@ -3508,7 +3493,7 @@ function LapTimingTable({
           })}
         </tbody>
       </table>
-      <p className="track-analysis-table-note">Latest crossing per trackpoint is used; sectors with reverse timing are ignored.</p>
+      <InfoTip label="About lap timing crossings" text="Latest crossing per trackpoint is used; sectors with reverse timing are ignored." />
     </div>
   )
 }

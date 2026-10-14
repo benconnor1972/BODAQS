@@ -11,9 +11,12 @@ import type {
   SessionBookmarkRecord,
   SessionNoteRecord,
   SessionRecord,
+  SessionUserAnnotationRecord,
   ScenarioEvaluationRequest,
   ScenarioEvaluationResponse,
   ScenarioRecord,
+  ScenarioSessionQuery,
+  ScenarioSessionQueryPage,
   SessionVideoAttachmentsRecord,
   SessionTrackMatchRecord,
   SignalQueryRequest,
@@ -47,9 +50,36 @@ export type CatalogRevision = {
   revision: number
 }
 
+export type LibrarySignalCatalog = {
+  libraryId: string
+  sessionCount: number
+  signals: Array<{
+    entryId: string
+    streamName: string
+    column: string
+    unit: string
+    displayName: string
+    displayNames: string[]
+    sessionCount: number
+    sessionFraction: number
+    metadata?: Record<string, unknown>
+    metadataVariants?: Array<{ metadata: Record<string, unknown>; sessionCount: number; sessionFraction: number }>
+  }>
+}
+
 export type SessionGpsPointLoadOptions = {
   maxPoints?: number
   includeRouteGeometry?: boolean
+}
+
+export type CacheWarmingStatus = {
+  enabled: boolean
+  read_only: boolean
+  state: 'warming' | 'disabled' | 'waiting' | 'idle'
+  current: string | null
+  completed_units: number
+  failed_units: number
+  last_error: string | null
 }
 
 export type SignalSetDefinition = {
@@ -70,7 +100,10 @@ export type AnalysisTabsOpenResult = {
 }
 
 export interface LibraryDataSource {
+  loadCacheWarmingStatus?(): Promise<CacheWarmingStatus>
+  setCacheWarmingEnabled?(enabled: boolean): Promise<CacheWarmingStatus>
   listLibraries(): Promise<LibraryRecord[]>
+  loadLibrarySignalCatalog?(libraryId: string): Promise<LibrarySignalCatalog>
   refreshLibrary?(libraryId: string): Promise<LibraryRecord | void>
   loadWorkbenchBootstrap?(): Promise<WorkbenchBootstrapData>
   listCatalogRevisions?(): Promise<CatalogRevision[]>
@@ -84,6 +117,10 @@ export interface LibraryDataSource {
   openAnalysisTabs?(urls: string[]): Promise<AnalysisTabsOpenResult>
   listSavedSessionFilters?(): Promise<SavedSessionFilterRecord[]>
   listScenarios?(): Promise<ScenarioRecord[]>
+  createScenarioSessionQuery?(scenario: ScenarioRecord, sessions: StudySessionRef[], minimumTotalDurationS: number): Promise<ScenarioSessionQuery>
+  loadScenarioSessionQuery?(queryId: string): Promise<ScenarioSessionQuery>
+  loadScenarioSessionQueryResults?(queryId: string, offset?: number): Promise<ScenarioSessionQueryPage>
+  cancelScenarioSessionQuery?(queryId: string): Promise<ScenarioSessionQuery>
   saveScenario?(scenario: ScenarioRecord): Promise<ScenarioRecord>
   deleteScenario?(scenarioId: string): Promise<void>
   evaluateScenario?(request: ScenarioEvaluationRequest, options?: { signal?: AbortSignal }): Promise<ScenarioEvaluationResponse>
@@ -109,6 +146,8 @@ export interface LibraryDataSource {
     options?: SessionGpsPointLoadOptions,
   ): Promise<SessionGpsPointSet>
   loadSessionNote?(session: SessionRecord): Promise<SessionNoteRecord>
+  loadSessionUserAnnotations?(session: SessionRecord): Promise<SessionUserAnnotationRecord>
+  saveSessionUserAnnotations?(annotations: SessionUserAnnotationRecord): Promise<SessionUserAnnotationRecord>
   saveSessionNote?(note: SessionNoteRecord): Promise<SessionNoteRecord>
   saveSessionNotes?(notes: SessionNoteRecord[]): Promise<SessionNoteSaveResult[]>
   loadSessionVideoAttachments?(session: SessionRecord): Promise<SessionVideoAttachmentsRecord>

@@ -67,20 +67,20 @@ function SessionInfoButton({
   if (action === 'qc') {
     return (
       <IconButton
-        label={`View QA: ${qcStatusLabel(session.qcLevel, session.qcAlerts.length)}`}
+        label={`View QA: ${qcStatusLabel(session.qcLevel, session.qcAlerts.length)}${session.userAnnotations?.qaIssue?.flagged ? '; user flagged a QA issue' : ''}${session.userAnnotations?.warnings.length ? '; annotations unavailable' : ''}`}
         onClick={() => onInspect(session, 'qc')}
         icon={<AlertTriangle size={15} />}
-        tone={qcTone(session.qcLevel)}
+        tone={session.qcLevel === 'ok' && (session.userAnnotations?.qaIssue?.flagged || session.userAnnotations?.warnings.length) ? 'warning' : qcTone(session.qcLevel)}
       />
     )
   }
   if (action === 'gps') {
     return (
       <IconButton
-        label={`View GPS: ${gpsSummaryLine(session.gpsSummary)}`}
+        label={`View GPS: ${gpsSummaryLine(session.gpsSummary)}${session.userAnnotations?.gpsIssue?.flagged ? '; user flagged a GPS issue' : ''}${session.userAnnotations?.warnings.length ? '; annotations unavailable' : ''}`}
         onClick={() => onInspect(session, 'gps')}
         icon={<MapPin size={15} />}
-        tone={gpsQualityTone(session.gpsSummary.quality)}
+        tone={session.gpsSummary.quality !== 'invalid' && (session.userAnnotations?.gpsIssue?.flagged || session.userAnnotations?.warnings.length) ? 'warning' : gpsQualityTone(session.gpsSummary.quality)}
       />
     )
   }
@@ -89,13 +89,13 @@ function SessionInfoButton({
     const enabledCount = session.videoSummary.enabledCount
     const label = session.videoSummary.present
       ? `${attachmentCount} video attachment${attachmentCount === 1 ? '' : 's'} (${enabledCount} enabled)`
-      : 'No video attached'
+      : 'Add video: no video attached'
     return (
       <IconButton
         label={label}
         icon={<Video size={15} />}
         tone={session.videoSummary.present ? 'good' : 'neutral'}
-        disabled={!session.videoSummary.present}
+        onClick={() => onInspect(session, 'video')}
       />
     )
   }

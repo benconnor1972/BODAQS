@@ -1,4 +1,4 @@
-import { candidateId, groupingColors, sessionRefId } from '../domain/studySets'
+import { candidateId, groupingColors, sessionRefId, sessionToStudyRef } from '../domain/studySets'
 import { emptyGpsSummary } from '../domain/geospatial'
 import type { SavedSessionFilterRecord, SessionFilterPredicate } from '../domain/sessionFilters'
 import type {
@@ -32,11 +32,15 @@ import type {
   SessionNoteRecord,
   SessionNoteValue,
   SessionRecord,
+  SessionUserAnnotations,
+  SessionUserAnnotationRecord,
   ScenarioEvaluationRequest,
   ScenarioEvaluationResponse,
   ScenarioCriterion,
   ScenarioPredicate,
   ScenarioRecord,
+  ScenarioSessionQuery,
+  ScenarioSessionQueryPage,
   SessionSignalSummary,
   SessionVideoAttachmentRecord,
   SessionVideoAttachmentsRecord,
@@ -72,7 +76,9 @@ import type {
 import type {
   AnalysisTabsOpenResult,
   CatalogRevision,
+  CacheWarmingStatus,
   LibraryDataSource,
+  LibrarySignalCatalog,
   SessionGpsPointLoadOptions,
   SessionNoteSaveResult,
   SignalSetDefinition,
@@ -138,6 +144,16 @@ export class LocalApiDataSource implements LibraryDataSource {
     return requestJson<ApiHealth>(`${this.baseUrl}/api/v1/health`)
   }
 
+  async loadCacheWarmingStatus() {
+    return requestJson<CacheWarmingStatus>(`${this.baseUrl}/api/v1/cache/warming`)
+  }
+
+  async setCacheWarmingEnabled(enabled: boolean) {
+    return requestJson<CacheWarmingStatus>(`${this.baseUrl}/api/v1/cache/warming`, {
+      method: 'POST', body: JSON.stringify({ enabled }),
+    })
+  }
+
   async setLibrariesRoot(librariesRoot: string) {
     return requestJson<ApiSetLibrariesRootResponse>(`${this.baseUrl}/api/v1/config/libraries-root`, {
       method: 'POST',
@@ -148,6 +164,32 @@ export class LocalApiDataSource implements LibraryDataSource {
   async listLibraries() {
     const libraries = await requestJson<ApiObject[]>(`${this.baseUrl}/api/v1/libraries`)
     return libraries.map(mapLibrary)
+  }
+
+  async loadLibrarySignalCatalog(libraryId: string): Promise<LibrarySignalCatalog> {
+    const response = await requestJson<ApiObject>(
+      `${this.baseUrl}/api/v1/libraries/${encodeURIComponent(libraryId)}/signal-catalog`,
+    )
+    return {
+      libraryId: textValue(response.library_id, libraryId),
+      sessionCount: numberValue(response.session_count),
+      signals: arrayValue(response.signals).filter(isObject).map((signal) => ({
+        entryId: textValue(signal.entry_id),
+        streamName: textValue(signal.stream_name, 'primary'),
+        column: textValue(signal.column),
+        unit: textValue(signal.unit),
+        displayName: textValue(signal.display_name, textValue(signal.column)),
+        displayNames: arrayValue(signal.display_names).filter((name): name is string => typeof name === 'string'),
+        sessionCount: numberValue(signal.session_count),
+        sessionFraction: numberValue(signal.session_fraction),
+        metadata: objectValue(signal.metadata),
+        metadataVariants: arrayValue(signal.metadata_variants).filter(isObject).map((variant) => ({
+          metadata: objectValue(variant.metadata),
+          sessionCount: numberValue(variant.session_count),
+          sessionFraction: numberValue(variant.session_fraction),
+        })),
+      })),
+    }
   }
 
   async listCatalogRevisions(): Promise<CatalogRevision[]> {
@@ -275,6 +317,34 @@ export class LocalApiDataSource implements LibraryDataSource {
   async listScenarios(): Promise<ScenarioRecord[]> {
     const scenarios = await requestJson<ApiObject[]>(`${this.baseUrl}/api/v1/scenarios`)
     return scenarios.map(mapScenario)
+  }
+
+  async createScenarioSessionQuery(scenario: ScenarioRecord, sessions: StudySessionRef[], minimumTotalDurationS: number) {
+    return mapScenarioSessionQuery(await requestJson<ApiObject>(`${this.baseUrl}/api/v1/scenario-session-queries`, {
+      method: 'POST',
+      body: JSON.stringify({
+        scenario_ref: { scenario_id: scenario.id, revision: scenario.revision },
+        sessions: sessions.map((ref) => ({ library_id: ref.libraryId, run_id: ref.runId, session_id: ref.sessionId, session_key: ref.sessionKey })),
+        minimum_total_duration_s: minimumTotalDurationS,
+      }),
+    }))
+  }
+
+  async loadScenarioSessionQuery(queryId: string) {
+    return mapScenarioSessionQuery(await requestJson<ApiObject>(`${this.baseUrl}/api/v1/scenario-session-queries/${encodeURIComponent(queryId)}`))
+  }
+
+  async cancelScenarioSessionQuery(queryId: string) {
+    return mapScenarioSessionQuery(await requestJson<ApiObject>(`${this.baseUrl}/api/v1/scenario-session-queries/${encodeURIComponent(queryId)}`, { method: 'DELETE' }))
+  }
+
+  async loadScenarioSessionQueryResults(queryId: string, offset = 0): Promise<ScenarioSessionQueryPage> {
+    const response = await requestJson<ApiObject>(`${this.baseUrl}/api/v1/scenario-session-queries/${encodeURIComponent(queryId)}/results?offset=${offset}&limit=100`)
+    return {
+      results: arrayValue(response.results).filter(isObject).map((row) => ({ sessionRef: mapStudySessionRef(objectValue(row.session_ref)), matchedDurationS: numberValue(row.matched_duration_s) })),
+      nextOffset: response.next_offset == null ? null : numberValue(response.next_offset),
+      resultCount: numberValue(response.result_count),
+    }
   }
 
   async saveScenario(scenario: ScenarioRecord): Promise<ScenarioRecord> {
@@ -595,6 +665,22 @@ export class LocalApiDataSource implements LibraryDataSource {
   async loadSessionVideoAttachments(session: SessionRecord): Promise<SessionVideoAttachmentsRecord> {
     const response = await requestJson<ApiObject>(`${this.baseUrl}${sessionVideosPath(session)}`)
     return mapSessionVideoAttachments(response)
+  }
+
+  async loadSessionUserAnnotations(session: SessionRecord): Promise<SessionUserAnnotationRecord> {
+    const path = sessionVideosPath(session).replace(/\/videos$/, '/user-annotations')
+    const response = await requestJson<ApiObject>(`${this.baseUrl}${path}`)
+    return { ...mapUserAnnotations(objectValue(response.annotations)), present: Boolean(response.present), sessionRef: sessionToStudyRef(session) }
+  }
+
+  async saveSessionUserAnnotations(annotations: SessionUserAnnotationRecord): Promise<SessionUserAnnotationRecord> {
+    const path = sessionVideosPathFromRef(annotations.sessionRef).replace(/\/videos$/, '/user-annotations')
+    const response = await requestJson<ApiObject>(`${this.baseUrl}${path}`, {
+      method: 'PUT', body: JSON.stringify({ expected_revision: annotations.revision, annotations: {
+        tags: annotations.tags, gps_issue: annotations.gpsIssue, qa_issue: annotations.qaIssue,
+      } }),
+    })
+    return { ...mapUserAnnotations(objectValue(response.annotations)), present: Boolean(response.present), sessionRef: annotations.sessionRef }
   }
 
   async saveSessionVideoAttachments(attachments: SessionVideoAttachmentsRecord): Promise<SessionVideoAttachmentsRecord> {
@@ -918,6 +1004,20 @@ function mapSession(row: ApiObject): SessionRecord {
     gps: [],
     gpsSummary: mapGpsSummary(gpsSummary),
     videoSummary: mapVideoSummary(videoSummary),
+    userAnnotations: mapUserAnnotations(objectValue(row.user_annotations)),
+  }
+}
+
+function mapUserAnnotations(value: ApiObject): SessionUserAnnotations {
+  const issue = (raw: unknown) => raw === null ? null : {
+    flagged: Boolean(objectValue(raw).flagged), explanation: textValue(objectValue(raw).explanation),
+  }
+  return {
+    present: Boolean(value.present) || numberValue(value.revision) > 0,
+    revision: value.revision === null ? null : numberValue(value.revision),
+    tags: arrayValue(value.tags).map((tag) => textValue(tag)).filter(Boolean),
+    gpsIssue: issue(value.gps_issue), qaIssue: issue(value.qa_issue),
+    warnings: arrayValue(value.warnings).map((warning) => textValue(warning)).filter(Boolean),
   }
 }
 
@@ -1676,6 +1776,19 @@ function mapScenarioPredicate(value: ApiObject): ScenarioPredicate {
           },
         }
       : {}),
+  }
+}
+
+function mapScenarioSessionQuery(value: ApiObject): ScenarioSessionQuery {
+  return {
+    queryId: textValue(value.query_id),
+    status: trackpointMatchQueryStatusValue(value.status),
+    candidateSessionCount: numberValue(value.candidate_session_count),
+    processedSessionCount: numberValue(value.processed_session_count),
+    matchedSessionCount: numberValue(value.matched_session_count),
+    unavailableSessionCount: numberValue(value.unavailable_session_count),
+    partialSessionCount: numberValue(value.partial_session_count),
+    error: value.error == null ? null : textValue(value.error),
   }
 }
 

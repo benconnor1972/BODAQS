@@ -13,7 +13,7 @@ const defaultPredicate: SessionFilterPredicate = { field: 'rider', op: 'contains
 
 type BuilderJoin = 'and' | 'or'
 type BuilderMode = 'visual' | 'advanced'
-type BuilderOperator = 'contains' | 'eq' | 'gte' | 'in' | 'lt' | 'present' | 'matches'
+type BuilderOperator = 'contains' | 'eq' | 'gte' | 'in' | 'all' | 'lt' | 'present' | 'matches'
 
 type FieldDefinition = {
   field: SessionFilterField
@@ -44,6 +44,9 @@ type PredicateBuilder = {
 }
 
 const fieldDefinitions: FieldDefinition[] = [
+  { field: 'tags', label: 'Tags', help: 'Matches whole tag names, ignoring case. Enter one tag per line.', operators: ['in', 'all', 'present'] },
+  { field: 'user.gps_issue', label: 'User GPS issue', help: 'User-reported GPS issue, independent of automatic GPS quality.', operators: ['eq'], values: [{ value: 'true', label: 'Flagged' }, { value: 'false', label: 'Not flagged' }] },
+  { field: 'user.qa_issue', label: 'User QA issue', help: 'User-reported QA issue, independent of automatic QA.', operators: ['eq'], values: [{ value: 'true', label: 'Flagged' }, { value: 'false', label: 'Not flagged' }] },
   {
     field: 'rider',
     label: 'Rider',
@@ -166,6 +169,7 @@ export function FilterManagerModal({
   onClose,
   onSave,
   onDelete,
+  initialDraft,
 }: {
   filters: SavedSessionFilterRecord[]
   tracks: TrackRecord[]
@@ -173,11 +177,12 @@ export function FilterManagerModal({
   onClose: () => void
   onSave: (filter: SavedSessionFilterRecord) => Promise<SavedSessionFilterRecord>
   onDelete: (filter: SavedSessionFilterRecord) => Promise<void>
+  initialDraft?: SavedSessionFilterRecord | null
 }) {
-  const initialFilter = filters[0] ?? emptyFilter()
+  const initialFilter = initialDraft ?? filters[0] ?? emptyFilter()
   const initialEditor = editorStateForPredicate(initialFilter.predicate, tracks)
-  const [selectedId, setSelectedId] = useState<string | null>(filters[0]?.id ?? null)
-  const [isNew, setIsNew] = useState(filters.length === 0)
+  const [selectedId, setSelectedId] = useState<string | null>(initialDraft ? null : filters[0]?.id ?? null)
+  const [isNew, setIsNew] = useState(Boolean(initialDraft) || filters.length === 0)
   const [draft, setDraft] = useState<SavedSessionFilterRecord>(() => cloneFilter(initialFilter))
   const [builder, setBuilder] = useState<PredicateBuilder>(initialEditor.builder)
   const [editorMode, setEditorMode] = useState<BuilderMode>(initialEditor.mode)
@@ -312,7 +317,7 @@ export function FilterManagerModal({
         <div className="modal-header">
           <div>
             <p className="eyebrow">Saved filter library</p>
-            <h2>Filter Manager</h2>
+            <h2>Filter manager</h2>
           </div>
           <button aria-label="Close filter manager" className="icon-button" onClick={onClose} type="button">
             <X size={16} />
@@ -544,7 +549,7 @@ function CatalogConditionEditor({
         <select value={condition.op} onChange={(event) => onChange({ op: event.target.value as BuilderOperator })}>
           {definition.operators.map((operator) => (
             <option key={operator} value={operator}>
-              {operatorLabel(operator)}
+              {condition.field === 'tags' && operator === 'in' ? 'has any' : operatorLabel(operator)}
             </option>
           ))}
         </select>
@@ -561,6 +566,8 @@ function CatalogConditionEditor({
               <option value="false">Missing</option>
             </select>
           </label>
+        ) : condition.field === 'tags' ? (
+          <label>Tag names (one per line)<textarea value={condition.value} onChange={(event) => onChange({ value: event.target.value, values: [] })} /></label>
         ) : condition.field === 'started' && (condition.op === 'gte' || condition.op === 'lt') ? (
           <DateTimeConditionValue condition={condition} onChange={onChange} />
         ) : definition.values ? (
@@ -569,7 +576,7 @@ function CatalogConditionEditor({
           <label>
             Value
             <input
-              placeholder={condition.op === 'in' ? 'comma,separated,values' : definition.placeholder}
+              placeholder={condition.op === 'in' || condition.op === 'all' ? 'comma,separated,values' : definition.placeholder}
               value={condition.value}
               onChange={(event) => onChange({ value: event.target.value })}
             />
@@ -634,7 +641,7 @@ function EnumConditionValue({
       </label>
     )
   }
-  if (condition.op === 'in') {
+  if (condition.op === 'in' || condition.op === 'all') {
     return (
       <div className="enum-picker">
         {definition.values?.map((item) => (
@@ -794,7 +801,7 @@ function conditionFromPredicate(predicate: SessionFilterPredicate, tracks: Track
   if (!definition.operators.includes(predicate.op)) {
     return null
   }
-  const value = Array.isArray(predicate.value) ? predicate.value.join(', ') : String(predicate.value ?? '')
+  const value = Array.isArray(predicate.value) ? predicate.value.join(predicate.field === 'tags' ? '\n' : ', ') : String(predicate.value ?? '')
   return {
     ...defaultCondition(predicate.field),
     op: predicate.op,
@@ -900,11 +907,11 @@ function conditionToPredicate(condition: BuilderCondition): SessionFilterPredica
       value: condition.boolValue,
     }
   }
-  if (condition.op === 'in') {
-    const values = condition.values.length ? condition.values : splitValues(condition.value)
+  if (condition.op === 'in' || condition.op === 'all') {
+    const values = condition.values.length ? condition.values : condition.field === 'tags' ? condition.value.split(/\r?\n/).map((tag) => tag.trim()).filter(Boolean) : splitValues(condition.value)
     return {
       field: condition.field,
-      op: 'in',
+      op: condition.op,
       value: values,
     }
   }
@@ -969,6 +976,8 @@ function operatorLabel(operator: BuilderOperator) {
       return 'on or after'
     case 'in':
       return 'is one of'
+    case 'all':
+      return 'has all'
     case 'lt':
       return 'before'
     case 'present':

@@ -38,6 +38,8 @@ import {
   fixtureTracks,
 } from './fixtures'
 import type { LibraryDataSource } from './LibraryDataSource'
+import { emptySessionAnnotations } from '../domain/sessionAnnotations'
+import type { SessionUserAnnotationRecord } from '../domain/types'
 
 export class FixtureLibraryDataSource implements LibraryDataSource {
   private savedStudySets = fixtureSavedStudySets.map(cloneStudySet)
@@ -47,6 +49,22 @@ export class FixtureLibraryDataSource implements LibraryDataSource {
   private notes = new Map(this.sessions.map((session) => [sessionRefId(sessionToStudyRef(session)), sessionNoteFromSession(session)]))
   private tracks = fixtureTracks.map(cloneTrack)
   private bookmarks: SessionBookmarkRecord[] = []
+  private annotations = new Map<string, SessionUserAnnotationRecord>()
+
+  async loadSessionUserAnnotations(session: SessionRecord): Promise<SessionUserAnnotationRecord> {
+    return structuredClone(this.annotations.get(sessionRefId(sessionToStudyRef(session))) ?? emptySessionAnnotations(session))
+  }
+
+  async saveSessionUserAnnotations(record: SessionUserAnnotationRecord): Promise<SessionUserAnnotationRecord> {
+    const key = sessionRefId(record.sessionRef)
+    const current = this.annotations.get(key)
+    if (record.revision !== (current?.revision ?? 0)) throw new Error('Annotations changed. Reload before saving.')
+    const saved = structuredClone({ ...record, present: true, revision: (record.revision ?? 0) + 1,
+      tags: [...new Set(record.tags.map((tag) => tag.trim().toLowerCase()))].sort() })
+    this.annotations.set(key, saved)
+    this.sessions = this.sessions.map((session) => sessionRefId(sessionToStudyRef(session)) === key ? { ...session, userAnnotations: saved } : session)
+    return structuredClone(saved)
+  }
 
   async listLibraries() {
     return fixtureLibraries.map((libraryItem) => ({ ...libraryItem }))

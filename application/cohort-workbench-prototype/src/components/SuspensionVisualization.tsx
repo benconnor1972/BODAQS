@@ -1,3 +1,4 @@
+import { chartAxisFont } from '../domain/chartTypography'
 import { Fragment, memo, startTransition, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
 import * as d3 from 'd3'
 import { Activity, ChevronDown, ChevronUp, FileClock, Folder, ListFilter, Milestone, Route } from 'lucide-react'
@@ -3845,13 +3846,13 @@ function PhaseProbabilityContourChart({
       {showZeroLines && yDomain[0] < 0 && yDomain[1] > 0 && <line stroke="#7b8580" strokeDasharray="3 3" x1={margin.left} x2={width - margin.right} y1={yScale(0)} y2={yScale(0)} />}
       <line stroke="#56615c" x1={margin.left} x2={width - margin.right} y1={height - margin.bottom} y2={height - margin.bottom} />
       <line stroke="#56615c" x1={margin.left} x2={margin.left} y1={margin.top} y2={height - margin.bottom} />
-      {xScale.ticks(5).map((tick) => <g key={`x-${tick}`} transform={`translate(${xScale(tick)},${height - margin.bottom})`}><line stroke="#56615c" y2="4" /><text dy="1.25em" textAnchor="middle">{formatPhaseTick(tick)}</text></g>)}
-      {yScale.ticks(5).map((tick) => <g key={`y-${tick}`} transform={`translate(${margin.left},${yScale(tick)})`}><line stroke="#56615c" x2="-4" /><text dx="-0.5em" dy="0.32em" textAnchor="end">{formatPhaseTick(tick)}</text></g>)}
+      {xScale.ticks(5).map((tick) => <g key={`x-${tick}`} transform={`translate(${xScale(tick)},${height - margin.bottom})`}><line stroke="#56615c" y2="4" /><text className="viz-axis-label" dy="1.25em" textAnchor="middle">{formatPhaseTick(tick)}</text></g>)}
+      {yScale.ticks(5).map((tick) => <g key={`y-${tick}`} transform={`translate(${margin.left},${yScale(tick)})`}><line stroke="#56615c" x2="-4" /><text className="viz-axis-label" dx="-0.5em" dy="0.32em" textAnchor="end">{formatPhaseTick(tick)}</text></g>)}
       {contourMasses.length > 0 && <g className="viz-phase-contour-level-legend" transform={`translate(${width - margin.right - contourMasses.length * 62} 10)`}>
         {contourMasses.map((mass, index) => <g key={mass} transform={`translate(${index * 62} 0)`}><line stroke="#56615c" strokeDasharray={phaseContourDasharray(mass)} strokeWidth={phaseContourStrokeWidth(mass)} x2="19" y1="5" y2="5" /><text x="23" y="9">{formatContourMass(mass)}</text></g>)}
       </g>}
-      <text textAnchor="middle" x={margin.left + plotWidth / 2} y={height - 7}>{xLabel}</text>
-      <text textAnchor="middle" transform={`translate(15 ${margin.top + plotHeight / 2}) rotate(-90)`}>wheel velocity (mm/s)</text>
+      <text className="viz-axis-title" textAnchor="middle" x={margin.left + plotWidth / 2} y={height - 7}>{xLabel}</text>
+      <text className="viz-axis-title" textAnchor="middle" transform={`translate(15 ${margin.top + plotHeight / 2}) rotate(-90)`}>wheel velocity (mm/s)</text>
       {!hasContours && <text textAnchor="middle" x={margin.left + plotWidth / 2} y={margin.top + plotHeight / 2}>{contourMasses.length === 0 ? 'No contour levels selected' : 'Not enough paired samples for contours'}</text>}
     </svg>
   )
@@ -3968,10 +3969,10 @@ function PhaseDensityChart({ densityBins, markOpacity, renderMode, logDensity, s
       {showZeroLines && yDomain[0] < 0 && yDomain[1] > 0 && <line stroke="#7b8580" strokeDasharray="3 3" x1={margin.left} x2={width - margin.right} y1={yScale(0)} y2={yScale(0)} />}
       <line stroke="#56615c" x1={margin.left} x2={width - margin.right} y1={height - margin.bottom} y2={height - margin.bottom} />
       <line stroke="#56615c" x1={margin.left} x2={margin.left} y1={margin.top} y2={height - margin.bottom} />
-      {xScale.ticks(5).map((tick) => <g key={`x-${tick}`} transform={`translate(${xScale(tick)},${height - margin.bottom})`}><line stroke="#56615c" y2="4" /><text dy="1.25em" textAnchor="middle">{formatPhaseTick(tick)}</text></g>)}
-      {yScale.ticks(5).map((tick) => <g key={`y-${tick}`} transform={`translate(${margin.left},${yScale(tick)})`}><line stroke="#56615c" x2="-4" /><text dx="-0.5em" dy="0.32em" textAnchor="end">{formatPhaseTick(tick)}</text></g>)}
-      <text textAnchor="middle" x={margin.left + plotWidth / 2} y={height - 7}>{xLabel}</text>
-      <text textAnchor="middle" transform={`translate(15 ${margin.top + plotHeight / 2}) rotate(-90)`}>wheel velocity (mm/s)</text>
+      {xScale.ticks(5).map((tick) => <g key={`x-${tick}`} transform={`translate(${xScale(tick)},${height - margin.bottom})`}><line stroke="#56615c" y2="4" /><text className="viz-axis-label" dy="1.25em" textAnchor="middle">{formatPhaseTick(tick)}</text></g>)}
+      {yScale.ticks(5).map((tick) => <g key={`y-${tick}`} transform={`translate(${margin.left},${yScale(tick)})`}><line stroke="#56615c" x2="-4" /><text className="viz-axis-label" dx="-0.5em" dy="0.32em" textAnchor="end">{formatPhaseTick(tick)}</text></g>)}
+      <text className="viz-axis-title" textAnchor="middle" x={margin.left + plotWidth / 2} y={height - 7}>{xLabel}</text>
+      <text className="viz-axis-title" textAnchor="middle" transform={`translate(15 ${margin.top + plotHeight / 2}) rotate(-90)`}>wheel velocity (mm/s)</text>
       {!hasPoints && <text textAnchor="middle" x={margin.left + plotWidth / 2} y={margin.top + plotHeight / 2}>No paired samples</text>}
     </svg>
   )
@@ -4088,7 +4089,7 @@ function PhaseCanvasChart({ markOpacity, renderMode, scatterMarkSize, series, sh
     context.lineTo(margin.left, height - margin.bottom)
     context.stroke()
     context.fillStyle = '#3f4a45'
-    context.font = '12px system-ui, sans-serif'
+    context.font = chartAxisFont()
     context.textAlign = 'center'
     for (const tick of xScale.ticks(5)) {
       const x = xScale(tick)
@@ -4797,8 +4798,8 @@ function CumulativeHoverReadout({
   x: number
   y: number
 }) {
-  const boxWidth = 142
-  const rowHeight = 12
+  const boxWidth = 170
+  const rowHeight = 14
   const boxHeight = 20 + items.length * rowHeight
   const boxX = clamp(x + 8, 6, chartWidth - boxWidth - 6)
   return (

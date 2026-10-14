@@ -1,14 +1,16 @@
 import { Copy, Plus, Save, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import type { LibraryDataSource } from '../data/LibraryDataSource'
+import type { LibraryDataSource, LibrarySignalCatalog } from '../data/LibraryDataSource'
+import { scenarioCatalogFromSessions } from '../domain/scenarioSignalCatalog'
 import { cloneScenario, emptyScenario, scenarioDefinitionJson, scenarioFromDefinitionJson, scratchScenario } from '../domain/scenarios'
-import type { ScenarioRecord } from '../domain/types'
+import type { LibraryRecord, ScenarioRecord } from '../domain/types'
 import {
   scenarioBuilderFromPredicate,
   scenarioPredicateFromBuilder,
   type ScenarioPredicateBuilderState,
 } from '../domain/scenarioPredicateBuilder'
 import { ScenarioPredicateBuilder } from './ScenarioPredicateBuilder'
+import { InfoTip } from './Common'
 
 type EditorMode = 'visual' | 'advanced'
 
@@ -38,6 +40,42 @@ export function ScenarioEditorModal({
   const [definitionText, setDefinitionText] = useState(() => scenarioDefinitionJson(firstDraft))
   const [status, setStatus] = useState(() => dataSource.listScenarios ? '' : 'The current data source does not provide saved Scenarios.')
   const [busy, setBusy] = useState(false)
+  const [libraries, setLibraries] = useState<LibraryRecord[]>([])
+  const [catalogLibraryId, setCatalogLibraryId] = useState('')
+  const [loadedCatalog, setLoadedCatalog] = useState<LibrarySignalCatalog>()
+  const [catalogNotice, setCatalogNotice] = useState({ libraryId: '', message: 'Loading signal catalogs...' })
+  const signalCatalog = loadedCatalog?.libraryId === catalogLibraryId ? loadedCatalog : undefined
+  const catalogMessage = catalogNotice.libraryId === catalogLibraryId ? catalogNotice.message : 'Loading column suggestions...'
+
+  useEffect(() => {
+    let cancelled = false
+    void dataSource.listLibraries().then((loaded) => {
+      if (cancelled) return
+      setLibraries(loaded)
+      setCatalogLibraryId(loaded[0]?.id ?? '')
+      if (!loaded.length) setCatalogNotice({ libraryId: '', message: 'No libraries are available for column suggestions.' })
+    }).catch((error) => {
+      if (!cancelled) setCatalogNotice({ libraryId: '', message: `Could not load libraries: ${errorMessage(error)}` })
+    })
+    return () => { cancelled = true }
+  }, [dataSource])
+
+  useEffect(() => {
+    if (!catalogLibraryId) return
+    let cancelled = false
+    const library = libraries.find((item) => item.id === catalogLibraryId)
+    const load = dataSource.loadLibrarySignalCatalog
+      ? dataSource.loadLibrarySignalCatalog(catalogLibraryId)
+      : dataSource.listSessions(library ? [library] : []).then((sessions) => scenarioCatalogFromSessions(catalogLibraryId, sessions))
+    void load.then((catalog) => {
+      if (cancelled) return
+      setLoadedCatalog(catalog)
+      setCatalogNotice({ libraryId: catalogLibraryId, message: `${catalog.sessionCount} sessions in the suggestion catalog.` })
+    }).catch((error) => {
+      if (!cancelled) setCatalogNotice({ libraryId: catalogLibraryId, message: `Could not load column suggestions: ${errorMessage(error)}. You can still enter a column name.` })
+    })
+    return () => { cancelled = true }
+  }, [catalogLibraryId, dataSource, libraries])
 
   useEffect(() => {
     if (!dataSource.listScenarios) {
@@ -112,7 +150,7 @@ export function ScenarioEditorModal({
       }, draft)
       const nextBuilder = scenarioBuilderFromPredicate(parsed.predicate)
       if (!nextBuilder) {
-        setStatus('This predicate uses nested groups, selectors or operators that the visual builder cannot represent.')
+        setStatus('This predicate uses nested groups, selector formats or operators that the visual builder cannot represent.')
         return
       }
       setDraft({ ...parsed, displayName: draft.displayName })
@@ -170,7 +208,7 @@ export function ScenarioEditorModal({
         <div className="modal-header">
           <div>
             <p className="eyebrow">Scenario library</p>
-            <h2>Create or edit Scenario</h2>
+            <h2>Create or edit scenario</h2>
           </div>
           <button aria-label="Close Scenario editor" className="icon-button" onClick={onClose} type="button">
             <X size={16} />
@@ -223,21 +261,29 @@ export function ScenarioEditorModal({
               </div>
             )}
             {editorMode === 'visual' ? (
-              <ScenarioPredicateBuilder builder={builder} onChange={setBuilder} />
+              <>
+                <label className="filter-manager-row">
+                  <span className="inline-heading">Signal catalog library <InfoTip label="About the suggestion catalog" text="Availability is across sessions in this library. The scenario can be used with other libraries; the suggestion library is not stored in the predicate." /></span>
+                  <select aria-label="Signal catalog library" value={catalogLibraryId} onChange={(event) => setCatalogLibraryId(event.target.value)} disabled={!libraries.length}>
+                    {!libraries.length && <option value="">No library available</option>}
+                    {libraries.map((library) => <option key={library.id} value={library.id}>{library.name}</option>)}
+                  </select>
+                </label>
+                <p className="condition-help" role="status">{catalogMessage}</p>
+                <ScenarioPredicateBuilder builder={builder} onChange={setBuilder} catalog={signalCatalog} />
+              </>
             ) : (
               <>
                 <label className="filter-manager-row scenario-editor-json">
-                  Advanced definition JSON
+                  <span className="inline-heading">Advanced definition JSON <InfoTip label="About scenario JSON" text="JSON uses the canonical Scenario contract and includes Episode and eligibility policies. Identity and descriptive metadata are managed separately." /></span>
                   <textarea
+                    aria-label="Advanced definition JSON"
                     className="filter-manager-textarea"
                     spellCheck={false}
                     value={definitionText}
                     onChange={(event) => setDefinitionText(event.target.value)}
                   />
                 </label>
-                <p className="scenario-editor-help">
-                  JSON uses the canonical Scenario contract and includes Episode and eligibility policies. Identity and descriptive metadata are managed separately.
-                </p>
               </>
             )}
             <div className="filter-builder-footer">

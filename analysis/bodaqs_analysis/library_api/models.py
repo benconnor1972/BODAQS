@@ -30,12 +30,15 @@ def default_capabilities() -> dict[str, Any]:
             "read_session_notes": True,
         },
         "features": {
+            "read_library_signal_catalog": True,
             "write_study_sets": True,
             "delete_study_sets": True,
             "delete_sessions": True,
             "read_session_notes": True,
             "write_session_notes": True,
             "read_session_video_attachments": True,
+            "read_session_user_annotations": True,
+            "write_session_user_annotations": True,
             "write_session_video_attachments": True,
             "stream_session_video_attachments": True,
             "select_local_video_files": True,
@@ -87,6 +90,7 @@ def library_payload(
         "display_name": str(display_name),
         "root": str(root),
         "capabilities": {
+            "read_library_signal_catalog": True,
             "read_processed_library": True,
             "read_parquet": True,
             "write_study_sets": True,

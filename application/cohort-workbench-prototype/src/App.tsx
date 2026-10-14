@@ -13,7 +13,6 @@ import {
   GitBranch,
   Library,
   Layers3,
-  ListFilter,
   MapPin,
   Minus,
   Play,
@@ -28,6 +27,9 @@ import './App.css'
 import { IconButton, InfoTip, PanelTitle } from './components/Common'
 import { FilterPanel } from './components/FilterPanel'
 import { FilterManagerModal } from './components/FilterManagerModal'
+import { SessionAnnotationEditor } from './components/SessionAnnotationEditor'
+import { AnnotationFilters } from './components/AnnotationFilters'
+import { annotationFilterPredicate, emptyAnnotationFilter } from './domain/annotationFilters'
 import { GeospatialWorkbench, MatchPreviewCard, StudySetGpsCoverageCard } from './components/GeospatialWorkbench'
 import { GpsRoutePreview } from './components/GpsRoutePreview'
 import { MapRoutePreview } from './components/MapRoutePreview'
@@ -40,6 +42,8 @@ import {
 } from './components/SessionNoteEditorModal'
 import { SessionAltitudePreview } from './components/SessionAltitudePreview'
 import { ScenarioEditorModal } from './components/ScenarioEditorModal'
+import { ScenarioSessionSearch } from './components/ScenarioSessionSearch'
+import { CacheWarmingControl } from './components/CacheWarmingControl'
 import { SessionSignalPreview } from './components/SessionSignalPreview'
 import { SessionTable, type SessionColumnWidthId, type SessionColumnWidths, type SessionSelectionGesture } from './components/SessionTable'
 import { StudySessionTable } from './components/StudySessionTable'
@@ -248,7 +252,12 @@ function App() {
   const [geoFilterQueryStates, setGeoFilterQueryStates] = useState<Record<string, GeoFilterQueryState>>({})
   const [tableColumnFilters, setTableColumnFilters] = useState<TableColumnFilter[]>([])
   const [filterManagerOpen, setFilterManagerOpen] = useState(false)
+  const [annotationEditor, setAnnotationEditor] = useState<{ session: SessionRecord } | null>(null)
+  const [annotationFilter, setAnnotationFilter] = useState(emptyAnnotationFilter)
+  const [filterInitialDraft, setFilterInitialDraft] = useState<SavedSessionFilterRecord | null>(null)
   const [scenarioEditorOpen, setScenarioEditorOpen] = useState(false)
+  const [scenarioMatchIds, setScenarioMatchIds] = useState<string[] | null>(null)
+  const [scenarioMatchScope, setScenarioMatchScope] = useState('')
   const [columnMenuOpen, setColumnMenuOpen] = useState(false)
   const [modal, setModal] = useState<ModalState>(null)
   const [bookmarkRefreshToken, setBookmarkRefreshToken] = useState(0)
@@ -706,6 +715,9 @@ function App() {
   )
   const libraryScopedSessions = sessions.filter((session) => selectedLibraryIds.includes(session.libraryId))
   const activeSavedSessionFilters = savedSessionFilters.filter((filter) => activeSavedFilterIds.includes(filter.id))
+  const knownTags = [...new Set(libraryScopedSessions.flatMap((session) => session.userAnnotations?.tags ?? []))].sort()
+  const annotationPredicate = annotationFilterPredicate(annotationFilter)
+  const temporaryAnnotationFilters: SavedSessionFilterRecord[] = annotationPredicate ? [{ id: 'temporary-annotations', displayName: 'Tags and user issues', description: '', category: 'custom', origin: 'prototype_saved', revision: 0, predicate: annotationPredicate }] : []
   const activeTrackpointFilterSpecs = trackpointCrossingSpecsForFilters(activeSavedSessionFilters, selectedLibraryIds)
   const activeTrackpointFilterSpecKey = JSON.stringify(activeTrackpointFilterSpecs)
   const pendingTrackpointFilterKeys = new Set(
@@ -719,7 +731,7 @@ function App() {
       .map((spec) => [spec.key, geoFilterQueryStates[spec.key].matchedSessionIds]),
   )
   const activeGeoFilterStates = activeTrackpointFilterSpecs.map((spec) => geoFilterQueryStates[spec.key] ?? queuedGeoFilterState(spec))
-  const savedFilteredSessions = applySavedSessionFilters(libraryScopedSessions, activeSavedSessionFilters, {
+  const savedFilteredSessions = applySavedSessionFilters(libraryScopedSessions, [...activeSavedSessionFilters, ...temporaryAnnotationFilters], {
     libraryIds: selectedLibraryIds,
     pendingTrackpointCrossingKeys: pendingTrackpointFilterKeys,
     trackpointCrossingMatches,
@@ -730,7 +742,7 @@ function App() {
     matchesSearch(session, searchText, visibleColumns, libraries),
   )
   const visibleSessions = sortSessions(
-    searchedSessions,
+    scenarioMatchIds === null || scenarioMatchScope !== `${librarySelectionScopeKey}:${selectedLibraryIds.join('|')}` ? searchedSessions : searchedSessions.filter((session) => scenarioMatchIds.includes(candidateId(session))),
     sortColumn,
     sortDirection,
     libraries,
@@ -1003,6 +1015,8 @@ function App() {
       setSelectedTrackIds([])
       setActiveSavedFilterIds([])
       setTableColumnFilters([])
+      setAnnotationFilter(emptyAnnotationFilter)
+      setAnnotationEditor(null)
       setGroupingName('')
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -1506,13 +1520,18 @@ function App() {
   }
 
   function inspectSession(session: SessionRecord, tab: SessionInspectionTab) {
+    if (tab === 'annotations') {
+      setModal(null)
+      setAnnotationEditor({ session })
+      return
+    }
     if (tab === 'note') {
       setModal(null)
       setNoteEditorSession(session)
       return
     }
-    if (tab === 'signals') {
-      setModal({ kind: 'signal-inspector', session, initialWindow: null })
+    if (tab === 'signals' || (tab === 'video' && !session.videoSummary.present)) {
+      setModal({ kind: 'signal-inspector', session, initialWindow: null, browseVideoOnOpen: tab === 'video' })
       return
     }
     setModal({ kind: 'session', session, tab })
@@ -2265,10 +2284,10 @@ function App() {
           studyDrawerOpen ? 'study-drawer-open' : 'study-drawer-closed',
         ].join(' ')}
       >
-        <aside className="panel library-panel" aria-label="Library Browser">
+        <aside className="panel library-panel" aria-label="Library browser">
           <PanelTitle
             icon={<Library size={18} />}
-            title="Library Browser"
+            title="Library browser"
             action={null}
           />
 
@@ -2287,7 +2306,7 @@ function App() {
               <>
                 <div className="module-header">
                   <h2 className="module-heading">
-                    Library Selector
+                    Library selector
                     <InfoTip text="Choose which libraries from the configured library root are included in the session browser." />
                   </h2>
                   <div className="module-header-actions">
@@ -2299,7 +2318,7 @@ function App() {
                       icon={<RefreshCw size={16} />}
                     />
                     <IconButton
-                      label="Collapse Library Selector"
+                      label="Collapse Library selector"
                       onClick={() => setLibrarySelectorCollapsed(true)}
                       icon={<ChevronUp size={16} />}
                     />
@@ -2333,6 +2352,7 @@ function App() {
                   <strong>{connectionMode === 'local-api' ? 'Local API' : 'Fixture fallback'}</strong>
                   <span>{localDataSource.baseUrl}</span>
                 </p>
+                <CacheWarmingControl key={librarySelectionScopeKey} dataSource={activeDataSource} />
                 <div className="library-list">
                   {libraries.map((libraryItem) => (
                     <label className="check-row" key={libraryItem.id}>
@@ -2356,7 +2376,7 @@ function App() {
             <div className="module-header">
               <h2 className="module-heading">
                 <Activity size={16} aria-hidden="true" />
-                Session Selector
+                Session selector
                 <InfoTip text="Browse sessions from the selected libraries. Use reusable filters from the filter panel or column filter icons in the table to narrow the list." />
               </h2>
               <div className="module-header-actions">
@@ -2364,13 +2384,13 @@ function App() {
                   {libraryScopedSessions.length} total / {visibleSessions.length} filtered / {selectedCandidateIds.length} selected
                 </span>
                 <IconButton
-                  label="Reload Session Selector"
+                  label="Reload Session selector"
                   onClick={() => void refreshWorkbenchData()}
                   disabled={isRefreshingWorkbenchData || isChangingLibraryRoot}
                   icon={<RefreshCw size={16} />}
                 />
                 <IconButton
-                  label={sessionSelectorCollapsed ? 'Expand Session Selector' : 'Collapse Session Selector'}
+                  label={sessionSelectorCollapsed ? 'Expand Session selector' : 'Collapse Session selector'}
                   onClick={() => setSessionSelectorCollapsed((current) => !current)}
                   icon={sessionSelectorCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
                 />
@@ -2469,6 +2489,9 @@ function App() {
                     )}
                   </div>
                 </div>
+                <AnnotationFilters knownTags={knownTags} value={annotationFilter} onChange={setAnnotationFilter}
+                  canSave={Boolean(canWriteLibraryState && activeDataSource.saveSavedSessionFilter)}
+                  onSave={() => { if (annotationPredicate) { setFilterInitialDraft({ id: '', displayName: 'Tags and user issues', description: '', category: 'custom', origin: 'api_saved', revision: 0, predicate: annotationPredicate }); setFilterManagerOpen(true) } }} />
                 <SessionTable
                   sessions={visibleSessions}
                   filterBaseSessions={savedFilteredSessions}
@@ -2535,20 +2558,20 @@ function App() {
             {gpsLocationCollapsed ? (
               <button className="gps-rail" onClick={() => setGpsLocationCollapsed(false)} type="button">
                 <ChevronRight size={18} />
-                GPS Location
+                GPS location
               </button>
             ) : (
               <section className="module map-module">
                 <div className="module-header">
                   <h2 className="module-heading">
                     <MapPin size={16} aria-hidden="true" />
-                    GPS Location
+                    GPS location
                     <InfoTip text="Preview the selected session GPS path and any selected or attached tracks." />
                   </h2>
                   <div className="module-header-actions">
                     <span className="module-header-count">{primarySession ? primarySession.name : 'No primary session'}</span>
                     <IconButton
-                      label="Collapse GPS Location"
+                      label="Collapse GPS location"
                       onClick={() => setGpsLocationCollapsed(true)}
                       icon={<ChevronLeft size={16} />}
                     />
@@ -2614,19 +2637,15 @@ function App() {
                 onTrackDeleted={deleteTrackFromWorkbench}
               />
 
-              <section className="geo-card library-scenarios-card">
-                <div className="geo-card-title">
-                  <ListFilter size={16} aria-hidden="true" />
-                  <strong className="inline-heading">
-                    Scenarios
-                    <InfoTip text="Create, edit, save, and reuse scenario predicates for analysis filtering." />
-                  </strong>
-                  <button className="secondary-action compact" onClick={() => setScenarioEditorOpen(true)} type="button">
-                    <ListFilter size={14} />
-                    Create or edit
-                  </button>
-                </div>
-              </section>
+              <ScenarioSessionSearch
+                key={`${librarySelectionScopeKey}:${selectedLibraryIds.join('|')}`}
+                dataSource={activeDataSource}
+                sessions={searchedSessions}
+                refreshToken={scenarioEditorOpen}
+                onManage={() => setScenarioEditorOpen(true)}
+                onFilter={(ids) => { setScenarioMatchIds(ids); setScenarioMatchScope(`${librarySelectionScopeKey}:${selectedLibraryIds.join('|')}`) }}
+                onAttachSession={addSessionRefToStudySet}
+              />
             </div>
           </section>
         </aside>
@@ -2636,26 +2655,26 @@ function App() {
             className="study-drawer-rail"
             type="button"
             onClick={() => setStudyDrawerOpen(true)}
-            aria-label="Open Study Set Builder"
+            aria-label="Open Study Set builder"
           >
             <ChevronLeft size={17} />
-            <span>Study Set Builder</span>
+            <span>Study Set builder</span>
           </button>
         )}
 
-        <aside className="panel study-panel" aria-label="Study Set Builder">
+        <aside className="panel study-panel" aria-label="Study Set builder">
           <PanelTitle
             icon={
               <>
                 <IconButton
-                  label="Collapse Study Set Builder"
+                  label="Collapse Study Set builder"
                   onClick={() => setStudyDrawerOpen(false)}
                   icon={<ChevronRight size={16} />}
                 />
                 <Layers3 size={18} />
               </>
             }
-            title="Study Set Builder"
+            title="Study Set builder"
             action={null}
           />
 
@@ -2819,7 +2838,7 @@ function App() {
                 <div className="module-header">
                   <h2 className="module-heading">
                     <MapPin size={16} aria-hidden="true" />
-                    Study Set GPS Location
+                    Study Set GPS location
                     <InfoTip text="Preview the GPS paths for sessions in the current Study Set and any tracks attached to it." />
                   </h2>
                   <div className="module-header-actions">
@@ -2936,12 +2955,23 @@ function App() {
           onSaved={updateSessionAfterNoteSave}
         />
       )}
+      {annotationEditor && <SessionAnnotationEditor
+        key={`${annotationEditor.session.libraryId}:${annotationEditor.session.sessionKey}`}
+        session={annotationEditor.session} dataSource={activeDataSource}
+        canWrite={canWriteLibraryState} knownTags={knownTags}
+        onClose={() => setAnnotationEditor(null)}
+        onSaved={(record) => {
+          setSessions((current) => current.map((session) => session.libraryId === record.sessionRef.libraryId && session.runId === record.sessionRef.runId && session.sessionId === record.sessionRef.sessionId ? { ...session, userAnnotations: record } : session))
+          setStatusMessage('Saved session flags and tags.')
+        }}
+      />}
       {filterManagerOpen && (
         <FilterManagerModal
           filters={savedSessionFilters}
+          initialDraft={filterInitialDraft}
           tracks={tracks}
           canWrite={Boolean(canWriteLibraryState && activeDataSource.saveSavedSessionFilter)}
-          onClose={() => setFilterManagerOpen(false)}
+          onClose={() => { setFilterManagerOpen(false); setFilterInitialDraft(null) }}
           onSave={saveSessionFilter}
           onDelete={deleteSessionFilter}
         />
@@ -3042,13 +3072,13 @@ function AnalysisRoutePage({
 }) {
   const viewTitle =
     route.viewId === 'simple-suspension'
-      ? 'Simple Suspension Analysis'
+      ? 'Simple suspension analysis'
       : route.viewId === 'suspension-phase-diagram'
-        ? 'Suspension Phase Diagram'
+        ? 'Suspension phase diagram'
       : route.viewId === 'event-browser'
-        ? 'Event Browser'
+        ? 'Event browser (beta)'
       : route.viewId === 'track-analysis-lap-timing'
-        ? 'Track Analysis and Lap Timing'
+        ? 'Track analysis and lap timing'
         : route.viewId
   const [routeModal, setRouteModal] = useState<ModalState>(null)
   const [bookmarkRefreshToken, setBookmarkRefreshToken] = useState(0)
@@ -3081,7 +3111,7 @@ function AnalysisRoutePage({
           <h2>Analysis scope unavailable</h2>
           <p>
             {scopeError ||
-              'This analysis tab could not find its Study Set scope. Open the analysis again from the Library Browser or Study Set Builder.'}
+              'This analysis tab could not find its Study Set scope. Open the analysis again from the Library browser or Study Set builder.'}
           </p>
         </section>
       ) : route.viewId === 'simple-suspension' || route.viewId === 'suspension-phase-diagram' ? (

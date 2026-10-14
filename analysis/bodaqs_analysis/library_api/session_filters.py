@@ -17,9 +17,12 @@ SESSION_FILTER_VERSION = 1
 SESSION_FILTERS_DIR = Path("session_filters")
 
 _GROUP_OPS = {"and", "or"}
-_LEAF_OPS = {"eq", "in", "contains", "present", "gte", "lt"}
+_LEAF_OPS = {"eq", "in", "all", "contains", "present", "gte", "lt"}
 _TRACKPOINT_OPS = {"matches"}
 _FIELDS = {
+    "tags",
+    "user.gps_issue",
+    "user.qa_issue",
     "bike",
     "event.schema",
     "firmware",
@@ -214,6 +217,26 @@ def _normalized_predicate(value: Any, *, context: str) -> dict[str, Any]:
         )
 
     out: dict[str, Any] = {"field": field, "op": op}
+    if field in {"user.gps_issue", "user.qa_issue"}:
+        raw = value.get("value")
+        if op != "eq" or (not isinstance(raw, bool) and raw not in ("true", "false")):
+            raise InvalidSessionFilterError("User issue filters require 'eq' and a boolean value.")
+        return {"field": field, "op": "eq", "value": raw if isinstance(raw, bool) else raw == "true"}
+    if field == "tags":
+        if op not in {"eq", "in", "all", "present"}:
+            raise InvalidSessionFilterError("Tag filters require eq, in, all or present.")
+        if op != "present":
+            raw_tags = value.get("value")
+            if op == "eq":
+                raw_tags = [raw_tags]
+            if not isinstance(raw_tags, list) or not raw_tags or len(raw_tags) > 100:
+                raise InvalidSessionFilterError("Tag filter values require 1–100 tags.")
+            if any(not isinstance(tag, str) or not tag.strip() or len(tag.strip().casefold()) > 80 or any(ord(char) < 32 for char in tag) for tag in raw_tags):
+                raise InvalidSessionFilterError("Tag filter values must be non-empty strings of at most 80 characters without control characters.")
+            tags = sorted({tag.strip().casefold() for tag in raw_tags})
+            return {"field": field, "op": op, "value": tags[0] if op == "eq" else tags}
+    if op == "all" and field != "tags":
+        raise InvalidSessionFilterError("The 'all' operator is only supported for tags.")
     if op == "present":
         if "value" in value:
             out["value"] = bool(value.get("value"))
@@ -231,9 +254,9 @@ def _normalized_predicate(value: Any, *, context: str) -> dict[str, Any]:
     if "value" not in value:
         raise InvalidSessionFilterError(f"{context}.value is required for {op!r}.")
     raw_value = value.get("value")
-    if op == "in":
+    if op in {"in", "all"}:
         if not isinstance(raw_value, list):
-            raise InvalidSessionFilterError(f"{context}.value must be a list for 'in'.")
+            raise InvalidSessionFilterError(f"{context}.value must be a list for {op!r}.")
         out["value"] = [str(item).strip() for item in raw_value if str(item).strip()]
     elif isinstance(raw_value, bool):
         out["value"] = raw_value

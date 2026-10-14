@@ -17,6 +17,7 @@
   --teal-strong: #00666d;
 
   --font-ui: Aptos, "IBM Plex Sans", "Segoe UI", sans-serif;
+  --font-code: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
 
   --text-page-title: 23px;
   --text-modal-title: 18px;
@@ -28,6 +29,7 @@
   --text-caption: 11px;
   --text-label: 10px;
   --text-micro: 9px;
+  --text-chart-axis: 11px;
 
   --weight-regular: 400;
   --weight-medium: 500;
@@ -90,6 +92,13 @@ button,
 input,
 summary {
   letter-spacing: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: var(--font-ui);
 }
 
 button:focus-visible,

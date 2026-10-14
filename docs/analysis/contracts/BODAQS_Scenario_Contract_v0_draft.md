@@ -277,6 +277,33 @@ resolve a selector differently from the service.
 Selectors are preferable for stable semantic concepts. Explicit columns are
 appropriate for exploratory, diagnostic, or source-specific Scenarios.
 
+The Workbench visual builder's Custom column option discovers primary and
+registered secondary streams from the library signal summary catalog. Users
+choose a suggestion library, stream and searchable column; choices show source
+units and whole-library session availability. The chosen library is discovery
+context only and is not saved as a restriction on the Scenario. Only the concrete
+stream/column reference is saved. Missing references are retained during editing,
+and manual column entry remains available. Multiple recorded units are shown
+separately with a notice that thresholds use each session's stored units; counts
+for overlapping unit variants are not combined. Sources without the summary API
+may derive suggestions from their session catalogs.
+
+The visual metric list also offers **Choose by meaning**, immediately after
+**Custom column**. This mode saves a `selector` instead of a `column`. It offers
+catalog-derived suggestions for domain, quantity, end, component and unit, plus
+additional attributes such as processing role, kind, sensor and coordinate frame.
+Blank attributes are omitted; at least one attribute is required. A unit
+constraint matches registered units; it does not convert values. A changed
+library or missing catalog match does not rewrite or remove the selector.
+Catalog examples are hints rather than a per-session resolution/coverage result;
+the Python evaluator remains authoritative for ranking and ambiguity checks.
+
+Flat predicates with numeric operators and string-valued selectors can move
+between the visual builder and Advanced JSON without losing attributes, including
+additional selector keys already present in a saved definition. Non-string
+selector formats, categorical operators and nested groups remain in Advanced
+JSON. Existing exact-column Scenarios retain their concrete references.
+
 ### 6.2 Numeric operators
 
 Version 0 numeric operators are:
@@ -988,7 +1015,12 @@ Deferred:
 - A Scenario contains at most four leaf criteria.
 - Synchronous evaluation accepts at most 32 explicit session references and
   returns at most 10,000 Episodes. Broader scopes require a future asynchronous
-  execution form.
+  execution form. The library's Scenario session-search API now provides that
+  form for one saved Scenario and up to 10,000 explicit candidate references,
+  evaluating sessions independently and returning compact duration summaries.
+  It matches only fully evaluated sessions with at least one Episode and the
+  requested minimum total Episode duration; partial/unavailable evaluations
+  remain separate. It does not relax the synchronous per-session Episode limit.
 - The initial SSA and SPD Session view selects one or more Scenario facet
   populations and may include an explicit `All qualifying data` baseline.
   Manual time windows, activity exclusion, and selected entity membership form

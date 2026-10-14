@@ -26,7 +26,7 @@ from .event_annotations import (
 )
 from .event_definitions import query_event_definitions
 from .event_segments import query_event_segments
-from .cache import InMemoryLruCache, PersistentJsonCache, stable_cache_digest
+from .cache import CacheBuildLocks, InMemoryLruCache, PersistentJsonCache, stable_cache_digest
 from .catalog import (
     build_session_catalog,
     discover_libraries,
@@ -66,6 +66,7 @@ from .selection import study_set_to_selection_snapshot
 from .scenario_evaluation import compose_scenario_evaluation, evaluate_scenario, scenario_evaluation_cache_key
 from .scenarios import create_scenario, delete_scenario, list_scenarios, load_scenario, normalize_scenario, update_scenario
 from .signal_sets import load_signal_sets
+from .signal_catalog import build_library_signal_catalog, LIBRARY_SIGNAL_CATALOG_VERSION
 from .session_filters import (
     create_session_filter,
     delete_session_filter,
@@ -75,6 +76,7 @@ from .session_filters import (
 )
 from .session_descriptions import update_session_descriptions as write_session_descriptions
 from .session_notes import load_session_note, save_session_note
+from .session_annotations import load_session_user_annotations, save_session_user_annotations
 from .session_videos import (
     load_session_video_attachments,
     resolve_session_video_attachment,
@@ -88,7 +90,7 @@ from .study_sets import (
     load_study_set,
     update_study_set,
 )
-from .timeseries import get_multistream_timeseries_window, get_timeseries_window as build_timeseries_window
+from .timeseries import _parse_session_ref, get_multistream_timeseries_window, get_timeseries_window as build_timeseries_window
 from .spatial_context_window import get_spatial_context_window as build_spatial_context_window
 from .trackpoint_queries import (
     cancel_trackpoint_match_query,
@@ -114,6 +116,7 @@ class LibraryAdapter:
     _SCENARIO_SESSION_EVALUATION_CACHE_NAMESPACE = "scenario_session_evaluation"
     _SESSION_CATALOG_CACHE_NAMESPACE = "session_catalog"
     _SESSION_CATALOG_LATEST_CACHE_NAMESPACE = "session_catalog_latest"
+    _LIBRARY_SIGNAL_CATALOG_CACHE_NAMESPACE = "library_signal_catalog"
     _ANALYSIS_ADEQUACY_CACHE_TTL_S = 900.0
     _ANALYSIS_INPUT_CACHE_TTL_S = 900.0
     _GPS_POINTS_CACHE_TTL_S = 900.0
@@ -136,6 +139,9 @@ class LibraryAdapter:
         self._catalog_base_cache: dict[str, tuple[dict[str, Any], int | None]] = {}
         self._pending_catalog_changed_sessions: dict[str, list[dict[str, Any]]] = {}
         self._cache = InMemoryLruCache(max_entries=1024, default_ttl_s=900.0)
+        self._cache_builds = CacheBuildLocks()
+        self._scenario_usage: dict[str, float] = {}
+        self._session_usage: dict[str, float] = {}
         self._persistent_cache = PersistentJsonCache(self.libraries_root / self._SERVICE_CACHE_DIR_NAME)
         self._timing_samples: list[dict[str, Any]] = []
         self._catalog_cache_event_counts: dict[str, int] = {}
@@ -150,6 +156,101 @@ class LibraryAdapter:
         """Return the root-scoped, user-managed Signal Inspector definitions."""
 
         return load_signal_sets(self.libraries_root)
+
+    def get_signal_catalog(self, library_id: str, *, refresh: bool = False) -> dict[str, Any]:
+        """Return whole-library signal presence, using the current session catalog."""
+        catalog = self.get_catalog(library_id, refresh=refresh)
+        wanted = str(library_id).strip()
+        cache_key = stable_cache_digest({
+            "version": LIBRARY_SIGNAL_CATALOG_VERSION,
+            "library_id": wanted,
+            "catalog_cache_key": self._catalog_cache_keys[wanted],
+        })
+        return self._cache.get_or_set(
+            self._LIBRARY_SIGNAL_CATALOG_CACHE_NAMESPACE,
+            cache_key,
+            lambda: {
+                **build_library_signal_catalog(catalog),
+                "catalog_revision": self._catalog_cache_revisions.get(wanted),
+            },
+        )
+
+    def cache_warming_tasks(self) -> list[dict[str, Any]]:
+        """Plan a bounded batch from catalogs already loaded by foreground work."""
+        candidates = [(library_id, row) for library_id, catalog in self._catalog_cache.items()
+                      for row in catalog.get("rows") or [] if isinstance(row, Mapping)]
+        candidates.sort(key=lambda item: (
+            self._session_usage.get(f"{item[0]}:{item[1].get('session_key')}", 0),
+            str((item[1].get("timestamps") or {}).get("imported_at") or (item[1].get("timestamps") or {}).get("started_at_utc") or ""),
+        ), reverse=True)
+        scenarios = self.list_scenarios()
+        scenarios.sort(key=lambda scenario: (self._scenario_usage.get(str(scenario.get("scenario_id")), 0),
+                                             str((scenario.get("provenance") or {}).get("updated_at") or "")), reverse=True)
+        tasks: list[dict[str, Any]] = []
+        for library_id, row in candidates[:16]:
+            ref = {"library_id": library_id, "run_id": row["run_id"], "session_id": row["session_id"],
+                   "session_key": row["session_key"]}
+            tasks.append({"kind": "activity", "ref": ref})
+            signals = self._standard_preview_signals(row)
+            summary = row.get("summary") or {}
+            duration = float((row.get("gps_summary") or {}).get("session_duration_s") or float(summary.get("duration_min") or 0) * 60)
+            if signals and duration > 0:
+                tasks.append({"kind": "preview", "ref": ref, "request": {
+                    "session": ref, "signals": [{"column": column} for column in signals],
+                    "window": {"start_s": 0, "end_s": max(1.0, duration)}, "resolution": {"target_points": 900},
+                    "include_events": False, "include_marks": False,
+                }})
+            for scenario in scenarios[:4]:
+                tasks.append({"kind": "scenario", "ref": ref, "scenario": scenario})
+        return tasks
+
+    def warm_cache_task(self, task: Mapping[str, Any]) -> str:
+        """Fill disk cache spare capacity without promoting speculative RAM entries."""
+        if not self.write_catalog_revision:
+            return "disabled"
+        ref = task["ref"]
+        root = self._library_root(str(ref["library_id"]))
+        if (ArtifactStore(root).path_library_dir() / "import_agent.lock").exists():
+            return "importing"
+        kind = task["kind"]
+        if kind == "activity":
+            namespace = self._ACTIVITY_INDEX_CACHE_NAMESPACE
+            key = activity_index_cache_key(root, ref)
+            budget = self._ACTIVITY_INDEX_PERSISTENT_CACHE_MAX_ENTRIES // 2
+        elif kind == "preview":
+            namespace = self._TIMESERIES_PREVIEW_CACHE_NAMESPACE
+            key = self._timeseries_preview_cache_key(str(ref["library_id"]), task["request"])
+            budget = self._TIMESERIES_PREVIEW_PERSISTENT_CACHE_MAX_ENTRIES // 2
+        else:
+            # Do not populate an obsolete plan after a definition was edited/deleted.
+            scenario = self.load_scenario(str(task["scenario"]["scenario_id"]))
+            if scenario["revision"] != task["scenario"]["revision"]:
+                return "obsolete"
+            request = {"scenario": scenario, "sessions": [ref], "options": {"include_criterion_diagnostics": True}}
+            namespace = self._SCENARIO_SESSION_EVALUATION_CACHE_NAMESPACE
+            key = scenario_evaluation_cache_key(request, scenario=scenario, library_root=self._library_root)
+            budget = self._SCENARIO_SESSION_EVALUATION_PERSISTENT_CACHE_MAX_ENTRIES // 2
+        if self._cache.has(namespace, key) or self._persistent_cache._entry_path(namespace, key).exists():
+            return "cached"
+        if sum(1 for _ in self._persistent_cache._namespace_dir(namespace).glob("*.json")) >= budget:
+            return "budget"
+        with self._cache_builds.hold(namespace, key):
+            # Foreground builds may have completed since the initial check.
+            if self._cache.has(namespace, key) or self._persistent_cache._entry_path(namespace, key).exists():
+                return "cached"
+            if kind == "activity":
+                value = build_activity_index(root, ref)
+            elif kind == "preview":
+                value = build_timeseries_window(root, task["request"], library_id=str(ref["library_id"]))
+            else:
+                def activity_loader(library_root: Path, session_ref: Mapping[str, str]) -> Mapping[str, Any]:
+                    activity_key = activity_index_cache_key(library_root, session_ref)
+                    cached = self._persistent_cache.get(self._ACTIVITY_INDEX_CACHE_NAMESPACE, activity_key)
+                    return cached.value if cached is not None else build_activity_index(library_root, session_ref)
+                value = evaluate_scenario(request, scenario=scenario, library_root=self._library_root,
+                                          activity_index_loader=activity_loader)
+            self._persistent_cache.set(namespace, key, value, ttl_s=None)
+        return "built"
 
     def cache_diagnostics(self) -> dict[str, Any]:
         persistent_catalog_summary = self._persistent_cache.prune_namespace(
@@ -323,6 +424,8 @@ class LibraryAdapter:
             self._pending_catalog_changed_sessions.pop(wanted, None)
 
         build_start = time.perf_counter()
+        # Also discard summaries when a deep refresh rebuilds an unchanged key.
+        self._cache.invalidate_namespace(self._LIBRARY_SIGNAL_CATALOG_CACHE_NAMESPACE)
         self._catalog_cache[wanted] = build_session_catalog(
             library_root,
             library_id=wanted,
@@ -408,30 +511,33 @@ class LibraryAdapter:
         return payload
 
     def get_timeseries_window(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        ref = request.get("session") if isinstance(request.get("session"), Mapping) else {}
+        self._session_usage[f"{library_id}:{ref.get('session_key') or str(ref.get('run_id')) + '::' + str(ref.get('session_id'))}"] = time.monotonic()
         if not self._is_standard_preview_request(request):
             return build_timeseries_window(self._library_root(library_id), request, library_id=library_id)
         cache_key = self._timeseries_preview_cache_key(library_id, request)
-        cached = self._cache.get(self._TIMESERIES_PREVIEW_CACHE_NAMESPACE, cache_key)
-        if isinstance(cached, dict):
-            return cached
-        persisted = self._persistent_cache.get(self._TIMESERIES_PREVIEW_CACHE_NAMESPACE, cache_key)
-        if persisted is not None and isinstance(persisted.value, dict):
-            self._cache.set(self._TIMESERIES_PREVIEW_CACHE_NAMESPACE, cache_key, persisted.value, ttl_s=None)
-            return persisted.value
-        response = build_timeseries_window(self._library_root(library_id), request, library_id=library_id)
-        self._cache.set(self._TIMESERIES_PREVIEW_CACHE_NAMESPACE, cache_key, response, ttl_s=None)
-        self._persistent_cache.set(
-            self._TIMESERIES_PREVIEW_CACHE_NAMESPACE,
-            cache_key,
-            response,
-            ttl_s=None,
-            metadata={"library_id": str(library_id), "cache_schema": "bodaqs.timeseries_preview_cache_key", "cache_version": 1},
-        )
-        self._persistent_cache.prune_namespace(
-            self._TIMESERIES_PREVIEW_CACHE_NAMESPACE,
-            max_entries=self._TIMESERIES_PREVIEW_PERSISTENT_CACHE_MAX_ENTRIES,
-        )
-        return response
+        with self._cache_builds.hold(self._TIMESERIES_PREVIEW_CACHE_NAMESPACE, cache_key):
+            cached = self._cache.get(self._TIMESERIES_PREVIEW_CACHE_NAMESPACE, cache_key)
+            if isinstance(cached, dict):
+                return cached
+            persisted = self._persistent_cache.get(self._TIMESERIES_PREVIEW_CACHE_NAMESPACE, cache_key)
+            if persisted is not None and isinstance(persisted.value, dict):
+                self._cache.set(self._TIMESERIES_PREVIEW_CACHE_NAMESPACE, cache_key, persisted.value, ttl_s=None)
+                return persisted.value
+            response = build_timeseries_window(self._library_root(library_id), request, library_id=library_id)
+            self._cache.set(self._TIMESERIES_PREVIEW_CACHE_NAMESPACE, cache_key, response, ttl_s=None)
+            self._persistent_cache.set(
+                self._TIMESERIES_PREVIEW_CACHE_NAMESPACE,
+                cache_key,
+                response,
+                ttl_s=None,
+                metadata={"library_id": str(library_id), "cache_schema": "bodaqs.timeseries_preview_cache_key", "cache_version": 2},
+            )
+            self._persistent_cache.prune_namespace(
+                self._TIMESERIES_PREVIEW_CACHE_NAMESPACE,
+                max_entries=self._TIMESERIES_PREVIEW_PERSISTENT_CACHE_MAX_ENTRIES,
+            )
+            return response
 
     def get_multistream_timeseries_window(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
         return get_multistream_timeseries_window(self._library_root(library_id), request, library_id=library_id)
@@ -439,7 +545,7 @@ class LibraryAdapter:
     def get_spatial_context_window(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
         return build_spatial_context_window(self._library_root(library_id), request, library_id=library_id)
 
-    def evaluate_scenario(self, request: dict[str, Any]) -> dict[str, Any]:
+    def evaluate_scenario(self, request: dict[str, Any], *, record_usage: bool = True) -> dict[str, Any]:
         total_start = time.perf_counter()
         has_ref = isinstance(request.get("scenario_ref"), Mapping)
         has_embedded = isinstance(request.get("scenario"), Mapping)
@@ -460,6 +566,12 @@ class LibraryAdapter:
         else:
             scenario = normalize_scenario(request["scenario"])
         cache_key = scenario_evaluation_cache_key(request, scenario=scenario, library_root=self._library_root)
+        if record_usage:
+            if scenario.get("scenario_id"):
+                self._scenario_usage[str(scenario["scenario_id"])] = time.monotonic()
+            for ref in request.get("sessions") or []:
+                self._session_usage[f"{ref.get('library_id')}:{ref.get('session_key') or str(ref.get('run_id')) + '::' + str(ref.get('session_id'))}"] = time.monotonic()
+        options = request.get("options") if isinstance(request.get("options"), Mapping) else {}
         cached = self._cache.get(self._SCENARIO_EVALUATION_CACHE_NAMESPACE, cache_key)
         if isinstance(cached, dict):
             self._record_scenario_evaluation_timing(request, total_start, "memory_hit")
@@ -475,58 +587,66 @@ class LibraryAdapter:
         session_persistent_hits = 0
         session_misses = 0
         for raw_session in request.get("sessions") or []:
-            single_request = {**request, "sessions": [raw_session]}
+            # Always cache complete per-session evaluations. Diagnostics are a
+            # response presentation option, not a different signal computation.
+            single_request = {**request, "sessions": [raw_session], "options": {
+                **options, "include_criterion_diagnostics": True,
+            }}
             single_key = scenario_evaluation_cache_key(
                 single_request,
                 scenario=scenario,
                 library_root=self._library_root,
             )
-            single_response = self._cache.get(self._SCENARIO_SESSION_EVALUATION_CACHE_NAMESPACE, single_key)
-            if isinstance(single_response, dict):
-                session_memory_hits += 1
-            else:
-                single_persisted = self._persistent_cache.get(
-                    self._SCENARIO_SESSION_EVALUATION_CACHE_NAMESPACE,
-                    single_key,
-                )
-                if single_persisted is not None and isinstance(single_persisted.value, dict):
-                    single_response = single_persisted.value
-                    self._cache.set(
-                        self._SCENARIO_SESSION_EVALUATION_CACHE_NAMESPACE,
-                        single_key,
-                        single_response,
-                        ttl_s=None,
-                    )
-                    session_persistent_hits += 1
+            with self._cache_builds.hold(self._SCENARIO_SESSION_EVALUATION_CACHE_NAMESPACE, single_key):
+                single_response = self._cache.get(self._SCENARIO_SESSION_EVALUATION_CACHE_NAMESPACE, single_key)
+                if isinstance(single_response, dict):
+                    session_memory_hits += 1
                 else:
-                    single_response = evaluate_scenario(
-                        single_request,
-                        scenario=scenario,
-                        library_root=self._library_root,
-                        activity_index_loader=self._cached_activity_index,
-                    )
-                    self._cache.set(
+                    single_persisted = self._persistent_cache.get(
                         self._SCENARIO_SESSION_EVALUATION_CACHE_NAMESPACE,
                         single_key,
-                        single_response,
-                        ttl_s=None,
                     )
-                    if self.write_catalog_revision:
-                        self._persistent_cache.set(
+                    if single_persisted is not None and isinstance(single_persisted.value, dict):
+                        single_response = single_persisted.value
+                        self._cache.set(
                             self._SCENARIO_SESSION_EVALUATION_CACHE_NAMESPACE,
                             single_key,
                             single_response,
                             ttl_s=None,
-                            metadata={
-                                "cache_schema": "bodaqs.scenario_session_evaluation_cache_key",
-                                "cache_version": 1,
-                            },
                         )
-                    session_misses += 1
+                        session_persistent_hits += 1
+                    else:
+                        single_response = evaluate_scenario(
+                            single_request,
+                            scenario=scenario,
+                            library_root=self._library_root,
+                            activity_index_loader=self._cached_activity_index,
+                        )
+                        self._cache.set(
+                            self._SCENARIO_SESSION_EVALUATION_CACHE_NAMESPACE,
+                            single_key,
+                            single_response,
+                            ttl_s=None,
+                        )
+                        if self.write_catalog_revision:
+                            self._persistent_cache.set(
+                                self._SCENARIO_SESSION_EVALUATION_CACHE_NAMESPACE,
+                                single_key,
+                                single_response,
+                                ttl_s=None,
+                                metadata={
+                                    "cache_schema": "bodaqs.scenario_session_evaluation_cache_key",
+                                    "cache_version": 1,
+                                },
+                            )
+                        session_misses += 1
             sessions = single_response.get("sessions") if isinstance(single_response, Mapping) else None
             if not isinstance(sessions, list) or len(sessions) != 1 or not isinstance(sessions[0], Mapping):
                 raise InvalidRequestError("Cached Scenario session evaluation has an invalid shape.")
-            session_results.append(dict(sessions[0]))
+            result = dict(sessions[0])
+            if options.get("include_criterion_diagnostics", True) is False:
+                result["criteria"] = []
+            session_results.append(result)
 
         response = compose_scenario_evaluation(
             request,
@@ -588,31 +708,32 @@ class LibraryAdapter:
     def _cached_activity_index(self, library_root: Path, ref: Mapping[str, str]) -> dict[str, Any]:
         started = time.perf_counter()
         cache_key = activity_index_cache_key(library_root, ref)
-        cached = self._cache.get(self._ACTIVITY_INDEX_CACHE_NAMESPACE, cache_key)
-        if isinstance(cached, dict):
-            self._record_activity_index_cache_event("memory_hit", started)
-            return cached
-        persisted = self._persistent_cache.get(self._ACTIVITY_INDEX_CACHE_NAMESPACE, cache_key)
-        if persisted is not None and isinstance(persisted.value, dict):
-            self._cache.set(self._ACTIVITY_INDEX_CACHE_NAMESPACE, cache_key, persisted.value, ttl_s=None)
-            self._record_activity_index_cache_event("persistent_hit", started)
-            return persisted.value
-        index = build_activity_index(library_root, ref)
-        self._cache.set(self._ACTIVITY_INDEX_CACHE_NAMESPACE, cache_key, index, ttl_s=None)
-        if self.write_catalog_revision:
-            self._persistent_cache.set(
-                self._ACTIVITY_INDEX_CACHE_NAMESPACE,
-                cache_key,
-                index,
-                ttl_s=None,
-                metadata={"cache_schema": "bodaqs.activity_index_cache_key", "cache_version": 1},
-            )
-            self._persistent_cache.prune_namespace(
-                self._ACTIVITY_INDEX_CACHE_NAMESPACE,
-                max_entries=self._ACTIVITY_INDEX_PERSISTENT_CACHE_MAX_ENTRIES,
-            )
-        self._record_activity_index_cache_event("built", started)
-        return index
+        with self._cache_builds.hold(self._ACTIVITY_INDEX_CACHE_NAMESPACE, cache_key):
+            cached = self._cache.get(self._ACTIVITY_INDEX_CACHE_NAMESPACE, cache_key)
+            if isinstance(cached, dict):
+                self._record_activity_index_cache_event("memory_hit", started)
+                return cached
+            persisted = self._persistent_cache.get(self._ACTIVITY_INDEX_CACHE_NAMESPACE, cache_key)
+            if persisted is not None and isinstance(persisted.value, dict):
+                self._cache.set(self._ACTIVITY_INDEX_CACHE_NAMESPACE, cache_key, persisted.value, ttl_s=None)
+                self._record_activity_index_cache_event("persistent_hit", started)
+                return persisted.value
+            index = build_activity_index(library_root, ref)
+            self._cache.set(self._ACTIVITY_INDEX_CACHE_NAMESPACE, cache_key, index, ttl_s=None)
+            if self.write_catalog_revision:
+                self._persistent_cache.set(
+                    self._ACTIVITY_INDEX_CACHE_NAMESPACE,
+                    cache_key,
+                    index,
+                    ttl_s=None,
+                    metadata={"cache_schema": "bodaqs.activity_index_cache_key", "cache_version": 1},
+                )
+                self._persistent_cache.prune_namespace(
+                    self._ACTIVITY_INDEX_CACHE_NAMESPACE,
+                    max_entries=self._ACTIVITY_INDEX_PERSISTENT_CACHE_MAX_ENTRIES,
+                )
+            self._record_activity_index_cache_event("built", started)
+            return index
 
     def _record_activity_index_cache_event(self, status: str, started: float) -> None:
         self._activity_index_cache_event_counts[status] = self._activity_index_cache_event_counts.get(status, 0) + 1
@@ -739,6 +860,19 @@ class LibraryAdapter:
             source_id=source_id,
             include_route_geometry=include_route_geometry,
         )
+
+    def load_session_user_annotations(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        session_ref = self._normalized_session_ref_request(library_id, request)
+        self._catalog_row_for_session(library_id, session_ref)
+        return load_session_user_annotations(self._library_root(library_id), session_ref)
+
+    def save_session_user_annotations(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        session_ref = self._normalized_session_ref_request(library_id, request)
+        self._catalog_row_for_session(library_id, session_ref)
+        response = save_session_user_annotations(self._library_root(library_id), session_ref, request)
+        self._touch_catalog_revision(library_id, reason="session_user_annotations_saved", session_ref=session_ref)
+        self._invalidate_catalog_cache(str(library_id).strip())
+        return response
 
     def load_session_note(self, library_id: str, request: dict[str, Any]) -> dict[str, Any]:
         session_ref = self._normalized_session_ref_request(library_id, request)
@@ -1641,7 +1775,10 @@ class LibraryAdapter:
         )
 
     def _timeseries_preview_cache_key(self, library_id: str, request: Mapping[str, Any]) -> str:
-        session = request.get("session") if isinstance(request.get("session"), Mapping) else {}
+        session = _parse_session_ref(request.get("session"))
+        if session.get("library_id", library_id) != library_id:
+            raise InvalidRequestError("session.library_id does not match the request library.")
+        canonical_request = {**request, "session": {**session, "library_id": library_id}}
         run_id = str(session.get("run_id") or "")
         session_id = str(session.get("session_id") or "")
         dataframe_path = self._library_root(library_id) / "runs" / run_id / "sessions" / session_id / "session" / "df.parquet"
@@ -1649,9 +1786,9 @@ class LibraryAdapter:
         return stable_cache_digest(
             {
                 "cache_schema": "bodaqs.timeseries_preview_cache_key",
-                "cache_version": 1,
+                "cache_version": 2,
                 "library_id": str(library_id),
-                "request": request,
+                "request": canonical_request,
                 "dataframe": self._file_stat_dependency(dataframe_path, self._library_root(library_id)),
                 "meta": self._file_stat_dependency(meta_path, self._library_root(library_id)),
             }
@@ -2216,7 +2353,7 @@ class LibraryAdapter:
         dependency: dict[str, Any] = {
             "cache_schema": "bodaqs.session_catalog_cache_key",
             # Visibility and variant metadata were added in catalog v4.
-            "cache_version": 5,
+            "cache_version": 6,
             "library_id": str(library_id),
             "library_root": str(library_root.resolve()),
             "library_definition": self._file_stat_dependency(library_root / "library_definition.json", library_root),

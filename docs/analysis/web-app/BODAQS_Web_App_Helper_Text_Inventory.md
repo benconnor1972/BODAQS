@@ -88,6 +88,29 @@ layout while making the wording easy to review and refine.
 | Source filename | Matches the original source/archive filename. | Filter condition builder field help. |
 | Trackpoint crossing | Runs an async GPS/trackpoint match query against selected libraries. | Filter condition builder field help. |
 
+## Scenario, annotation and shared analysis help
+
+The following explanations are now behind info markers rather than permanent
+paragraphs. Existing warnings and live availability counts remain visible.
+
+| UI location | Helper text or source | Used for |
+| --- | --- | --- |
+| Flag and tag modal title | User reports are kept alongside automatic GPS and QA results. | Distinguishes user annotations from automatic results. |
+| Library Scenarios heading | Select one saved scenario and search the currently filtered sessions. Minimum total duration sums its qualifying episodes. Incomplete evaluations are reported separately. Searches are temporary and do not change session data. | Explains scope, duration thresholds and incomplete evaluations. |
+| Library cache warming status | Builds activity indexes, saved scenario evaluations and standard previews while the service is idle. User requests take priority after the current build finishes. Pause applies to this service session; warming stays off in read-only mode. | Explains idle work and pause behavior. |
+| Note field labels | Dynamic: the note schema field's `helpText`. | Explains each editable note field. |
+| Scenario Match label | Up to four criteria; advanced JSON supports nested/categorical predicates and other selector formats. | Explains visual-builder scope. |
+| Scenario gradient criterion heading | Gradient values are fractions; ?0.10 means ?10%. | Explains numeric units. |
+| Signal catalog library label | Availability applies to the suggestion library; scenarios remain reusable and do not store that library context. | Explains catalog scope. |
+| Meaning picker Stream label | Blank attributes match any value; resolution uses meaning metadata and requires a unique match in the session. | Explains semantic selection and catalog suggestions. |
+| Advanced definition JSON label | The canonical predicate contract is used; episode, eligibility and identity settings are managed separately. | Explains advanced editing boundaries. |
+| Shared analysis control-card titles | Dynamic: the card's existing `hint` text. | Explains control groups without a permanent subtitle. |
+| Track Analysis Find sessions / Find tracks / Add to view titles | The existing query and selection instructions for each workflow. | Explains local analysis selection. |
+| Tracks in map view headings | Pan/zoom and search instructions; changes affect this analysis view. | Explains map-dependent track lists. |
+| Track Analysis Tracks heading | Includes selecting a nearby track path and creating scratch tracks from session GPS. | Explains track selection and placement. |
+| Video trackpoint placement marker | The existing playback-position and trackpoint-placement instructions. | Explains video-assisted placement. |
+| Lap timing crossings marker | The existing crossing and section-timing explanation. | Explains the lap timing table. |
+
 ## Notes For Review
 
 - Empty states, warnings, and live status readouts remain visible rather than

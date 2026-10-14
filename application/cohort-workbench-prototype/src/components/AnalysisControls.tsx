@@ -40,7 +40,7 @@ export function AnalysisControlDrawer({
         <section className="viz-control-panel">
           <button className="viz-control-panel-header" type="button" onClick={onToggle}>
             <span>
-              <strong>Select and Filter <InfoTip text={infoText} /></strong>
+              <strong>Select and filter <InfoTip text={infoText} /></strong>
               <small>{summary}</small>
             </span>
             <ChevronLeft size={16} />
@@ -153,8 +153,7 @@ export function AnalysisScenarioPicker({
 export function AnalysisControlCard({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
   return (
     <section className="viz-mode-filter-control">
-      <strong>{title}</strong>
-      {hint && <small>{hint}</small>}
+      <strong className="inline-heading">{title}{hint && <InfoTip label={`About ${title.toLowerCase()}`} text={hint} />}</strong>
       {children}
     </section>
   )

@@ -21,6 +21,7 @@ export type ScenarioBuilderCondition = {
   streamName: string
   column: string
   op: ScenarioNumericOperator
+  selector?: Record<string, string>
   value: string
   lower: string
   upper: string
@@ -74,10 +75,15 @@ export function scenarioPredicateFromBuilder(builder: ScenarioPredicateBuilderSt
     const criterionId = condition.criterionId.trim() || `criterion-${index + 1}`
     const uniqueId = ids.has(criterionId) ? `${criterionId}-${index + 1}` : criterionId
     ids.add(uniqueId)
-    if (!condition.streamName.trim() || !condition.column.trim()) throw new Error(`Criterion ${index + 1} requires a stream and column.`)
+    if (!condition.streamName.trim()) throw new Error(`Criterion ${index + 1} requires a stream.`)
+    const selector = Object.fromEntries(Object.entries(condition.selector ?? {}).filter(([, value]) => value.trim()))
+    if (condition.seriesKey === 'meaning' && Object.keys(selector).length === 0) throw new Error(`Criterion ${index + 1} requires at least one meaning attribute.`)
+    if (condition.seriesKey !== 'meaning' && !condition.column.trim()) throw new Error(`Criterion ${index + 1} requires a column.`)
     const criterion: ScenarioCriterion = {
       criterionId: uniqueId,
-      series: { streamName: condition.streamName.trim(), column: condition.column.trim() },
+      series: condition.seriesKey === 'meaning'
+        ? { streamName: condition.streamName.trim(), selector: { ...selector } }
+        : { streamName: condition.streamName.trim(), column: condition.column.trim() },
       op: condition.op,
     }
     if (condition.op === 'between' || condition.op === 'outside') {
@@ -111,15 +117,18 @@ export function defaultScenarioCondition(index: number): ScenarioBuilderConditio
 }
 
 function conditionFromCriterion(criterion: ScenarioCriterion): ScenarioBuilderCondition | null {
-  if (!criterion.series.column || criterion.series.selector) return null
+  const selector = criterion.series.selector
+  if (selector && (criterion.series.column || Object.keys(selector).length === 0 || Object.values(selector).some((value) => typeof value !== 'string'))) return null
+  if (!selector && !criterion.series.column) return null
   if (!['lt', 'lte', 'gt', 'gte', 'between', 'outside'].includes(criterion.op)) return null
   const definition = scenarioSeriesDefinitions.find((item) => item.streamName === criterion.series.streamName && item.column === criterion.series.column)
   return {
     editorId: nextEditorId(),
     criterionId: criterion.criterionId,
-    seriesKey: definition?.key ?? 'custom',
+    seriesKey: selector ? 'meaning' : definition?.key ?? 'custom',
     streamName: criterion.series.streamName,
-    column: criterion.series.column,
+    column: criterion.series.column ?? '',
+    ...(selector ? { selector: { ...selector } as Record<string, string> } : {}),
     op: criterion.op as ScenarioNumericOperator,
     value: String(criterion.value ?? definition?.defaultValue ?? 0),
     lower: String(criterion.range?.lower ?? 0),

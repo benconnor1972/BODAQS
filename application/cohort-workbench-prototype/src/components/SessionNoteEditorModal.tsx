@@ -8,7 +8,7 @@ import type {
   SessionNoteValue,
   SessionRecord,
 } from '../domain/types'
-import { IconButton } from './Common'
+import { IconButton, InfoTip } from './Common'
 import { NoteBadge } from './StatusBadges'
 
 type NoteDraft = {
@@ -194,7 +194,7 @@ export function SessionNoteEditorModal({
                 )}
                 {groupedFields.map((group) => (
                   <fieldset className="note-field-group" key={group.section}>
-                    <legend>{group.section}</legend>
+                    <legend>{{ overview: 'Overview', bike: 'Bike', front: 'Front', rear: 'Rear', notes: 'Notes', custom: 'Custom' }[group.section] ?? group.section}</legend>
                     <div className="note-field-grid">
                       {group.rows.map((row) => (
                         <NoteFieldEditor
@@ -263,6 +263,7 @@ function NoteFieldEditor({
       <span>
         {label}
         {field.required ? <em> required</em> : null}
+        {field.helpText && <InfoTip label={`About ${field.label}`} text={field.helpText} />}
       </span>
       {field.fieldType === 'bool' ? (
         <span className="note-bool-control">
@@ -274,7 +275,7 @@ function NoteFieldEditor({
           Yes
         </span>
       ) : field.fieldType === 'enum' ? (
-        <select value={noteValueText(value)} onChange={(event) => onChange(event.target.value || null)}>
+        <select aria-label={label} value={noteValueText(value)} onChange={(event) => onChange(event.target.value || null)}>
           <option value="">Not set</option>
           {field.enumOptions.map((option) => (
             <option value={option} key={option}>
@@ -304,9 +305,10 @@ function NoteFieldEditor({
           })}
         </span>
       ) : field.fieldType === 'text' ? (
-        <textarea value={noteValueText(value)} onChange={(event) => onChange(event.target.value)} />
+        <textarea aria-label={label} value={noteValueText(value)} onChange={(event) => onChange(event.target.value)} />
       ) : field.fieldType === 'int' || field.fieldType === 'float' ? (
         <input
+          aria-label={label}
           inputMode="decimal"
           value={noteValueText(value)}
           onChange={(event) => onChange(event.target.value)}
@@ -315,10 +317,10 @@ function NoteFieldEditor({
         <input
           value={noteValueText(value)}
           onChange={(event) => onChange(event.target.value)}
+          aria-label={label}
           type={field.fieldType === 'date' ? 'date' : 'text'}
         />
       )}
-      {field.helpText ? <small>{field.helpText}</small> : null}
     </label>
   )
 }

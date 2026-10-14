@@ -913,6 +913,50 @@ The first projected `note_fields` should include `bike` and `rider` where
 available. Additional projected fields may be added later without changing the
 core row shape.
 
+### 10.1 Library signal summary catalog
+
+`GET /api/v1/libraries/{library_id}/signal-catalog` returns a derived summary
+of the current whole-library session catalog. It is available in read-only mode;
+the service and library advertise `read_library_signal_catalog`.
+
+The response has schema `bodaqs.library_signal_catalog`, version `1`, with:
+
+- `library_id`, `scope: "whole_library"`, and
+  `availability_basis: "catalog_presence"`;
+- `catalog_generated_at` and `catalog_revision` (null where no revision exists);
+- `session_count`: distinct sessions in the library, including sessions with no
+  catalogued signals;
+- `sessions_with_catalogued_signals`, `signal_count`, and `signals`.
+
+Each signal entry is grouped by exact `(stream_name, column, unit)`. Different
+units remain separate entries; an unknown unit is null. Legacy records without
+`stream_name` use `primary`. Each entry provides a stable `entry_id`, the concrete
+reference and unit, `display_name`, all observed `display_names` and `signal_ids`,
+and `session_count` / `session_fraction`. The fraction uses the whole-library
+`session_count` as its denominator and is between zero and one. Duplicate signal
+records in a session contribute only once.
+
+`metadata` contains only attributes shared by every observed metadata variant.
+`metadata_variants` retains each differing metadata object with its distinct
+session count and whole-library fraction. Attributes include stream kind, time
+column, end, domain, quantity, processing role, inspection visibility, analysis
+variant, kind, sensor, component, coordinate frame, vector group, motion source
+and origin where present. Variant counts can overlap when a session contains
+more than one variant; they must not be summed to obtain entry coverage.
+Display aliases and metadata variants are ordered deterministically. Differently
+named columns are not merged by meaning, and absent metadata is not inferred.
+
+Presence is discovery evidence, not a guarantee of finite samples, time coverage,
+quality, or unique semantic resolution. An all-null signal can still be listed.
+Older libraries with incomplete registries may under-report signal presence.
+An empty library returns zero counts and an empty `signals` list.
+
+Aggregation adds no sample-data reads or preprocessing. It reuses the session
+catalog and caches summaries against the catalog dependency. Cold requests may
+incur the normal session-catalog construction cost. Import/reprocessing revision
+changes, invalidation followed by rebuild, and explicit catalog refresh refresh
+the summary as well. Existing session catalog responses remain unchanged.
+
 ---
 
 ## 11. Time-Series Window Contract v1
@@ -1137,6 +1181,7 @@ GET  /api/v1/libraries
 GET  /api/v1/libraries/{library_id}
 POST /api/v1/libraries/{library_id}/refresh
 GET  /api/v1/libraries/{library_id}/catalog
+GET  /api/v1/libraries/{library_id}/signal-catalog
 ```
 
 The first implementation discovers libraries under the active `libraries_root`.
@@ -1146,6 +1191,81 @@ root, and subsequent calls use the new adapter state. This is not an Import
 Manager import/preprocessing operation.
 
 ### 12.3 Session Curation
+
+Session user annotations are independent of session notes, video attachments,
+and generated GPS/QA results. They are stored at
+`runs/<run_id>/sessions/<session_id>/annotations/session_user_annotations.json`
+with schema `bodaqs.session_user_annotations`, version `1`.
+
+```text
+GET /api/v1/libraries/{library_id}/runs/{run_id}/sessions/{session_id}/user-annotations
+PUT /api/v1/libraries/{library_id}/runs/{run_id}/sessions/{session_id}/user-annotations
+```
+
+Both endpoints return schema `bodaqs.library_api.session_user_annotations`,
+version `1`, with `session_ref`, `present`, and `annotations`. The document
+contains run/session identity, revision, creation/update timestamps and these
+editable fields: `tags`, `gps_issue`, and `qa_issue`. A missing document returns
+`present=false`, revision `0`, empty timestamps/tags, and unflagged issues with
+empty explanations. GET does not create files. Missing sessions return `404`.
+
+PUT replaces all three editable fields. Send only those fields in `annotations`
+and the revision obtained from GET as the outer `expected_revision`:
+
+```json
+{
+  "expected_revision": 0,
+  "annotations": {
+    "tags": ["wet", "setup test"],
+    "gps_issue": {"flagged": true, "explanation": "Route jumps away from the trail."},
+    "qa_issue": {"flagged": false, "explanation": ""}
+  }
+}
+```
+
+Successful saves increment revision and preserve the original creation time.
+Stale revisions return `409 revision_conflict`; invalid content returns `400`.
+Writes use atomic file replacement, with revision checks and writes serialized
+within the service process. As with other local-library writes, run one writable
+service for a library; this is not a cross-process locking protocol. Read-only
+services expose GET and reject PUT with `403`. Capability flags are
+`read_session_user_annotations` and `write_session_user_annotations`.
+
+Tags are trimmed, Unicode case-folded, deduplicated and sorted. Supply at most
+100 non-empty strings, each at most 80 characters with no control characters.
+Each issue requires boolean `flagged`; `explanation` is optional text, defaults
+to empty and is limited to 4,000 characters. Explanations are independent of
+flag state: callers may preserve an explanation when clearing a flag, or clear
+both explicitly. Unknown editable fields are rejected.
+
+Catalog rows include additive `user_annotations` summaries with `present`,
+`revision`, `tags`, both issue objects (including explanations) and `warnings`.
+Saves advance the catalog revision and invalidate cached catalogs. Persistent
+catalog cache version is advanced so older cached rows are rebuilt. Corrupt or
+unsupported documents are not overwritten: direct access reports an error;
+catalog summaries emit `user_annotations_invalid` with null revision/issues.
+Generated `gps_summary` and `qc_summary` remain unchanged. Older libraries need
+no migration; annotations require no preprocessing or sample-data reads.
+Workbench session context menus provide a single Flag and tag... action.
+The editor follows the note editor layout and supports optional explanations, clearing flags,
+tag suggestions and explicit saving. It loads the current revision before
+editing; failed saves retain edits and offer an explicit reload. Read-only
+libraries display the saved annotations with editing disabled. GPS/QA glyphs
+indicate user reports, while their info panels show reports and explanations
+separately from automatic findings. Session metadata also displays tags.
+The optional Tags column is available through the Session Selector's Columns
+menu under Setup; it displays grouping-style tiles, supports sorting/search,
+and filters on individual whole tag names. The editor uses the same tag tiles
+with removal controls. Opening the shared editor does not change flag states.
+
+The Session Selector's Tags and user issues controls apply temporary filters.
+Tag selections can match any or all selected whole tag names. Issue choices
+include GPS, QA, either issue or no issues flagged. These filters combine with
+saved filters using AND. Save as filter opens Filter Manager with the current
+predicate as a new draft; naming and saving persists it. The visual saved-filter
+builder also offers Tags, User GPS issue and User QA issue. Tag entry uses one
+name per line, preserving commas within tag names. Missing annotations mean no
+tags/flags; unreadable issue status does not match an unflagged filter.
 
 ```text
 POST /api/v1/libraries/{library_id}/sessions/note
@@ -1659,6 +1779,18 @@ the full-resolution signal timebase.
 
 ### 12.9 Scenarios And Episodes
 
+Idle cache warming is exposed through `GET /api/v1/cache/warming` and
+`POST /api/v1/cache/warming` with `{ "enabled": true | false }`. Status includes
+`enabled`, `read_only`, `state` (`warming`, `waiting`, `idle` or `disabled`),
+`current`, `completed_units`, `failed_units`, `last_error`, `foreground_count`
+and `idle_seconds`. Enabling or pausing is writable-service-only and lasts until
+service restart. Read-only services report disabled warming.
+
+Foreground work takes priority at each build boundary; an in-progress read or
+evaluation finishes before queued foreground work proceeds. The cache warming
+[roadmap](../web-app/BODAQS_Library_Cache_Warming_Roadmap.md) records candidate
+selection, limits and the remaining interruption/resource-management work.
+
 Root-scoped Scenario persistence and read-only synchronous evaluation use:
 
 ```text
@@ -1678,6 +1810,50 @@ and caps a synchronous result at 10,000 Episodes. Secondary-stream criteria
 retain their native source-sample boundaries. Evaluation is read-only and
 continues to work when the service is in read-only mode; Scenario persistence
 does not.
+
+Library-wide Scenario session searches use a separate asynchronous API:
+
+```text
+POST   /api/v1/scenario-session-queries
+GET    /api/v1/scenario-session-queries/{query_id}
+GET    /api/v1/scenario-session-queries/{query_id}/results?offset=0&limit=100
+DELETE /api/v1/scenario-session-queries/{query_id}
+```
+
+Creation accepts `scenario_ref` (`scenario_id`, current integer `revision`),
+explicit `sessions` references, and `minimum_total_duration_s` (default zero;
+finite and non-negative). Duplicate references are removed. The request may
+contain up to 10,000 references. The saved definition is captured at creation;
+editing it afterwards does not alter a running search.
+
+The record uses schema `bodaqs.scenario_session_query`, version 1, and reports
+`query_id`, `status`, `minimum_total_duration_s`, `candidate_session_count`,
+`processed_session_count`, `matched_session_count`, `unavailable_session_count`,
+`partial_session_count` and `error`. Status is `queued`, `running`, `completed`,
+`cancelled` or `failed`. A match requires a fully succeeded evaluation, at least
+one qualifying Episode, and total Episode duration greater than or equal to the
+threshold. Partial/unavailable sessions are counted separately and excluded.
+Existing Scenario episode and eligibility policies still apply, including gap
+bridging. There is no instance-count search threshold.
+
+Results contain `session_ref` and `matched_duration_s` only. A results page
+returns `results`, `result_count` and nullable `next_offset`; `limit` must be
+1–500 and `offset` non-negative. Cancellation takes effect between evaluations,
+or after the current session finishes; it does not interrupt a Parquet read.
+
+Jobs are transient and available in read-only service mode. They are lost on
+service restart, expire after one hour from creation once inactive, and may be
+evicted earlier as new searches exceed the 32 retained-job limit. At most four
+searches may be active. Session evaluations share the existing Scenario
+semaphore, use its per-session cache, and retain its per-session Episode limit.
+No Scenario or session artifact is modified by creating or cancelling a job;
+the writable service may populate its existing disposable evaluation caches.
+
+The Workbench searches the current library/table/search-filtered scope, before
+applying any temporary Scenario result filter. One saved Scenario is selected
+in the library list without checkboxes. Results can filter the selector or add
+individual sessions to the Study Set. Changing Scenario, duration, library scope
+or reloading saved definitions clears that temporary result filter.
 
 ---
 

@@ -15,6 +15,7 @@ export type ColumnPreset = {
 }
 
 export const columnLabels: Record<ColumnId, string> = {
+  tags: 'Tags',
   name: 'Session',
   runName: 'Run',
   started: 'Started',
@@ -51,6 +52,7 @@ export const infoActionColumns = [
 export type InfoActionColumn = (typeof infoActionColumns)[number]
 
 export const allColumns: ColumnId[] = [
+  'tags',
   'name',
   'runName',
   'started',
@@ -96,7 +98,7 @@ export const columnGroups: ColumnGroup[] = [
   {
     id: 'setup',
     label: 'Setup',
-    columns: ['bike', 'rider', 'duration', 'distance'],
+    columns: ['bike', 'rider', 'tags', 'duration', 'distance'],
   },
   {
     id: 'processing',
@@ -179,6 +181,8 @@ export function getColumnText(
   libraries: LibraryRecord[],
 ) {
   switch (columnId) {
+    case 'tags':
+      return (session.userAnnotations?.tags ?? []).join(', ')
     case 'name':
       return session.name
     case 'runName':
