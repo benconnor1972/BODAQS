@@ -273,12 +273,12 @@ jobs:
             echo "error: Apple notarization returned no JSON (exit code $notary_exit_code). See the notarytool error above; agreement-related HTTP 403 errors require the team's Account Holder to review Apple Developer agreements." >&2
             exit 1
           fi
-          if ! plutil -lint "$notary_result" >/dev/null 2>&1; then
+          if ! python -c 'import json, sys; data = json.load(open(sys.argv[1], encoding="utf-8-sig")); sys.exit(0 if isinstance(data, dict) and all(isinstance(data.get(key, ""), str) for key in ("id", "status")) else 1)' "$notary_result" >/dev/null 2>&1; then
             echo "error: Apple notarization returned invalid JSON (exit code $notary_exit_code)." >&2
             exit 1
           fi
-          submission_id="$(plutil -extract id raw "$notary_result" 2>/dev/null || true)"
-          submission_status="$(plutil -extract status raw "$notary_result" 2>/dev/null || true)"
+          submission_id="$(python -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8-sig")).get("id", ""))' "$notary_result")"
+          submission_status="$(python -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8-sig")).get("status", ""))' "$notary_result")"
           if [[ "$notary_exit_code" -ne 0 || "$submission_status" != "Accepted" || -z "$submission_id" ]]; then
             echo "error: Apple notarization status: ${submission_status:-unknown}" >&2
             if [[ -n "$submission_id" ]]; then
