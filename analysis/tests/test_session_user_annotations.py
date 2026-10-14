@@ -1,6 +1,7 @@
 import json
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from threading import Event
 from pathlib import Path
 
 import pytest
@@ -104,6 +105,55 @@ def test_simultaneous_writers_cannot_both_save_same_revision(library):
             return "conflict"
     with ThreadPoolExecutor(max_workers=2) as executor:
         assert sorted(executor.map(lambda _: save(), range(2))) == ["conflict", "saved"]
+
+
+@pytest.mark.parametrize("operation", ["read", "write"])
+def test_location_resolution_waits_for_atomic_replacement(library, monkeypatch, operation):
+    import bodaqs_analysis.library_api.session_annotations as annotations
+    _, store, ref = library
+    replacing = Event()
+    release = Event()
+    started = Event()
+    original_replace = annotations.os.replace
+    original_location = annotations._location
+
+    def replace(source, destination):
+        replacing.set()
+        assert release.wait(5)
+        try:
+            return original_replace(source, destination)
+        finally:
+            replacing.clear()
+
+    def location(*args):
+        if replacing.is_set():
+            raise InvalidRequestError("Simulated Windows path resolution during replacement")
+        return original_location(*args)
+
+    monkeypatch.setattr(annotations.os, "replace", replace)
+    monkeypatch.setattr(annotations, "_location", location)
+
+    def concurrent_request():
+        started.set()
+        if operation == "read":
+            return load_session_user_annotations(store.root, ref)
+        with pytest.raises(RevisionConflictError):
+            save_session_user_annotations(store.root, ref, payload())
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(save_session_user_annotations, store.root, ref, payload())
+        assert replacing.wait(5)
+        second = executor.submit(concurrent_request)
+        try:
+            assert started.wait(5)
+            with pytest.raises(TimeoutError):
+                second.result(timeout=0.1)
+        finally:
+            release.set()
+        assert first.result()["annotations"]["revision"] == 1
+        result = second.result()
+        if operation == "read":
+            assert result["annotations"]["revision"] == 1
 
 
 def test_catalog_refresh_and_other_documents_unchanged(library):

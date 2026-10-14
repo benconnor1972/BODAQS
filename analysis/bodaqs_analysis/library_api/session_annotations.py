@@ -19,6 +19,15 @@ SESSION_USER_ANNOTATIONS_VERSION = 1
 _WRITE_LOCKS = [RLock() for _ in range(64)]
 
 
+def _annotation_lock(library_root: str | Path, session_ref: Mapping[str, Any]):
+    # Derive the lock from the stable library root and lexical identifiers,
+    # before resolving a file another writer may be atomically replacing.
+    root = Path(library_root).expanduser().resolve()
+    identity = (os.path.normcase(str(root)), str(session_ref.get("run_id", "")).strip(),
+                str(session_ref.get("session_id", "")).strip())
+    return _WRITE_LOCKS[hash(identity) % len(_WRITE_LOCKS)]
+
+
 def _location(library_root: str | Path, session_ref: Mapping[str, Any]) -> tuple[Path, dict[str, str]]:
     ref = {}
     for key in ("library_id", "run_id", "session_id"):
@@ -110,9 +119,10 @@ def _response(ref: Mapping[str, str], doc: Mapping[str, Any], *, present: bool) 
 
 
 def load_session_user_annotations(library_root: str | Path, session_ref: Mapping[str, Any]) -> dict[str, Any]:
-    path, ref = _location(library_root, session_ref)
-    doc = _read_document(path, ref)
-    return _response(ref, doc, present=doc["revision"] > 0)
+    with _annotation_lock(library_root, session_ref):
+        path, ref = _location(library_root, session_ref)
+        doc = _read_document(path, ref)
+        return _response(ref, doc, present=doc["revision"] > 0)
 
 
 def save_session_user_annotations(
@@ -121,15 +131,15 @@ def save_session_user_annotations(
     """Replace editable contents using an expected revision; serialize writers in this process."""
     if not isinstance(payload, Mapping):
         raise InvalidRequestError("Session annotation payload must be an object.")
-    path, ref = _location(library_root, session_ref)
-    expected = payload.get("expected_revision")
-    if type(expected) is not int or expected < 0:
-        raise InvalidRequestError("expected_revision must be a non-negative integer.")
-    raw = payload.get("annotations")
-    if not isinstance(raw, Mapping):
-        raise InvalidRequestError("annotations must be an object.")
-    content = _content(raw)
-    with _WRITE_LOCKS[hash(str(path)) % len(_WRITE_LOCKS)]:
+    with _annotation_lock(library_root, session_ref):
+        path, ref = _location(library_root, session_ref)
+        expected = payload.get("expected_revision")
+        if type(expected) is not int or expected < 0:
+            raise InvalidRequestError("expected_revision must be a non-negative integer.")
+        raw = payload.get("annotations")
+        if not isinstance(raw, Mapping):
+            raise InvalidRequestError("annotations must be an object.")
+        content = _content(raw)
         previous = _read_document(path, ref)
         if previous["revision"] != expected:
             raise RevisionConflictError("Session annotations were modified after loading.",
@@ -147,7 +157,7 @@ def save_session_user_annotations(
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
-    return _response(ref, doc, present=True)
+        return _response(ref, doc, present=True)
 
 
 def session_user_annotation_summary(store: ArtifactStore, run_id: str, session_id: str) -> dict[str, Any]:
