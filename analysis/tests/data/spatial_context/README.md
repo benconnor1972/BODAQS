@@ -9,6 +9,13 @@ Coordinates are relocated to a neutral origin, timestamps and altitude are
 rebased, and unrelated channels are omitted. Route shape and suspension values
 are retained because they are the evidence under test.
 
+The three base cases each include `primary.parquet`, `gps.parquet` and
+`metadata.json`. All six Parquet files must be committed with the manifest;
+the root `.gitignore` explicitly exempts these prepared fixtures from the
+general Parquet-output rule. CI uses them directly from a clean checkout and
+does not need access to the private source library. The fault variants reuse
+the base fixtures rather than storing additional recordings.
+
 `manifest.json` records provenance, deterministic fault variants, canonical
 configuration overrides, and tolerant output summaries. Rebuild it from a local
 copy of the source library with:

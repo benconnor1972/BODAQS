@@ -33,6 +33,13 @@ analysis/event schema/old versions/*
 firmware/libraries/*
 logs/*
 *.parquet
+# Prepared spatial-context regression fixtures required by clean-checkout tests.
+!analysis/tests/data/spatial_context/cases/pipenhot_full/primary.parquet
+!analysis/tests/data/spatial_context/cases/pipenhot_full/gps.parquet
+!analysis/tests/data/spatial_context/cases/sendit2_full/primary.parquet
+!analysis/tests/data/spatial_context/cases/sendit2_full/gps.parquet
+!analysis/tests/data/spatial_context/cases/rapid_activity_boundaries/primary.parquet
+!analysis/tests/data/spatial_context/cases/rapid_activity_boundaries/gps.parquet
 *.feather
 *.h5
 *.npz
