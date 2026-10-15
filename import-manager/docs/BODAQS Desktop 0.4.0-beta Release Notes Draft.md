@@ -157,24 +157,26 @@ uncommitted source files. It does not create a Git tag or publish a release.
   idle activity/Scenario warming, Pause, and Scenario search results.
 - Installer component manifest: verified all four requested versions.
 
-## Windows download
+## Downloads and signing
 
-- [Windows x64 installer](../dist/installer/windows/bodaqs-desktop-setup-0.4.0-beta.exe)
-- Size: 108,935,418 bytes (103.9 MiB)
-- [SHA-256 checksum](../dist/installer/windows/bodaqs-desktop-setup-0.4.0-beta.exe.sha256)
-- [Build manifest](../dist/installer/windows/bodaqs-desktop-setup-0.4.0-beta.build-manifest.json)
+BODAQS Desktop `0.4.0-beta` is available in four signed platform variants:
 
-```text
-3D0ECDB72728E4CA8DEF1A0A17731F664D08097CD91B642D7E9F570EF83BF0C3
-```
+| Platform | Release artifact | Signing and verification |
+| --- | --- | --- |
+| Windows x64 | `bodaqs-desktop-setup-0.4.0-beta.exe` | Certum Authenticode signature with a timestamp. |
+| macOS Apple silicon (arm64) | `BODAQS-Import-Manager-0.4.0-beta-macos-arm64.dmg` | Developer ID signed, notarized by Apple and stapled. |
+| macOS Intel (x64) | `BODAQS-Import-Manager-0.4.0-beta-macos-x64.dmg` | Developer ID signed, notarized by Apple and stapled. |
+| Linux x64 | `BODAQS-Import-Manager-0.4.0-beta-linux-x64.tar.gz` | Sigstore signature with an accompanying verification bundle. |
 
-The installer contains Import Manager, Library Service and the built Workbench.
-This package does not embed the optional demo library. Existing library paths
-and installed demo data can continue to be used.
+Each package contains Import Manager `0.1.11-beta`, Library Service
+`0.3.0-beta` and Workbench `0.3.0-beta`. Select the package matching the
+operating system and processor architecture.
 
-Desktop CI component defaults have been updated to Import Manager `0.1.11-beta`,
-Library Service `0.3.0-beta` and Workbench `0.3.0-beta`. A `Desktop-v0.4.0-beta`
-tag selects the bundle version; an ordinary main-branch push uses a CI build
-identifier. This local build has not created or pushed that tag.
+The Windows installer is accompanied by
+`bodaqs-desktop-setup-0.4.0-beta.exe.sha256`, calculated after signing.
+The Linux archive is accompanied by
+`BODAQS-Import-Manager-0.4.0-beta-linux-x64.tar.gz.sigstore.json` for
+Sigstore verification. Keep these verification files with their matching
+release artifacts.
 
-This locally generated installer is unsigned. Signing and publishing remain separate release steps.
+Existing library paths and installed demo data can continue to be used.

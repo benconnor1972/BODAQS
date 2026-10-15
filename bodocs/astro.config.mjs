@@ -87,6 +87,15 @@ export default defineConfig({
           label: 'User guide',
           autogenerate: {directory: 'user-guide'},
         }, {
+          label: 'Other build guides',
+          items: [
+            {slug: 'other-build-guides/handlebar-switch'},
+            {slug: 'other-build-guides/gps'},
+            {slug: 'other-build-guides/imu-mounting'},
+            {slug: 'other-build-guides/potentiometer-modifications'},
+            {slug: 'other-build-guides/string-potentiometer'},
+          ],
+        }, {
           label: 'Archive',
           autogenerate: {directory: 'archive'},
         },
