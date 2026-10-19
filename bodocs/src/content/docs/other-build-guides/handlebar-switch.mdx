@@ -1,9 +1,10 @@
 ---
 title: Handlebar switch
-description: Build guide for a BODAQS handlebar switch.
+description: Build guide for the BODAQS handlebar switch.
 ---
 
 import {Aside} from '@astrojs/starlight/components';
+import Flag from '@components/Flag.astro';
 
 <Aside type="note" title="Work in progress">
   This guide is a placeholder. Instructions will be added soon.
@@ -11,16 +12,90 @@ import {Aside} from '@astrojs/starlight/components';
 
 ## Overview
 
-To be added.
+This guide shows you how to build a handlebar-mounted switch for BODAQS data loggers. It is compatible with both the A8 and Prototype F loggers. It is not essential but is extremely useful.
 
-## Parts needed
+The switch can be used to start and stop logging; to mark events of interest while logging; to toggle WiFi on and off; and to freeze the sag reading when the Sag Helper is operating. It also functions as a duplicate 'enter' button in the menu system. 
 
-To be added.
+The switch also has an LED that is lit when the logger is logging. 
+
+## Parts and tools needed
+
+You will need: 
+
+<Flag src="/src/assets/pics/logger-build-guide/hardware_1.png" alt="hardware_1">
+A **3D printed switch housing**. The files are available [here].
+
+It is recommended that you print the housing in a tough and resilient material such as nylon, CF-nylon or CF-PPA. If you are limited to more basic materials, then PETG is probably the best choice.
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/hardware_1.png" alt="hardware_1">
+A **switch**. The recommended switch is [this one]. As well as Digikey, many local electronics suppliers carry this switch. It has some nearly identical close relatives: make sure the one you get is *intermittent, normally open, and has an LED*. 
+
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/hardware_1.png" alt="hardware_1">
+**3 or 4-core cable** in 24, 26 or 28 AWG. The exact details do not matter much: I prefer cable with smaller strands (28AWG) as it is thinner and easier to route, but slightly more delicate. Only three cores are needed, but 4-core cable is much more common.
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/hardware_1.png" alt="hardware_1">
+**M4 capscrew and brass insert** for fixing the housing to the handlebar. 
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/hardware_1.png" alt="hardware_1">
+The appropriate **plug** for your logger.
+For the A8 logger, the plug you need will depend on whether you want intermediate connectors in your wiring - see [this section](logger-build-guide/bodaqs-a8/sourcing-hardware/#plugs-for-the-connectors).
+Prototype-F loggers use a [3-pin M8 plug](/logger-build-guide/prototype-f/sourcing-hardware/#bill-of-materials). 
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/soldering_iron_1.png" alt="A generic soldering iron">
+**Electrical tools** (soldering iron, wire cutters, wire strippers etc) as listed [here](http://localhost:4321/logger-build-guide/bodaqs-a8/sourcing-hardware/#tools). 
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/hardware_1.png" alt="hardware_1">
+A **hot glue gun** for sealing and strain relief. 
+</Flag>
 
 ## Build steps
 
-To be added.
+<Flag src="/src/assets/pics/logger-build-guide/hardware_1.png" alt="hardware_1">
+**Print the switch housing** and install the M4 brass insert. Check the M4 capscrew can be threaded into the insert. If some melted plastic has found its way into the threads, it can be cleaned up with an M4 tap.
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/hardware_1.png" alt="hardware_1">
+Remove the nut and washer from the switch. Thread the cable through the cable port on the switch housing and **solder the switch to the cable**. The switch has four connectors:
+- Two *switch terminals* that are non-polarized (they can be wired either way around)
+- Two *LED connections* that need to be wired with the correct polarity: the long leg is positive and the short leg is negative.
+
+Three wires go to the switch: MARK (the switch output), LED (the LED input) and GND (the ground connection). Choose three cores from the cable you are using and decide which color will do which job. *Write it down* and save yourself some pain later. Then:
+- Bend the short leg of the LED connection so it touches one of the switch connections and solder the connections together. Solder the GND cable to this connection.
+- Solder the LED cable to the long leg of the LED connection
+- Solder the MARK cable to the unused switch connection.
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/hardware_1.png" alt="hardware_1">
+Carefully draw the cable back through the housing and push the switch into place. The switch should be a light friction fit in the housing.
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/hardware_1.png" alt="hardware_1">
+Using the hot glue gun, squirt hot glue into the cross-hole on the cable port until it squeezes out the front of the port. If you like, you can wet your fingers and pinch the excess glue into a neater shape. Be careful!
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/hardware_1.png" alt="hardware_1">
+Fit the switch to the bike and lay out the cable as you plan to route it. My preferred mounting position is: left-hand side, switch above the bar, cable routed along the brake line as far as the head tube, but do whatever works for you. Work out how long the cable needs to be; ass a little bit extra and cut to length.
+</Flag>
+
+<Flag src="/src/assets/pics/logger-build-guide/hardware_1.png" alt="hardware_1">
+Solder the connector to the plug. The required pin layout for A8 loggers is shown [here](/sensor-connection-and-wiring-guide/#digital-sensors) (in the UART section). The required layout for Prototype F loggers is shown [here](/logger-build-guide/prototype-f/building-the-logger/#assembling-the-connectors).
+</Flag>
 
 ## Installation and setup
 
-To be added.
+<Flag src="/src/assets/pics/logger-build-guide/hardware_1.png" alt="hardware_1">
+- Plug the switch plug into the logger and turn the logger on. 
+- Hold down the switch for 2 seconds and release. The logger should show that logging has started and the LED should illuminate. 
+- Do a short press of the switch. The logger should flash the message 'marked'.
+- Repeat the long press of the switch - the logger should stop logging and the LED should go out.
+-Mount the switch on your bike and secure the cable neatly.
+
+That's it.
+</Flag>
