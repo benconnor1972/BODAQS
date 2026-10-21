@@ -42,6 +42,7 @@ int runBdqV2WriterTests();
 int runRateTests();
 int runBoardProfileTests();
 int runAdcReadyWaitTests();
+int runStringPotWrapTests();
 int runI2CTransferPriorityTests();
 
 static int tests_passed = 0;
@@ -326,6 +327,7 @@ int main() {
 
     printf("\nRunning ADC ready wait tests...\n\n");
     tests_failed += runAdcReadyWaitTests();
+    tests_failed += runStringPotWrapTests();
 
     printf("\nRunning I2C transfer priority tests...\n\n");
     tests_failed += runI2CTransferPriorityTests();

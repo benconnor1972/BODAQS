@@ -2,6 +2,7 @@
 
 #include "Sensor.h"
 #include "SensorParams.h"
+#include "StringPotWrapTracker.h"
 #include <limits.h>
 
 class AS5600StringPotSensorBase : public Sensor {
@@ -67,6 +68,7 @@ public:
 
 protected:
   virtual int readWrappedCountsOnce() const = 0;
+  virtual bool hasAnalogWrapSettling() const { return false; }
 
   void applyBaseParams(const BaseParams& p);
   void resetTrackingState(bool assumeTurnZero);
@@ -122,7 +124,5 @@ private:
   bool     m_muted = false;
 
   mutable bool    m_trackingInit = false;
-  mutable int     m_lastWrappedRaw = 0;
-  mutable int32_t m_turnIndex = 0;
-  mutable int32_t m_lastUnwrappedRaw = 0;
+  mutable StringPotWrapTracker m_wrapTracker;
 };
