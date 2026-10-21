@@ -25,6 +25,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+from .timebase import time_searchsorted
 
 
 # -------------------------
@@ -110,7 +111,7 @@ class MetricsContext:
     events: pd.DataFrame              # aligned to data rows (valid segments only)
     segments: pd.DataFrame            # valid-only, aligned
     data: Mapping[str, np.ndarray]    # role arrays, shape (n_seg, n_samp)
-    t_rel_s: np.ndarray               # 1D grid, shape (n_samp,)
+    t_rel_s: np.ndarray               # per-event grids, shape (n_seg, n_samp)
     dt_s: float                       # estimated dt from t_rel_s
 
 
@@ -176,12 +177,16 @@ def compute_metrics_from_segments(
             "This often indicates a transposed t_rel_s array."
         )
 
-    t_rel = t_rel_2d[0].astype(np.float64, copy=False)
-    dt_s = _estimate_dt(t_rel)
+    t_rel = t_rel_2d.astype(np.float64, copy=False)
+    steps = np.diff(t_rel, axis=1)
+    steps = steps[np.isfinite(steps) & (steps > 0)]
+    if not steps.size:
+        raise ValueError("SegmentBundle has no positive sample intervals")
+    dt_s = float(np.median(steps))
 
     # Ensure all role arrays have correct shape
     n_seg = len(seg_valid)
-    n_samp = len(t_rel)
+    n_samp = t_rel.shape[1]
     for k, arr in data.items():
         if not isinstance(arr, np.ndarray):
             continue
@@ -284,7 +289,7 @@ def _metric_peak(ctx: MetricsContext, spec: Mapping[str, Any], *, strict: bool) 
 
     if return_time:
         t = ctx.t_rel_s
-        t_at = t[idx]
+        t_at = t[np.arange(len(idx)), idx]
         out[f"{col_val}_t_rel_s"] = t_at.astype(np.float64, copy=False)
 
     return out
@@ -338,11 +343,31 @@ def _metric_interval_stats(ctx: MetricsContext, spec: Mapping[str, Any], *, stri
         t0_rel = t0_rel + min_delay_s
 
     grid = ctx.t_rel_s
-    i0 = np.searchsorted(grid, t0_rel, side="left")
-    i1 = np.searchsorted(grid, t1_rel, side="right")
-
-    i0 = np.clip(i0, 0, len(grid) - 1)
-    i1 = np.clip(i1, 0, len(grid))
+    # Prefer original absolute timestamps: subtraction/re-addition at a trigger
+    # must not move an inclusive endpoint to its neighbouring sample.
+    absolute_grid = ctx.data.get("time_s")
+    search_grid = absolute_grid if absolute_grid is not None else grid
+    lower = np.minimum(t0_abs, t1_abs) + max(min_delay_s, 0) if absolute_grid is not None else t0_rel
+    upper = np.maximum(t0_abs, t1_abs) if absolute_grid is not None else t1_rel
+    i0 = np.zeros(len(y), dtype=int)
+    i1 = np.zeros(len(y), dtype=int)
+    for row in range(len(y)):
+        if not np.isfinite([lower[row], upper[row]]).all():
+            continue
+        a = time_searchsorted(search_grid[row], lower[row])
+        b = time_searchsorted(search_grid[row], upper[row], side="right")
+        # Do not silently measure a clipped or cross-boundary stroke. Padded
+        # timestamps are finite, so also require actual signal coverage.
+        if a >= b or a >= y.shape[1] or b == 0:
+            continue
+        a = min(a, y.shape[1] - 1)
+        b = min(b, y.shape[1])
+        slack = 8 * np.finfo(float).eps * max(1.0, abs(lower[row]), abs(upper[row]))
+        if (lower[row] < search_grid[row, 0] - slack
+                or upper[row] > search_grid[row, -1] + slack
+                or not np.isfinite(y[row, a:b]).all()):
+            continue
+        i0[row], i1[row] = a, b
 
     if smooth_ms and smooth_ms > 0:
         win = max(1, int(round((smooth_ms / 1000.0) / ctx.dt_s)))
@@ -586,6 +611,7 @@ def _resolve_trigger_idx(events: pd.DataFrame, trigger_id: str, strict: bool) ->
 
 
 def _moving_average_2d(y: np.ndarray, win: int) -> np.ndarray:
+    win = min(win, y.shape[1])
     if win <= 1:
         return y
 
@@ -649,5 +675,5 @@ def _integral_interval(y: np.ndarray, i0: np.ndarray, i1: np.ndarray, grid: np.n
         a = int(i0[r]); b = int(i1[r])
         if b <= a:
             continue
-        out[r] = float(np.trapz(y[r, a:b], grid[a:b]))
+        out[r] = float(np.trapezoid(y[r, a:b], grid[r, a:b]))
     return out

@@ -2709,6 +2709,8 @@ def _preprocess_loaded_session(session: Dict[str, Any],
 
     if normalize_ranges is None and bike_profile is None:
         raise ValueError("preprocessing requires either normalize_ranges or bike_profile_path")
+    if session.get("source", {}).get("input_format") == "byb" and not session.get("meta", {}).get("zero_reference_resolved_columns"):
+        normalize_ranges = {}  # Explicitly disabled suspension: retain GPS/raw streams.
 
     # ---------------- Zero physical signal columns before bike-profile transforms ----------------
     if normalize_ranges is None:
@@ -2723,9 +2725,10 @@ def _preprocess_loaded_session(session: Dict[str, Any],
     else:
         zero_ranges = dict(normalize_ranges)
 
+    resolved_zero_columns = set(session.get("meta", {}).get("zero_reference_resolved_columns", []))
     df2, zero_meta = zero_signal_columns(
         df,
-        zero_ranges,
+        {col: value for col, value in zero_ranges.items() if col not in resolved_zero_columns},
         zeroing_enabled=zeroing_enabled,
         zero_window_s=zero_window_s,
         min_samples_abs_min=zero_min_samples,
@@ -2737,6 +2740,7 @@ def _preprocess_loaded_session(session: Dict[str, Any],
         for r in zero_per_column
         if r.get("status") == "ok" and (r.get("zeroing") or {}).get("enabled", False)
     }
+    zeroed_columns_for_norm.update(resolved_zero_columns)
     session["df"] = df2
 
     if bike_profile is not None:
@@ -2762,7 +2766,7 @@ def _preprocess_loaded_session(session: Dict[str, Any],
             if r.get("output_column") is not None
             and str(r.get("input_column")) in zeroed_columns_for_norm
         }
-        if zeroing_enabled:
+        if zeroing_enabled or resolved_zero_columns:
             zeroed_columns_for_norm.update(generated_zeroed_transform_columns)
         session = build_signals_registry(session, strict=False)
         df2 = session["df"]
@@ -3372,7 +3376,7 @@ def preprocess_resolved(
     if not isinstance(meta, dict):
         raise ValueError("session['meta'] must be a dict")
 
-    if csv_path is not None:
+    if csv_path is not None and session_obj.get("source", {}).get("input_format") != "byb":
         sid = os.path.splitext(os.path.basename(str(csv_path)))[0]
     else:
         sid = str(session_obj.get("session_id") or meta.get("session_id") or "session")
@@ -3582,6 +3586,8 @@ def preprocess_session(
     activity_detection: Optional[Mapping[str, Any]] = None,
     spatial_context: Optional[Mapping[str, Any]] = None,
     timezone: Optional[str] = None,
+    byb_config_path: Optional[str | Path] = None,
+    byb_snapshot_path: Optional[str | Path] = None,
     include_events: bool = True,
     include_metrics: bool = True,
     strict: bool = True,
@@ -3609,7 +3615,14 @@ def preprocess_session(
         logger.info("Using existing session for preprocessing")
     else:
         input_path = session_or_path
-        if is_bdq_path(input_path):
+        if Path(input_path).suffix.lower() == ".byb":
+            from .byb import load_byb_session
+            session, bike_profile, _ = load_byb_session(
+                input_path, config_path=byb_config_path, snapshot_path=byb_snapshot_path,
+                timezone=timezone, preprocess_config={"zero_window_s": zero_window_s, "zero_min_samples": zero_min_samples, **(cfg or {})},
+            )
+            bike_profile_path = None
+        elif is_bdq_path(input_path):
             session = load_bdq_session(input_path, timezone=timezone)
             logger.info("BDQ session load complete: %s", input_path)
         else:

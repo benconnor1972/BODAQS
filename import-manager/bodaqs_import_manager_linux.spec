@@ -22,6 +22,7 @@ app_version = os.environ.get("BODAQS_IMPORT_MANAGER_APP_VERSION", "").strip() or
 )
 
 setup_datas = collect_data_files("bodaqs_import_manager.import_agent_assets")
+setup_datas.append((str(analysis_dir / "config" / "byb"), "bodaqs_import_manager/import_agent_assets/byb/examples"))
 setup_excludes = [
     "IPython",
     "jedi",

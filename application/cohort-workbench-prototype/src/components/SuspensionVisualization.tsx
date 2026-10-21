@@ -36,13 +36,12 @@ import type {
 import { InfoTip } from './Common'
 import { AnalysisControlDrawer, AnalysisEndPicker, AnalysisEntityPicker, AnalysisScenarioPicker } from './AnalysisControls'
 import { ScenarioEditorModal } from './ScenarioEditorModal'
+import { ALL_STROKE_EVENT_TYPES, isCompressionStroke, isReboundStroke, selectStrokeDefinitionRows, strokeEventTypes, strokeEventTypeMatches } from '../domain/strokeDefinitions'
 
 const FRONT_COLOR = '#008c95'
 const REAR_COLOR = '#101820'
 const UNKNOWN_COLOR = '#8b9793'
 const ENTITY_SERIES_COLORS = ['#008c95', '#101820', '#d55e00', '#0072b2', '#cc79a7', '#e69f00', '#6f4c9b', '#009e73']
-const COMPRESSION_EVENT_TYPE = 'compressions_all'
-const REBOUND_EVENT_TYPE = 'rebounds_all'
 const SCATTER_X_METRIC = 'm_stroke_disp_max'
 const STROKE_LENGTH_METRIC = 'm_stroke_disp_range'
 const COMPRESSION_Y_METRIC = 'm_interval_vel_max'
@@ -71,7 +70,7 @@ const SCRATCH_SCENARIO_KEY = '__scratch__'
 const BASELINE_SCENARIO_KEY = '__all__'
 const PHASE_CONTOUR_MASS_OPTIONS = [0.5, 0.8, 0.95, 0.99, 0.999] as const
 const PHASE_DEFAULT_CONTOUR_MASSES = [0.5, 0.8, 0.95]
-const VISUALIZATION_SESSION_CACHE_VERSION = 3
+const VISUALIZATION_SESSION_CACHE_VERSION = 4
 const VELOCITY_STATS_FORMATTER = formatMetricValueWithUnit('mm/s')
 const STROKE_LENGTH_STATS_FORMATTER = formatMetricValueWithUnit('mm')
 const DISPLACEMENT_MM_STATS_FORMATTER = formatMetricValueWithUnit('mm')
@@ -227,6 +226,7 @@ type SuspensionVisualizationSettings = {
   showDisplacementStatsOnChart: boolean
   showVelocityStatsOnChart: boolean
   showStrokeLengthStatsOnChart: boolean
+  useBybStrokeDefinition: boolean
   phaseDensityBins: number
   phaseContourMasses: number[]
   phaseConditionalBins: number
@@ -434,6 +434,7 @@ export function SuspensionVisualization({
   const [showDisplacementStatsOnChart, setShowDisplacementStatsOnChart] = useState(initialSettings.showDisplacementStatsOnChart)
   const [showVelocityStatsOnChart, setShowVelocityStatsOnChart] = useState(initialSettings.showVelocityStatsOnChart)
   const [showStrokeLengthStatsOnChart, setShowStrokeLengthStatsOnChart] = useState(initialSettings.showStrokeLengthStatsOnChart)
+  const [useBybStrokeDefinition, setUseBybStrokeDefinition] = useState(initialSettings.useBybStrokeDefinition)
   const [phaseDensityBins, setPhaseDensityBins] = useState(initialSettings.phaseDensityBins)
   const [phaseContourMasses, setPhaseContourMasses] = useState(initialSettings.phaseContourMasses)
   const [phaseConditionalBins, setPhaseConditionalBins] = useState(initialSettings.phaseConditionalBins)
@@ -717,6 +718,7 @@ export function SuspensionVisualization({
       showDisplacementStatsOnChart,
       showVelocityStatsOnChart,
       showStrokeLengthStatsOnChart,
+      useBybStrokeDefinition,
       phaseDensityBins,
       phaseContourMasses,
       phaseConditionalBins,
@@ -757,6 +759,7 @@ export function SuspensionVisualization({
     showDisplacementStatsOnChart,
     showVelocityStatsOnChart,
     showStrokeLengthStatsOnChart,
+    useBybStrokeDefinition,
     phaseDensityBins,
     phaseContourMasses,
     phaseConditionalBins,
@@ -820,7 +823,32 @@ export function SuspensionVisualization({
     }
   }, [dataSource, sessions, studySetSessionKey, signalChoiceSignature, displacementUnitMode, mode])
 
-  const data = loadState.data ?? null
+  const data = useMemo(() => {
+    const loaded = loadState.data
+    if (!loaded || mode !== 'simple') return loaded ?? null
+    return {
+      ...loaded,
+      events: selectStrokeDefinitionRows(loaded.events, useBybStrokeDefinition),
+      metrics: selectStrokeDefinitionRows(loaded.metrics, useBybStrokeDefinition),
+    }
+  }, [loadState.data, mode, useBybStrokeDefinition])
+  const selectedStrokeEvents = strokeEventTypes(useBybStrokeDefinition)
+  const missingStrokeMetrics = useMemo(() => {
+    if (!data || mode !== 'simple') return 0
+    const available = new Set<string>()
+    for (const row of data.metrics) {
+      for (const [direction, type] of Object.entries(selectedStrokeEvents)) {
+        const velocity = row.fields[direction === 'compression' ? COMPRESSION_Y_METRIC : REBOUND_Y_METRIC]
+        if (strokeEventTypeMatches(row.eventType, type) && Number.isFinite(numericField(velocity))
+            && Number.isFinite(numericField(row.fields[STROKE_LENGTH_METRIC]))) {
+          available.add(`${sessionRefId(row.sessionRef)}|${row.signalRole}|${type}`)
+        }
+      }
+    }
+    return selectedSessionRefs.reduce((count, ref) => count + selectedEnds.filter((end) =>
+      !Object.values(selectedStrokeEvents).every((type) => available.has(`${sessionRefId(ref)}|${end}|${type}`)),
+    ).length, 0)
+  }, [data, mode, selectedSessionRefs, selectedEnds, selectedStrokeEvents])
   const activityMaskSummary = useMemo(() => data ? summarizeActivityMasks(data) : null, [data])
   const deferredTimeWindowsBySession = useDeferredValue(timeWindowsBySession)
   const windowedData = useMemo(
@@ -1131,6 +1159,8 @@ export function SuspensionVisualization({
                   showDisplacementStatsOnChart={showDisplacementStatsOnChart}
                   showStrokeLengthStatsOnChart={showStrokeLengthStatsOnChart}
                   showVelocityStatsOnChart={showVelocityStatsOnChart}
+                  useBybStrokeDefinition={useBybStrokeDefinition}
+                  onUseBybStrokeDefinitionChange={setUseBybStrokeDefinition}
                 />
                 )}
         </AnalysisControlDrawer>
@@ -1139,6 +1169,12 @@ export function SuspensionVisualization({
           {loadState.status === 'loading' && <div className="viz-status">{loadState.message}</div>}
           {loadState.status === 'error' && <div className="viz-status warning">Could not load visualization data: {loadState.message}</div>}
           {loadState.status === 'idle' && <div className="viz-status">{loadState.message}</div>}
+          {loadState.status === 'ready' && missingStrokeMetrics > 0 && (
+            <div className="viz-status warning">
+              {useBybStrokeDefinition ? 'BYB-style' : 'BODAQS'} stroke metrics are missing for {missingStrokeMetrics} selected session/end combination(s).
+              {' '}Reprocess with the combined event schema or {useBybStrokeDefinition ? 'clear' : 'select'} “Use BYB stroke definition” to use the other definition.
+            </div>
+          )}
           {selectedScenario && scenarioEvaluationState.status === 'loading' && <div className="viz-status">{scenarioEvaluationState.message}</div>}
           {selectedScenario && scenarioEvaluationState.status === 'error' && <div className="viz-status warning">{scenarioEvaluationState.message}</div>}
 
@@ -1324,7 +1360,7 @@ export function SuspensionVisualization({
             collapsed={collapsedPanels.includes('compression')}
             onToggle={() => togglePanel('compression')}
           >
-            <MemoFacetedScatterGrid model={facetModel} fallbackData={activityFilteredBaseData} eventType={COMPRESSION_EVENT_TYPE} xMetric={SCATTER_X_METRIC} yMetric={COMPRESSION_Y_METRIC} yLabel="Compression velocity (mm/s)" />
+            <MemoFacetedScatterGrid model={facetModel} fallbackData={activityFilteredBaseData} eventType={selectedStrokeEvents.compression} xMetric={SCATTER_X_METRIC} yMetric={COMPRESSION_Y_METRIC} yLabel="Compression velocity (mm/s)" />
           </VisualizationPanel>
 
           <VisualizationPanel
@@ -1334,7 +1370,7 @@ export function SuspensionVisualization({
             collapsed={collapsedPanels.includes('rebound')}
             onToggle={() => togglePanel('rebound')}
           >
-            <MemoFacetedScatterGrid model={facetModel} fallbackData={activityFilteredBaseData} eventType={REBOUND_EVENT_TYPE} xMetric={SCATTER_X_METRIC} yMetric={REBOUND_Y_METRIC} yLabel="Rebound velocity (mm/s)" />
+            <MemoFacetedScatterGrid model={facetModel} fallbackData={activityFilteredBaseData} eventType={selectedStrokeEvents.rebound} xMetric={SCATTER_X_METRIC} yMetric={REBOUND_Y_METRIC} yLabel="Rebound velocity (mm/s)" />
           </VisualizationPanel>
 
           <VisualizationPanel
@@ -1628,6 +1664,8 @@ function DisplayOptionsControl({
   showDisplacementStatsOnChart,
   showStrokeLengthStatsOnChart,
   showVelocityStatsOnChart,
+  useBybStrokeDefinition,
+  onUseBybStrokeDefinitionChange,
 }: {
   modes: FrequencyDisplayModes
   onChange: (quantity: keyof FrequencyDisplayModes, mode: FrequencyDisplayMode) => void
@@ -1639,6 +1677,8 @@ function DisplayOptionsControl({
   showDisplacementStatsOnChart: boolean
   showStrokeLengthStatsOnChart: boolean
   showVelocityStatsOnChart: boolean
+  useBybStrokeDefinition: boolean
+  onUseBybStrokeDefinitionChange: (checked: boolean) => void
 }) {
   return (
     <section className="viz-display-options">
@@ -1702,6 +1742,14 @@ function DisplayOptionsControl({
           value={modes.strokeLength}
           onChange={(mode) => onChange('strokeLength', mode)}
         />
+        <fieldset className="viz-frequency-options">
+          <legend>Compatibility</legend>
+          <label className="viz-frequency-extra-option">
+            <input checked={useBybStrokeDefinition} onChange={(event) => onUseBybStrokeDefinitionChange(event.target.checked)} type="checkbox" />
+            Use BYB stroke definition
+          </label>
+          <small>Use movement between displacement extrema for stroke distributions and balance plots.</small>
+        </fieldset>
       </div>
     </section>
   )
@@ -5950,7 +5998,7 @@ async function fetchVisualizationLibrarySessions(
     ),
     mode === 'simple' ? dataSource.queryEvents(libraryId, { sessions: refs }) : Promise.resolve({ rows: [], warnings: [] }),
     mode === 'simple'
-      ? dataSource.queryMetrics(libraryId, { sessions: refs, eventTypes: [COMPRESSION_EVENT_TYPE, REBOUND_EVENT_TYPE] })
+      ? dataSource.queryMetrics(libraryId, { sessions: refs, eventTypes: ALL_STROKE_EVENT_TYPES })
       : Promise.resolve({ rows: [], warnings: [] }),
   ])
   const signalWarnings = signalResponses.flatMap((response) => response.warnings)
@@ -6105,6 +6153,7 @@ function restoredVisualizationSettings(
     showDisplacementStatsOnChart: cached?.showDisplacementStatsOnChart ?? true,
     showVelocityStatsOnChart: cached?.showVelocityStatsOnChart ?? true,
     showStrokeLengthStatsOnChart: cached?.showStrokeLengthStatsOnChart ?? true,
+    useBybStrokeDefinition: cached?.useBybStrokeDefinition ?? true,
     phaseDensityBins: cached?.phaseDensityBins === 48 || cached?.phaseDensityBins === 96 ? cached.phaseDensityBins : 72,
     phaseContourMasses: normalizedPhaseContourMasses(cached?.phaseContourMasses),
     phaseConditionalBins: typeof cached?.phaseConditionalBins === 'number' && Number.isInteger(cached.phaseConditionalBins) && cached.phaseConditionalBins >= 20 && cached.phaseConditionalBins <= 120
@@ -7602,12 +7651,12 @@ function metricMirroredValuesForRows(rows: TableQueryRow[], end: SuspensionEnd, 
     if (row.signalRole !== end) {
       continue
     }
-    if (eventTypeMatches(row.eventType, COMPRESSION_EVENT_TYPE)) {
+    if (isCompressionStroke(row.eventType)) {
       const metricValue = numericField(row.fields[metricSpec.compressionMetricName])
       if (Number.isFinite(metricValue)) {
         values.push(Math.abs(metricValue))
       }
-    } else if (eventTypeMatches(row.eventType, REBOUND_EVENT_TYPE)) {
+    } else if (isReboundStroke(row.eventType)) {
       const metricValue = numericField(row.fields[metricSpec.reboundMetricName])
       if (Number.isFinite(metricValue)) {
         values.push(-Math.abs(metricValue))

@@ -7,6 +7,7 @@ import math
 
 from .signalname import parse_signal_name, format_signal_name, SignalNameParts
 from .signalspec import DEFAULT_SPEC
+from .timebase import continuous_segments
 
 
 # ---- Public helpers (stable contract) ---------------------------------
@@ -180,6 +181,25 @@ def estimate_va(
     target_cols = _pick_cols(df, cols)
 
     out = df.copy()
+
+    segments = continuous_segments(df, time_col=time_col, sample_rate_hz=1.0 / dt)
+    if len(segments) > 1:
+        pieces = []
+        unavailable = set()
+        for start, end in segments:
+            piece, info = estimate_va(
+                df.iloc[start:end], cols=target_cols, sample_rate_hz=1.0 / dt,
+                time_col=time_col, window_points=window_points, poly_order=poly_order,
+                return_meta=True,
+            )
+            pieces.append(piece)
+            unavailable.update(info["unavailable_cols"])
+        out = pd.concat(pieces)
+        info = {"dt": dt, "window_points": window_points, "poly_order": poly_order,
+                "cols": list(target_cols), "unavailable_cols": sorted(unavailable),
+                "time_col": time_col, "sample_rate_hz": sample_rate_hz,
+                "segment_count": len(segments)}
+        return (out, info) if return_meta else out
 
     # Interpolate ordinary gaps, but leave wholly unavailable signals for the
     # per-column guard below rather than passing them into SciPy.

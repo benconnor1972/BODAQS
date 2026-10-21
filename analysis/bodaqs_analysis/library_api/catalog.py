@@ -1723,7 +1723,7 @@ def _provenance_summary(
         "source_type": _first_text(source.get("import_source_type"), import_source.get("source_type")),
         "source_id": _first_text(source.get("import_source_id"), import_source.get("source_id")),
         "logger_id": _first_text(remote_source.get("logger_id"), source.get("logger_id")),
-        "archive_name": _optional_text(source.get("original_archive_filename")),
+        "archive_name": _first_text(source.get("original_archive_filename"), source.get("original_byb_filename"), source.get("original_bdq_filename")),
         "processing_key": _first_text(source.get("processing_key"), archive_import.get("processing_key")),
         "preprocessing_profile": _first_text(
             source.get("preprocess_profile_id"),

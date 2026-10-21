@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterator, Optional
 
 from .io_bdq import BDQ_SUFFIX, is_bdq_path
+from .io_byb import is_byb_path
 
 
 SESSION_ARCHIVE_SUFFIX = ".zip"
@@ -39,7 +40,7 @@ def is_session_archive_path(path: str | Path) -> bool:
 
 def is_session_input_path(path: str | Path) -> bool:
     suffix = Path(path).suffix.lower()
-    return suffix in {SESSION_ARCHIVE_SUFFIX, ".csv", BDQ_SUFFIX}
+    return suffix in {SESSION_ARCHIVE_SUFFIX, ".csv", BDQ_SUFFIX, ".byb"}
 
 
 def raw_session_identity(*, csv_sha256: str, log_metadata_sha256: str) -> str:
@@ -58,6 +59,10 @@ def bdq_session_identity(*, bdq_sha256: str) -> str:
             "format": "bdq.v1",
         }
     )
+
+
+def byb_session_identity(*, byb_sha256: str) -> str:
+    return sha256_jsonable({"byb_sha256": byb_sha256, "format": "byb.v1"})
 
 
 @dataclass(frozen=True)
@@ -87,6 +92,7 @@ class SessionInputIdentity:
     archive_sha256: Optional[str] = None
     bdq_sha256: Optional[str] = None
     contract: Optional[SessionArchiveContract] = None
+    byb_sha256: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -100,9 +106,12 @@ class PreparedSessionInput:
     archive_sha256: Optional[str] = None
     bdq_sha256: Optional[str] = None
     contract: Optional[SessionArchiveContract] = None
+    byb_sha256: Optional[str] = None
 
     @property
     def source_identity(self) -> str:
+        if self.input_kind == "byb" and self.byb_sha256:
+            return byb_session_identity(byb_sha256=self.byb_sha256)
         if self.contract is not None:
             return self.contract.raw_session_identity
         if self.input_kind == "bdq" and self.bdq_sha256:
@@ -111,6 +120,8 @@ class PreparedSessionInput:
 
     @property
     def source_identity_kind(self) -> str:
+        if self.input_kind == "byb":
+            return "byb_session_identity"
         if self.contract is not None:
             return "raw_session_identity"
         if self.input_kind == "bdq":
@@ -135,6 +146,9 @@ class PreparedSessionInput:
         if self.contract is None:
             manifest["original_input_path"] = str(self.input_path)
             manifest["original_input_filename"] = self.input_path.name
+            if self.input_kind == "byb":
+                manifest["original_byb_filename"] = self.input_path.name
+                manifest["byb_sha256"] = self.byb_sha256 or csv_sha256
             if self.input_kind == "bdq":
                 manifest["original_bdq_filename"] = self.input_path.name
                 manifest["original_bdq_sha256"] = self.bdq_sha256 or csv_sha256
@@ -212,6 +226,9 @@ def read_session_archive_contract(archive_path: str | Path) -> SessionArchiveCon
 
 def session_input_identity(path: str | Path) -> SessionInputIdentity:
     input_path = Path(path).expanduser().resolve()
+    if is_byb_path(input_path):
+        digest = sha256_file(input_path)
+        return SessionInputIdentity(input_path=input_path, input_kind="byb", source_identity=byb_session_identity(byb_sha256=digest), source_identity_kind="byb_session_identity", csv_sha256=digest, byb_sha256=digest)
     if is_session_archive_path(input_path):
         contract = read_session_archive_contract(input_path)
         return SessionInputIdentity(
@@ -287,6 +304,10 @@ def prepare_session_input(
     work_dir: Optional[str | Path] = None,
 ) -> Iterator[PreparedSessionInput]:
     input_path = Path(path).expanduser().resolve()
+    if is_byb_path(input_path):
+        digest = sha256_file(input_path)
+        yield PreparedSessionInput(input_path=input_path, input_kind="byb", csv_path=input_path, csv_sha256=digest, byb_sha256=digest)
+        return
     if is_session_archive_path(input_path):
         temp_parent = Path(work_dir).expanduser().resolve() if work_dir is not None else None
         if temp_parent is not None:

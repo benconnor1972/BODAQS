@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
+from .timebase import continuous_segments
 
 
 RAW_SIGNAL_DROPOUT_MODES = {"off", "detect", "detect_and_repair"}
-RAW_SIGNAL_DROPOUT_BEHAVIOR_VERSION = "bodaqs.raw_signal_dropout_filter.v3"
+RAW_SIGNAL_DROPOUT_BEHAVIOR_VERSION = "bodaqs.raw_signal_dropout_filter.v4"
 
 DEFAULT_RAW_SIGNAL_DROPOUT_FILTER: dict[str, Any] = {
     "mode": "detect_and_repair",
@@ -259,6 +260,7 @@ def apply_raw_signal_dropout_filter(
         return RawSignalDropoutResult(report=report, repaired_source_columns={})
 
     sample_rate_hz = _sample_rate_hz(df, meta)
+    continuity = continuous_segments(df, sample_rate_hz=sample_rate_hz)
     max_gap_samples = max(1, int(round(float(config.get("max_repair_gap_ms", 100.0)) * sample_rate_hz / 1000.0)))
     context_samples = max(2, int(round(float(config.get("context_ms", 25.0)) * sample_rate_hz / 1000.0)))
     max_boundary_extension_samples = max(
@@ -331,8 +333,8 @@ def apply_raw_signal_dropout_filter(
                     f"Skipped bounded analogue dropout detection for {raw_col!r}: electrical bounds unavailable"
                 )
                 continue
-            detected, segments, working_values = _detect_bounded_analog(
-                values,
+            detected, segments, working_values = _detect_continuous(
+                df, values, _detect_bounded_analog, continuity=continuity,
                 lower=bounds[0],
                 upper=bounds[1],
                 max_gap_samples=max_gap_samples,
@@ -344,8 +346,8 @@ def apply_raw_signal_dropout_filter(
             modulus = None
         else:
             modulus = float(detector_cfg.get("modulus", 4096.0))
-            detected, segments, working_values = _detect_wrapped_encoder(
-                values,
+            detected, segments, working_values = _detect_continuous(
+                df, values, _detect_wrapped_encoder, continuity=continuity,
                 modulus=modulus,
                 max_gap_samples=max_gap_samples,
                 context_samples=context_samples,
@@ -381,7 +383,8 @@ def apply_raw_signal_dropout_filter(
                 record["start_time_s"] = float(df.iloc[start]["time_s"])
                 record["end_time_s"] = float(df.iloc[end]["time_s"])
             if mode == "detect_and_repair" and segment.repair_eligible:
-                bridge = _bridge_segment(working_values, start, end, context_samples=context_samples)
+                bridge = _bridge_continuous(df, working_values, start, end,
+                                            context_samples=context_samples, continuity=continuity)
                 if bridge is not None:
                     if modulus is not None:
                         bridge = np.mod(bridge, modulus)
@@ -900,6 +903,31 @@ def _unwrap_counts(values: np.ndarray, modulus: float) -> np.ndarray:
     return out
 
 
+def _detect_continuous(df, values, detector, *, continuity=None, **kwargs):
+    detected = np.zeros(len(values), dtype=bool)
+    working = values.copy()
+    segments = []
+    for start, end in (continuity if continuity is not None else continuous_segments(df)):
+        if end - start < 3:
+            continue
+        mask, found, part = detector(values[start:end], **kwargs)
+        detected[start:end] = mask
+        working[start:end] = part
+        segments.extend(replace(s, start=s.start + start, end=s.end + start,
+                                core_intervals=tuple((a + start, b + start) for a, b in s.core_intervals))
+                        for s in found)
+    return detected, segments, working
+
+
+def _bridge_continuous(df, values, start, end, *, context_samples, continuity=None):
+    for lo, hi in (continuity if continuity is not None else continuous_segments(df)):
+        if lo <= start < hi:
+            if end >= hi:
+                return None
+            return _bridge_segment(values[lo:hi], start - lo, end - lo, context_samples=context_samples)
+    return None
+
+
 def _bridge_segment(
     values: np.ndarray, start: int, end: int, *, context_samples: int
 ) -> np.ndarray | None:
@@ -944,6 +972,7 @@ def _repair_related_logger_signals(
     repaired_source_col: str,
 ) -> None:
     sensor = str(raw_info.get("sensor") or raw_info.get("motion_source_id") or "").strip().lower()
+    continuity = continuous_segments(df)
     for column in list(df.columns):
         if column in {raw_col, repaired_source_col}:
             continue
@@ -961,7 +990,8 @@ def _repair_related_logger_signals(
         repaired = values.copy()
         any_repaired = False
         for start, end in _true_runs(repaired_mask):
-            bridge = _bridge_segment(values, start, end, context_samples=context_samples)
+            bridge = _bridge_continuous(df, values, start, end,
+                                        context_samples=context_samples, continuity=continuity)
             if bridge is None:
                 continue
             repaired[start : end + 1] = bridge

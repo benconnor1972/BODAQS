@@ -16,6 +16,7 @@ import pandas as pd
 import logging
 
 from .sensor_aliases import canonical_end
+from .timebase import continuous_segments, time_searchsorted
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ class OutputSpec:
     include_time_s: bool = True
     include_t_rel_s: bool = True
     include_primary_signal: bool = True
-    dtype: Any = np.float32
+    dtype: Any = np.float64
 
 
 @dataclass(frozen=True)
@@ -119,6 +120,7 @@ def extract_segments(
         window=resolved["window"],
         pad=req.output.pad,
         grid=resolved["grid"],
+        continuity=continuous_segments(df),
     )
 
     seg_df = seg_df.copy()
@@ -544,6 +546,7 @@ def _compute_segment_indices(
     window: WindowSpec,
     pad: PadMode,
     grid: GridSpec,
+    continuity: Optional[Sequence[Tuple[int, int]]] = None,
 ) -> Tuple[pd.DataFrame, int]:
     if df_time_s.ndim != 1:
         raise ValueError("df_time_s must be 1D")
@@ -568,6 +571,8 @@ def _compute_segment_indices(
         n_expected = int(window.pre_n + window.post_n + 1)
 
     rows: List[Dict[str, Any]] = []
+    continuity = list(continuity or [(0, len(df_time_s))])
+    continuous_starts = np.asarray([s for s, _ in continuity])
     for i, ev in events_df.iterrows():
         if anchor.endswith("_idx"):
             trigger_idx = int(ev[anchor])
@@ -581,7 +586,7 @@ def _compute_segment_indices(
                 reason = ""
         else:
             trigger_time_s = float(ev[anchor])
-            trigger_idx = int(np.searchsorted(df_time_s, trigger_time_s, side="left"))
+            trigger_idx = time_searchsorted(df_time_s, trigger_time_s)
             if trigger_idx < 0 or trigger_idx >= len(df_time_s):
                 valid = False
                 reason = "anchor time out of bounds"
@@ -596,14 +601,17 @@ def _compute_segment_indices(
             else:
                 t0 = trigger_time_s - float(window.pre_s)
                 t1 = trigger_time_s + float(window.post_s)
-                req_start_idx = int(np.searchsorted(df_time_s, t0, side="left"))
-                req_end_idx_excl = int(np.searchsorted(df_time_s, t1, side="right"))
+                req_start_idx = time_searchsorted(df_time_s, t0)
+                req_end_idx_excl = time_searchsorted(df_time_s, t1, side="right")
         else:
             req_start_idx = req_end_idx_excl = -1
 
         if valid:
-            start_idx = max(0, req_start_idx)
-            end_idx_excl = min(len(df_time_s), req_end_idx_excl)
+            continuous_start, continuous_end = continuity[
+                int(np.searchsorted(continuous_starts, trigger_idx, side="right") - 1)
+            ]
+            start_idx = max(continuous_start, req_start_idx)
+            end_idx_excl = min(continuous_end, req_end_idx_excl)
             n_here = end_idx_excl - start_idx
             if n_here <= 0:
                 valid = False
@@ -623,7 +631,7 @@ def _compute_segment_indices(
                 "req_end_idx_excl": int(req_end_idx_excl),
                 "start_idx": int(start_idx),
                 "end_idx_excl": int(end_idx_excl),
-                "n_expected": int(n_here),
+                "n_expected": int(n_here + max(0, start_idx - req_start_idx)) if valid else 0,
             }
         )
 
@@ -658,9 +666,9 @@ def _materialize_arrays_per_event(
         data[role] = _alloc()
 
     if output.include_time_s:
-        data["time_s"] = _alloc()
+        data["time_s"] = np.full((n_seg, n_expected), np.nan, dtype=np.float64)
     if output.include_t_rel_s:
-        data["t_rel_s"] = _alloc()
+        data["t_rel_s"] = np.full((n_seg, n_expected), np.nan, dtype=np.float64)
 
     time_s = df["time_s"].to_numpy(dtype=np.float64)
 
@@ -700,19 +708,19 @@ def _materialize_arrays_per_event(
             # time at column left_pad equals time_s[start_idx]
             base_time0 = float(time_s[start_idx]) - left_pad * dt_global
             if output.include_time_s:
-                data["time_s"][seg_out_i, :] = (base_time0 + grid_idx * dt_global).astype(output.dtype, copy=False)
+                data["time_s"][seg_out_i, :] = base_time0 + grid_idx * dt_global
 
             if output.include_t_rel_s:
                 base_rel0 = (float(time_s[start_idx]) - anchor_t) - left_pad * dt_global
-                data["t_rel_s"][seg_out_i, :] = (base_rel0 + grid_idx * dt_global).astype(output.dtype, copy=False)
+                data["t_rel_s"][seg_out_i, :] = base_rel0 + grid_idx * dt_global
 
             # Optionally overwrite the “have” region with exact timestamps (keeps perfect fidelity)
             if copy_n > 0:
                 t_slice = time_s[sl][:copy_n]
                 if output.include_time_s:
-                    data["time_s"][seg_out_i, left_pad:left_pad + copy_n] = t_slice.astype(output.dtype, copy=False)
+                    data["time_s"][seg_out_i, left_pad:left_pad + copy_n] = t_slice
                 if output.include_t_rel_s:
-                    data["t_rel_s"][seg_out_i, left_pad:left_pad + copy_n] = (t_slice - anchor_t).astype(output.dtype, copy=False)
+                    data["t_rel_s"][seg_out_i, left_pad:left_pad + copy_n] = t_slice - anchor_t
 
         # --- Copy signal roles (still padded with NaN if requested) ---
         for role, col in role_to_col.items():

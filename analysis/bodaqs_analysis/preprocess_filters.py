@@ -9,6 +9,7 @@ import pandas as pd
 
 from .signalname import SignalNameParts, format_signal_name, parse_signal_name
 from .signalspec import DEFAULT_SPEC, SignalSpec
+from .timebase import continuous_segments
 
 
 @dataclass(frozen=True)
@@ -220,7 +221,17 @@ def apply_butterworth_smoothing(
                 )
                 continue
 
-            filt, err = _filter_single_series_safely(out[src_col], sos=sos)
+            filt = np.full(len(out), np.nan)
+            errors = []
+            for start, end in continuous_segments(out, sample_rate_hz=sample_rate_hz):
+                part, error = _filter_single_series_safely(out[src_col].iloc[start:end], sos=sos)
+                if error is None:
+                    filt[start:end] = part
+                else:
+                    errors.append(f"segment [{start}, {end}): {error}")
+            err = "; ".join(errors) if not np.isfinite(filt).any() else None
+            if errors and err is None:
+                warnings.extend(f"[Butterworth] {src_col}: {error}" for error in errors)
             if err is not None or filt is None:
                 msg = (
                     f"[Butterworth] Skipped {src_col} with {cfg.op_tag}: {err or 'unknown_error'}"

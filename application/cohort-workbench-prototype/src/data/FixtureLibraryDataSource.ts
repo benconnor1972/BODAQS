@@ -39,6 +39,7 @@ import {
 } from './fixtures'
 import type { LibraryDataSource } from './LibraryDataSource'
 import { emptySessionAnnotations } from '../domain/sessionAnnotations'
+import { ALL_STROKE_EVENT_TYPES } from '../domain/strokeDefinitions'
 import type { SessionUserAnnotationRecord } from '../domain/types'
 
 export class FixtureLibraryDataSource implements LibraryDataSource {
@@ -761,7 +762,7 @@ function fixtureInactiveMask(sessionKey: string, count: number): number[] {
 
 function fixtureEventRows(sessionRef: { libraryId: string; sessionKey: string; runId: string; sessionId: string; label: string }): TableQueryRow[] {
   const rows: TableQueryRow[] = []
-  for (const eventType of ['compressions_all', 'rebounds_all']) {
+  for (const eventType of ALL_STROKE_EVENT_TYPES) {
     for (const role of ['front', 'rear'] as const) {
       const count = 18 + Math.floor(seededNumber(`${sessionRef.sessionKey}:${eventType}:${role}`) * 46)
       for (let index = 0; index < count; index += 1) {
@@ -802,7 +803,7 @@ function fixtureMarksForSession(sessionKey: string, startS: number, endS: number
 
 function fixtureMetricRows(sessionRef: { libraryId: string; sessionKey: string; runId: string; sessionId: string; label: string }): TableQueryRow[] {
   const rows: TableQueryRow[] = []
-  for (const eventType of ['compressions_all', 'rebounds_all']) {
+  for (const eventType of ALL_STROKE_EVENT_TYPES) {
     for (const role of ['front', 'rear'] as const) {
       const count = 28 + Math.floor(seededNumber(`${sessionRef.sessionKey}:metrics:${eventType}:${role}`) * 28)
       const roleOffset = role === 'rear' ? 6 : -3

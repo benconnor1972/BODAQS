@@ -12,6 +12,7 @@ from .signal_selectors import resolve_signal_selector
 from .signalname import SignalNameParts, format_signal_name, parse_signal_name
 from .signalspec import DEFAULT_SPEC, SignalSpec
 from .va import _effective_savgol_params, _savgol_numpy
+from .timebase import continuous_segments, finite_segments
 
 
 @dataclass(frozen=True)
@@ -302,44 +303,35 @@ def _derive_profile_for_source(
     vel_bw_tag = build_butterworth_op_tag(vel_cutoff, vel_order)
     acc_bw_tag = build_butterworth_op_tag(acc_cutoff, acc_order)
 
-    source_series = _numeric_interpolated(df[source_col])
-    disp_filtered = _butterworth_lowpass(
-        source_series,
-        sample_rate_hz=sample_rate_hz,
-        cutoff_hz=disp_cutoff,
-        order=disp_order,
-    )
-
-    vel = _savgol_derivative(
-        disp_filtered,
-        window_points=vel_sg.window_points,
-        poly_order=vel_sg.poly_order,
-        deriv=1,
-        dt=1.0 / sample_rate_hz,
-    )
-    acc = _savgol_derivative(
-        disp_filtered,
-        window_points=acc_sg.window_points,
-        poly_order=acc_sg.poly_order,
-        deriv=2,
-        dt=1.0 / sample_rate_hz,
-    )
-    vel_filtered = _butterworth_lowpass(
-        pd.Series(vel, index=df.index),
-        sample_rate_hz=sample_rate_hz,
-        cutoff_hz=vel_cutoff,
-        order=vel_order,
-    )
-    acc_filtered = _butterworth_lowpass(
-        pd.Series(acc, index=df.index),
-        sample_rate_hz=sample_rate_hz,
-        cutoff_hz=acc_cutoff,
-        order=acc_order,
-    )
-
-    nan_mask = pd.to_numeric(df[source_col], errors="coerce").isna().to_numpy(dtype=bool)
-    for arr in (disp_filtered, vel_filtered, acc_filtered):
-        arr[nan_mask] = np.nan
+    values = pd.to_numeric(df[source_col], errors="coerce").to_numpy(dtype=float)
+    segments = finite_segments(values, continuous_segments(df, sample_rate_hz=sample_rate_hz))
+    disp_filtered, vel_filtered, acc_filtered = [np.full(len(df), np.nan) for _ in range(3)]
+    segment_warnings = []
+    for start, end in segments:
+        try:
+            disp = _butterworth_lowpass(
+                pd.Series(values[start:end]), sample_rate_hz=sample_rate_hz,
+                cutoff_hz=disp_cutoff, order=disp_order,
+            )
+            vel = _savgol_derivative(
+                disp, window_points=vel_sg.window_points, poly_order=vel_sg.poly_order,
+                deriv=1, dt=1.0 / sample_rate_hz,
+            )
+            acc = _savgol_derivative(
+                disp, window_points=acc_sg.window_points, poly_order=acc_sg.poly_order,
+                deriv=2, dt=1.0 / sample_rate_hz,
+            )
+            vel = _butterworth_lowpass(
+                pd.Series(vel), sample_rate_hz=sample_rate_hz, cutoff_hz=vel_cutoff, order=vel_order,
+            )
+            acc = _butterworth_lowpass(
+                pd.Series(acc), sample_rate_hz=sample_rate_hz, cutoff_hz=acc_cutoff, order=acc_order,
+            )
+        except ValueError as exc:
+            # A short island cannot borrow samples from the next segment.
+            segment_warnings.append(f"{source_col}: segment [{start}, {end}) unavailable: {exc}")
+            continue
+        disp_filtered[start:end], vel_filtered[start:end], acc_filtered[start:end] = disp, vel, acc
 
     source_ops = tuple(source_parts.ops)
     semantic_base = _semantic_motion_base(source_parts, source_info)
@@ -360,6 +352,8 @@ def _derive_profile_for_source(
             {
                 "source_id": source_id,
                 "source_col": source_col,
+                "continuity_policy": "segment_id_or_missing_sample_v1",
+                "segment_count": len(segments),
                 "profile_id": profile_id,
                 "role": role,
                 "output_col": output_col,
@@ -380,6 +374,8 @@ def _derive_profile_for_source(
             "op_chain": list(source_ops + tuple(ops)),
             "derivation": {
                 "method": "motion_derivation",
+                "continuity_policy": "segment_id_or_missing_sample_v1",
+                "segment_count": len(segments),
                 "source_col": source_col,
                 "displacement_lowpass_hz": float(disp_cutoff),
                 "displacement_lowpass_order": int(disp_order),
@@ -404,7 +400,7 @@ def _derive_profile_for_source(
         },
         "generated": generated,
         "channel_info": channel_info,
-        "warnings": list(vel_sg.warnings + acc_sg.warnings),
+        "warnings": list(vel_sg.warnings + acc_sg.warnings) + segment_warnings,
     }
 
 

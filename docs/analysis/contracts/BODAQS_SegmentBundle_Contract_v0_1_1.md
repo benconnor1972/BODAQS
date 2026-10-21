@@ -148,6 +148,24 @@ A lightweight summary derived from `segments`.
 
 The SegmentBundle intentionally does **not** support variable‑length segments within a bundle.
 
+## 10. Stroke timing and continuity correction (2026-10-21)
+
+- Native rows may have different relative timestamps when a window is clipped
+  by the recording start or a continuous-segment boundary. Consumers MUST use
+  each row's own grid, including for peak times and interval integrals.
+- `time_s` and `t_rel_s` arrays are always float64. Signal output now defaults
+  to float64; callers can still explicitly request float32 signals through
+  `OutputSpec.dtype` without reducing timestamp precision.
+- Extraction stops at explicit `segment_id` changes and missing sample
+  intervals (timestamp delta greater than 1.5 nominal intervals). Nominal
+  intervals are inferred from the median positive timestamp difference.
+- Interval measurements require complete finite signal coverage between their
+  trigger anchors. Uncovered or cross-boundary intervals yield NaN metrics,
+  rather than partial measurements of a clipped stroke.
+
+See [Stroke timing and continuity](../Stroke_Timing_and_Continuity.md) for
+processing behaviour and migration guidance.
+
 ---
 
 **End of SegmentBundle Contract (v0.1)**

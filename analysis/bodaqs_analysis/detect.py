@@ -3,6 +3,8 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from .model import validate_events_df
 from .metrics import extract_metrics_df  # contract: metrics live in metrics.py
 from .signal_selectors import SIGNAL_SELECTOR_FIELDS, selector_matches_signal
+from .timebase import continuous_segments, finite_segments, time_searchsorted
+from .schema import reject_custom_triggers
 
 import copy
 import itertools
@@ -116,8 +118,88 @@ class _DetectionContext:
             tuple[str, tuple[tuple[str, Any, Any, int], ...], float, int],
             tuple[np.ndarray, dict[str, np.ndarray], dict[str, int]],
         ] = {}
-        self._band_keys: dict[int, tuple[tuple[str, Any, Any, int], ...]] = {}
         self._finite_bounds: dict[str, tuple[float, float]] = {}
+        self.segments = continuous_segments(df)
+        self.segment_starts = np.asarray([s for s, _ in self.segments], dtype=int)
+        self._candidates: dict[Any, tuple[list[dict], np.ndarray]] = {}
+        self._segment_contexts: dict[tuple[int, int], _DetectionContext] = {}
+        self._smoothed: dict[tuple[str, int], np.ndarray] = {}
+        self._signal_segments: dict[str, list[tuple[int, int]]] = {}
+
+    def signal_segments(self, name: str) -> list[tuple[int, int]]:
+        if name not in self._signal_segments:
+            self._signal_segments[name] = finite_segments(self.float_series(name), self.segments)
+        return self._signal_segments[name]
+
+    def bounds(self, index: int) -> tuple[int, int]:
+        return self.segments[int(np.searchsorted(self.segment_starts, index, side="right") - 1)]
+
+    def smoothed_series(self, name: str, win: int) -> np.ndarray:
+        key = (name, win)
+        if key not in self._smoothed:
+            values = self.float_series(name)
+            out = np.full(len(values), np.nan)
+            for start, end in self.signal_segments(name):
+                out[start:end] = _moving_average_1d(values[start:end], win)
+            self._smoothed[key] = out
+        return self._smoothed[key]
+
+    def trigger_candidates(self, ev: dict, dt: float, scanner, base_time: float | None) -> list[dict]:
+        """Scan continuous signals once; relative searches only select anchors.
+
+        Prominence/distance, hysteresis, dwell and smoothing are evaluated on
+        complete segments, independently of each caller's search window.
+        """
+        trig = ev["trigger"]
+        name = ev["inputs"].get(trig.get("signal"))
+        if not name:
+            return []
+        config = {k: v for k, v in trig.items()
+                  if k not in {"id", "type", "search", "debounce", "base_trigger"}}
+        smooth_ms = (trig.get("search") or {}).get("smooth_ms")
+        if smooth_ms is not None:
+            config["search"] = {"smooth_ms": smooth_ms}
+        key = (scanner.__name__, name, float(dt), _freeze_trigger(config),
+               ev["inputs"].get("disp"))
+        if key not in self._candidates:
+            candidates = []
+            for start, end in self.signal_segments(name):
+                bounds = (start, end)
+                local = self._segment_contexts.get(bounds)
+                if local is None:
+                    local = _DetectionContext(self.df.iloc[start:end])
+                    local.time_s = self.time_s[start:end]
+                    self._segment_contexts[bounds] = local
+                scan_ev = dict(ev, trigger=config)
+                found = scanner(local.df, dt, scan_ev, base_t0_sec=None, context=local)
+                edge = float(trig.get("edge_ignore_s", 0) or 0)
+                for candidate in found:
+                    idx = int(candidate["t0_index"]) + start
+                    if (self.time_s[idx] < self.time_s[start] + edge
+                            or self.time_s[idx] > self.time_s[end - 1] - edge):
+                        continue
+                    candidates.append({**candidate, "t0_index": idx,
+                                       "t0_time": float(self.time_s[idx]),
+                                       "_continuous_segment": start})
+            candidates.sort(key=lambda c: c["t0_index"])
+            self._candidates[key] = (candidates, np.asarray([c["t0_index"] for c in candidates]))
+        candidates, indices = self._candidates[key]
+        lo, hi = _resolve_search_window(trig, self.time_s, base_time)
+        if base_time is not None and np.isfinite(base_time):
+            anchor = time_searchsorted(self.time_s, base_time)
+            if anchor >= len(self.time_s):
+                return []
+            start, end = self.bounds(anchor)
+            lo, hi = max(lo, start), min(hi, end)
+            signal_segments = self.signal_segments(name)
+            signal_starts = [a for a, _ in signal_segments]
+            part = int(np.searchsorted(signal_starts, anchor, side="right") - 1)
+            if part < 0 or anchor >= signal_segments[part][1]:
+                return []
+            start, end = signal_segments[part]
+            lo, hi = max(lo, start), min(hi, end)
+        a, b = np.searchsorted(indices, [lo, hi], side="left")
+        return candidates[a:b]
 
     def float_series(self, name: str) -> np.ndarray:
         cached = self._float_series.get(name)
@@ -138,19 +220,12 @@ class _DetectionContext:
         if smooth_ms is not None and np.isfinite(dt) and dt > 0:
             smooth_win = max(1, int(round((float(smooth_ms) / 1000.0) / dt)))
 
-        bands_identity = id(bands)
-        bands_key = self._band_keys.get(bands_identity)
-        if bands_key is None:
-            bands_key = tuple(
-                (
-                    name,
-                    (bands.get(name, {}) or {}).get("min", -np.inf),
-                    (bands.get(name, {}) or {}).get("max", np.inf),
-                    int((bands.get(name, {}) or {}).get("dwell_samples", 1) or 1),
-                )
-                for name in ("neg", "zero", "pos")
-            )
-            self._band_keys[bands_identity] = bands_key
+        bands_key = tuple(
+            (name, (bands.get(name, {}) or {}).get("min", -np.inf),
+             (bands.get(name, {}) or {}).get("max", np.inf),
+             int((bands.get(name, {}) or {}).get("dwell_samples", 1) or 1))
+            for name in ("neg", "zero", "pos")
+        )
 
         key = (series_name, bands_key, float(dt), smooth_win)
         cached = self._phased_inputs.get(key)
@@ -159,8 +234,7 @@ class _DetectionContext:
 
         y = self.float_series(series_name)
         if smooth_win > 1:
-            kernel = np.ones(smooth_win, dtype=float) / smooth_win
-            y_s = np.convolve(y, kernel, mode="same")
+            y_s = self.smoothed_series(series_name, smooth_win)
         else:
             y_s = y
 
@@ -218,8 +292,8 @@ def _resolve_search_window(trig: dict, t: np.ndarray, base_t0_sec: float | None)
     start_sec = base + min_delay_s
     end_sec   = base + float(max_delay_s) if max_delay_s is not None else float(t[-1])
 
-    i0 = int(np.searchsorted(t, start_sec, side="left"))
-    i1 = int(np.searchsorted(t, end_sec,   side="right"))
+    i0 = time_searchsorted(t, start_sec)
+    i1 = time_searchsorted(t, end_sec, side="right")
     return _clip_bounds(n, i0, i1)
 
 def _event_has_semantic_inputs(ev: Mapping[str, Any]) -> bool:
@@ -495,7 +569,30 @@ def _hash_event_params(ev_resolved: dict, *, schema_version: str = "") -> str:
     b = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
     return hashlib.sha256(b).hexdigest()
 
+def _freeze_trigger(value):
+    if isinstance(value, Mapping):
+        return tuple(sorted((k, _freeze_trigger(v)) for k, v in value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_trigger(v) for v in value)
+    return value
+
+
 def _trigger_local_extrema(df, dt, ev, base_t0_sec=None, *, context=None):
+    context = context or _DetectionContext(df)
+    return context.trigger_candidates(ev, dt, _scan_local_extrema, base_t0_sec)
+
+
+def _trigger_threshold_crossing(df, dt, ev, base_t0_sec=None, *, context=None):
+    context = context or _DetectionContext(df)
+    return context.trigger_candidates(ev, dt, _scan_threshold_crossing, base_t0_sec)
+
+
+def _trigger_phased_threshold_crossing(df, dt, ev, base_t0_sec=None, *, context=None):
+    context = context or _DetectionContext(df)
+    return context.trigger_candidates(ev, dt, _scan_phased_threshold_crossing, base_t0_sec)
+
+
+def _scan_local_extrema(df, dt, ev, base_t0_sec=None, *, context=None):
     trig = ev["trigger"]
     signal = trig.get("signal")            # 'disp' | 'vel' | 'acc'
     kind = trig.get("kind")                # 'min' | 'max'
@@ -584,7 +681,7 @@ def _trigger_local_extrema(df, dt, ev, base_t0_sec=None, *, context=None):
         })
     return out
 
-def _trigger_threshold_crossing(df, dt, ev, base_t0_sec=None, *, context=None):
+def _scan_threshold_crossing(df, dt, ev, base_t0_sec=None, *, context=None):
     """
     Implements 'simple_threshold_crossing' (and legacy 'threshold_crossing').
 
@@ -676,7 +773,7 @@ def _trigger_zero_crossing(df, dt, ev, base_t0_sec=None, *, context=None):
         context=context,
     )
 
-def _trigger_phased_threshold_crossing(df, dt, ev, base_t0_sec=None, *, context=None):
+def _scan_phased_threshold_crossing(df, dt, ev, base_t0_sec=None, *, context=None):
     """
     Phased threshold crossing trigger.
 
@@ -986,16 +1083,15 @@ def _apply_conditions(df, dt, ev, t0_idx, inputs_map, *, context=None):
     def make_slice(within):
         start_s, end_s = within
         n = len(df)
-        def _s2n(sec):
-            k = _sec_to_samples_opt(sec, dt)
-            return int(k) if (k is not None) else 0
-        i0 = t0_idx + _s2n(start_s)
-        i1 = t0_idx + _s2n(end_s)
-        if i1 < i0:
-            i0, i1 = i1, i0
+        lo, hi = sorted((t[t0_idx] + start_s, t[t0_idx] + end_s))
+        i0, i1 = time_searchsorted(t, lo), time_searchsorted(t, hi)
         i0, i1 = _clip_bounds(n, i0, i1)
-        if i1 <= i0:
-            i1 = min(n, i0 + 1)
+        if context is not None:
+            start, end = context.bounds(t0_idx)
+            i0, i1 = max(i0, start), min(i1, end)
+        limit = context.bounds(t0_idx)[1] if context is not None else n
+        if i1 == i0 and i0 < limit:
+            i1 = i0 + 1
         return (i0, i1)
 
     # --- Preconditions ---
@@ -1068,7 +1164,8 @@ def _debounce_and_select(
         return abs(v) if prefer_abs else v
 
     for c in cands[1:]:
-        if c["t0_index"] - cluster[-1]["t0_index"] < min_gap:
+        if (c.get("_continuous_segment") == cluster[-1].get("_continuous_segment")
+                and c["t0_index"] - cluster[-1]["t0_index"] < min_gap):
             cluster.append(c)
         else:
             # choose within-cluster winner according to prefer_max
@@ -1100,7 +1197,7 @@ def _resolve_interval_from_triggers(
         min_delay_s = float(metric_cfg.get("min_delay_s", 0.0) or 0.0)
         if min_delay_s > 0:
             s_t += min_delay_s
-            s_i = int(np.searchsorted(t, s_t, side="left"))
+            s_i = time_searchsorted(t, s_t)
             s_i, e_i = _clip_bounds(len(df), s_i, e_i)
             if e_i <= s_i or e_t <= s_t:
                 return None
@@ -1127,8 +1224,8 @@ def _resolve_interval_from_triggers(
         return None
 
     # Convert to indices from times so fractional delays land on the data grid.
-    s_i = int(np.searchsorted(t, s_t, side="left"))
-    e_i = int(np.searchsorted(t, e_t, side="right"))
+    s_i = time_searchsorted(t, s_t)
+    e_i = time_searchsorted(t, e_t, side="right")
     n = len(df)
     s_i, e_i = _clip_bounds(n, s_i, e_i)
     if e_i <= s_i:
@@ -1256,7 +1353,8 @@ def _compute_metrics(
     smoothed_signal_cache: dict[tuple[str, int], np.ndarray] | None = None,
     context: _DetectionContext | None = None,
 ):
-    t = context.time_s if context is not None else _to_seconds(df["time_s"])
+    context = context or _DetectionContext(df)
+    t = context.time_s
     seg = df.iloc[start_idx:end_idx]
     metrics = ev.get("metrics", []) or []
     out = {}
@@ -1354,6 +1452,10 @@ def _compute_metrics(
                 continue
 
             s_i, e_i, s_t, e_t = interval
+            metric_context = context or _DetectionContext(df)
+            continuous_start, continuous_end = metric_context.bounds(t0_idx)
+            if s_i < continuous_start or e_i > continuous_end:
+                continue
 
             # Which signal?
             signal_name = signal or "vel"
@@ -1372,15 +1474,15 @@ def _compute_metrics(
                     cache_key = (str(col), win)
                     y_source = smoothed_signal_cache.get(cache_key)
                     if y_source is None:
-                        y_source = _moving_average_1d(y_full, win)
+                        y_source = metric_context.smoothed_series(col, win)
                         smoothed_signal_cache[cache_key] = y_source
                 else:
-                    y_source = _moving_average_1d(y_full, win) if win > 1 else y_full
+                    y_source = metric_context.smoothed_series(col, win) if win > 1 else y_full
             else:
                 y_source = y_full
 
             y_s = y_source[s_i:e_i]
-            if y_s.size == 0:
+            if y_s.size == 0 or not np.isfinite(y_full[s_i:e_i]).all():
                 continue
 
             polarity = m.get("polarity", None)
@@ -1481,9 +1583,10 @@ def _pick_secondary_candidate(st_cands, base_t0_sec, search_cfg):
         if not np.isfinite(t):
             continue
         rel = t - base_t0_sec  # seconds relative to base trigger
-        if rel < min_delay:
+        slack = 8 * np.finfo(float).eps * max(1.0, abs(t), abs(base_t0_sec))
+        if rel < min_delay - slack:
             continue
-        if (max_delay is not None) and (rel > max_delay):
+        if (max_delay is not None) and (rel > max_delay + slack):
             continue
         filtered.append((c, rel))
 
@@ -1534,6 +1637,7 @@ def detect_events_from_schema(
 ):
 
     df, meta, schema = _require_inputs(df=df, meta=meta, schema=schema)
+    reject_custom_triggers(schema)
 
     # Optional absolute datetime anchoring (contract-reserved column)
     _t0_dt_raw = meta.get("t0_datetime")
@@ -1698,12 +1802,6 @@ def detect_events_from_schema(
                 df, dt, ev_resolved, base_t0_sec=None, context=context
             )
             prefer_key_default = "t0_index"
-        elif ttype == "custom":
-            logger.warning(
-                "Custom trigger not implemented for %r. Skipping.",
-                ev_id,
-            )
-            cands, prefer_key_default = [], "t0_index"
         else:
             logger.warning(
                 "Unknown trigger type %r for %r. Skipping.",
@@ -1780,7 +1878,9 @@ def detect_events_from_schema(
             start_idx = t0_idx - pre_n
             end_idx   = t0_idx + post_n + 1
             start_idx, end_idx = _clip_bounds(len(df), start_idx, end_idx)
-            edge_clip = (start_idx == 0 or end_idx == len(df))
+            continuous_start, continuous_end = context.bounds(t0_idx)
+            start_idx, end_idx = max(start_idx, continuous_start), min(end_idx, continuous_end)
+            edge_clip = (start_idx == continuous_start or end_idx == continuous_end)
 
             # ---- CONDITIONS ----
             if not _apply_conditions(
@@ -1986,7 +2086,7 @@ def detect_events_from_schema(
                 "trigger_datetime": (_t0_ts + pd.to_timedelta(trigger_time_s, unit="s")) if _t0_ts is not None else None,
 
                 # ---- Provenance & QC (required) ----
-                "detector_version": "schema/v0",
+                "detector_version": "schema/v1-continuous",
                 "params_hash": params_hash,
 
                 # ---- Optional / future-proof ----

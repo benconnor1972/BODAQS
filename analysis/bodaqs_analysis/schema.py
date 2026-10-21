@@ -20,6 +20,19 @@ def _sha256(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 
+def reject_custom_triggers(schema: Mapping[str, Any]) -> None:
+    """Fail at ingestion, including callers passing schemas directly as dicts."""
+    for i, event in enumerate(schema.get("events") or []):
+        if not isinstance(event, Mapping):
+            continue
+        triggers = [(f"events[{i}].trigger", event.get("trigger"))]
+        triggers += [(f"events[{i}].secondary_triggers[{j}]", trigger)
+                     for j, trigger in enumerate(event.get("secondary_triggers") or [])]
+        for path, trigger in triggers:
+            if isinstance(trigger, Mapping) and trigger.get("type") == "custom":
+                raise ValueError(f"{path}.type 'custom' is not supported")
+
+
 def parse_event_schema(
     value: Mapping[str, Any] | str | bytes | Path,
     *,
@@ -57,6 +70,7 @@ def parse_event_schema(
 
     if not isinstance(schema, dict):
         raise ValueError("Top-level YAML must be a mapping (dict).")
+    reject_custom_triggers(schema)
 
     if not return_meta:
         return schema
@@ -207,7 +221,6 @@ def basic_validate(schema: Dict[str, Any]) -> List[str]:
         "threshold_crossing",
         "zero_crossing",
         "phased_threshold_crossing",
-        "custom",
     }
     allowed_dirs = {"rising", "falling", "either"}
 
@@ -293,8 +306,8 @@ def basic_validate(schema: Dict[str, Any]) -> List[str]:
 
         if ttype not in allowed_trigger_types:
             issues.append(f"{prefix}.trigger.type '{ttype}' not in allowed set {sorted(allowed_trigger_types)}.")
-        if ttype != "custom" and not isinstance(tsig, str):
-            issues.append(f"{prefix}.trigger.signal must be a string for non-custom triggers.")
+        if not isinstance(tsig, str):
+            issues.append(f"{prefix}.trigger.signal must be a string.")
 
         if ttype in ("simple_threshold_crossing", "threshold_crossing", "zero_crossing", "phased_threshold_crossing"):
             if tdir is not None and tdir not in allowed_dirs:
@@ -320,8 +333,7 @@ def basic_validate(schema: Dict[str, Any]) -> List[str]:
                                        "threshold_crossing",       # legacy alias
                                        "phased_threshold_crossing",
                                        "local_extrema",
-                                       "zero_crossing",
-                                       "custom"):
+                                       "zero_crossing"):
                         issues.append(f"{sprefix}.type '{st_type}' not in allowed set.")
 
                     st_id = st.get("id")

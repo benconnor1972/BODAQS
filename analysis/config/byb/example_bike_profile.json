@@ -1,0 +1,37 @@
+{
+  "schema": "bodaqs.bike_profile",
+  "version": 1,
+  "bike_profile_id": "example_byb_linear_sensors",
+  "display_name": "Example geometry for linear BYB sensors",
+  "description": "Illustrative values only. Front mapping is identity in this example; the curve example instead demonstrates head-angle projection.",
+  "normalization_ranges": [
+    {"id": "front_suspension", "signal": {"end": "front", "quantity": "disp", "domain": "suspension", "unit": "mm"}, "full_range": 170},
+    {"id": "front_wheel", "signal": {"end": "front", "quantity": "disp", "domain": "wheel", "unit": "mm"}, "full_range": 170},
+    {"id": "rear_suspension", "signal": {"end": "rear", "quantity": "disp", "domain": "suspension", "unit": "mm"}, "full_range": 65},
+    {"id": "rear_wheel", "signal": {"end": "rear", "quantity": "disp", "domain": "wheel", "unit": "mm"}, "full_range": 150}
+  ],
+  "signal_transforms": [
+    {
+      "id": "front_linear_to_wheel",
+      "input": {"end": "front", "quantity": "disp", "domain": "suspension", "unit": "mm"},
+      "output": {"end": "front", "quantity": "disp", "domain": "wheel", "unit": "mm"},
+      "method": "polynomial",
+      "polynomial": {"coefficients": [0, 1], "coefficient_order": "ascending"}
+    },
+    {
+      "id": "rear_linear_to_wheel",
+      "input": {"end": "rear", "quantity": "disp", "domain": "suspension", "unit": "mm"},
+      "output": {"end": "rear", "quantity": "disp", "domain": "wheel", "unit": "mm"},
+      "method": "lut",
+      "interpolation": "linear",
+      "extrapolation": "linear",
+      "lut": [
+        {"input": 0, "output": 0},
+        {"input": 16.25, "output": 42},
+        {"input": 32.5, "output": 81},
+        {"input": 48.75, "output": 117},
+        {"input": 65, "output": 150}
+      ]
+    }
+  ]
+}

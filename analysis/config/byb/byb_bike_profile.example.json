@@ -1,0 +1,25 @@
+{
+  "schema": "bodaqs.compatibility.byb",
+  "version": 1,
+  "display_name": "Example BYB setup using a BODAQS bike profile",
+  "description": "Illustrative values only. Fixed zero counts must be measured for the actual sensor installation.",
+  "timezone": "Australia/Perth",
+  "suspension": {
+    "front": {
+      "enabled": true,
+      "sensor_length_mm": 210,
+      "compression_direction": "increasing_counts",
+      "zero": {"mode": "fixed", "count": 120}
+    },
+    "rear": {
+      "enabled": true,
+      "sensor_length_mm": 80,
+      "compression_direction": "decreasing_counts",
+      "zero": {"mode": "fixed", "count": 3900}
+    }
+  },
+  "geometry": {
+    "kind": "bodaqs_bike_profile",
+    "path": "example_bike_profile.json"
+  }
+}

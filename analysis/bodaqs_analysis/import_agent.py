@@ -35,6 +35,8 @@ from .artifacts import (
     write_session_manifest,
 )
 from .bike_profile import load_bike_profile
+from .byb import BYBConfigurationError, load_byb_session, load_byb_setup, write_byb_snapshot
+from .io_byb import is_byb_path
 from .exporters.data_syn_bike import (
     bike_profile_travel_ranges,
     data_syn_bike_manual_settings,
@@ -52,8 +54,9 @@ from .import_agent_logger_wifi_discovery import (
 from .io_bdq import is_bdq_path, read_bdq, validate_bdq_importable
 from .io_fit import refresh_fit_inspection_index
 from .pipeline import preprocess_session
-from .preprocess_profile import load_preprocess_config, resolve_preprocess_config_paths
+from .preprocess_profile import load_preprocess_config, preprocess_config_from_profile, resolve_preprocess_config_paths
 from .raw_signal_dropouts import RAW_SIGNAL_DROPOUT_BEHAVIOR_VERSION
+from .schema import parse_event_schema
 from .session_note_presets import BikeSetupPreset, load_bike_setup_preset
 from .session_notes import (
     SessionNoteStore,
@@ -64,6 +67,7 @@ from .session_notes import (
 from .session_archive import (
     SessionArchiveContract,
     bdq_session_identity as make_bdq_session_identity,
+    byb_session_identity as make_byb_session_identity,
     extract_session_archive,
     raw_session_identity as make_raw_session_identity,
     read_session_archive_contract,
@@ -83,7 +87,7 @@ IMPORT_SOURCE_SCHEMA = "bodaqs.import_source"
 IMPORT_SOURCE_VERSION = 1
 IMPORT_AGENT_STATE_SCHEMA = "bodaqs.import_agent_state"
 IMPORT_AGENT_STATE_VERSION = 1
-DEFAULT_ARCHIVE_PATTERNS = ("*.zip", "*.ZIP", "*.bdq", "*.BDQ")
+DEFAULT_ARCHIVE_PATTERNS = ("*.zip", "*.ZIP", "*.bdq", "*.BDQ", "*.byb", "*.BYB")
 DEFAULT_DATA_SYN_BIKE_EXPORT_FILENAME_TEMPLATE = "{run_id}__{session_id}__{export_id}__data_syn_bike.csv"
 DEFAULT_DATA_SYN_BIKE_SETTINGS_FILENAME_TEMPLATE = "{run_id}__{session_id}__data_syn_bike_settings.txt"
 DATA_SYN_BIKE_LIBRARY_MANIFEST_FILENAME = "data_syn_bike_export_manifest.json"
@@ -114,6 +118,8 @@ def _normalize_archive_patterns(patterns: Sequence[str]) -> tuple[str, ...]:
     lower = {item.lower() for item in normalized}
     if "*.zip" in lower and "*.bdq" not in lower:
         normalized.extend(["*.bdq", "*.BDQ"])
+    if lower <= {"*.zip", "*.bdq", "*.byb"} and "*.zip" in lower and "*.byb" not in lower:
+        normalized.extend(["*.byb", "*.BYB"])
     return tuple(normalized)
 
 
@@ -710,6 +716,7 @@ class ImportArchiveCandidate:
     source_identity_kind: str
     raw_session_identity: str
     processing_key: str
+    byb_context: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -934,9 +941,7 @@ class ImportSourceRunner:
     def _ensure_runtime_config_loaded(self) -> None:
         if self.preprocess_config is None:
             preprocess_profile_path = self._resolve_preprocess_profile_path()
-            bike_profile_path = self._resolve_bike_profile_path()
             self.preprocess_profile_sha256 = _sha256_file(preprocess_profile_path)
-            self.bike_profile_sha256 = _sha256_file(bike_profile_path)
             normalized_preprocess_config = load_preprocess_config(preprocess_profile_path)
             self.effective_preprocess_config_sha256 = _sha256_jsonable(normalized_preprocess_config)
             self.preprocess_config = resolve_preprocess_config_paths(
@@ -964,7 +969,10 @@ class ImportSourceRunner:
                 loader=load_bike_profile,
             )
         except Exception as exc:
-            errors.append(str(exc))
+            if (self.source.source_root / "byb.json").is_file():
+                warnings.append(f"Native inputs need a bike profile: {exc}")
+            else:
+                errors.append(str(exc))
 
         if self.source.session_note.attach_on_import:
             template_store = SessionNoteTemplateStore(self.source.session_note.template_path)
@@ -1908,7 +1916,7 @@ class ImportSourceRunner:
         seen: set[str] = set()
         for pattern in self.source.archive_patterns:
             for path in sorted(self.source.inbox_dir.glob(pattern)):
-                if not path.is_file():
+                if not path.is_file() or path.suffix.lower() not in {".zip", ".bdq", ".byb"}:
                     continue
                 key = _path_key(path)
                 if key in seen:
@@ -1942,10 +1950,35 @@ class ImportSourceRunner:
         self._ensure_runtime_config_loaded()
         stat = claimed_archive_path.stat()
         archive_sha256 = _sha256_file(claimed_archive_path)
-        input_kind = "bdq" if is_bdq_path(claimed_archive_path) else "archive"
+        input_kind = "byb" if is_byb_path(claimed_archive_path) else ("bdq" if is_bdq_path(claimed_archive_path) else "archive")
         source_identity_kind = "raw_session_identity"
         contract: Optional[SessionArchiveContract] = None
-        if input_kind == "bdq":
+        byb_context = None
+        if input_kind == "byb":
+            try:
+                profile_path = self._resolve_preprocess_profile_path()
+                profile_bytes = profile_path.read_bytes()
+                cfg = resolve_preprocess_config_paths(
+                    preprocess_config_from_profile(json.loads(profile_bytes)), base_dir=profile_path.parent,
+                )
+                schema_bytes = None
+                if cfg.get("schema_path"):
+                    schema_file = Path(cfg["schema_path"])
+                    schema_bytes = schema_file.read_bytes()
+                    parse_event_schema(schema_bytes)
+            except (OSError, ValueError) as exc:
+                raise BYBConfigurationError(f"BYB analysis configuration: {exc}") from exc
+            setup = load_byb_setup(self.source.source_root / "byb.json", fallback_timezone=self.source.logger_timezone)
+            setup.assets.append(("preprocess_profile.json", profile_bytes, str(profile_path)))
+            if schema_bytes is not None:
+                setup.assets.append(("event_schema.yaml", schema_bytes, str(schema_file)))
+            session, effective_profile, setup = load_byb_session(claimed_archive_path, setup=setup, preprocess_config=cfg)
+            if _sha256_file(claimed_archive_path) != archive_sha256:
+                raise BYBConfigurationError("BYB input changed while being prepared; wait for the writer to finish")
+            byb_context = {"session": session, "profile": effective_profile, "setup": setup, "config": cfg, "schema_bytes": schema_bytes}
+            raw_session_identity = make_byb_session_identity(byb_sha256=archive_sha256)
+            source_identity_kind = "byb_session_identity"
+        elif input_kind == "bdq":
             self._validate_bdq_input(claimed_archive_path)
             raw_session_identity = make_bdq_session_identity(bdq_sha256=archive_sha256)
             source_identity_kind = "bdq_session_identity"
@@ -1955,8 +1988,9 @@ class ImportSourceRunner:
                 csv_sha256=contract.csv_sha256,
                 log_metadata_sha256=contract.log_metadata_sha256,
             )
-        processing_key = _sha256_jsonable(
-            {
+        if input_kind != "byb":
+            self.bike_profile_sha256 = _sha256_file(self._resolve_bike_profile_path())
+        identity_inputs = {
                 "input_kind": input_kind,
                 "raw_session_identity": raw_session_identity,
                 "preprocess_profile_sha256": self.preprocess_profile_sha256,
@@ -1967,7 +2001,16 @@ class ImportSourceRunner:
                 "include_metrics": self.source.include_metrics,
                 "logger_timezone": self.source.logger_timezone,
             }
-        )
+        if byb_context is not None:
+            identity_inputs.update({
+                "byb_setup": setup.identity,
+                "bike_profile_sha256": _sha256_jsonable(effective_profile),
+                "preprocess_profile_sha256": hashlib.sha256(profile_bytes).hexdigest(),
+                "effective_preprocess_config_sha256": _sha256_jsonable(cfg),
+                "event_schema_sha256": hashlib.sha256(schema_bytes).hexdigest() if schema_bytes else None,
+                "logger_timezone": setup.timezone,
+            })
+        processing_key = _sha256_jsonable(identity_inputs)
         return ImportArchiveCandidate(
             source=self.source,
             inbox_archive_path=inbox_archive_path,
@@ -1981,10 +2024,11 @@ class ImportSourceRunner:
             source_identity_kind=source_identity_kind,
             raw_session_identity=raw_session_identity,
             processing_key=processing_key,
+            byb_context=byb_context,
         )
 
     def _extract_candidate(self, candidate: ImportArchiveCandidate, target_dir: Path) -> tuple[Path, Optional[Path]]:
-        if candidate.input_kind == "bdq":
+        if candidate.input_kind in {"bdq", "byb"}:
             return candidate.claimed_archive_path, None
         if candidate.contract is None:
             raise ValueError(f"Session archive contract missing for {candidate.archive_name}")
@@ -2162,6 +2206,12 @@ class ImportSourceRunner:
                 inbox_archive_path=inbox_path,
                 claimed_archive_path=claimed_path,
             )
+        except BYBConfigurationError as exc:
+            retry_path = _move_to_dir_unique(claimed_path, self.source.inbox_dir)
+            pending = {"status": "needs_configuration", "archive_path": str(retry_path), "error": str(exc)}
+            summary.setdefault("needs_configuration", []).append(pending)
+            self._emit_progress(progress_callback, "archive_deferred", reason="needs_configuration", error=str(exc), **archive_progress)
+            return
         except Exception as exc:
             failed_path = _move_to_dir_unique(claimed_path, self.source.failed_dir, touch_mtime=True)
             failure = {
@@ -2549,6 +2599,7 @@ class ImportSourceRunner:
             "artifacts_dir": str(self.source.artifacts_dir),
             "seen": 0,
             "deferred_unsettled": [],
+            "needs_configuration": [],
             "skipped_succeeded": [],
             "skipped_failed": [],
             "imported": [],
@@ -2652,7 +2703,7 @@ class ImportSourceRunner:
         session_artifacts_started = False
         added_to_batch = False
         preprocess_profile_path = self._resolve_preprocess_profile_path()
-        bike_profile_path = self._resolve_bike_profile_path()
+        bike_profile_path = None if candidate.byb_context is not None else self._resolve_bike_profile_path()
         import_started = time.perf_counter()
         stage_timings: Dict[str, float] = {}
         preprocess_timings: Optional[Mapping[str, Any]] = None
@@ -2667,14 +2718,30 @@ class ImportSourceRunner:
                 input_path, log_metadata_path = self._extract_candidate(candidate, Path(tmpdir))
                 stage_timings["input_preparation"] = time.perf_counter() - stage_started
                 preprocess_kwargs: Dict[str, Any] = {}
+                candidate_config = self.preprocess_config
+                pipeline_input = str(input_path)
+                if candidate.byb_context is not None:
+                    context = candidate.byb_context
+                    candidate_config = dict(context["config"])
+                    pipeline_input = context["session"]
+                    bike_profile_path = Path(tmpdir) / "effective_bike_profile.json"
+                    bike_profile_path.write_text(json.dumps(context["profile"]), encoding="utf-8")
+                    if context["schema_bytes"] is not None:
+                        frozen_schema = Path(tmpdir) / "event_schema.yaml"
+                        frozen_schema.write_bytes(context["schema_bytes"])
+                        candidate_config["schema_path"] = str(frozen_schema)
+                candidate_fit_import = self._import_agent_fit_import_config()
+                if candidate.byb_context is not None and isinstance(candidate_config.get("fit_import"), Mapping):
+                    candidate_fit_import = dict(candidate_config["fit_import"])
+                    candidate_fit_import.update({"fit_dir": str(self.source.fit_dir), "ambiguity_policy": "largest_overlap", "failure_policy": "warn"})
                 if log_metadata_path is not None:
                     preprocess_kwargs["log_metadata_path"] = str(log_metadata_path)
 
                 stage_started = time.perf_counter()
                 results = preprocess_session(
-                    str(input_path),
-                    preprocess_config=self.preprocess_config,
-                    fit_import=self._import_agent_fit_import_config(),
+                    pipeline_input,
+                    preprocess_config=candidate_config,
+                    fit_import=candidate_fit_import,
                     fit_candidates=batch.fit_candidates,
                     fit_parsed_cache=batch.fit_parsed_cache,
                     bike_profile_path=str(bike_profile_path),
@@ -2693,7 +2760,7 @@ class ImportSourceRunner:
                 session_id = str(session["session_id"])
                 ensure_session_is_new(self.store, run_id=run_id, session_id=session_id, force=False)
 
-                source_input_name = "input.bdq" if candidate.input_kind == "bdq" else "input.csv"
+                source_input_name = f"input.{candidate.input_kind}" if candidate.input_kind in {"bdq", "byb"} else "input.csv"
                 copied_input_sha256 = copy_raw_input_to_source(
                     store=self.store,
                     run_id=run_id,
@@ -2702,6 +2769,12 @@ class ImportSourceRunner:
                     dest_name=source_input_name,
                 )
                 session_artifacts_started = True
+                if candidate.byb_context is not None:
+                    if copied_input_sha256 != candidate.archive_sha256:
+                        raise ValueError("BYB input changed after validation")
+                    snapshot_dir = self.store.session_dir(run_id, session_id) / "source" / "byb"
+                    write_byb_snapshot(context["setup"], snapshot_dir, resolved=session["meta"]["byb"], preprocess_config=context["config"])
+                    (snapshot_dir / "effective_bike_profile.json").write_text(json.dumps(context["profile"], indent=2), encoding="utf-8")
 
                 save_session_artifacts(
                     self.store,
@@ -2729,7 +2802,16 @@ class ImportSourceRunner:
                     "input_kind": candidate.input_kind,
                     "processing_key": candidate.processing_key,
                 }
-                if candidate.input_kind == "bdq":
+                if candidate.input_kind == "byb":
+                    source_manifest.update({
+                        "import_mode": "import_agent_byb_v1", "original_input_filename": candidate.archive_name,
+                        "original_byb_filename": candidate.archive_name, "byb_sha256": candidate.archive_sha256,
+                        "byb_snapshot": "source/byb/manifest.json", "byb_setup_identity": context["setup"].identity,
+                        "timezone": context["setup"].timezone,
+                        "bike_profile_id": context["profile"]["bike_profile_id"],
+                        "bike_profile_path": "source/byb/effective_bike_profile.json",
+                    })
+                elif candidate.input_kind == "bdq":
                     source_manifest.update(
                         {
                             "import_mode": "import_agent_" + session["meta"]["source_contract"]["name"].replace(".", "_"),
@@ -2788,7 +2870,7 @@ class ImportSourceRunner:
                     summary=self._session_summary(session),
                 )
 
-                schema_path = _optional_text(self.preprocess_config.get("schema_path"))
+                schema_path = _optional_text(candidate_config.get("schema_path"))
                 if schema_path and isinstance(events_df, pd.DataFrame) and not events_df.empty:
                     write_events_partitioned_by_schema_id(
                         store=self.store,
@@ -2824,6 +2906,17 @@ class ImportSourceRunner:
                     data_syn_bike_export_record=data_syn_bike_export_record,
                     session_note_record=session_note_record,
                 )
+                if candidate.byb_context is not None:
+                    archive_import_config.update({
+                        "byb_snapshot": f"runs/{run_id}/sessions/{session_id}/source/byb/manifest.json",
+                        "byb_setup_identity": context["setup"].identity,
+                        "bike_profile_path": "source/byb/effective_bike_profile.json",
+                        "bike_profile_selection_path": str(self.source.source_root / "byb.json"),
+                        "bike_profile_sha256": _sha256_jsonable(context["profile"]),
+                        "preprocess_profile_sha256": hashlib.sha256(next(data for name, data, _ in context["setup"].assets if name == "preprocess_profile.json")).hexdigest(),
+                        "effective_preprocess_config_sha256": _sha256_jsonable(context["config"]),
+                        "byb_sha256": candidate.archive_sha256,
+                    })
                 batch.add_session(session_id, archive_import_config)
                 added_to_batch = True
                 self._write_import_run_manifest(batch)
@@ -3187,6 +3280,7 @@ def _aggregate_reports(reports: Sequence[Mapping[str, Any]]) -> Dict[str, int]:
     totals = {
         "seen": 0,
         "deferred_unsettled": 0,
+        "needs_configuration": 0,
         "skipped_succeeded": 0,
         "skipped_failed": 0,
         "imported": 0,
@@ -3196,6 +3290,7 @@ def _aggregate_reports(reports: Sequence[Mapping[str, Any]]) -> Dict[str, int]:
         totals["seen"] += int(report.get("seen", 0))
         for key in (
             "deferred_unsettled",
+            "needs_configuration",
             "skipped_succeeded",
             "skipped_failed",
             "imported",
@@ -3259,6 +3354,7 @@ def _print_run_report(report: Mapping[str, Any]) -> None:
     print(f"Seen: {int(totals.get('seen', 0))}")
     print(f"Imported: {int(totals.get('imported', 0))}")
     print(f"Deferred (unsettled): {int(totals.get('deferred_unsettled', 0))}")
+    print(f"Needs configuration: {int(totals.get('needs_configuration', 0))}")
     print(f"Skipped duplicate success: {int(totals.get('skipped_succeeded', 0))}")
     print(f"Skipped duplicate failure: {int(totals.get('skipped_failed', 0))}")
     print(f"Failed this scan: {int(totals.get('failed', 0))}")

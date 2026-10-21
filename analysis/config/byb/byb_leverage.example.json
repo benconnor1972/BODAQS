@@ -1,0 +1,27 @@
+{
+  "schema": "bodaqs.compatibility.byb",
+  "version": 1,
+  "display_name": "Example BYB setup using a linkage curve",
+  "description": "Illustrative calibration and geometry only. Copy as source_root/byb.json, copy the referenced curve, and replace the values before use.",
+  "timezone": "Australia/Perth",
+  "suspension": {
+    "front": {
+      "enabled": true,
+      "sensor_length_mm": 210,
+      "compression_direction": "increasing_counts",
+      "zero": {"mode": "recording"}
+    },
+    "rear": {
+      "enabled": true,
+      "sensor_length_mm": 80,
+      "compression_direction": "increasing_counts",
+      "zero": {"mode": "recording"}
+    }
+  },
+  "geometry": {
+    "kind": "byb_leverage",
+    "path": "example.bybLeverage"
+  },
+  "front_projection": {"head_angle_deg": 64},
+  "travel_overrides": {"front_suspension_mm": 170}
+}

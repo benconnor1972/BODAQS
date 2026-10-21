@@ -1,0 +1,22 @@
+{
+  "schema": "bodaqs.compatibility.byb",
+  "version": 1,
+  "display_name": "Replace with your BYB setup name",
+  "description": "Replace zero sensor lengths and head angle with measured values. Select byb_leverage or bodaqs_bike_profile and point to your geometry file. Remove front_projection when a bike profile supplies the front mapping.",
+  "suspension": {
+    "front": {
+      "enabled": true,
+      "sensor_length_mm": 0,
+      "compression_direction": "increasing_counts",
+      "zero": {"mode": "recording"}
+    },
+    "rear": {
+      "enabled": true,
+      "sensor_length_mm": 0,
+      "compression_direction": "increasing_counts",
+      "zero": {"mode": "recording"}
+    }
+  },
+  "geometry": {"kind": "byb_leverage", "path": "geometry/bike.bybLeverage"},
+  "front_projection": {"head_angle_deg": 0}
+}

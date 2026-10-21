@@ -11,14 +11,17 @@ ANALYSIS_VIEW_REGISTRY_SCHEMA = "bodaqs.analysis_view_registry"
 ANALYSIS_VIEW_REGISTRY_VERSION = 1
 ANALYSIS_ADEQUACY_SCHEMA = "bodaqs.analysis_adequacy"
 ANALYSIS_ADEQUACY_VERSION = 2
-ANALYSIS_ADEQUACY_POLICY_VERSION = 2
+ANALYSIS_ADEQUACY_POLICY_VERSION = 3
 
 SIMPLE_SUSPENSION_VIEW_ID = "simple-suspension"
 SUSPENSION_PHASE_DIAGRAM_VIEW_ID = "suspension-phase-diagram"
 TRACK_ANALYSIS_VIEW_ID = "track-analysis-lap-timing"
 EVENT_BROWSER_VIEW_ID = "event-browser"
 _SUSPENSION_ENDS = ("front", "rear")
-_REQUIRED_EVENT_TYPES = ("compressions_all", "rebounds_all")
+_STROKE_EVENT_TYPE_PAIRS = (
+    ("compressions_all", "rebounds_all"),
+    ("compression_byb", "rebound_byb"),
+)
 _REQUIRED_METRIC_COLUMNS = (
     "m_stroke_disp_max",
     "m_stroke_disp_range",
@@ -777,13 +780,14 @@ def _wheel_velocity_signal(end: str, signals: list[Mapping[str, Any]]) -> Mappin
 def _has_required_event_metrics(row: Mapping[str, Any]) -> bool:
     event_summary = row.get("event_summary") if isinstance(row.get("event_summary"), Mapping) else {}
     by_type = event_summary.get("by_type") if isinstance(event_summary.get("by_type"), Mapping) else {}
-    if any(int(by_type.get(event_type) or 0) <= 0 for event_type in _REQUIRED_EVENT_TYPES):
-        return False
-
     metric_summary = row.get("metric_summary") if isinstance(row.get("metric_summary"), Mapping) else {}
     schema_ids = {str(item) for item in metric_summary.get("schema_ids") or []}
     metric_columns = {str(item) for item in metric_summary.get("metric_columns") or []}
-    return set(_REQUIRED_EVENT_TYPES).issubset(schema_ids) and set(_REQUIRED_METRIC_COLUMNS).issubset(metric_columns)
+    return set(_REQUIRED_METRIC_COLUMNS).issubset(metric_columns) and any(
+        set(pair).issubset(schema_ids)
+        and all(int(by_type.get(event_type) or 0) > 0 for event_type in pair)
+        for pair in _STROKE_EVENT_TYPE_PAIRS
+    )
 
 
 def _scope_summary(status: str, *, usable_sessions: int, total_sessions: int) -> str:

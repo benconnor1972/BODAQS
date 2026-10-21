@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:bodaqs:schema:byb-source:1",
+  "title": "BODAQS source-local BYB compatibility configuration v1",
+  "description": "Structural validation for source_root/byb.json. Referenced-file, geometry, timezone and recording-dependent validation is defined in the companion contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "version", "suspension"],
+  "properties": {
+    "$schema": {"type": "string", "pattern": "\\S"},
+    "schema": {"const": "bodaqs.compatibility.byb"},
+    "version": {"type": "integer", "const": 1},
+    "display_name": {"type": "string", "pattern": "\\S"},
+    "description": {"type": "string"},
+    "timezone": {
+      "type": "string",
+      "pattern": "\\S",
+      "description": "IANA timezone for the recording header; otherwise use the import source's logger_timezone. Never infer from the host timezone."
+    },
+    "suspension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["front", "rear"],
+      "properties": {
+        "front": {"$ref": "#/$defs/channel"},
+        "rear": {"$ref": "#/$defs/channel"}
+      }
+    },
+    "geometry": {
+      "oneOf": [
+        {"$ref": "#/$defs/leverage_reference"},
+        {"$ref": "#/$defs/bike_profile_reference"}
+      ]
+    },
+    "front_projection": {
+      "description": "Provides the front mapping when the referenced profile does not already supply one. Do not compose with an existing front mapping.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["head_angle_deg"],
+      "properties": {
+        "head_angle_deg": {"type": "number", "exclusiveMinimum": 0, "maximum": 90}
+      }
+    },
+    "travel_overrides": {
+      "description": "Explicit normalization-travel decisions. These do not rescale or replace geometry transforms.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "front_suspension_mm": {"$ref": "#/$defs/positive_mm"},
+        "front_wheel_mm": {"$ref": "#/$defs/positive_mm"},
+        "rear_suspension_mm": {"$ref": "#/$defs/positive_mm"},
+        "rear_wheel_mm": {"$ref": "#/$defs/positive_mm"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "suspension": {
+            "properties": {"rear": {"properties": {"enabled": {"const": true}}}}
+          }
+        }
+      },
+      "then": {"required": ["geometry"]}
+    },
+    {
+      "if": {
+        "required": ["geometry"],
+        "properties": {
+          "geometry": {"properties": {"kind": {"const": "byb_leverage"}}},
+          "suspension": {
+            "properties": {"front": {"properties": {"enabled": {"const": true}}}}
+          }
+        }
+      },
+      "then": {"required": ["front_projection"]}
+    },
+    {
+      "if": {
+        "not": {"required": ["geometry"]},
+        "properties": {
+          "suspension": {
+            "properties": {"front": {"properties": {"enabled": {"const": true}}}}
+          }
+        }
+      },
+      "then": {"required": ["front_projection"]}
+    }
+  ],
+  "$defs": {
+    "positive_mm": {"type": "number", "exclusiveMinimum": 0},
+    "path": {
+      "type": "string",
+      "pattern": "\\S",
+      "description": "One file, relative to byb.json or absolute. No directory selection, glob, environment substitution or URL."
+    },
+    "channel": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "properties": {"enabled": {"const": false}}
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "sensor_length_mm", "compression_direction"],
+          "properties": {
+            "enabled": {"const": true},
+            "sensor_length_mm": {
+              "$ref": "#/$defs/positive_mm",
+              "description": "Sensor displacement corresponding to the full 0..4095 count span, not bike suspension travel."
+            },
+            "compression_direction": {"enum": ["increasing_counts", "decreasing_counts"]},
+            "zero": {
+              "description": "Omission is equivalent to mode=recording. A fixed count overrides recording-based zero estimation.",
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["mode"],
+                  "properties": {"mode": {"const": "recording"}}
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["mode", "count"],
+                  "properties": {
+                    "mode": {"const": "fixed"},
+                    "count": {"type": "number", "minimum": 0, "maximum": 4095}
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "leverage_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path"],
+      "properties": {
+        "kind": {"const": "byb_leverage"},
+        "path": {"$ref": "#/$defs/path"}
+      }
+    },
+    "bike_profile_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path"],
+      "properties": {
+        "kind": {"const": "bodaqs_bike_profile"},
+        "path": {"$ref": "#/$defs/path"}
+      }
+    }
+  }
+}

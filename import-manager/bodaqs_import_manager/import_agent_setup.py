@@ -26,6 +26,8 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+from bodaqs_analysis.byb import load_byb_setup
+
 try:
     from PIL import Image, ImageDraw, ImageTk
 except Exception:  # pragma: no cover - Pillow is included in packaged desktop builds.
@@ -356,6 +358,7 @@ def _aggregate_reports(reports: Sequence[dict[str, Any]]) -> dict[str, int]:
     totals = {
         "seen": 0,
         "deferred_unsettled": 0,
+        "needs_configuration": 0,
         "skipped_succeeded": 0,
         "skipped_failed": 0,
         "imported": 0,
@@ -363,7 +366,7 @@ def _aggregate_reports(reports: Sequence[dict[str, Any]]) -> dict[str, int]:
     }
     for report in reports:
         totals["seen"] += int(report.get("seen", 0))
-        for key in ("deferred_unsettled", "skipped_succeeded", "skipped_failed", "imported", "failed"):
+        for key in ("deferred_unsettled", "needs_configuration", "skipped_succeeded", "skipped_failed", "imported", "failed"):
             totals[key] += len(report.get(key, []))
     return totals
 
@@ -422,6 +425,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--start-watch", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--start-minimized", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--smoke-test-imu-bdq", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--smoke-test-byb-source", default="", help=argparse.SUPPRESS)
     parser.add_argument("--smoke-test-workbench-layout", action="store_true", help=argparse.SUPPRESS)
     return parser
 
@@ -2022,6 +2026,9 @@ class ImportAgentManagerWindow:
         return state
 
     def _update_source_status_from_report(self, report: dict[str, Any]) -> None:
+        if report.get("needs_configuration"):
+            self._set_source_runtime_status(str(report.get("source_id") or ""), "BYB needs configuration")
+            return
         status = self._remote_report_status_text(report.get("remote"))
         if status:
             self._set_source_runtime_status(str(report.get("source_id") or ""), status)
@@ -2077,6 +2084,8 @@ class ImportAgentManagerWindow:
             count = self._progress_int(progress, "archive_count")
             return f"{count} archive(s) detected" if count else "no archives detected"
         if event == "archive_deferred":
+            if progress.get("reason") == "needs_configuration":
+                return "BYB needs configuration"
             return (
                 f"deferred {self._progress_int(progress, 'archive_index')}/"
                 f"{self._progress_int(progress, 'archive_count')}"
@@ -2104,6 +2113,8 @@ class ImportAgentManagerWindow:
         if event == "source_scan_completed":
             totals = progress.get("totals")
             if isinstance(totals, Mapping):
+                if totals.get("needs_configuration"):
+                    return f"BYB needs configuration ({totals['needs_configuration']})"
                 return (
                     f"complete: seen={totals.get('seen', 0)} imported={totals.get('imported', 0)} "
                     f"failed={totals.get('failed', 0)}"
@@ -2169,6 +2180,8 @@ class ImportAgentManagerWindow:
                 return None
             return f"{label} source {source_id}: detected {count} archive(s)."
         if event == "archive_deferred":
+            if progress.get("reason") == "needs_configuration":
+                return f"{label} source {source_id}: {archive_name} needs BYB configuration: {progress.get('error')}"
             return f"{label} source {source_id}: deferred {archive_name} while it settles."
         if event == "archive_processing_started":
             return (
@@ -4798,6 +4811,8 @@ class ImportAgentManagerWindow:
         menu.add_command(label="Assign preprocess profile", command=self._assign_selected_preprocess_profile)
         menu.add_command(label="Change target library", command=self._change_selected_source_library)
         menu.add_command(label="Import naming", command=self._edit_selected_source_naming)
+        if source.source_type == SOURCE_TYPE_FILESYSTEM_ARCHIVE:
+            menu.add_command(label="Edit BYB settings", command=self._edit_selected_byb_settings)
         menu.add_command(label="Details", command=self._show_selected_source_details)
         if source.source_type == SOURCE_TYPE_LOGGER_WIFI:
             menu.add_separator()
@@ -4961,6 +4976,51 @@ class ImportAgentManagerWindow:
             ),
         )
 
+    def _edit_selected_byb_settings(self) -> None:
+        try:
+            source = self._selected_source_config()
+            path = source.source_root / "byb.json"
+            text = path.read_text(encoding="utf-8") if path.exists() else files(
+                "bodaqs_import_manager.import_agent_assets"
+            ).joinpath("byb", "template.json").read_text(encoding="utf-8")
+        except Exception as exc:
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
+            return
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"BYB settings - {source.source_id}")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(1, weight=1)
+        ttk.Label(dialog, text=f"{path}\nSet your sensor measuring lengths, directions and geometry reference. Paths are relative to this file.", wraplength=800).grid(row=0, column=0, sticky="w", padx=12, pady=8)
+        editor = tk.Text(dialog, width=100, height=30, wrap="none", undo=True)
+        editor.grid(row=1, column=0, sticky="nsew", padx=12)
+        editor.insert("1.0", text)
+        status = tk.StringVar(value="The template requires your actual calibration and geometry values before it can be saved.")
+        ttk.Label(dialog, textvariable=status, wraplength=800).grid(row=2, column=0, sticky="w", padx=12, pady=8)
+
+        def validate(save=False):
+            try:
+                content = editor.get("1.0", "end-1c").encode("utf-8")
+                load_byb_setup(path, fallback_timezone=source.logger_timezone, config_bytes=content)
+                if save:
+                    temporary = path.with_suffix(".json.tmp")
+                    temporary.write_bytes(content)
+                    os.replace(temporary, path)
+                    self._append_log(f"Saved BYB settings for {source.source_id}: {path}")
+                    dialog.destroy()
+                else:
+                    status.set("Setup files are valid. Recording travel and channel compatibility are checked during import.")
+            except Exception as exc:
+                status.set(str(exc))
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=3, column=0, sticky="e", padx=12, pady=(0, 12))
+        ttk.Button(buttons, text="Validate", command=validate).grid(row=0, column=0, padx=4)
+        ttk.Button(buttons, text="Save", command=lambda: validate(True)).grid(row=0, column=1, padx=4)
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).grid(row=0, column=2, padx=4)
+        self._wait_for_manager_dialog(dialog)
+
     def _show_selected_source_details(self) -> None:
         source_id = self._selected_source_id()
         if source_id is None:
@@ -4987,6 +5047,7 @@ class ImportAgentManagerWindow:
                 ("Library ID", str(source.library_id)),
                 ("Source Root", str(source.source_root)),
                 ("Preprocess Profile", str(source_config.preprocess_profile_path)),
+                ("BYB Settings", str(source.source_root / "byb.json")),
                 ("Session Naming", naming_text),
             ),
         )
@@ -6433,6 +6494,17 @@ class ImportAgentManagerWindow:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if str(args.smoke_test_byb_source).strip():
+        from bodaqs_analysis.import_agent import ImportSourceRunner
+        source = load_import_source_config(args.smoke_test_byb_source)
+        report_path = source.source_root / "byb_smoke_result.json"
+        try:
+            report = ImportSourceRunner(source).scan_once()
+            report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+            return 0 if report["imported"] and not report["failed"] and not report["needs_configuration"] else 1
+        except Exception as exc:
+            report_path.write_text(json.dumps({"error": f"{type(exc).__name__}: {exc}"}), encoding="utf-8")
+            return 1
     if args.smoke_test_workbench_layout:
         try:
             summary = _smoke_test_workbench_layout()

@@ -2118,7 +2118,7 @@ def provision_import_agent_source(
         "done_dir": "done",
         "failed_dir": "failed",
         "staging_dir": "staging",
-        "archive_patterns": ["*.zip", "*.bdq"],
+        "archive_patterns": ["*.zip", "*.bdq", "*.byb"],
         "run_tz_label": str(run_tz_label).strip() or "LOCAL",
         "poll_interval_s": float(poll_interval_s),
         "settle_time_s": float(settle_time_s),

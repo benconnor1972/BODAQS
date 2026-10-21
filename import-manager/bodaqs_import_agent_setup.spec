@@ -17,6 +17,7 @@ app_version = os.environ.get("BODAQS_IMPORT_MANAGER_APP_VERSION", "").strip()
     encoding="utf-8",
 )
 setup_datas = collect_data_files("bodaqs_import_manager.import_agent_assets")
+setup_datas.append((str(analysis_dir / "config" / "byb"), "bodaqs_import_manager/import_agent_assets/byb/examples"))
 app_icon_path = (import_manager_dir / "packaging" / "windows" / "bodaqs_import_agent.ico").resolve()
 setup_excludes = [
     "IPython",

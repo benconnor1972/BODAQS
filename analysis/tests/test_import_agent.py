@@ -1475,6 +1475,7 @@ def test_run_sources_once_emits_detection_and_archive_progress(tmp_path):
     assert events[-1]["totals"] == {
         "seen": 2,
         "deferred_unsettled": 0,
+        "needs_configuration": 0,
         "skipped_succeeded": 0,
         "skipped_failed": 0,
         "imported": 2,
@@ -2045,6 +2046,15 @@ def test_provision_import_agent_source_seeds_defaults_and_config_is_loadable(tmp
     assert not Path(source_payload["bike_profile_path"]).is_absolute()
     assert source_payload["session_note"]["attach_on_import"] is False
     assert preprocess_profile["config"]["schema_path"] == "../event_schemas/event_schema.yaml"
+    event_schema = provisioning_module.parse_event_schema(source.event_schema_path)
+    events = {event["id"]: event for event in event_schema["events"]}
+    assert set(events) == {"compressions_all", "rebounds_all", "compression_byb", "rebound_byb", "bottom_out", "Jump"}
+    for event in events.values():
+        for metric in event.get("metrics", []):
+            assert metric.get("smooth_ms", 0) == 0
+            assert metric.get("min_delay_s", 0) == 0
+    assert events["compressions_all"]["trigger"]["type"] == "phased_threshold_crossing"
+    assert events["compression_byb"]["trigger"]["type"] == "local_extrema"
 
 
 def test_provision_import_agent_source_can_seed_logger_wifi_config(tmp_path):

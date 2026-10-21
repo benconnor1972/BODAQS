@@ -1,5 +1,6 @@
 specification: 0.2.0
-version: '1'
+name: event_schema_combined
+version: '2'
 naming:
   suffixes:
     disp: ' [mm]'
@@ -108,8 +109,8 @@ events:
           - mean
           - max
           - min
-        smooth_ms: 20
-        min_delay_s: 0.02
+        smooth_ms: 0
+        min_delay_s: 0
         return_debug: true
       - id: stroke_disp
         type: interval_stats
@@ -120,8 +121,8 @@ events:
           - max
           - min
           - range
-        smooth_ms: 20
-        min_delay_s: 0.02
+        smooth_ms: 0
+        min_delay_s: 0
         return_debug: true
     metric_conditions: &stroke_disp_gt_5mm_metric_conditions
       all_of:
@@ -211,8 +212,8 @@ events:
           - mean
           - max
           - min
-        smooth_ms: 20
-        min_delay_s: 0.02
+        smooth_ms: 0
+        min_delay_s: 0
         return_debug: true
       - id: stroke_disp
         type: interval_stats
@@ -223,8 +224,8 @@ events:
           - max
           - min
           - range
-        smooth_ms: 20
-        min_delay_s: 0.02
+        smooth_ms: 0
+        min_delay_s: 0
         return_debug: true
     metric_conditions: *stroke_disp_gt_5mm_metric_conditions
     tags:
@@ -328,7 +329,7 @@ events:
         ops:
           - mean
           - max
-        min_delay_s: 0.02
+        min_delay_s: 0
         return_debug: true
       - type: trigger_delta
         start_trigger: topout_start
@@ -341,3 +342,163 @@ events:
       - compression
       - jump
     segment_defaults: *rebound_segment_defaults
+
+  # Movement between adjacent extrema, inspired by BYB's stroke definition.
+  # Uses BODAQS primary wheel-domain displacement/velocity for both ends.
+  # Excursion is tested AFTER pairing; small movements are rejected, not merged.
+  # No extra smoothing, onset delay, peak-distance filter, or debounce.
+  # This does not reproduce BYB's shock-based pairing, plateau/start/end quirks,
+  # or its measurement pipeline. The rear threshold is 1 mm at the wheel.
+  # Pairing is capped at 5 s to match the fixed extraction-window coverage.
+  # No minimum duration or velocity restriction is imposed.
+  - id: compression_byb
+    label: wheel compression between adjacent extrema, excursion > 1 mm
+    expand: *front_rear_wheel_expansion
+    inputs: &byb_primary_inputs
+      disp:
+        <<: *primary_disp_role
+        domain: wheel
+      vel:
+        <<: *primary_vel_role
+        domain: wheel
+    trigger:
+      id: compression_start
+      type: local_extrema
+      signal: disp
+      kind: min
+      prominence: 0
+      edge_ignore_s: 0
+      debounce:
+        gap_s: 0
+    secondary_triggers:
+      - id: compression_end
+        type: local_extrema
+        signal: disp
+        kind: max
+        prominence: 0
+        edge_ignore_s: 0
+        base_trigger: compression_start
+        search:
+          min_delay_s: 0
+          max_delay_s: 5
+          direction: forward
+        debounce:
+          gap_s: 0
+    window: &byb_window
+      pre_s: 0.02
+      post_s: 5.02
+      align: trigger
+    metrics:
+      - id: stroke_disp
+        type: interval_stats
+        signal: disp
+        start_trigger: compression_start
+        end_trigger: compression_end
+        ops: [max, min, range, delta]
+        smooth_ms: 0
+        min_delay_s: 0
+        return_debug: true
+      - id: interval_vel
+        type: interval_stats
+        signal: vel
+        start_trigger: compression_start
+        end_trigger: compression_end
+        ops: [mean, max, min]
+        smooth_ms: 0
+        min_delay_s: 0
+        return_debug: true
+      - id: stroke_duration
+        type: trigger_delta
+        start_trigger: compression_start
+        end_trigger: compression_end
+        quantity: seconds
+        return_debug: true
+    metric_conditions:
+      all_of:
+        - metric: m_stroke_disp_delta
+          cmp: ">"
+          value: 1.0
+        - metric: m_stroke_duration
+          cmp: ">"
+          value: 0.0
+        - metric: m_stroke_duration
+          cmp: "<="
+          value: 5.0
+    tags: [kinematics, compression, byb]
+    segment_defaults: &byb_segment_defaults
+      anchor: trigger_time_s
+      window:
+        pre_s: 0.02
+        post_s: 5.02
+      roles:
+        - role: disp
+          prefer: *primary_disp_role
+        - role: vel
+          prefer: *primary_vel_role
+
+  - id: rebound_byb
+    label: wheel rebound between adjacent extrema, excursion > 1 mm
+    expand: *front_rear_wheel_expansion
+    inputs: *byb_primary_inputs
+    trigger:
+      id: rebound_start
+      type: local_extrema
+      signal: disp
+      kind: max
+      prominence: 0
+      edge_ignore_s: 0
+      debounce:
+        gap_s: 0
+    secondary_triggers:
+      - id: rebound_end
+        type: local_extrema
+        signal: disp
+        kind: min
+        prominence: 0
+        edge_ignore_s: 0
+        base_trigger: rebound_start
+        search:
+          min_delay_s: 0
+          max_delay_s: 5
+          direction: forward
+        debounce:
+          gap_s: 0
+    window: *byb_window
+    metrics:
+      - id: stroke_disp
+        type: interval_stats
+        signal: disp
+        start_trigger: rebound_start
+        end_trigger: rebound_end
+        ops: [max, min, range, delta]
+        smooth_ms: 0
+        min_delay_s: 0
+        return_debug: true
+      - id: interval_vel
+        type: interval_stats
+        signal: vel
+        start_trigger: rebound_start
+        end_trigger: rebound_end
+        ops: [mean, max, min]
+        smooth_ms: 0
+        min_delay_s: 0
+        return_debug: true
+      - id: stroke_duration
+        type: trigger_delta
+        start_trigger: rebound_start
+        end_trigger: rebound_end
+        quantity: seconds
+        return_debug: true
+    metric_conditions:
+      all_of:
+        - metric: m_stroke_disp_delta
+          cmp: "<"
+          value: -1.0
+        - metric: m_stroke_duration
+          cmp: ">"
+          value: 0.0
+        - metric: m_stroke_duration
+          cmp: "<="
+          value: 5.0
+    tags: [kinematics, rebound, byb]
+    segment_defaults: *byb_segment_defaults

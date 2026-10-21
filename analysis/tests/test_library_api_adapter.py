@@ -364,6 +364,7 @@ def _write_simple_suspension_fixture_session(
     include_velocity_signals: bool = False,
     include_event_metrics: bool = True,
     include_gps: bool = True,
+    stroke_event_types: tuple[str, str] = ("compressions_all", "rebounds_all"),
 ) -> dict:
     session_ref = _make_session(library_root, run_id, session_id, library_id=library_id)
     session_root = library_root / "runs" / run_id / "sessions" / session_id
@@ -433,8 +434,8 @@ def _write_simple_suspension_fixture_session(
         events_root = session_root / "events"
         metrics_root = session_root / "metrics"
         for event_type, event_id, velocity_metric in (
-            ("compressions_all", "compression:front:1", {"m_interval_vel_max": 820.0}),
-            ("rebounds_all", "rebound:front:1", {"m_interval_vel_min": -760.0}),
+            (stroke_event_types[0], "compression:front:1", {"m_interval_vel_max": 820.0}),
+            (stroke_event_types[1], "rebound:front:1", {"m_interval_vel_min": -760.0}),
         ):
             (events_root / event_type).mkdir(parents=True)
             pd.DataFrame(
@@ -1806,6 +1807,22 @@ def test_library_adapter_caches_session_gps_points_and_invalidates_by_artifact_f
     assert changed["sampling"]["source_points"] == 4
 
 
+@pytest.mark.parametrize("event_types,has_metrics", [
+    (("compression_byb", "rebound_byb"), True),
+    (("compressions_all", "rebounds_all"), True),
+    (("compression_byb", "rebounds_all"), False),
+])
+def test_suspension_adequacy_requires_a_complete_stroke_definition_pair(tmp_path: Path, event_types, has_metrics) -> None:
+    libraries_root = tmp_path / "libraries"
+    library_root = libraries_root / "default-library"
+    _make_library_definition(library_root, library_id="default-library", display_name="Default Library")
+    ref = _write_simple_suspension_fixture_session(
+        library_root, "run", "session", include_velocity_signals=True, stroke_event_types=event_types,
+    )
+    result = LibraryAdapter(libraries_root).get_analysis_view_adequacy("simple-suspension", {"sessions": [ref]})
+    assert ("event_metrics" not in result["session_results"][0]["missing_recommended"]) is has_metrics
+
+
 def test_library_adapter_lists_analysis_views_and_evaluates_simple_suspension_adequacy(tmp_path: Path) -> None:
     libraries_root = tmp_path / "libraries"
     library_root = libraries_root / "default-library"
@@ -1936,7 +1953,7 @@ def test_library_adapter_caches_and_invalidates_analysis_view_adequacy(tmp_path:
     assert cold_explain["schema"] == "bodaqs.library_api.analysis_adequacy_cache_key_explain"
     assert cold_explain["namespace"] == "analysis_adequacy"
     assert cold_explain["cached"] is False
-    assert cold_explain["dependencies"]["policy_version"] == 2
+    assert cold_explain["dependencies"]["policy_version"] == 3
     assert cold_explain["dependencies"]["scope"]["kind"] == "session_refs"
     assert len(cold_explain["dependencies"]["sessions"][0]["available_signals"]) >= 5
 

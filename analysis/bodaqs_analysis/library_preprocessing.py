@@ -9,7 +9,7 @@ import pandas as pd
 
 from bodaqs_analysis.artifacts import (
     ArtifactStore,
-    copy_raw_csv_to_source,
+    copy_raw_input_to_source,
     copy_session_aux_sources,
     ensure_run_is_new,
     ensure_session_is_new,
@@ -282,11 +282,12 @@ def _process_one_input(
         metrics_df = processed.get("metrics", pd.DataFrame())
 
         ensure_session_is_new(store, run_id=run_id, session_id=session_id, force=False)
-        source_sha256 = copy_raw_csv_to_source(
+        source_sha256 = copy_raw_input_to_source(
             store=store,
             run_id=run_id,
             session_id=session_id,
-            csv_path=session_input.csv_path,
+            input_path=session_input.csv_path,
+            dest_name="input.byb" if session_input.input_kind == "byb" else "input.csv",
         )
         source_manifest = _source_manifest(
             session_input,
@@ -383,7 +384,7 @@ def _source_manifest(
     resolved_log_metadata_path: Path | None,
 ) -> dict[str, Any]:
     manifest = session_input.source_manifest(
-        source_path="source/input.csv",
+        source_path="source/input.byb" if session_input.input_kind == "byb" else "source/input.csv",
         source_sha256=source_sha256,
     )
     manifest.update(

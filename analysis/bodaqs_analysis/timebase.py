@@ -7,6 +7,63 @@ import numpy as np
 import pandas as pd
 
 
+def continuous_segments(
+    df: pd.DataFrame,
+    *,
+    time_col: str = "time_s",
+    sample_rate_hz: Optional[float] = None,
+) -> list[tuple[int, int]]:
+    """Half-open positional ranges that must not share filter/detector state.
+
+    Explicit segment changes and missing sample intervals (>1.5 nominal steps)
+    are boundaries. Non-increasing or non-finite timestamps also reset state.
+    A frame without timestamps can still declare explicit segment boundaries.
+    """
+    n = len(df)
+    if not n:
+        return []
+    breaks = np.zeros(n, dtype=bool)
+    breaks[0] = True
+    if "segment_id" in df:
+        ids = df["segment_id"]
+        breaks[1:] |= ~ids.iloc[1:].reset_index(drop=True).eq(
+            ids.iloc[:-1].reset_index(drop=True)
+        ).fillna(False).to_numpy(dtype=bool)
+    if time_col in df:
+        t = pd.to_numeric(df[time_col], errors="coerce").to_numpy(dtype=np.float64)
+        delta = np.diff(t)
+        positive = delta[np.isfinite(delta) & (delta > 0)]
+        dt = (1.0 / sample_rate_hz) if sample_rate_hz is not None else (
+            float(np.median(positive)) if positive.size else np.inf
+        )
+        finite_times = t[np.isfinite(t)]
+        tolerance = 16 * np.finfo(float).eps * max(
+            1.0, float(np.max(np.abs(finite_times))) if finite_times.size else 1.0
+        )
+        breaks[1:] |= ~np.isfinite(delta) | (delta <= 0) | (delta > 1.5 * dt + tolerance)
+    starts = np.flatnonzero(breaks)
+    return list(zip(starts.tolist(), np.r_[starts[1:], n].tolist()))
+
+
+def finite_segments(values: np.ndarray, segments: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Split continuous ranges further at unavailable signal samples."""
+    out = []
+    for start, end in segments:
+        valid = np.isfinite(values[start:end])
+        edges = np.diff(np.r_[False, valid, False].astype(np.int8))
+        out.extend(zip((start + np.flatnonzero(edges == 1)).tolist(),
+                       (start + np.flatnonzero(edges == -1)).tolist()))
+    return out
+
+
+def time_searchsorted(times: np.ndarray, value: float, *, side: str = "left") -> int:
+    """Search timestamps without losing an endpoint to float64 arithmetic noise."""
+    if not np.isfinite(value):
+        return int(np.searchsorted(times, value, side=side))
+    slack = 8 * np.finfo(float).eps * max(1.0, abs(value))
+    return int(np.searchsorted(times, value - slack if side == "left" else value + slack, side=side))
+
+
 @dataclass(frozen=True)
 class TimebaseInfo:
     kind: str                # "uniform" for v0

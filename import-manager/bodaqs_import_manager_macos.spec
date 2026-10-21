@@ -54,6 +54,7 @@ def _numeric_build_number(version: str) -> str:
 build_number = _numeric_build_number(app_version)
 
 setup_datas = collect_data_files("bodaqs_import_manager.import_agent_assets")
+setup_datas.append((str(analysis_dir / "config" / "byb"), "bodaqs_import_manager/import_agent_assets/byb/examples"))
 app_icon_path = (import_manager_dir / "packaging" / "macos" / "bodaqs_import_manager.icns").resolve()
 setup_excludes = [
     "IPython",
