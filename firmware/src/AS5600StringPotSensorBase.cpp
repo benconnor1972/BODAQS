@@ -76,9 +76,7 @@ void AS5600StringPotSensorBase::applyBaseParams(const BaseParams& p) {
 
 void AS5600StringPotSensorBase::resetTrackingState(bool assumeTurnZero) {
   m_trackingInit = false;
-  m_lastWrappedRaw = 0;
-  m_turnIndex = assumeTurnZero ? 0 : 0;
-  m_lastUnwrappedRaw = 0;
+  m_wrapTracker.reset(0, 0, m_countsPerTurn);
 }
 
 void AS5600StringPotSensorBase::recomputeScale() {
@@ -125,23 +123,13 @@ int32_t AS5600StringPotSensorBase::updateUnwrappedFromWrapped_(int wrapped) cons
   wrapped = normalizeWrapped_(wrapped);
   if (!m_trackingInit) {
     m_trackingInit = true;
-    m_lastWrappedRaw = wrapped;
-    m_lastUnwrappedRaw = initialUnwrappedFromWrapped_(wrapped);
-    const int32_t turn = (m_countsPerTurn > 0) ? int32_t(m_countsPerTurn) : 1;
-    m_turnIndex = (m_lastUnwrappedRaw - int32_t(wrapped)) / turn;
-    return m_lastUnwrappedRaw;
+    const int32_t initial = initialUnwrappedFromWrapped_(wrapped);
+    m_wrapTracker.reset(wrapped, initial, m_countsPerTurn);
+    return initial;
   }
 
-  const int delta = wrapped - m_lastWrappedRaw;
-  if (delta <= -int(m_wrapThreshold)) {
-    ++m_turnIndex;
-  } else if (delta >= int(m_wrapThreshold)) {
-    --m_turnIndex;
-  }
-
-  m_lastWrappedRaw = wrapped;
-  m_lastUnwrappedRaw = (m_turnIndex * int32_t(m_countsPerTurn)) + int32_t(wrapped);
-  return m_lastUnwrappedRaw;
+  return m_wrapTracker.update(wrapped, m_countsPerTurn, m_wrapThreshold,
+                              hasAnalogWrapSettling());
 }
 
 AS5600StringPotSensorBase::SampleState AS5600StringPotSensorBase::captureSample_() const {

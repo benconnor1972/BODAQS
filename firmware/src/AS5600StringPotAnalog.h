@@ -20,6 +20,7 @@ public:
 
 protected:
   int readWrappedCountsOnce() const override;
+  bool hasAnalogWrapSettling() const override { return true; }
 
 private:
   int8_t m_ain = -1;
