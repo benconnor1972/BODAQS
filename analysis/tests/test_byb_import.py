@@ -21,7 +21,7 @@ from bodaqs_analysis.pipeline import preprocess_session
 from bodaqs_analysis.session_archive import prepare_session_input, session_input_identity
 
 
-def recording_bytes(counters=None, n=1601, travel=(170, 65, 150)):
+def recording_bytes(counters=None, n=1601, travel=(170, 65, 150), trailer_extra=()):
     if counters is None:
         counters = np.arange(n, dtype=np.uint32) + 12345
     n = len(counters)
@@ -42,8 +42,11 @@ def recording_bytes(counters=None, n=1601, travel=(170, 65, 150)):
     header[0x20:0x24] = b"1000"
     trailer = bytearray(2012)
     trailer[:2] = b"\xf0\xf0"
-    payload = b"Rider\0Frame\029\0" + b"\0".join(str(v).encode() for v in travel) + b"\0"
-    trailer[2:2 + len(payload)] = payload
+    fields = {0: "Example rider", 1: "75 Kg", 7: "Example bike", 8: "L", 9: "29"}
+    fields.update({10 + index: str(value) for index, value in enumerate((*travel, *trailer_extra))})
+    for index, value in fields.items():
+        payload = value.encode("ascii")
+        trailer[2 + 30 * index:2 + 30 * index + len(payload)] = payload
     return bytes(header) + rows.tobytes()[:-4] + bytes(trailer)
 
 
@@ -94,6 +97,30 @@ def test_reader_keeps_overlapped_final_record_and_excludes_padding(tmp_path):
     assert len(recording.gps) == 17  # Stationary repeated coordinates remain legitimate fixes.
     assert recording.gps.speed_mps.eq(10).all()
     assert recording.raw.accel_x_counts.eq(-1234).all()
+
+
+@pytest.mark.parametrize("extra", [(), (0, 0, 0, 0), (15, 25, 35, 45)])
+def test_fixed_trailer_travel_is_independent_of_later_fields(tmp_path, extra):
+    path = tmp_path / "fixed_fields.byb"
+    path.write_bytes(recording_bytes(travel=(200, 75, 200), trailer_extra=extra))
+    result = read_byb(path)
+    assert result.travel == {"front_suspension_mm": 200, "rear_suspension_mm": 75, "rear_wheel_mm": 200}
+    assert result.qc["trailer"]["layout"] == "fixed_30_byte_fields"
+    assert result.qc["trailer"]["bike"] == "Example bike"
+
+
+def test_compact_trailer_remains_supported(tmp_path):
+    data = bytearray(recording_bytes())
+    trailer = bytearray(2012)
+    trailer[:2] = b"\xf0\xf0"
+    payload = b"Example\0Bike\0" + b"29\0" + b"170\0" + b"65\0" + b"150\0"
+    trailer[2:2 + len(payload)] = payload
+    data[-2012:] = trailer
+    path = tmp_path / "compact.byb"
+    path.write_bytes(data)
+    result = read_byb(path)
+    assert result.travel == {"front_suspension_mm": 170, "rear_suspension_mm": 65, "rear_wheel_mm": 150}
+    assert result.qc["trailer"]["layout"] == "compact_trailing_travel"
 
 
 @pytest.mark.parametrize("damage", ["sentinel", "alignment", "marker", "date"])
@@ -335,6 +362,176 @@ def test_pipeline_filters_do_not_cross_byb_gap(tmp_path):
     path.write_bytes(changed)
     after = preprocess_session(path, preprocess_config=cfg, include_events=False, include_metrics=False)["session"]["df"]
     pd.testing.assert_frame_equal(before[before.segment_id == 0], after[after.segment_id == 0])
+
+
+@pytest.mark.parametrize("existing_settings", [False, True])
+def test_manager_byb_editor_loads_namespace_template_or_existing_settings(tmp_path, monkeypatch, existing_settings):
+    from importlib.resources.readers import MultiplexedPath
+    from types import SimpleNamespace
+    from bodaqs_import_manager import import_agent_setup as manager
+
+    assets = ROOT / "import-manager/bodaqs_import_manager/import_agent_assets"
+    expected = (assets / "byb/template.json").read_text(encoding="utf-8")
+    if existing_settings:
+        expected = '{"existing": "source-specific settings"}\n'
+        (tmp_path / "byb.json").write_text(expected, encoding="utf-8")
+
+    def resource_files(package):
+        assert package == "bodaqs_import_manager.import_agent_assets"
+        assert not existing_settings, "Existing source settings must take precedence"
+        # Namespace-package resources have a single-component joinpath on Python 3.11.
+        return MultiplexedPath(str(assets))
+
+    class Widget:
+        def __init__(self, *args, **kwargs):
+            self.text = None
+
+        def insert(self, index, text):
+            self.text = text
+
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: None
+
+    editor = Widget()
+    monkeypatch.setattr(manager, "files", resource_files)
+    monkeypatch.setattr(manager, "tk", SimpleNamespace(Toplevel=Widget, Text=lambda *a, **kw: editor, StringVar=Widget))
+    monkeypatch.setattr(manager, "ttk", SimpleNamespace(Label=Widget, Frame=Widget, Button=Widget))
+
+    def unexpected_error(*args, **kwargs):
+        pytest.fail(f"BYB editor failed to open: {args}")
+
+    monkeypatch.setattr(manager.messagebox, "showerror", unexpected_error)
+    window = manager.ImportAgentManagerWindow.__new__(manager.ImportAgentManagerWindow)
+    window.root = object()
+    window._selected_source_config = lambda: SimpleNamespace(source_root=tmp_path, source_id="byb_test")
+    opened = []
+    window._wait_for_manager_dialog = opened.append
+    window._edit_selected_byb_settings()
+    assert len(opened) == 1
+    assert editor.text == expected
+    assert (tmp_path / "byb.json").exists() == existing_settings
+
+
+@pytest.fixture
+def byb_editor_ui(monkeypatch):
+    from types import SimpleNamespace
+    from bodaqs_import_manager import import_agent_setup as manager
+
+    ui = SimpleNamespace(buttons={}, editors=[], statuses=[], dialogs=[], errors=[], logs=[])
+
+    class Widget:
+        def __init__(self, *args, **kwargs):
+            self.value = kwargs.get("value", "")
+            self.destroyed = False
+
+        def insert(self, index, text):
+            self.value = text
+
+        def get(self, *args):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
+        def destroy(self):
+            self.destroyed = True
+
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: None
+
+    def capture(collection):
+        def create(*args, **kwargs):
+            widget = Widget(*args, **kwargs)
+            collection.append(widget)
+            return widget
+        return create
+
+    def button(*args, **kwargs):
+        ui.buttons[kwargs["text"]] = kwargs["command"]
+        return Widget()
+
+    monkeypatch.setattr(manager, "tk", SimpleNamespace(Toplevel=capture(ui.dialogs), Text=capture(ui.editors), StringVar=capture(ui.statuses)))
+    monkeypatch.setattr(manager, "ttk", SimpleNamespace(Label=Widget, Frame=Widget, Button=button))
+    monkeypatch.setattr(manager.messagebox, "showerror", lambda *args, **kwargs: ui.errors.append(args))
+
+    def open_editor(source_root):
+        window = manager.ImportAgentManagerWindow.__new__(manager.ImportAgentManagerWindow)
+        window.root = object()
+        window._selected_source_config = lambda: SimpleNamespace(source_root=source_root, source_id="byb_test", logger_timezone="UTC")
+        window._append_log = ui.logs.append
+        window._wait_for_manager_dialog = lambda dialog: None
+        window._edit_selected_byb_settings()
+        return ui.editors[-1]
+
+    ui.open = open_editor
+    return ui
+
+
+def test_manager_byb_template_defaults(tmp_path, byb_editor_ui):
+    config = json.loads(byb_editor_ui.open(tmp_path).get())
+    assert config["suspension"]["front"]["sensor_length_mm"] == 210
+    assert config["suspension"]["rear"]["sensor_length_mm"] == 80
+    assert config["front_projection"]["head_angle_deg"] == 65
+    assert config["timezone"] == "GMT"
+    validate_byb_config(config)
+    from zoneinfo import ZoneInfo
+    assert ZoneInfo(config["timezone"]).utcoffset(None).total_seconds() == 0
+
+
+@pytest.mark.parametrize("existing_settings", [False, True])
+@pytest.mark.parametrize("validate_first", [False, True])
+def test_manager_byb_save_persists_edits_with_unresolved_geometry(tmp_path, byb_editor_ui, existing_settings, validate_first):
+    path = tmp_path / "byb.json"
+    if existing_settings:
+        template = ROOT / "import-manager/bodaqs_import_manager/import_agent_assets/byb/template.json"
+        original = json.loads(template.read_text())
+        original["timezone"] = "Australia/Perth"
+        path.write_text(json.dumps(original))
+    editor = byb_editor_ui.open(tmp_path)
+    config = json.loads(editor.get())
+    assert config["timezone"] == ("Australia/Perth" if existing_settings else "GMT")
+    config["display_name"] = "Edited setup — saved"
+    config["suspension"]["front"]["sensor_length_mm"] = 215
+    content = json.dumps(config, ensure_ascii=False, indent=2) + "\n"
+    editor.set(content)
+    if validate_first:
+        byb_editor_ui.buttons["Validate"]()
+        assert "geometry" in byb_editor_ui.statuses[-1].get()
+        assert path.exists() == existing_settings
+    byb_editor_ui.buttons["Save"]()
+    assert not byb_editor_ui.errors
+    assert path.read_bytes() == content.encode("utf-8")
+    assert not path.with_suffix(".json.tmp").exists()
+    assert byb_editor_ui.dialogs[-1].destroyed
+    assert "Saved BYB settings" in byb_editor_ui.logs[-1]
+    assert byb_editor_ui.open(tmp_path).get() == content
+
+
+@pytest.mark.parametrize("invalid_text", ['{"broken":', '[]'])
+def test_manager_byb_save_reports_invalid_json_without_overwriting(tmp_path, byb_editor_ui, invalid_text):
+    path = tmp_path / "byb.json"
+    original = '{"display_name": "Keep this draft"}'
+    path.write_text(original)
+    byb_editor_ui.open(tmp_path).set(invalid_text)
+    byb_editor_ui.buttons["Save"]()
+    assert byb_editor_ui.errors and "Could not save BYB settings" in byb_editor_ui.errors[-1][1]
+    assert path.read_text() == original
+    assert not byb_editor_ui.dialogs[-1].destroyed
+
+
+def test_manager_byb_save_reports_write_failure(tmp_path, byb_editor_ui, monkeypatch):
+    from bodaqs_import_manager import import_agent_setup as manager
+
+    def fail_replace(*args):
+        raise PermissionError("test write denied")
+
+    path = tmp_path / "byb.json"
+    byb_editor_ui.open(tmp_path)
+    monkeypatch.setattr(manager.os, "replace", fail_replace)
+    byb_editor_ui.buttons["Save"]()
+    assert not path.exists()
+    assert "test write denied" in byb_editor_ui.errors[-1][1]
+    assert not byb_editor_ui.dialogs[-1].destroyed
 
 
 def test_manager_smoke_entry_point_and_pending_status_without_window(tmp_path, monkeypatch):

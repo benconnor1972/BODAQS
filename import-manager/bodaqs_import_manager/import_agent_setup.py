@@ -4982,7 +4982,7 @@ class ImportAgentManagerWindow:
             path = source.source_root / "byb.json"
             text = path.read_text(encoding="utf-8") if path.exists() else files(
                 "bodaqs_import_manager.import_agent_assets"
-            ).joinpath("byb", "template.json").read_text(encoding="utf-8")
+            ).joinpath("byb").joinpath("template.json").read_text(encoding="utf-8")
         except Exception as exc:
             messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
             return
@@ -4996,28 +4996,36 @@ class ImportAgentManagerWindow:
         editor = tk.Text(dialog, width=100, height=30, wrap="none", undo=True)
         editor.grid(row=1, column=0, sticky="nsew", padx=12)
         editor.insert("1.0", text)
-        status = tk.StringVar(value="The template requires your actual calibration and geometry values before it can be saved.")
+        status = tk.StringVar(value="Save keeps your settings, including incomplete setups. Validate checks calibration and referenced geometry before import.")
         ttk.Label(dialog, textvariable=status, wraplength=800).grid(row=2, column=0, sticky="w", padx=12, pady=8)
 
-        def validate(save=False):
+        def validate():
             try:
                 content = editor.get("1.0", "end-1c").encode("utf-8")
                 load_byb_setup(path, fallback_timezone=source.logger_timezone, config_bytes=content)
-                if save:
-                    temporary = path.with_suffix(".json.tmp")
-                    temporary.write_bytes(content)
-                    os.replace(temporary, path)
-                    self._append_log(f"Saved BYB settings for {source.source_id}: {path}")
-                    dialog.destroy()
-                else:
-                    status.set("Setup files are valid. Recording travel and channel compatibility are checked during import.")
+                status.set("Setup files are valid. Recording travel and channel compatibility are checked during import.")
             except Exception as exc:
                 status.set(str(exc))
+
+        def save():
+            try:
+                text = editor.get("1.0", "end-1c")
+                if not isinstance(json.loads(text), dict):
+                    raise ValueError("BYB settings must be a JSON object.")
+                temporary = path.with_suffix(".json.tmp")
+                temporary.write_bytes(text.encode("utf-8"))
+                os.replace(temporary, path)
+            except Exception as exc:
+                status.set(str(exc))
+                messagebox.showerror(_APP_DISPLAY_NAME, f"Could not save BYB settings to {path}:\n{exc}", parent=dialog)
+                return
+            self._append_log(f"Saved BYB settings for {source.source_id}: {path}")
+            dialog.destroy()
 
         buttons = ttk.Frame(dialog)
         buttons.grid(row=3, column=0, sticky="e", padx=12, pady=(0, 12))
         ttk.Button(buttons, text="Validate", command=validate).grid(row=0, column=0, padx=4)
-        ttk.Button(buttons, text="Save", command=lambda: validate(True)).grid(row=0, column=1, padx=4)
+        ttk.Button(buttons, text="Save", command=save).grid(row=0, column=1, padx=4)
         ttk.Button(buttons, text="Cancel", command=dialog.destroy).grid(row=0, column=2, padx=4)
         self._wait_for_manager_dialog(dialog)
 

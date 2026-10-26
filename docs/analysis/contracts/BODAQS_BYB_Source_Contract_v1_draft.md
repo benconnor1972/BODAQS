@@ -1,7 +1,8 @@
 # BODAQS BYB Source Contract v1
 
-Status: Implemented v1; real-recording validation remains pending. The schema
-and examples describe the source-local importer configuration.
+Status: Implemented v1; reader/import workflows validated with two hardware
+recordings. Bike-specific calibration and linkage remain unconfirmed for those
+recordings. The schema and examples describe the source-local configuration.
 
 Configuration version: `1`  
 Schema identifier: `bodaqs.compatibility.byb`  
@@ -310,9 +311,18 @@ point is extrapolated. The unmodified records remain in `byb_raw`.
 A uint32 counter wrap is unwrapped only when the preceding value exceeds
 `0xF0000000` and the following value is below `0x0FFFFFFF`. Other backward jumps
 are rejected because their missing elapsed time is unknown. This policy is
-covered by synthetic fixtures and still needs validation against representative
-original/exported recordings. This contract adds no user-facing timing tuning
+covered by synthetic fixtures and by original recordings with non-zero initial
+counters and repeated/skipped counters. Validation evidence and remaining
+calibration limitations are described in the
+[import guide](../BYB_Import.md). This contract adds no user-facing timing tuning
 fields.
+
+For recognized fixed trailers, 67 NUL-padded fields of 30 bytes follow the
+two-byte sentinel. Fork, shock and rear-wheel travel occupy fields 10, 11 and 12
+(zero-based), at trailer-relative offsets 302, 332 and 362. Later fields are not
+travel. Retain the raw travel strings and bike/frame/wheel labels in recording
+QC. Use the compact trailing-travel interpretation only when the recognized
+fixed layout is absent; missing/unparseable travel follows section 6.
 
 GPS values held across high-rate records MUST NOT be presented as independent
 high-rate fixes. Produce the standard GPS stream, preserving legitimate stationary

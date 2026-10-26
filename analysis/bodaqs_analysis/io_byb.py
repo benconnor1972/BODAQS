@@ -9,7 +9,7 @@ import re
 import numpy as np
 import pandas as pd
 
-BYB_READER_VERSION = "byb.v1.1"
+BYB_READER_VERSION = "byb.v1.2"
 BYB_TIMING_VERSION = "byb.counter_grid.v1"
 RECORD_DTYPE = np.dtype([
     ("counter", "<u4"), ("front_counts", "<u2"), ("rear_counts", "<u2"),
@@ -37,6 +37,44 @@ class BYBRecording:
     gps: pd.DataFrame
     travel: dict[str, float]
     qc: dict
+
+
+def _read_trailer(trailer: bytes) -> tuple[dict[str, float], dict, list[str]]:
+    """Decode known fixed-width fields before considering the compact layout.
+
+    Hardware recordings include extra fields after wheel travel. Those fields
+    cannot be used to locate travel by counting backwards from the file end.
+    """
+    slots = [trailer[i:i + 30] for i in range(2, len(trailer), 30)]
+    padded = len(slots) == 67 and all(
+        len(slot) == 30 and (b"\0" not in slot or not any(slot.split(b"\0", 1)[1]))
+        for slot in slots
+    )
+    fields = [slot.split(b"\0", 1)[0].decode("ascii", errors="replace").strip() for slot in slots]
+    names = ("front_suspension_mm", "rear_suspension_mm", "rear_wheel_mm")
+    metadata = {}
+    if padded and any(fields[7:13]):
+        values = fields[10:13]
+        metadata = {
+            "layout": "fixed_30_byte_fields",
+            "bike": fields[7], "frame_size": fields[8], "wheel_size": fields[9],
+            "raw_travel_fields": dict(zip(names, values)),
+        }
+    else:
+        # The reference also describes a compact layout with travel at the end.
+        runs = re.findall(rb"[\x20-\x7e]+", trailer[2:])
+        values = [value.decode("ascii") for value in runs[-3:]] if len(runs) >= 3 else [""] * 3
+        metadata = {"layout": "compact_trailing_travel", "raw_travel_fields": dict(zip(names, values))}
+    travel, warnings = {}, []
+    for name, value in zip(names, values):
+        try:
+            number = float(value)
+            if not np.isfinite(number) or number <= 0:
+                raise ValueError("non-positive travel")
+            travel[name] = number
+        except ValueError:
+            warnings.append(f"missing_trailer_travel:{name}")
+    return travel, metadata, warnings
 
 
 def _timebase(counters: np.ndarray) -> tuple[np.ndarray, float, dict]:
@@ -123,25 +161,12 @@ def read_byb(path: str | Path) -> BYBRecording:
     gps.loc[~good, ["latitude_deg", "longitude_deg", "altitude_m", "speed_mps"]] = np.nan
     gps.loc[~np.isfinite(gps.speed_mps) | (gps.speed_mps < 0), "speed_mps"] = np.nan
     gps.loc[~np.isfinite(gps.altitude_m), "altitude_m"] = np.nan
-    runs = re.findall(rb"[\x20-\x7e]+", data[trailer_offset + 2:])
-    travel = {}
-    warnings = []
-    if len(runs) >= 3:
-        for name, value in zip(("front_suspension_mm", "rear_suspension_mm", "rear_wheel_mm"), runs[-3:]):
-            try:
-                number = float(value)
-                if np.isfinite(number) and number > 0:
-                    travel[name] = number
-                else:
-                    warnings.append(f"missing_trailer_travel:{name}")
-            except ValueError:
-                warnings.append(f"missing_trailer_travel:{name}")
-    else:
-        warnings.append("missing_trailer_travel")
+    travel, trailer_metadata, warnings = _read_trailer(data[trailer_offset:])
     timing.update({"segment_count": int(analysis.segment_id.nunique()), "analysis_rows": len(analysis)})
     return BYBRecording(started, raw, analysis, gps, travel, {
         "reader_version": BYB_READER_VERSION, "timing": timing, "raw_rows": n,
         "invalid_counts": invalid, "warnings": warnings,
+        "trailer": trailer_metadata,
         "header_mode": data[0x16:0x20].split(b"\0")[0].decode("ascii", errors="replace"),
         "declared_rate": data[0x20:0x2A].split(b"\0")[0].decode("ascii", errors="replace"),
         "sampling_mode": data[0x2A:72].split(b"\0")[0].decode("ascii", errors="replace"),
