@@ -22,7 +22,7 @@ are part of this implementation.
 | #170 synchronization and analysis timing | Merged and verified | `a1d4cba`, merged at `8d5dbc4`; [synchronization evidence](CAN-FD_Synchronization_Implementation.md) |
 | #171 bounded loss and continuity recovery | Merged and verified | `6e64f66`, merged at `bd86b0d`; [bounded loss evidence](CAN-FD_Bounded_Loss_Recovery_Implementation.md) |
 | #172 link/restart containment and cleanup | Merged and verified | `1113809`, merged at `647811a`; [link/restart evidence](CAN-FD_Link_Restart_Implementation.md) |
-| #173 four-node resource admission | Implementing | Depends on verified #170 |
+| #173 four-node resource admission | Merged and verified | `0628154`, merged at `e8c5123`; [admission evidence](CAN-FD_Four_Node_Admission_Implementation.md), [link profiles](CAN-FD_Link_Profile_Implementation.md) |
 | #174 integrated software acceptance | Pending | Depends on #171, #172 and #173 |
 
 At `9c20ead`, the combined common CAN/control suite (nine binaries), full logger
@@ -76,6 +76,21 @@ retries share the 4/s burst-four bucket; real loss diagnostics remain valid.
 The complete merged tree equals the tested child tree, preserving passing
 G3507 node, G3518 master and A8 target-build evidence. Physical qualification
 remains deferred.
+
+At `e8c5123`, the complete firmware host/runtime suite, fourteen common binaries,
+node capture/SPI/acquisition scenarios 1-12 and master timing pass. Four real
+lifecycle peers exercise allocation-before-PREPARE, startup, renewal, STOP,
+tail/fence/release and healthy-peer isolation after bus-off. Admission fixtures
+verify joint backlog coverage and explicit CAN/SPI/drain/qualification rejection.
+The entire merged tree equals child `0628154`, preserving its full analysis
+result (588 passed, one skipped) and explicit target-build evidence: TI node
+FLASH 41456/SRAM 13169 bytes; master FLASH 41352/bank-0 SRAM 62139 bytes,
+including reserved 2048-byte stack, with 3397 bank-0 bytes free and bank 1 unused;
+A8 `bodaqs_s3_mini_n4r2` static RAM 260460/flash 2020553 bytes. Both TI bring-up
+and acquisition link selectors pass. Target builds were not repeated.
+Production has no qualified scheduling profile and explicitly rejects remote
+admission before PREPARE; deterministic synthetic profiles establish software
+behavior only. #174 integrated acceptance and final review remain pending.
 
 ## Deferred physical qualification
 
