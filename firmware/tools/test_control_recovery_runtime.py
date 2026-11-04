@@ -21,5 +21,6 @@ def main():
         cpp.write_text(fixture)
         subprocess.run([args.compiler,"-std=c++17","-ffunction-sections","-Wl,--gc-sections","-Wall","-Wextra","-Werror","-Wno-class-memaccess","-I",str(root/"test/stubs"),"-I",str(root/"src"),"-I",str(protocol),"-I",str(root/"can-fd/common/test"),str(cpp),*[str(s) for s in sources],"-o",str(exe)],check=True)
         subprocess.run([str(exe)],check=True)
+        subprocess.run([str(exe),"--wrap"],check=True)
 
 if __name__=="__main__": main()

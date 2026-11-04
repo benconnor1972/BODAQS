@@ -62,6 +62,21 @@ static void addControlApplyJson_(JsonObject node, const BodaqsControlApplyClient
   operation["pending"] = apply.phase && apply.current.node_address == address && (!outcome.valid || outcome.kind == 2);
   operation["outcome_valid"] = outcome.valid;
   operation["sequence"] = outcome.operation;
+  operation["node_boot_id"] = outcome.boot;
+  snprintf(decimal,sizeof(decimal),"%llu",static_cast<unsigned long long>(outcome.session));
+  operation["control_session_id"] = decimal;
+  const auto& previous=apply.previous[address];
+  if(previous.valid) {
+    JsonObject history=operation["previous"].to<JsonObject>();
+    history["kind"]=previous.kind;history["reason"]=previous.reason;
+    history["reason_key"]=bodaqs_control_reason_key(previous.reason);
+    history["sequence"]=previous.operation;history["node_boot_id"]=previous.boot;
+    history["observed_ms"]=previous.observed_ms;
+    snprintf(decimal,sizeof(decimal),"%llu",static_cast<unsigned long long>(previous.session));
+    history["control_session_id"]=decimal;
+    snprintf(decimal,sizeof(decimal),"%llu",static_cast<unsigned long long>(previous.desired_generation));
+    history["desired_generation"]=decimal;
+  }
   snprintf(decimal, sizeof(decimal), "%llu", static_cast<unsigned long long>(outcome.desired_generation));
   operation["desired_generation"] = decimal;
   operation["kind"] = outcome.kind;

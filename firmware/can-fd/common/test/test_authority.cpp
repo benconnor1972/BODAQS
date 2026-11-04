@@ -137,6 +137,15 @@ int main()
     assert(bodaqs_control_authority_client_accept(&client,0x87,&reply,12));
     assert(client.nodes[0].bound && client.nodes[0].next_mutation==4);
 
+    BodaqsControlAuthorityClient exhausted=client;
+    exhausted.nodes[0].next_mutation=0;
+    bodaqs_control_authority_client_node(&exhausted,0,123,false);
+    bodaqs_control_authority_client_node(&exhausted,0,123,true);
+    assert(bodaqs_control_authority_client_next(&exhausted,55,&request,&type));
+    reply=request;
+    assert(bodaqs_control_authority_process(&a,&n,&request.record,13,random64,0,&reply.record));
+    assert(bodaqs_control_authority_client_accept(&exhausted,0x87,&reply,13));
+    assert(exhausted.nodes[0].next_mutation==0); // Duplicate BIND never revives exhausted allocator.
     BodaqsControlAuthorityClient observed = client;
     bodaqs_control_authority_client_observe_session(&observed, 0, 1000);
     assert(observed.nodes[0].bound && observed.nodes[0].reason == 0);

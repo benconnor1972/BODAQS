@@ -11,6 +11,13 @@ enum
     SNAPSHOT_RELEASE_EFFECTIVE,
     SNAPSHOT_REFRESH_EPOCH
 };
+static void invalidate_current(BodaqsControlObservation *node)
+{
+    unsigned endpoint;
+    node->valid = false;
+    node->epoch_valid_mask = 0;
+    for (endpoint=0; endpoint<6; ++endpoint) node->endpoints[endpoint].current=false;
+}
 void bodaqs_control_observer_tick(BodaqsControlObserver *o, uint32_t now)
 {
     o->now_ms = now;
@@ -65,8 +72,7 @@ void bodaqs_control_observer_node(BodaqsControlObserver *observer,
     if (node->node_boot_id != boot || !available ||
         node->endpoint_mask != endpoints)
     {
-        node->valid = false;
-        node->epoch_valid_mask = 0;
+        invalidate_current(node);
         for (unsigned e=0; e<6; ++e) node->endpoints[e].current = false;
         if ((observer->pending && observer->current.node_address == address) ||
             (observer->snapshot_phase && observer->snapshot_address == address))
@@ -352,8 +358,7 @@ bool bodaqs_control_observer_accept(BodaqsControlObserver *observer,
         if (record->data[0] >= BODAQS_CONTROL_BUSY)
         {
             observer->pending = false;
-            node->valid = false;
-            node->epoch_valid_mask = 0;
+            invalidate_current(node);
         }
         return true;
     }
@@ -362,16 +367,14 @@ bool bodaqs_control_observer_accept(BodaqsControlObserver *observer,
         /* A completed malformed result may be cached by a faulty peer. Abandon
          * this read rather than polling the same unusable result forever. */
         observer->pending = false;
-        node->valid = false;
-        node->epoch_valid_mask = 0;
+        invalidate_current(node);
         return false;
     }
     if (record->opcode == BODAQS_CONTROL_ERROR &&
         record->data[0] == BODAQS_CONTROL_COMMAND_REJECTED &&
         record->data[3] == BODAQS_CONTROL_GET_NODE_STATE)
     {
-        node->valid = false;
-        node->epoch_valid_mask = 0;
+        invalidate_current(node);
         node->reason = record->data[1];
         node->field = record->data[2];
         observer->pending = false;

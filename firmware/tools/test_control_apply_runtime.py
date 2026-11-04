@@ -25,6 +25,8 @@ static SensorSpec specs[2];
 static uint8_t count;
 static bool liveMuted;
 static CanMasterManager::Diagnostics s_diagnostics;
+static bool s_renewSession=false;
+static bool s_configurationDirty[4]={};
 static const board::BoardProfile* s_board = nullptr;
 uint8_t LoggerConfig::sensorCount() const { return count; }
 bool LoggerConfig::getSensorSpec(uint8_t i, SensorSpec& out) const { if(i>=count) return false; out=specs[i]; return true; }

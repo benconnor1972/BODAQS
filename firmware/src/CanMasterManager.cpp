@@ -102,7 +102,7 @@ void scheduleDisabled_() {
     auto& generation = s_diagnostics.desiredGeneration[address];
     if (!generation || s_configurationDirty[address] || disabled != s_diagnostics.desiredDisabled[address] ||
         enabled != s_diagnostics.desiredEnabled[address]) {
-      if (generation == UINT64_MAX) continue;
+      if (generation == UINT64_MAX) { s_renewSession=true; continue; }
       ++generation;
       s_configurationDirty[address]=false;
       s_diagnostics.desiredEnabled[address]=enabled;
@@ -391,8 +391,11 @@ void serviceControl_() {
       auto& peer=s_diagnostics.authority.nodes[address];
       const auto& outcome=s_diagnostics.apply.nodes[address];
       if(peer.available && peer.phase==3 && peer.reason && due_(now,s_nextAuthorityRetryMs[address])) {
-        if(peer.reason==5 || peer.reason==12) s_renewSession=true;
-        else peer.phase=peer.bind.record.opcode ? 1 : 0;
+        if(peer.reason==5 || peer.reason==12 || (peer.reason==20 && peer.ever_bound)) s_renewSession=true;
+        else {
+          if(peer.reason==20) peer.bind={}; // An unconsumed challenge can expire while a prior apply drains.
+          peer.phase=peer.bind.record.opcode ? 1 : 0;
+        }
         s_nextAuthorityRetryMs[address]=now+5000;
       }
       if(peer.available && ((peer.bound && !peer.next_mutation) ||
@@ -534,8 +537,8 @@ void commitInventory_(
     const bool available=present && !stale && !duplicate;
     if (available && (!s_diagnostics.control.nodes[node].available ||
         s_diagnostics.control.nodes[node].node_boot_id != record.bootId)) {
-      s_nextRecoveryMs[node]=0;
-      s_nextAuthorityRetryMs[node]=0;
+      s_nextRecoveryMs[node]=millis();
+      s_nextAuthorityRetryMs[node]=millis();
     }
     if (s_diagnostics.control.nodes[node].node_boot_id != record.bootId || !available)
       bodaqs_control_apply_client_invalidate(&s_diagnostics.apply, node);
@@ -640,8 +643,13 @@ void enableControlAuthority(uint64_t session) {
   const uint32_t nextRead=s_diagnostics.authority.next_read;
   bodaqs_control_authority_client_init(&s_diagnostics.authority, session);
   if (nextRead) s_diagnostics.authority.next_read=nextRead;
-  for (uint8_t address=0; address<4; ++address)
+  for (uint8_t address=0; address<4; ++address) {
     bodaqs_control_apply_client_invalidate(&s_diagnostics.apply,address);
+    if(s_diagnostics.desiredGeneration[address]==UINT64_MAX) {
+      s_diagnostics.desiredGeneration[address]=0;
+      s_configurationDirty[address]=true;
+    }
+  }
   s_diagnostics.apply.next_transfer = 0; // Only reset in the distinct session scope.
   for (uint8_t address = 0; address < 4; ++address) {
     const auto& node = s_diagnostics.control.nodes[address];
@@ -664,7 +672,7 @@ bool configurationReconciled(uint8_t address) {
   const auto& endpoint = node.endpoints[0];
   const auto& authority = s_diagnostics.authority.nodes[address];
   const uint8_t* d = endpoint.effective;
-  return !s_renewSession && authority.bound && node.available && node.valid && endpoint.current && endpoint.effective_valid &&
+  return !s_renewSession && !s_configurationDirty[address] && authority.bound && node.available && node.valid && endpoint.current && endpoint.effective_valid &&
       authority.boot == node.node_boot_id &&
       static_cast<int32_t>(node.observed_ms - authority.confirmed_ms) >= 0 &&
       node.active_session == s_diagnostics.authority.session && d[4] == (enabled ? 2 : 1) &&
@@ -693,12 +701,15 @@ void begin(const board::BoardProfile& profile, const LoggerConfig& cfg) {
   s_haveCompletedSlot = false;
   s_lastSlotCompletedUs = 0;
   s_statusHardwareUid = 0;
-  s_nextControlMs = 0;
+  s_nextControlMs = millis();
   bodaqs_control_observer_init(&s_diagnostics.control);
   s_lastConfirmedMasterBoot = 0;
   s_lastIssuedSession = 0;
   s_renewSession = false;
-  memset(s_nextRecoveryMs,0,sizeof(s_nextRecoveryMs));
+  for(uint8_t address=0;address<4;++address) {
+    s_nextRecoveryMs[address]=millis();
+    s_nextAuthorityRetryMs[address]=millis();
+  }
   s_exchangeOwner = 0;
   enableControlAuthority(freshSession_(0));
 
