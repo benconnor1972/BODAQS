@@ -57,11 +57,8 @@ int main(void) {
     bodaqs_node_capture_init();
     bodaqs_node_capture_supervise(140);
     assert(bodaqs_node_capture_fault());
-<<<<<<< HEAD
     bodaqs_node_capture_discard();
     assert(!bodaqs_node_capture_clock_trusted());
-=======
->>>>>>> 17e1d72
     bodaqs_node_capture_init();
     raw=8;count=100;cc[3]=100;bodaqs_node_capture_irq();
     bodaqs_node_sync_marker(41,900000);

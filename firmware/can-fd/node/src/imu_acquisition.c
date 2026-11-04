@@ -395,6 +395,7 @@ void bodaqs_node_acquisition_service(uint32_t now) {
     service_transmit();
     if (a.phase == IDLE || a.phase == FAILED)
         return;
+    if(a.phase!=STOPPING && !bodaqs_node_capture_clock_trusted()) {fail(35);return;}
     if (a.phase == RECOVER) {
         if ((uint32_t)(now-a.recovery_ms)>=100) {(void)recovery_boundary(6,now);fail(32);return;}
         /* Bypass FIFO and discard all ambiguous words/captures, observe a fresh
@@ -638,7 +639,7 @@ void bodaqs_node_acquisition_backend(void *context, uint8_t command, uint32_t ge
         a.reason = 0;
         a.pending_event = 0;
         a.failure_after_first = false;
-        a.recovery_count=0; a.recovered=a.gap=a.evidence_gap=false; a.loss_count=a.loss_evidence=0;
+        a.recovered=a.gap=a.evidence_gap=false; a.loss_count=a.loss_evidence=0;
         bodaqs_node_capture_discard();
     } else if (command == BODAQS_ACQ_START) {
         a.start_tick = clock_tick();
