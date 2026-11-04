@@ -93,6 +93,7 @@ void clearInventory_(bool clearObservations) {
   }
   for (uint8_t address = 0; address < 4; ++address) {
     bodaqs_control_observer_node(&s_diagnostics.control, address, 0, 0, false);
+    bodaqs_control_authority_client_node(&s_diagnostics.authority, address, 0, false);
   }
 }
 
@@ -246,6 +247,10 @@ bool refreshControlInfo_() {
     ++s_diagnostics.invalidResponses;
     return false;
   }
+  if (s_diagnostics.control.master_boot_id != boot) {
+    const uint64_t session = s_diagnostics.authority.session;
+    bodaqs_control_authority_client_init(&s_diagnostics.authority, session);
+  }
   bodaqs_control_observer_boot(&s_diagnostics.control, boot, features);
   s_diagnostics.controlInfoValid = true;
   return true;
@@ -256,7 +261,22 @@ void serviceControl_() {
   BodaqsControlWrapped wrapped, reply;
   uint8_t type;
   bodaqs_control_observer_tick(&s_diagnostics.control, millis());
-  if (!bodaqs_control_observer_next(&s_diagnostics.control, &wrapped, &type)) return;
+  bool inspected = true;
+  for (const auto& node : s_diagnostics.control.nodes) {
+    if (!node.available) continue;
+    for (uint8_t endpoint = 0; endpoint < 6; ++endpoint) {
+      if (!(node.endpoint_mask & (1U << endpoint))) continue;
+      const auto& descriptor = node.endpoints[endpoint];
+      inspected = inspected && descriptor.current && descriptor.capability_valid && descriptor.effective_valid;
+    }
+  }
+  const bool observerOwnsExchange = s_diagnostics.control.pending || s_diagnostics.control.snapshot_phase;
+  const bool authorityOwnsExchange = !observerOwnsExchange &&
+      (s_diagnostics.authority.pending || (!LoggingManager::isRunning() && inspected));
+  const bool authorityRequest = authorityOwnsExchange &&
+      bodaqs_control_authority_client_next(&s_diagnostics.authority,
+          s_diagnostics.control.master_boot_id, &wrapped, &type);
+  if (!authorityRequest && !bodaqs_control_observer_next(&s_diagnostics.control, &wrapped, &type)) return;
   CanMasterProtocol::Frame request, response;
   request.type = static_cast<CanMasterProtocol::MessageType>(type);
   request.sequence = nextSequence_();
@@ -273,8 +293,12 @@ void serviceControl_() {
     }
     return;
   }
-  if (!bodaqs_control_observer_accept(&s_diagnostics.control,
-          static_cast<uint8_t>(response.type), &reply, millis())) {
+  const bool accepted = authorityRequest ?
+      bodaqs_control_authority_client_accept(&s_diagnostics.authority,
+          static_cast<uint8_t>(response.type), &reply, millis()) :
+      bodaqs_control_observer_accept(&s_diagnostics.control,
+          static_cast<uint8_t>(response.type), &reply, millis());
+  if (!accepted) {
     ++s_diagnostics.invalidResponses;
   }
   if (reply.master_boot_id != wrapped.master_boot_id) {
@@ -343,6 +367,8 @@ void commitInventory_(
     }
     bodaqs_control_observer_node(&s_diagnostics.control, node, record.bootId,
         record.endpointMask, present && !stale && !duplicate);
+    bodaqs_control_authority_client_node(&s_diagnostics.authority, node, record.bootId,
+        present && !stale && !duplicate);
     if (present) ++s_diagnostics.inventoryPresentCount;
     if (stale) ++s_diagnostics.inventoryStaleCount;
     if (duplicate) ++s_diagnostics.inventoryDuplicateCount;
@@ -434,6 +460,15 @@ bool refreshInventory_() {
 }  // namespace
 
 namespace CanMasterManager {
+
+void enableControlAuthority(uint64_t session) {
+  bodaqs_control_authority_client_init(&s_diagnostics.authority, session);
+  for (uint8_t address = 0; address < 4; ++address) {
+    const auto& node = s_diagnostics.control.nodes[address];
+    bodaqs_control_authority_client_node(&s_diagnostics.authority, address,
+        node.node_boot_id, node.available);
+  }
+}
 
 void begin(const board::BoardProfile& profile, const LoggerConfig& cfg) {
   s_board = &profile;
@@ -599,7 +634,14 @@ void loop() {
   const bool logging = LoggingManager::isRunning();
   if (s_wasLogging && !logging) s_probeRequested = true;
   s_wasLogging = logging;
-  if (logging) return;
+  if (logging) {
+    const uint32_t now = millis();
+    if ((s_diagnostics.authority.pending || s_diagnostics.control.pending) && due_(now, s_nextControlMs)) {
+      s_nextControlMs = now + 100;
+      serviceControl_();
+    }
+    return;
+  }
 
   const uint32_t now = millis();
   const bool irqAsserted = s_profile.irq_pin >= 0 &&

@@ -3,3 +3,5 @@
 #include "../can-fd/common/protocol/bodaqs_control_observer.c"
 
 #include "../can-fd/common/protocol/bodaqs_control_snapshot.c"
+
+#include "../can-fd/common/protocol/bodaqs_control_authority_client.c"

@@ -59,6 +59,7 @@ struct Diagnostics {
   bool controlSupported = false;
   bool controlInfoValid = false;
   BodaqsControlObserver control = {};
+  BodaqsControlAuthorityClient authority = {};
   bool inventorySupported = false;
   bool inventoryValid = false;
   uint32_t inventoryAttempts = 0;
@@ -75,6 +76,7 @@ struct Diagnostics {
       inventory[CanMasterProtocol::kDiscoveryNodeCount];
 };
 
+void enableControlAuthority(uint64_t session);
 void begin(const board::BoardProfile& profile, const LoggerConfig& cfg);
 void applyConfig(const LoggerConfig& cfg);
 void loop();
