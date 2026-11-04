@@ -24,7 +24,7 @@ static struct {
     bool sync_present, seed_started;
     uint8_t seed_attempts;
     uint8_t recovery_step, recovery_count, recovery_stage;
-    uint32_t recovery_ms, attempts[3], resync_timestamp;
+    uint32_t recovery_ms, recovery_tick, attempts[3], resync_timestamp;
     uint32_t loss_count, loss_evidence, loss_first, loss_last, loss_ms, model_tick, model_anchor_tick, model_numerator, sent_sync;
     uint16_t model_denominator;
     uint32_t recovery_capture;
@@ -238,17 +238,18 @@ static bool loss_report(uint32_t now, bool anchor) {
 }
 static bool recovery_boundary(uint8_t kind,uint32_t now) {
     uint8_t p[64],*b=p+8;
+    (void)now;
     envelope(p,0x25,56); bodaqs_control_put_u32(b,a.boot);
     b[5]=a.epoch; b[6]=kind; b[7]=a.recovery_stage;
     bodaqs_control_put_u32(b+8,++a.evidence);
     bodaqs_control_put_u32(b+12,a.sensor_epoch); bodaqs_control_put_u32(b+16,1);
     if (a.sequence) bodaqs_control_put_u32(b+20,a.sequence-1);
-    put16(b+44,27); put16(b+46,(uint16_t)(0x60 | (a.sequence?1:0)));
+    put16(b+44,27); put16(b+46,(uint16_t)(0x60 | (a.sequence || kind==2 || kind==5?1:0) | (kind==2?256:0)));
     if(kind==4 && a.recovery_capture) {
         bodaqs_control_put_u32(b+36,a.recovery_capture);
         put16(b+46,(uint16_t)(0x70 | (a.sequence?1:0)));
     }
-    bodaqs_control_put_u32(b+48,(now-a.recovery_ms)*1000);
+    bodaqs_control_put_u32(b+48,clock_tick()-a.recovery_tick);
     bodaqs_control_put_u32(b+52,clock_tick());
     return emit(0x25,p,64);
 }
@@ -263,7 +264,7 @@ static void recover(uint8_t stage,uint32_t now) {
     if(tx_depth>23 || a.epoch==255 || a.evidence>UINT32_MAX-8 || a.model_id==UINT32_MAX) {fail(31);return;}
     a.attempts[a.recovery_count++]=now;
     if(a.phase!=RECOVER) {
-        a.recovery_ms=now; a.recovery_stage=stage;
+        a.recovery_ms=now; a.recovery_tick=clock_tick(); a.recovery_stage=stage;
         a.recovery_capture=bodaqs_node_capture_loss_take();
         if(!flush(false) || !recovery_boundary(1,now) || !recovery_boundary(4,now)) {fail(31);return;}
     }

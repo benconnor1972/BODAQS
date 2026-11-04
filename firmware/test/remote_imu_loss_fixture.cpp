@@ -68,4 +68,20 @@ int main() {
   s.release();assert(s.configure(binding,2,3));
   for(unsigned i=0;i<140;++i) assert(s.acceptSharedSync(i,1000*i,1,3000000)==RemoteImuStream::Accepted);
   assert(!s.failed());
+  assert(s.finish(3200000));
+  ev=s.evidenceSource();unsigned evidenceLost=0;
+  while(ev.pendingRecords(ev.context)) {
+    assert(ev.popRecord(ev.context,record,sizeof record));
+    if(record[168]==9) {
+      evidenceLost+=BdqV2Format::getU32(record+152);
+      assert(!(BdqV2Format::getU32(record+16)&(1u<<16)));
+    }
+  }
+  assert(evidenceLost==20);
+  ev.chunkWritten(ev.context);
+  assert(s.accept(0x90,b,64,0,0,3300000)==RemoteImuStream::Accepted);
+  b[14]=3;unsigned retained=1;
+  while(s.accept(0x90,b,64,0,0,3300000)==RemoteImuStream::Accepted) ++retained;
+  assert(s.failed() && retained==128);
+  assert(ev.pendingRecords(ev.context)==128); // essential exhaustion preserves every old record
 }
