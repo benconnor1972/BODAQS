@@ -87,8 +87,13 @@ static bool emit(uint8_t type, uint8_t *p, size_t n) {
     }
     return true;
 }
+static bool evidence_available(void) {
+    if(a.evidence>=UINT32_MAX-1) {a.reason=31;return false;}
+    return true;
+}
 static bool boundary(uint8_t kind, uint16_t reason, uint32_t tick) {
     uint8_t p[64], *b = p + 8;
+    if(!evidence_available()) return false;
     envelope(p, 0x25, 56);
     bodaqs_control_put_u32(b, a.boot);
     b[5] = a.epoch;
@@ -118,6 +123,7 @@ static void fail(uint8_t reason) {
 }
 static bool snapshot(uint32_t seq, uint32_t tick, uint32_t ts) {
     uint8_t p[64], *b = p + 8;
+    if(!evidence_available()) return false;
     uint32_t sync_sequence=0,sync_tick=0;
     if(seq && tx_depth>=24) {
         if(a.loss_evidence==UINT32_MAX || a.evidence==UINT32_MAX) return false;
@@ -149,8 +155,10 @@ static bool snapshot(uint32_t seq, uint32_t tick, uint32_t ts) {
 }
 static bool model(uint32_t seq, uint32_t tick, uint32_t now) {
     uint8_t p[64], *b = p + 8;
-    if (a.model_id == UINT32_MAX)
+    if (a.model_id == UINT32_MAX) {
+        a.reason=31;
         return false;
+    }
     ++a.model_id;
     a.model_seq = seq;
     a.model_ms = now;
@@ -218,6 +226,7 @@ static bool flush(bool final) {
 static bool loss_report(uint32_t now, bool anchor) {
     uint8_t p[64], *b=p+8;
     if ((!a.loss_count && !a.loss_evidence) || (uint32_t)(now-a.loss_ms)<100) return true;
+    if(!evidence_available()) return false;
     if (tx_depth>(anchor?30:31)) return false;
     envelope(p,0x25,56);
     bodaqs_control_put_u32(b,a.boot); b[5]=a.epoch; b[6]=3; b[7]=4;
@@ -239,6 +248,7 @@ static bool loss_report(uint32_t now, bool anchor) {
 static bool recovery_boundary(uint8_t kind,uint32_t now) {
     uint8_t p[64],*b=p+8;
     (void)now;
+    if(!evidence_available()) return false;
     envelope(p,0x25,56); bodaqs_control_put_u32(b,a.boot);
     b[5]=a.epoch; b[6]=kind; b[7]=a.recovery_stage;
     bodaqs_control_put_u32(b+8,++a.evidence);
@@ -345,8 +355,10 @@ static bool word(const uint8_t *w, uint32_t now) {
         a.ready_event = true;
     }
     if (a.phase == STARTING && (int32_t)(tick - a.start_tick) > 0) {
-        if (a.epoch == 255)
+        if (a.epoch == 255) {
+            a.reason=31;
             return false;
+        }
         ++a.epoch;
         a.sequence = 0;
         a.recorded = false;
@@ -359,8 +371,10 @@ static bool word(const uint8_t *w, uint32_t now) {
         a.pending_event = BODAQS_ACQ_FIRST;
     }
     if (a.phase == RECORDING) {
-        if (a.sequence == UINT32_MAX)
+        if (a.sequence == UINT32_MAX) {
+            a.reason=31;
             return false;
+        }
         if ((uint32_t)(tick - a.model_tick) >= 100000 || a.sequence - a.model_seq >= 500) {
             if (!flush(false) || !loss_report(now,true) || !model(a.sequence, tick, now) || !snapshot(a.sequence, tick, ts))
                 return false;
