@@ -111,6 +111,10 @@ void nodeDistinguishesUnsupportedStaleAndMalformed()
     request.endpoint = 0;
     request.operation = 1;
     request.node_boot_id = 1;
+    request.session = 123;
+    assert(bodaqs_control_node_process(&node, &request, &reply));
+    assert(reply.opcode == BODAQS_CONTROL_ERROR && reply.data[1] == 5);
+    request.session = 0;
     assert(bodaqs_control_node_process(&node, &request, &reply));
     const uint8_t state[24] = {0,    0,    0,    0,    0,    0,    0,    0,
                                0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
