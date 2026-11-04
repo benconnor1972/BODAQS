@@ -41,6 +41,24 @@ bool s_haveCompletedSlot = false;
 uint32_t s_lastSlotCompletedUs = 0;
 uint64_t s_statusHardwareUid = 0;
 uint32_t s_nextControlMs = 0;
+uint64_t s_lastConfirmedMasterBoot = 0;
+uint64_t s_lastIssuedSession = 0;
+bool s_renewSession = false;
+uint32_t s_nextRecoveryMs[4] = {};
+uint8_t s_exchangeOwner = 0;
+uint32_t s_exchangeStartedMs = 0;
+BodaqsControlWrapped s_exchangeIdentity = {};
+uint32_t s_nextAuthorityRetryMs[4] = {};
+
+
+uint64_t freshSession_(uint64_t previous) {
+  for (uint8_t attempt=0; attempt<4; ++attempt) {
+    const uint64_t value=(static_cast<uint64_t>(esp_random())<<32)|esp_random();
+    if (value && value!=previous && value!=s_lastIssuedSession) { s_lastIssuedSession=value; return value; }
+  }
+  return 0; // Entropy failure excludes control; never reuse an exhausted identity.
+}
+
 
 // Saved ownership plus live mute selects explicit disable. An active unresolved
 // remote BMI owner is retained as unresolved; it cannot become a new profile.
@@ -95,7 +113,11 @@ void scheduleDisabled_() {
     }
     auto& outcome = s_diagnostics.apply.nodes[address];
     if (s_diagnostics.apply.phase || (!disabled && !enabled) ||
-        (outcome.valid && outcome.desired_generation == generation)) continue;
+        CanMasterManager::configurationReconciled(address)) continue;
+    if (outcome.valid && outcome.desired_generation == generation &&
+        outcome.boot == s_diagnostics.control.nodes[address].node_boot_id &&
+        outcome.session == s_diagnostics.authority.session &&
+        static_cast<int32_t>(millis()-s_nextRecoveryMs[address])<0) continue;
     const auto& node = s_diagnostics.control.nodes[address];
     const auto& endpoint = node.endpoints[0];
     if (!node.available || !(node.endpoint_mask & 1) || !endpoint.current ||
@@ -105,7 +127,10 @@ void scheduleDisabled_() {
     if(enabled) { descriptor[4]=descriptor[8]=descriptor[10]=1; }
     if (bodaqs_control_apply_client_start(&s_diagnostics.apply, &s_diagnostics.authority,
         s_diagnostics.control.master_boot_id, address, generation,
-        bodaqs_control_get_u64(endpoint.effective + 32), descriptor, millis())) return;
+        bodaqs_control_get_u64(endpoint.effective + 32), descriptor, millis())) {
+      s_nextRecoveryMs[address]=millis()+30000;
+      return;
+    }
   }
 }
 
@@ -171,7 +196,7 @@ void clearInventory_(bool clearObservations) {
 void clearControl_() {
   s_diagnostics.controlSupported = false;
   s_diagnostics.controlInfoValid = false;
-  bodaqs_control_observer_init(&s_diagnostics.control);
+  bodaqs_control_observer_boot(&s_diagnostics.control, 0, 0);
 }
 
 void clearIdentity_() {
@@ -318,12 +343,12 @@ bool refreshControlInfo_() {
     ++s_diagnostics.invalidResponses;
     return false;
   }
-  if (s_diagnostics.control.master_boot_id != boot) {
-    const uint64_t session = s_diagnostics.authority.session;
-    const uint64_t transfer = s_diagnostics.apply.next_transfer;
-    bodaqs_control_authority_client_init(&s_diagnostics.authority, session);
-    bodaqs_control_apply_client_init(&s_diagnostics.apply);
-    s_diagnostics.apply.next_transfer = transfer;
+  if (s_lastConfirmedMasterBoot && s_lastConfirmedMasterBoot != boot)
+    s_renewSession = true;
+  s_lastConfirmedMasterBoot = boot;
+  if (s_renewSession && !LoggingManager::isRunning()) {
+    CanMasterManager::enableControlAuthority(freshSession_(s_diagnostics.authority.session));
+    s_renewSession = false;
   }
   bodaqs_control_observer_boot(&s_diagnostics.control, boot, features);
   s_diagnostics.controlInfoValid = true;
@@ -332,18 +357,60 @@ bool refreshControlInfo_() {
 
 void serviceControl_() {
   if (!s_diagnostics.controlInfoValid || !s_diagnostics.inventoryValid) return;
+  const uint32_t now=millis();
+  const uint8_t pendingOwner=s_diagnostics.apply.pending ? 2 :
+      s_diagnostics.authority.pending ? 3 : s_diagnostics.control.pending ? 1 : 0;
+  if (pendingOwner && pendingOwner==s_exchangeOwner &&
+      static_cast<uint32_t>(now-s_exchangeStartedMs)>=3500) {
+    // The SPI path and malformed cached replies need their own local deadline.
+    // Abandon transport ownership, never assert cancellation of admitted hardware.
+    if (pendingOwner==2) {
+      auto& apply=s_diagnostics.apply;
+      auto& outcome=apply.nodes[apply.current.node_address];
+      apply.pending=false;
+      apply.phase=5;
+      apply.resume_phase=0;
+      apply.next_query=now;
+      outcome.valid=true; outcome.kind=6; outcome.reason=26; outcome.observed_ms=now;
+    } else if (pendingOwner==3) {
+      auto& authority=s_diagnostics.authority;
+      auto& peer=authority.nodes[authority.current.node_address];
+      authority.pending=false; peer.bound=false; peer.phase=3; peer.reason=26;
+      s_nextAuthorityRetryMs[authority.current.node_address]=now+5000;
+    } else {
+      s_diagnostics.control.pending=false;
+      s_diagnostics.control.snapshot_phase=0;
+      auto& node=s_diagnostics.control.nodes[s_diagnostics.control.current.node_address];
+      node.valid=false;node.epoch_valid_mask=0;
+      for(auto& endpoint:node.endpoints) endpoint.current=false;
+    }
+    s_exchangeOwner=0;
+  }
+  if (!LoggingManager::isRunning()) {
+    for(uint8_t address=0;address<4;++address) {
+      auto& peer=s_diagnostics.authority.nodes[address];
+      const auto& outcome=s_diagnostics.apply.nodes[address];
+      if(peer.available && peer.phase==3 && peer.reason && due_(now,s_nextAuthorityRetryMs[address])) {
+        if(peer.reason==5 || peer.reason==12) s_renewSession=true;
+        else peer.phase=peer.bind.record.opcode ? 1 : 0;
+        s_nextAuthorityRetryMs[address]=now+5000;
+      }
+      if(peer.available && ((peer.bound && !peer.next_mutation) ||
+         (outcome.valid && outcome.kind==6 && outcome.session==s_diagnostics.authority.session &&
+          due_(now,s_nextRecoveryMs[address]) && !CanMasterManager::configurationReconciled(address))))
+        s_renewSession=true;
+    }
+    if(!s_diagnostics.authority.next_read || s_diagnostics.apply.next_transfer==UINT64_MAX)
+      s_renewSession=true;
+    if(s_renewSession && !s_diagnostics.apply.phase && !s_diagnostics.authority.pending &&
+       !s_diagnostics.control.pending && !s_diagnostics.control.snapshot_phase) {
+      CanMasterManager::enableControlAuthority(freshSession_(s_diagnostics.authority.session));
+      s_renewSession=false;
+    }
+  }
   BodaqsControlWrapped wrapped, reply;
   uint8_t type;
   bodaqs_control_observer_tick(&s_diagnostics.control, millis());
-  bool inspected = true;
-  for (const auto& node : s_diagnostics.control.nodes) {
-    if (!node.available) continue;
-    for (uint8_t endpoint = 0; endpoint < 6; ++endpoint) {
-      if (!(node.endpoint_mask & (1U << endpoint))) continue;
-      const auto& descriptor = node.endpoints[endpoint];
-      inspected = inspected && descriptor.current && descriptor.capability_valid && descriptor.effective_valid;
-    }
-  }
   const bool observerOwnsExchange = s_diagnostics.control.pending || s_diagnostics.control.snapshot_phase;
   if (!observerOwnsExchange && !s_diagnostics.authority.pending) scheduleDisabled_();
   const bool applyRequest = !observerOwnsExchange && !s_diagnostics.authority.pending &&
@@ -352,11 +419,20 @@ void serviceControl_() {
           millis(), &wrapped, &type);
   const bool authorityOwnsExchange = !observerOwnsExchange &&
       !applyRequest && !s_diagnostics.apply.phase &&
-      (s_diagnostics.authority.pending || (!LoggingManager::isRunning() && inspected));
+      (s_diagnostics.authority.pending || !LoggingManager::isRunning());
   const bool authorityRequest = authorityOwnsExchange &&
       bodaqs_control_authority_client_next(&s_diagnostics.authority,
           s_diagnostics.control.master_boot_id, &wrapped, &type);
   if (!authorityRequest && !applyRequest && !bodaqs_control_observer_next(&s_diagnostics.control, &wrapped, &type)) return;
+  const uint8_t owner=applyRequest ? 2 : authorityRequest ? 3 : 1;
+  if(owner!=s_exchangeOwner || memcmp(&wrapped.record,&s_exchangeIdentity.record,
+      offsetof(BodaqsControlRecord,data_length)) ||
+     wrapped.node_address!=s_exchangeIdentity.node_address ||
+     wrapped.record.operation!=s_exchangeIdentity.record.operation ||
+     wrapped.record.transfer!=s_exchangeIdentity.record.transfer ||
+     wrapped.record.opcode!=s_exchangeIdentity.record.opcode) {
+    s_exchangeOwner=owner;s_exchangeStartedMs=now;s_exchangeIdentity=wrapped;
+  }
   CanMasterProtocol::Frame request, response;
   request.type = static_cast<CanMasterProtocol::MessageType>(type);
   request.sequence = nextSequence_();
@@ -370,6 +446,7 @@ void serviceControl_() {
     for (auto& node : s_diagnostics.control.nodes) {
       node.valid = false;
       node.epoch_valid_mask = 0;
+      for(auto& endpoint:node.endpoints) endpoint.current=false;
     }
     return;
   }
@@ -388,6 +465,8 @@ void serviceControl_() {
     bodaqs_control_authority_client_observe_session(&s_diagnostics.authority,
         reply.node_address, s_diagnostics.control.nodes[reply.node_address].active_session);
   }
+  if (!(applyRequest ? s_diagnostics.apply.pending : authorityRequest ?
+      s_diagnostics.authority.pending : s_diagnostics.control.pending)) s_exchangeOwner=0;
   if (reply.master_boot_id != wrapped.master_boot_id) {
     s_diagnostics.controlInfoValid = false;
     s_probeRequested = true;
@@ -452,7 +531,13 @@ void commitInventory_(
          (kNodeStatusFlagErrorPassive | kNodeStatusFlagClockFault)) != 0) {
       healthy = false;
     }
-    if (s_diagnostics.control.nodes[node].node_boot_id != record.bootId || !present || stale || duplicate)
+    const bool available=present && !stale && !duplicate;
+    if (available && (!s_diagnostics.control.nodes[node].available ||
+        s_diagnostics.control.nodes[node].node_boot_id != record.bootId)) {
+      s_nextRecoveryMs[node]=0;
+      s_nextAuthorityRetryMs[node]=0;
+    }
+    if (s_diagnostics.control.nodes[node].node_boot_id != record.bootId || !available)
       bodaqs_control_apply_client_invalidate(&s_diagnostics.apply, node);
     bodaqs_control_observer_node(&s_diagnostics.control, node, record.bootId,
         record.endpointMask, present && !stale && !duplicate);
@@ -551,8 +636,13 @@ bool refreshInventory_() {
 namespace CanMasterManager {
 
 void enableControlAuthority(uint64_t session) {
+  if (session && session==s_diagnostics.authority.session) return;
+  const uint32_t nextRead=s_diagnostics.authority.next_read;
   bodaqs_control_authority_client_init(&s_diagnostics.authority, session);
-  bodaqs_control_apply_client_init(&s_diagnostics.apply);
+  if (nextRead) s_diagnostics.authority.next_read=nextRead;
+  for (uint8_t address=0; address<4; ++address)
+    bodaqs_control_apply_client_invalidate(&s_diagnostics.apply,address);
+  s_diagnostics.apply.next_transfer = 0; // Only reset in the distinct session scope.
   for (uint8_t address = 0; address < 4; ++address) {
     const auto& node = s_diagnostics.control.nodes[address];
     bodaqs_control_authority_client_node(&s_diagnostics.authority, address,
@@ -574,7 +664,7 @@ bool configurationReconciled(uint8_t address) {
   const auto& endpoint = node.endpoints[0];
   const auto& authority = s_diagnostics.authority.nodes[address];
   const uint8_t* d = endpoint.effective;
-  return authority.bound && node.available && node.valid && endpoint.current && endpoint.effective_valid &&
+  return !s_renewSession && authority.bound && node.available && node.valid && endpoint.current && endpoint.effective_valid &&
       authority.boot == node.node_boot_id &&
       static_cast<int32_t>(node.observed_ms - authority.confirmed_ms) >= 0 &&
       node.active_session == s_diagnostics.authority.session && d[4] == (enabled ? 2 : 1) &&
@@ -605,11 +695,12 @@ void begin(const board::BoardProfile& profile, const LoggerConfig& cfg) {
   s_statusHardwareUid = 0;
   s_nextControlMs = 0;
   bodaqs_control_observer_init(&s_diagnostics.control);
-  uint64_t session = 0;
-  for (uint8_t attempt = 0; attempt < 4 && !session; ++attempt) {
-    session = (static_cast<uint64_t>(esp_random()) << 32) | esp_random();
-  }
-  enableControlAuthority(session);
+  s_lastConfirmedMasterBoot = 0;
+  s_lastIssuedSession = 0;
+  s_renewSession = false;
+  memset(s_nextRecoveryMs,0,sizeof(s_nextRecoveryMs));
+  s_exchangeOwner = 0;
+  enableControlAuthority(freshSession_(0));
 
   if (!s_profile.supported) {
     s_diagnostics.state = State::Unsupported;
@@ -812,7 +903,7 @@ const char* shortStatus() {
 
 const char* controlShortStatus() {
   if (!s_diagnostics.controlSupported) return "C:--";
-  if (!s_diagnostics.controlInfoValid) return "C:!";
+  if (!s_diagnostics.controlInfoValid || !s_diagnostics.authority.session || s_renewSession) return "C:!";
   bool available = false;
   if (s_diagnostics.apply.phase) {
     const auto& outcome = s_diagnostics.apply.nodes[s_diagnostics.apply.current.node_address];

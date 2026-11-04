@@ -44,8 +44,8 @@ void bodaqs_control_observer_boot(BodaqsControlObserver *observer,
         {
             observer->nodes[i].valid = false;
             observer->nodes[i].epoch_valid_mask = 0;
-            memset(observer->nodes[i].endpoints, 0,
-                   sizeof(observer->nodes[i].endpoints));
+            for (unsigned e=0; e<6; ++e)
+                observer->nodes[i].endpoints[e].current = false;
         }
     }
     observer->master_boot_id = boot;
@@ -65,14 +65,17 @@ void bodaqs_control_observer_node(BodaqsControlObserver *observer,
     if (node->node_boot_id != boot || !available ||
         node->endpoint_mask != endpoints)
     {
-        memset(node, 0, sizeof(*node));
-        if (observer->pending && observer->current.node_address == address)
+        node->valid = false;
+        node->epoch_valid_mask = 0;
+        for (unsigned e=0; e<6; ++e) node->endpoints[e].current = false;
+        if ((observer->pending && observer->current.node_address == address) ||
+            (observer->snapshot_phase && observer->snapshot_address == address))
         {
             observer->pending = false;
             observer->snapshot_phase = 0;
         }
     }
-    node->node_boot_id = boot;
+    if (boot) node->node_boot_id = boot;
     node->endpoint_mask = endpoints;
     node->available = available && boot != 0;
 }
@@ -307,6 +310,8 @@ bool bodaqs_control_observer_accept(BodaqsControlObserver *observer,
                 {
                     memcpy(ep->effective, observer->snapshot_bytes, 192);
                     ep->effective_valid = true;
+                    ep->effective_boot = observer->nodes[reply->node_address].node_boot_id;
+                    ep->effective_uid = bodaqs_control_get_u64(ep->capability + 40);
                     ep->observed_ms = now;
                     ep->current = false;
                 }

@@ -321,6 +321,10 @@ static void handleStatus_(WebServer& srv) {
       state["capability_valid"] = descriptor.capability_valid;
       state["effective_valid"] = descriptor.effective_valid;
       state["current"] = descriptor.current;
+      state["observed_node_boot_id"] = descriptor.effective_boot;
+      char effectiveUid[24]; snprintf(effectiveUid,sizeof(effectiveUid),"%llu",
+          static_cast<unsigned long long>(descriptor.effective_uid));
+      state["observed_hardware_uid"] = effectiveUid;
       state["observed_ms"] = descriptor.observed_ms;
       state["configuration_supported"] = descriptor.capability_valid &&
           (bodaqs_control_get_u32(descriptor.capability + 8) & 1U) != 0;
@@ -886,6 +890,10 @@ static void addSensorJson_(JsonObject obj, uint8_t index, const SensorSpec& sp, 
       JsonObject effective = control["effective"].to<JsonObject>();
       effective["available"] = observation.effective_valid;
       effective["current"] = observation.current;
+      effective["observed_node_boot_id"] = observation.effective_boot;
+      char observedUid[24]; snprintf(observedUid,sizeof(observedUid),"%llu",
+          static_cast<unsigned long long>(observation.effective_uid));
+      effective["observed_hardware_uid"] = observedUid;
       if (observation.effective_valid) {
         const uint8_t* data = observation.effective;
         effective["state"] = data[4];

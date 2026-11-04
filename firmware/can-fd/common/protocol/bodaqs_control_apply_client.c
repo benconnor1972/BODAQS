@@ -8,11 +8,13 @@ void bodaqs_control_apply_client_invalidate(BodaqsControlApplyClient *s, uint8_t
 {
     if (a >= 4)
         return;
-    memset(&s->nodes[a], 0, sizeof(s->nodes[a]));
     if (s->phase && s->current.node_address == a)
     {
         s->phase = 0;
         s->pending = false;
+        s->nodes[a].valid = true;
+        s->nodes[a].kind = 6;
+        s->nodes[a].reason = 19; /* Invalidated scope is uncertainty, not rejection. */
     }
 }
 bool bodaqs_control_apply_client_start(BodaqsControlApplyClient *s, BodaqsControlAuthorityClient *a,
@@ -45,10 +47,12 @@ bool bodaqs_control_apply_client_start(BodaqsControlApplyClient *s, BodaqsContro
     s->committed = 0;
     s->commit_sent = false;
     s->resume_phase = 0;
+    if (s->nodes[address].valid) s->previous[address]=s->nodes[address];
     memset(&s->nodes[address], 0, sizeof(s->nodes[address]));
     s->nodes[address].desired_generation = generation;
     s->nodes[address].operation = q->operation;
     s->nodes[address].boot = q->node_boot_id;
+    s->nodes[address].session = q->session;
     s->nodes[address].kind = 2;
     return true;
 }
@@ -168,7 +172,9 @@ bool bodaqs_control_apply_client_accept(BodaqsControlApplyClient *s,
     s->pending = false;
     if (p->data[0] == 2 || p->data[0] == 3 || p->data[0] == 4 || p->data[0] == 5)
     {
-        a->nodes[r->node_address].next_mutation = o->operation == UINT32_MAX ? 0 : o->operation + 1;
+        uint32_t *next = &a->nodes[r->node_address].next_mutation;
+        if (*next && *next <= o->operation)
+            *next = o->operation == UINT32_MAX ? 0 : o->operation + 1;
     }
     if (p->data[0] == 2)
     {

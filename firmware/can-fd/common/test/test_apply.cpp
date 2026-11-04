@@ -640,4 +640,5 @@ int main()
     loggerAcrossRealSpiCanApplyAndSnapshot(false);
     loggerAcrossRealSpiCanApplyAndSnapshot(true);
     puts("apply tests passed");
+    return 0;
 }
