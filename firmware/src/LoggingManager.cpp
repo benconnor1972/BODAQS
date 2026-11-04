@@ -1,5 +1,7 @@
 #include <Arduino.h>
 #include "LoggingManager.h"
+#include "CanMasterManager.h"
+#include "ButtonManager.h"
 #include "StorageManager.h"
 #include "RTCManager.h"
 #include "WebServerManager.h"
@@ -39,6 +41,8 @@ namespace {
   // Live config (not owned)
   const LoggerConfig* s_cfg = nullptr;
 
+  bool s_starting = false;
+  bool s_stopping = false;
   // Run-state
   volatile bool   s_running       = false;
   LoggingManager::StartFailureHint s_startFailureHint =
@@ -331,7 +335,33 @@ void LoggingManager::refreshConfigurationStatus() {
 LoggingConfigIssue LoggingManager::configurationIssue() { return s_configurationIssue; }
 const char* LoggingManager::configurationDetail() { return s_configurationDetail; }
 
+bool LoggingManager::isStarting() { return s_starting; }
+void LoggingManager::cancelStart() {
+  if (!s_starting) return;
+  s_starting = false;
+  CanMasterManager::endRecordingHandoff();
+}
+bool LoggingManager::configurationLocked() { return s_starting || s_running || s_stopping; }
+
+LoggingManager::StartResult LoggingManager::requestStart() {
+  if (s_running) return StartResult::Started;
+  if (s_stopping) return StartResult::Failed;
+  if (!s_starting) {
+    s_starting = true;
+    CanMasterManager::beginRecordingHandoff();
+  }
+  if (!CanMasterManager::recordingHandoffReady()) {
+    UI::status("Preparing logging");
+    return StartResult::Pending;
+  }
+  return start() ? StartResult::Started : StartResult::Failed;
+}
+
 void LoggingManager::loop() {
+  if (s_starting) {
+    if (CanMasterManager::recordingHandoffReady()) (void)start();
+    return;
+  }
   if (s_running) return;
   static uint32_t lastCheckMs = 0;
   const uint32_t now = millis();
@@ -341,6 +371,20 @@ void LoggingManager::loop() {
 }
 
 bool LoggingManager::start() {
+  if (s_running || s_stopping) return false;
+  if (!s_starting) {
+    s_starting = true;
+    CanMasterManager::beginRecordingHandoff();
+  }
+  if (!CanMasterManager::recordingHandoffReady()) return false;
+  // Every failure releases admission; successful start retains the fence until
+  // finalization. This guard also covers early power/storage/preflight returns.
+  struct StartAdmission {
+    ~StartAdmission() {
+      s_starting = false;
+      if (!s_running) CanMasterManager::endRecordingHandoff();
+    }
+  } admission;
   s_startFailureHint = StartFailureHint::None;
   s_stopContext = StopContext{};
   if (!s_cfg) return false;
@@ -485,6 +529,7 @@ bool LoggingManager::start() {
   AnalogInputManager::onLoggingStart();
   SensorManager::startLoggingAcquisition();
   s_running = true;
+  ButtonManager_setPollingEnabled(false);
 
 #if defined(ESP32)
   // Start sampler task once (it loops forever; it will idle when not running)
@@ -571,6 +616,7 @@ LoggingManager::StopContext LoggingManager::stopContext() {
 }
 
 void LoggingManager::stop(StopReason reason, const char* triggerEvent) {
+  cancelStart();
   if (!s_running) {
     LOGGING_LOGW("stop ignored because logging is not active reason=%s trigger=%s\n",
                  stopReasonName(reason), triggerEvent ? triggerEvent : "");
@@ -585,6 +631,7 @@ void LoggingManager::stop(StopReason reason, const char* triggerEvent) {
       s_stopContext.sdDetectAvailable ? 1u : 0u,
       s_stopContext.sdCardDetected ? 1u : 0u,
       s_stopContext.analogRailFault ? 1u : 0u);
+  s_stopping = true;
   s_running = false;
 #if defined(ESP32)
   // A sampler that already passed the run-state check may still be copying a
@@ -649,6 +696,8 @@ void LoggingManager::stop(StopReason reason, const char* triggerEvent) {
                (unsigned long)s_lateOverTenPercent,
                (unsigned long)s_lateMaxLagUs);
 #endif
+  s_stopping = false;
+  CanMasterManager::endRecordingHandoff();
 }
 
 bool LoggingManager::isRunning() {

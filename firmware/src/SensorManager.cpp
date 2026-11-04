@@ -1,4 +1,6 @@
 #include "SensorManager.h"
+#include "CanMasterManager.h"
+#include "LoggingManager.h"
 #include "Sensor.h"
 #include "AnalogPotSensor.h"
 #include "ConfigManager.h"
@@ -47,6 +49,33 @@ namespace {
   const LoggerConfig* s_cfg               = nullptr;
   AnalogPotSensor*    s_primaryPot        = nullptr;
   SensorTimingStats   s_timingStats;
+
+  struct RemoteMuteOverride {
+    SensorAssignment assignment;
+    SensorType type = SensorType::Unknown;
+    char name[sizeof(SensorSpec::name)] = {};
+    bool valid = false, muted = false, savedDefault = false;
+  };
+  RemoteMuteOverride s_remoteMute[MAX_SENSORS];
+
+  // A temporary menu override survives unrelated rebuilds, but never follows a
+  // deleted/reassigned slot or overrides an explicit saved-default change.
+  bool remoteMuteSpec_(uint8_t index, SensorSpec& spec, RemoteMuteOverride*& overlay) {
+    if (index >= MAX_SENSORS) return false;
+    if (!ConfigManager::get().getSensorSpec(index, spec)) {
+      s_remoteMute[index].valid = false;
+      return false;
+    }
+    const auto assignment = sensorAssignment(spec, board::gBoard);
+    if (assignment.provider.kind != SensorProviderKind::CanNode) {
+      s_remoteMute[index].valid = false;
+      return false;
+    }
+    overlay = &s_remoteMute[index];
+    if (overlay->valid && (!(overlay->assignment == assignment) || overlay->type != spec.type ||
+        strcmp(overlay->name, spec.name) || overlay->savedDefault != spec.mutedDefault)) overlay->valid = false;
+    return true;
+  }
 
   int firstFree() {
     for (int i = 0; i < (int)MAX_SENSORS; ++i) if (!s_list[i]) return i;
@@ -275,6 +304,7 @@ void begin(const LoggerConfig* cfg) {
   s_cfg = cfg;
   for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
     s_list[i] = nullptr;
+    s_remoteMute[i].valid = false;
     s_loggingStarted[i] = false;
     s_loggingStopped[i] = false;
     s_sessionParticipating[i] = false;
@@ -294,6 +324,10 @@ void registerSensor(Sensor* s) {
 
 void buildSensorsFromConfig(const LoggerConfig& cfg) {
   SENS_LOGI("Starting buildSensorsFromConfig\n");
+  for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
+    SensorSpec spec; RemoteMuteOverride* overlay = nullptr;
+    (void)remoteMuteSpec_(i, spec, overlay);
+  }
   const uint8_t n = cfg.sensorCount();
   if (n == 0) {
     UI::status("No sensors");
@@ -1015,12 +1049,31 @@ Sensor* get(uint8_t i) {
 Sensor* at(uint8_t i) { return get(i); }
 
 bool getMuted(uint8_t index, bool& outMuted) {
+  SensorSpec spec; RemoteMuteOverride* overlay = nullptr;
+  if (remoteMuteSpec_(index, spec, overlay)) {
+    outMuted = overlay->valid ? overlay->muted : spec.mutedDefault;
+    return true;
+  }
   if (index >= MAX_SENSORS || !s_list[index]) return false;
   outMuted = s_list[index]->muted();
   return true;
 }
 
 bool setMuted(uint8_t index, bool muted) {
+  // Admission precedes even overlay identity invalidation: rejected edits have
+  // no deferred state and do not touch the saved ParamPack or desired plan.
+  SensorSpec spec;
+  const bool configured = index < MAX_SENSORS && ConfigManager::get().getSensorSpec(index, spec);
+  const auto assignment = sensorAssignment(spec, board::gBoard);
+  if (configured && assignment.provider.kind == SensorProviderKind::CanNode) {
+    if (LoggingManager::configurationLocked()) return false;
+    auto& overlay = s_remoteMute[index];
+    overlay.assignment = assignment; overlay.type = spec.type;
+    snprintf(overlay.name, sizeof(overlay.name), "%s", spec.name);
+    overlay.savedDefault = spec.mutedDefault; overlay.muted = muted; overlay.valid = true;
+    CanMasterManager::scheduleConfigurationReconciliation();
+    return true;
+  }
   if (index >= MAX_SENSORS || !s_list[index]) return false;
   s_list[index]->setMuted(muted);
   return true;

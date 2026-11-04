@@ -20,6 +20,7 @@
 #include "CanMasterProtocol.h"
 #include "BoardSelect.h"
 #include "SensorRegistry.h"
+#include "SensorManager.h"
 #include "SensorAssignment.h"
 #include "UploadAckIndex.h"
 #include "UploadModeManager.h"
@@ -762,12 +763,12 @@ static void handleDelete_(WebServer& srv) {
 }
 
 static bool configEditLocked_() {
-  return LoggingManager::isRunning() || UploadModeManager::isActive();
+  return LoggingManager::configurationLocked() || UploadModeManager::isActive();
 }
 
 static bool rejectConfigEditLocked_(WebServer& srv) {
   if (!configEditLocked_()) return false;
-  sendError_(srv, 423, "config_locked", "Configuration is locked while logging or upload mode is active.");
+  sendError_(srv, 423, "config_locked", "Configuration is locked while recording starts, runs, or stops, or upload mode is active. Stop recording, then retry. Nothing was changed.");
   return true;
 }
 
@@ -885,6 +886,9 @@ static void addSensorJson_(JsonObject obj, uint8_t index, const SensorSpec& sp, 
   obj["type"] = SensorRegistry::typeKey(sp.type);
   obj["type_label"] = SensorRegistry::typeLabel(sp.type);
   obj["muted"] = sp.mutedDefault;
+  bool runtimeMuted = sp.mutedDefault;
+  (void)SensorManager::getMuted(index, runtimeMuted);
+  obj["runtime_muted"] = runtimeMuted;
   String provider = "local", endpoint;
   sp.params.get("provider", provider);
   sp.params.get("endpoint", endpoint);

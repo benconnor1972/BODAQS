@@ -312,11 +312,12 @@ void ButtonActions::onToggleLogging(ButtonEvent event) {
   (void)event; // if unused
 
   if (!LoggingManager::isRunning()) {
-    if (LoggingManager::start()) {
+    const auto result = LoggingManager::requestStart();
+    if (result == LoggingManager::StartResult::Started) {
       ButtonManager_setPollingEnabled(false);   // suspend nav polling
       UI::println("Logging started with RTC time.", "", UI::TARGET_SERIAL, UI::LVL_INFO);
       UI::status("Logging");
-    } else {
+    } else if (result == LoggingManager::StartResult::Failed) {
       UI::println("Failed to start logging.", "", UI::TARGET_SERIAL, UI::LVL_ERROR);
       // start() owns specific failure feedback. Persistent configuration
       // prompts must survive; do not replace them with a generic failure toast.
