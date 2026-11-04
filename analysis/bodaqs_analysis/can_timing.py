@@ -94,7 +94,7 @@ def map_can_timing(frames, descriptors, logger_origin_us=0):
                   and r[28] == acquisition.get('node_boot')
                   and _valid(r, 0, 1, 2, 4, 12, 20)
                   and r[202] == 1 and r[206] & 5 == 5
-                  and r[172] <= r[176] and 0 < r[100] <= 65535
+                  and (r[176] - r[172]) % MODULUS < MODULUS // 2 and 0 < r[100] <= 65535
                   and r[96] > 0 and 0 < r[108] <= 500 and 0 < r[112] <= 150000]
         positions_by_segment = {}
         for row, position in zip(samples, positions):
@@ -124,7 +124,7 @@ def map_can_timing(frames, descriptors, logger_origin_us=0):
             for anchor, model, binding in segment_models[bisect_left(starts, position - 500):bisect_right(starts, position)]:
                 delta = (row[0] - model[88]) % MODULUS
                 duration = delta * model[96] // model[100]
-                if delta > model[108] or duration > model[112]:
+                if delta >= model[108] or duration > model[112]:
                     continue
                 # Reject aliases if a stream spans another entire source cycle.
                 if anchor != position - delta:
@@ -200,7 +200,7 @@ def _logger_bounds(model, binding, tick, evidence, shared, conflicts):
         return None, None
     intervals = []
     for sync, acquisition in evidence:
-        if sync[12] != 3 or not _valid(sync, 0, 1, 3, 7):
+        if sync[12] != 3 or not _valid(sync, 0, 1, 3, 7) or not sync.get(140, 0) & 1:
             continue
         if (acquisition.get('provider_uid'), sync[28], sync[36], sync[14]) != (binding.get('provider_uid'), model[28], model[36], model[14]):
             continue

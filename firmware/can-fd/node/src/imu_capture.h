@@ -18,6 +18,8 @@ uint32_t bodaqs_node_capture_loss_take(void);
  * hardware capture still pending at the end of the critical transition. */
 bool bodaqs_node_capture_seed_end(void);
 bool bodaqs_node_capture_sync_take(BodaqsNodeCapture *);
+uint32_t bodaqs_node_capture_sync_loss_take(void);
+bool bodaqs_node_capture_sync_observation(BodaqsNodeCapture *);
 void bodaqs_node_sync_marker(uint32_t sequence,uint32_t master_tick);
 bool bodaqs_node_sync_latest(uint32_t *sequence,uint32_t *node_tick);
 bool bodaqs_node_watermark_take(void);

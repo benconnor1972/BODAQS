@@ -122,11 +122,11 @@ bool RemoteImuStream::configure(const RemoteImuBinding& b,uint16_t sample,uint16
     "\"nominal_sensitivities\":{\"accel_g_numerator\":%lu,\"accel_g_denominator\":%lu,"
     "\"gyro_dps_numerator\":%lu,\"gyro_dps_denominator\":%lu},"
     "\"sensor_clock_id\":\"can%u_sensor_boot_%lu\",\"master_clock_id\":\"master_boot_%llu_native\","
-    "\"logger_clock_id\":\"logger_monotonic_creation\",\"master_clock_epoch_scope\":\"one_per_boot_fail_closed_on_discontinuity\",\"master_timestamp_nominal_hz\":1000000,\"master_timestamp_modulus\":4294967296,\"physical_timing_bounds\":\"unknown_pending_qualification\",\"bridge_methods\":{\"1\":\"complete_causal_bracket\",\"2\":\"expired_token_only_no_master_observation\"},"
+    "\"logger_clock_id\":\"logger_monotonic_creation\",\"master_clock_epoch_scope\":\"one_per_boot_fail_closed_on_discontinuity\",\"master_timestamp_nominal_hz\":1000000,\"master_timestamp_modulus\":4294967296,\"physical_timing_bounds\":\"unknown_pending_qualification\",\"node_sync_capture_flags\":{\"0\":\"raw_capture_sequence_unknown\",\"1\":\"sequence_association_proven\"},\"bridge_methods\":{\"1\":\"complete_causal_bracket\",\"2\":\"expired_token_only_no_master_observation\"},"
     "\"sensor_timestamp_nominal_hz\":40000,\"sensor_timestamp_modulus\":4294967296,"
     "\"tick_semantics\":\"modelled_acceleration_output_ready\",\"inter_node_alignment\":\"unknown\","
     "\"uncertainty_validity\":\"validity_mask bit13\",\"snapshot_flag_semantics\":\"acquisition_contract_5.1\","
-    "\"validity_mask_semantics\":\"acquisition_contract_6.1\",\"tag_decoding\":\"LSM6DSO32X FIFO_DATA_OUT_TAG\","
+    "\"clock_bound_flags_semantics\":\"bits0..7 original reception flags; bit0 receive tick unknown\",\"validity_mask_semantics\":\"acquisition_contract_6.1\",\"tag_decoding\":\"LSM6DSO32X FIFO_DATA_OUT_TAG\","
     "\"companion_prefix_semantics\":\"logger_creation_observation_not_sample_time\"",
     (unsigned long long)b.uid,b.node,(unsigned long)b.boot,(unsigned long long)b.masterBoot,(unsigned long long)b.masterUid,
     (unsigned long long)b.recording,(unsigned long long)b.session,(unsigned long long)b.context,
@@ -188,7 +188,7 @@ BdqV2StreamDescriptor RemoteImuStream::descriptor(bool ev) {
   d.channels=ev?evidenceChannels:sampleChannels;d.channelCount=ev?sizeof evidenceChannels/sizeof *evidenceChannels:sizeof sampleChannels/sizeof *sampleChannels;
   d.statusFlags=flags;d.statusFlagCount=sizeof flags/sizeof *flags;d.acquisitionDetailsJson=provenance_;return d;
 }
-RemoteImuStream::Acceptance RemoteImuStream::accept(uint16_t id,const uint8_t* p,size_t n,uint32_t tick,uint64_t order,uint32_t logger) {
+RemoteImuStream::Acceptance RemoteImuStream::accept(uint16_t id,const uint8_t* p,size_t n,uint32_t tick,uint64_t order,uint32_t logger,uint8_t receptionFlags) {
   if(failed_ || !sampleId_ || !p) return Invalid;
   if(id==0x100+8*binding_.node) return samples(p,n);
   if(id!=0x90+binding_.node || n<8 || p[0]!=1 || p[2]!=1 || p[3] || p[7]) return Invalid;
@@ -217,24 +217,24 @@ RemoteImuStream::Acceptance RemoteImuStream::accept(uint16_t id,const uint8_t* p
   if(p[1]==0x21) {
     if(n!=24 || p[6]!=16 || u16(p+22) || u32(p+16)!=binding_.boot ||
        u16(p+4)!=uint16_t(u32(p+8))) return Invalid;
-    uint8_t out[224]={};put(out+4,logger);out[12]=3;
-    put(out+16,(1u<<0)|(1u<<1)|(1u<<3)|(1u<<7)|(1u<<9)|(1u<<10)|(1u<<22));
+    uint8_t out[224]={};put(out+4,logger);out[12]=3;out[14]=epoch_;
+    put(out+16,(1u<<0)|(1u<<1)|(1u<<3)|(1u<<7)|((receptionFlags&1)?0:1u<<9)|(1u<<10)|(1u<<22));
     put(out+20,segment_);put(out+28,binding_.boot);put(out+36,1);put(out+40,1);
-    put(out+64,u32(p+8));put(out+68,u32(p+12));put(out+76,tick);
+    put(out+64,u32(p+8));put(out+68,u32(p+12));put(out+76,(receptionFlags&1)?0:tick);put(out+180,receptionFlags);
     put(out+80,(uint32_t)order);put(out+188,(uint32_t)(order>>32));
     BdqV2Format::putU16(out+140,u16(p+20));out[184]=0x21;out[185]=1;out[186]=24;
     return pushShared(out);
   }
   if(n!=64 || p[6]!=56 || p[1]<0x23 || p[1]>0x25) return Invalid;
   if(u32(p+8)!=binding_.boot || p[12]) return Invalid;
-  return evidence(p[1],p+8,tick,order,logger);
+  return evidence(p[1],p+8,tick,order,logger,false,receptionFlags);
 }
-RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t* b,uint32_t tick,uint64_t order,uint32_t logger,bool local) {
+RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t* b,uint32_t tick,uint64_t order,uint32_t logger,bool local,uint8_t receptionFlags) {
   if(evidence_.size()==evidence_.capacity() || nextEvidence_==UINT32_MAX) {failed_=true;return Invalid;}
   uint8_t out[224]={};put(out,nextEvidence_);put(out+4,logger);out[12]=type==0x23?1:type==0x24?2:b[6]==3?7:6;
-  out[13]=b[4];out[14]=b[5];put(out+28,binding_.boot);put(out+76,tick);put(out+80,(uint32_t)order);put(out+188,(uint32_t)(order>>32));
+  out[13]=b[4];out[14]=b[5];put(out+28,binding_.boot);put(out+76,(receptionFlags&1)?0:tick);put(out+180,receptionFlags);put(out+80,(uint32_t)order);put(out+188,(uint32_t)(order>>32));
   if(!local) {out[184]=type;out[185]=1;out[186]=64;}
-  uint32_t valid=(1u<<0)|(1u<<9)|(1u<<10);
+  uint32_t valid=(1u<<0)|((receptionFlags&1)?0:1u<<9)|(1u<<10);
   if(type==0x25) {
     if(!local) put(out+48,u32(b+8));
     const uint16_t v=u16(b+46);if(v&~2047u || b[6]<1 || b[6]>8) return Invalid;

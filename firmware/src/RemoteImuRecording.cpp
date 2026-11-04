@@ -50,13 +50,6 @@ bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint
   if(address==255 && cls==5) {
     if(total<12 || p[0]!=1 || p[1] || p[3] || p[6] || p[7]) {fault=true;return true;}
     const uint16_t count=BdqV2Format::getU16(p+4);
-    if(p[2]==2) {
-      if(count!=1 || total!=84 || p[8]!=node) {fault=true;return true;}
-      const auto accepted=stream.acceptLocalLoss(p+24,BdqV2Format::getU32(p+12),
-        BdqV2Format::getU64(p+16),static_cast<uint32_t>(esp_timer_get_time()));
-      if(accepted==RemoteImuStream::Invalid) fault=true;
-      return accepted!=RemoteImuStream::Blocked;
-    }
     if(p[2]!=1 || total!=12+16*count || count!=1 || p[8]!=1 || p[9] || p[10] || p[11]) {fault=true;return true;}
     return stream.acceptSharedSync(BdqV2Format::getU32(p+12),BdqV2Format::getU32(p+16),
       BdqV2Format::getU32(p+20),static_cast<uint32_t>(esp_timer_get_time()))!=RemoteImuStream::Blocked;
@@ -75,7 +68,7 @@ bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint
     if(r[2]>64) {fault=true;return true;}
     const uint64_t order=(uint64_t(BdqV2Format::getU32(p+8))<<32)|BdqV2Format::getU32(r+8);
     const auto accepted=stream.accept(BdqV2Format::getU16(r),r+12,r[2],
-      BdqV2Format::getU32(r+4),order,static_cast<uint32_t>(esp_timer_get_time()));
+      BdqV2Format::getU32(r+4),order,static_cast<uint32_t>(esp_timer_get_time()),r[3]);
     if(accepted==RemoteImuStream::Blocked) return false;
     if(accepted==RemoteImuStream::Invalid) {fault=true;return true;}
   }

@@ -47,12 +47,12 @@ def verify_recording(path: Path, repo: Path) -> None:
         "ax": -1, "ay": 2, "az": 3, "gx": 4, "gy": 5, "gz": 6,
     }
     rows = list(iter_bdq_stream_records(path, "can0_timing"))
-    assert [row["kind"] for row in rows] == [6, 2, 1]
-    boundary, model, snapshot = rows
-    assert [row["sequence"] for row in rows] == [1, 2, 3]
-    assert [row["native_tick"] for row in rows] == [100, 101, 104]
-    assert [row["source_segment_id"] for row in rows] == [1, 1, 1]
-    assert [row["node_boot"] for row in rows] == [7, 7, 7]
+    assert [row["kind"] for row in rows] == [6, 2, 1, 3, 4, 5, 5]
+    boundary, model, snapshot = rows[:3]
+    assert [row["sequence"] for row in rows] == [1, 2, 3, 4, 5, 6, 7]
+    assert [row["native_tick"] for row in rows] == [100, 101, 104, 105, 106, 107, 108]
+    assert [row["source_segment_id"] for row in rows] == [1, 1, 1, 1, 0, 0, 0]
+    assert [row["node_boot"] for row in rows] == [7, 7, 7, 7, 0, 0, 0]
     assert boundary["boundary_event_kind"] == 2
     assert boundary["boundary_validity_flags"] == 353
     assert boundary["boundary_node_tick"] == 0  # Valid zero, not absent evidence.
@@ -73,6 +73,21 @@ def verify_recording(path: Path, repo: Path) -> None:
     assert [snapshot[name] for name in ("fifo_accel_tag", "fifo_gyro_tag", "fifo_timestamp_tag")] == [1, 2, 3]
     assert snapshot["master_receive_ordinal_low"] == 5 and snapshot["master_receive_ordinal_high"] == 1
     assert snapshot["validity_mask"] == 2100983
+    node_sync, master_sync, bridge, missing = rows[3:]
+    assert node_sync['kind'] == 3 and node_sync['stream_epoch'] == 1
+    assert node_sync['node_sync_tick'] == 900 and node_sync['master_clock_epoch'] == 1
+    assert node_sync['original_message_type'] == 33 and node_sync['original_message_length'] == 24
+    assert node_sync['master_receive_ordinal_high'] == 1 and node_sync['master_receive_ordinal_low'] == 6
+    assert master_sync['validity_mask'] == 4194568  # epoch3, masterSYNC8, method22
+    assert master_sync['sync_sequence'] == 2 and master_sync['master_sync_tick'] == 50000
+    assert bridge['validity_mask'] == 4243464  # epoch3, interval14, bridge15, method22
+    assert bridge['logger_lower_high'] == bridge['logger_upper_high'] == 1
+    assert bridge['logger_lower_low'] == 16 and bridge['logger_upper_low'] == 66
+    assert bridge['bridge_master_tick'] == 50100 and bridge['bridge_token'] == 42
+    assert bridge['bridge_method'] == 1 and bridge['clock_bound_flags'] == 0
+    assert missing['bridge_method'] == 2 and missing['bridge_token'] == 43
+    assert missing['validity_mask'] == 4227072  # token-only, no clock observation/bracket
+    assert missing['master_clock_epoch'] == missing['bridge_master_tick'] == 0
     chunks = list(info.stream_data_chunks)
     evidence_sequence = next(chunk.sequence_number for chunk in chunks if chunk.stream_id == 3)
     sample_sequence = next(chunk.sequence_number for chunk in chunks if chunk.stream_id == 2)

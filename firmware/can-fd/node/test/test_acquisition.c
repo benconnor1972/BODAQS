@@ -23,7 +23,7 @@ static bool fifo_drained;
 static FILE *wire;
 static uint32_t next_tx_tick, tx_blocked_until;
 static bool seen_boundary, seen_model, seen_anchor, seen_snapshot;
-static unsigned recovery_events;
+static unsigned recovery_events, raw_sync_events;
 static uint32_t reported_loss, previous_end;
 static unsigned detected_loss;
 static bool gap_seen, silence_after_overrun;
@@ -33,6 +33,11 @@ static bool sent(uint16_t id, const uint8_t *p, size_t n) {
         return false;
     next_tx_tick = sim_tick + 400;
     if (id == 0x90) {
+        if(p[1]==0x21) {
+            assert(n==24 && bodaqs_control_get_u32(p+8)==0 && p[20]==0 && p[21]==0);
+            assert(bodaqs_control_get_u32(p+12)>0 && bodaqs_control_get_u32(p+16)==17);
+            ++raw_sync_events;
+        }
         if(p[1]==0x25 && p[14]==3 && p[15]==4) reported_loss+=bodaqs_control_get_u32(p+40);
         if (p[1] == 0x25 && p[14] == 5) {
             assert(p[13] > 1 && !(p[54] & 0x1c)); /* unknown loss counts */
@@ -263,6 +268,7 @@ int main(int argc, char **argv) {
     bodaqs_node_acquisition_backend(0, BODAQS_ACQ_START, 2, 1, sim_tick / 1000, &e);
     for (uint32_t us = sim_tick + 100; us < start + 20000; us += 100) {
         advance(us);
+        if(us==start+5000) {raw=8;cc[3]=count;bodaqs_node_capture_irq();}
         bodaqs_node_imu_spi_irq();
         memset(&e, 0, sizeof(e));
         bodaqs_node_acquisition_backend(0, BODAQS_ACQ_POLL, 2, 1, us / 1000, &e);
@@ -274,6 +280,7 @@ int main(int argc, char **argv) {
             assert(first_tick > start && bodaqs_control_get_u32(e.boundary) == 0);
         }
     }
+    assert(raw_sync_events==1);
     assert(first && samples >= 5 && saved_sample[4] == 0 && saved_sample[5] == 0x80 && frames > 4);
     if (selected_fault >= 6) {
         unsigned before_recovery = samples;

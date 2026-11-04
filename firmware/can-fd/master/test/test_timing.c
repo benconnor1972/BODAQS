@@ -14,6 +14,15 @@ int main(void) {
  raw=1;count=7; // pending rollover is counted exactly once before handler
  assert(bodaqs_master_timing_clock(0,&epoch)==200007&&epoch==1);
  bodaqs_master_timing_irq();assert(bodaqs_master_timing_clock(0,&epoch)==200007);
+ // A retained periodic observation cannot invalidate the underlying counter.
+ raw=1;count=0;bodaqs_master_timing_irq();
+ raw=1;bodaqs_master_timing_irq();raw=1;bodaqs_master_timing_irq();
+ assert(bodaqs_master_timing_dropped()==1);
+ assert(bodaqs_master_timing_take(&sequence,&tick)&&sequence==3&&tick==250000);
+ assert(bodaqs_master_timing_clock(0,&epoch)==350000&&epoch==1);
+ bodaqs_master_timing_init();
+ for(unsigned i=0;i<85900;++i) {raw=1;count=0;bodaqs_master_timing_irq();(void)bodaqs_master_timing_take(&sequence,&tick);}
+ assert(bodaqs_master_timing_clock(0,&epoch)==32704&&epoch==1); // low32 wrap is not reset
  bodaqs_master_timing_supervise(51);
  (void)bodaqs_master_timing_clock(0,&epoch);assert(epoch==0);
 }

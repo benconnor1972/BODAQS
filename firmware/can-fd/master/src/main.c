@@ -84,6 +84,7 @@ typedef struct {
 typedef struct {
     DL_MCAN_RxBufElement message;
     uint32_t received_ms, received_tick;
+    uint8_t received_flags;
     uint64_t ordinal;
 } CanReceiveRecord;
 static uint64_t gCanReceiveOrdinal;
@@ -185,7 +186,7 @@ static void note_can_decode_result(BodaqsCanDecodeResult result)
 }
 
 static void process_can_message(
-    const DL_MCAN_RxBufElement *message, uint32_t received_ms, uint32_t received_tick, uint64_t ordinal)
+    const DL_MCAN_RxBufElement *message, uint32_t received_ms, uint32_t received_tick, uint64_t ordinal, uint8_t received_flags)
 {
     uint16_t identifier;
     size_t length;
@@ -252,13 +253,13 @@ static void process_can_message(
     if(identifier>=BODAQS_CAN_ID_STREAM_BASE && identifier<BODAQS_CAN_ID_STREAM_BASE+32) {
         node_address=(uint8_t)((identifier-BODAQS_CAN_ID_STREAM_BASE)/8);
         (void)bodaqs_master_service_receive_can_ordered(&gService,node_address,1,identifier,
-            message->data,(uint8_t)length,0,received_tick,ordinal,gUptimeMs);
+            message->data,(uint8_t)length,received_flags,received_tick,ordinal,gUptimeMs);
         return;
     }
     if(bodaqs_can_identifier_node(identifier,BODAQS_CAN_ID_TIMING_BASE,&node_address) ||
        bodaqs_can_identifier_node(identifier,BODAQS_CAN_ID_EVENT_BASE,&node_address)) {
         (void)bodaqs_master_service_receive_can_ordered(&gService,node_address,2,identifier,
-            message->data,(uint8_t)length,0,received_tick,ordinal,gUptimeMs);
+            message->data,(uint8_t)length,received_flags,received_tick,ordinal,gUptimeMs);
         return;
     }
     ++gMasterRuntimeInfo.can_unknown_frames;
@@ -282,9 +283,10 @@ static void capture_can_receive_fifo(void)
         record.received_ms = gUptimeMs;
         uint32_t clock_epoch;
         record.received_tick = bodaqs_master_timing_clock(NULL,&clock_epoch);
-        if(!clock_epoch) record.ordinal=0;
+        record.received_flags=clock_epoch?0:1;
+        if(!clock_epoch) record.received_tick=0;
         /* ISR capture order includes frames later rejected or dropped by queues. */
-        if(!clock_epoch || gCanReceiveOrdinal==UINT64_MAX) {
+        if(gCanReceiveOrdinal==UINT64_MAX) {
             ++gMasterRuntimeInfo.can_malformed_frames;
             record.ordinal=0; /* Fail closed while still retiring the hardware FIFO. */
         } else record.ordinal=++gCanReceiveOrdinal;
@@ -301,7 +303,7 @@ static void service_can_receive(void)
 {
     CanReceiveRecord record;
     if (take_record(&gCanReceiveQueue, &record)) {
-        process_can_message(&record.message, record.received_ms, record.received_tick, record.ordinal);
+        process_can_message(&record.message, record.received_ms, record.received_tick, record.ordinal, record.received_flags);
     }
 }
 

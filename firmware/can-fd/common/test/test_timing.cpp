@@ -10,6 +10,7 @@ int main() {
  s.native_clock=native_clock;
  BodaqsMeasurementSlot request={},response={};uint8_t wire[64],out[84];
  bodaqs_bridge_request(&request,9,42);
+ assert(request.body[4]==0x21 && request.body[5]==0xbd && request.body[6]==0xa3 && request.body[7]==0xd1); // independent struct.pack/zlib vector
  bodaqs_measurement_encode(&request,wire,64);
  assert(bodaqs_master_service_process_transfer(&s,wire,64,1,out)==0);
  assert(bodaqs_measurement_decode(out,64,&response));
