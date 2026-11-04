@@ -1,4 +1,5 @@
 #include "StorageManager.h"
+#include "RecordingStorageWorker.h"
 #include "RTCManager.h"
 #include "ConfigManager.h"
 #include "SensorManager.h"
@@ -89,6 +90,12 @@ static unsigned int sampleRateHz = 1;
 static uint32_t sampleIntervalUs = 1000000;
 
 static bool loggingActive = false;
+#if defined(ESP32)
+static TaskHandle_t s_storageTask = nullptr;
+static void storageTaskFn_(void*);
+static RecordingStorageWorker& storageWorker_();
+static bool storageOwner_() { return xTaskGetCurrentTaskHandle() == s_storageTask; }
+#endif
 
 static char s_customHeader[160] = {0};
 static String s_currentLogPath;
@@ -166,6 +173,7 @@ static inline bool queueFull()  { return (s_qCap != 0) && (s_qCount >= s_qCap); 
 static void refreshValueColumnTypes_();
 static bool mountSdmmc_();
 static bool isBdqV2Format_();
+static void storageService_();
 
 static void setStatus_(const char* status) {
   if (!status) status = "";
@@ -555,6 +563,7 @@ static void createSessionArchive_(const String& csvPath, const String& metadataP
 
   String error;
   if (!ZipArchiveWriter_createStoreOnly(tempPath.c_str(), entries, 2, &error)) {
+    ++s_storageWriteFailures;
     STOR_LOGW("Session archive failed: %s (%s)\n", tempPath.c_str(), error.c_str());
     if (SD_MMC.exists(tempPath.c_str())) {
       SD_MMC.remove(tempPath.c_str());
@@ -563,6 +572,7 @@ static void createSessionArchive_(const String& csvPath, const String& metadataP
   }
 
   if (!commitArchiveTemp_(tempPath, archivePath)) {
+    ++s_storageWriteFailures;
     STOR_LOGW("Session archive commit failed: %s -> %s\n", tempPath.c_str(), archivePath.c_str());
     return;
   }
@@ -1125,6 +1135,9 @@ static void addTimingSummary_(
 
 
 bool StorageManager_loadTextFile(const char* path, String& out) {
+#if defined(ESP32)
+  if (!storageOwner_() && storageWorker_().pending()) return false;
+#endif
     out = "";
     if (!path || !*path) return false;
 
@@ -1173,6 +1186,9 @@ static bool ensureParentDirs_(const String& absPath) {
 }
 
 bool StorageManager_saveTextFile(const char* path, const String& data) {
+#if defined(ESP32)
+  if (!storageOwner_() && storageWorker_().pending()) return false;
+#endif
   if (!path || !*path) return false;
 
   const char* cstr = data.c_str();
@@ -2231,9 +2247,18 @@ static void startLog() {
 
 
 bool StorageManager_startLog() {
+#if defined(ESP32)
+  if (!s_storageTask && xTaskCreatePinnedToCore(storageTaskFn_, "StorageTask",
+      12288, nullptr, 1, &s_storageTask, 1) != pdPASS) {
+    setStatus_("storage task unavailable");
+    return false;
+  }
+  return storageWorker_().requestStart();
+#else
   const bool wasActive = loggingActive;
   startLog();
   return loggingActive || wasActive;
+#endif
 }
 
 static void StorageManager_logSampleRow_(const SampleRow& row) {
@@ -2245,7 +2270,7 @@ static void StorageManager_logSampleRow_(const SampleRow& row) {
         row.sample_id, row.ts_ms, row.values, row.nValues, row.mark);
     if (wrote) {
       ++s_rowsWritten;
-    }
+    } else { ++s_storageWriteFailures; }
 #if BODAQS_TIMING_INSTRUMENTATION
     const uint32_t durationUs = (uint32_t)(micros() - t0);
     TimingStats_record(s_storageTiming.rowWriteUs, durationUs);
@@ -2269,6 +2294,9 @@ static void StorageManager_logSampleRow_(const SampleRow& row) {
 }
 
 void StorageManager_drainQueuedSamples() {
+#if defined(ESP32)
+  if (!storageOwner_()) return; // producer never performs or waits for I/O
+#endif
   if (!loggingActive) return;
   if (isBdqV2Format_()) {
     while (s_bdqV2Writer.hasPendingData()) {
@@ -2391,6 +2419,7 @@ static __attribute__((noinline)) void finalizeBdqV1_() {
   endInfo.i2cSchedulerTiming = &I2CBusScheduler::timingStats();
   endInfo.boardProfile = board::gBoard;
   if (!BdqLogWriter::end(endInfo)) {
+    ++s_storageWriteFailures;
     STOR_LOGW("BDQ writer end failed for %s\n", s_currentLogPath.c_str());
   }
 }
@@ -2436,9 +2465,11 @@ static __attribute__((noinline)) void finalizeBdqV2_() {
   } else {
     ++s_storageWriteFailures;
   }
+  if (StorageManager_storageFault()) return;
   const String summary = buildBdqV2FinalSummary_(endInfo);
   if (!summary.length() ||
       !s_bdqV2Writer.end(summary.c_str(), summary.length())) {
+    ++s_storageWriteFailures;
     STOR_LOGW("BDQ v2 writer end failed for %s\n", s_currentLogPath.c_str());
   }
 }
@@ -2487,12 +2518,16 @@ static __attribute__((noinline)) void finalizeCsv_() {
     STOR_LOGI("Log metadata written: %s\n", metadataPath.c_str());
     createSessionArchive_(s_currentLogPath, metadataPath);
   } else {
+    ++s_storageWriteFailures;
     STOR_LOGW("Failed to write complete log metadata for %s\n", s_currentLogPath.c_str());
   }
 }
 
 // Stop log
 void StorageManager_stopLog() {
+#if defined(ESP32)
+  if (!storageOwner_()) { storageWorker_().requestStop(); return; }
+#endif
   if (!loggingActive) return;
 
   // Drain any remaining queued samples into the staging buffer
@@ -2503,15 +2538,23 @@ void StorageManager_stopLog() {
     bufferIndex = 0;
   }
 
+  if (s_storageWriteFailures || StorageManager_storageFault()) {
+    logFileMMC.close();
+    loggingActive = false;
+    releaseLogSessionBuffers_();
+    return;
+  }
   if (isCompactBinaryFormat_()) {
     finalizeBdqV1_();
   } else if (isBdqV2Format_()) {
     finalizeBdqV2_();
   }
 
+  if (logFileMMC.getWriteError()) ++s_storageWriteFailures;
   logFileMMC.close();
 
-  if (!isBinaryFormat_() && s_currentLogPath.length() && !ConfigManager::get().omitMetadata) {
+  if (!isBinaryFormat_() && !StorageManager_storageFault() &&
+      !s_storageWriteFailures && s_currentLogPath.length() && !ConfigManager::get().omitMetadata) {
     finalizeCsv_();
   } else if (!isBinaryFormat_() && s_currentLogPath.length()) {
     STOR_LOGI("Log metadata omitted by config\n");
@@ -2568,6 +2611,9 @@ bool StorageManager_isMounted() {
 }
 
 bool StorageManager_remountIfPresent() {
+#if defined(ESP32)
+  if (!storageOwner_() && storageWorker_().pending()) return false;
+#endif
   if (!s_storage || !isSdmmcBackend()) return false;
   if (s_haveDetectPin) {
     s_cardDetectedCached = readCardDetectPin_();
@@ -2578,6 +2624,9 @@ bool StorageManager_remountIfPresent() {
 }
 
 bool StorageManager_readyForLogging() {
+#if defined(ESP32)
+  if (!storageOwner_()) return !storageWorker_().pending() && s_sdMounted && s_cardDetectedCached;
+#endif
   if (StorageManager_isMounted()) return true;
   return StorageManager_remountIfPresent();
 }
@@ -2731,9 +2780,21 @@ static void refreshValueColumnTypes_()
 
 // Background flush
 void StorageManager_loop() {
-  static unsigned long lastFlush = 0;
   unsigned long now = millis();
-  static uint32_t s_rowCount = 0;
+#if defined(ESP32)
+  auto& worker = storageWorker_();
+  worker.poll(now);
+  if (worker.fault() != RecordingStorageWorker::Fault::None) {
+    const bool stalled = worker.fault() == RecordingStorageWorker::Fault::Unresponsive;
+    setStatus_(stalled ? "Storage unresponsive" : "Storage failure");
+    if (LoggingManager::configurationLocked()) {
+      LoggingManager::stop(stalled ? LoggingManager::StopReason::StorageUnresponsive
+                                  : LoggingManager::StopReason::StorageFailure,
+                           stalled ? "storage_timeout" : "storage_failure");
+      UI::status(stalled ? "Storage unresponsive" : "Storage failure");
+    }
+  }
+#endif
 
   if (s_haveDetectPin && (int32_t)(now - s_nextDetectPollMs) >= 0) {
     s_nextDetectPollMs = now + kCardDetectPollMs;
@@ -2755,14 +2816,13 @@ void StorageManager_loop() {
         UI::status("SD removed");
         UI::toast("SD removed", 1800, 1);
 
-        if (LoggingManager::isRunning()) {
+        if (LoggingManager::isRunning() || LoggingManager::isStarting()) {
           STOR_LOGW("Stopping logging because SD card detect went absent\n");
           LoggingManager::stop(
               LoggingManager::StopReason::SdCardRemoved,
               "sd_detect_absent");
-          SD_MMC.end();
-          s_sdMounted = false;
-        } else if (s_sdMounted) {
+          if (!StorageManager_recordingIoPending()) { SD_MMC.end(); s_sdMounted = false; }
+        } else if (s_sdMounted && !StorageManager_recordingIoPending()) {
           SD_MMC.end();
           s_sdMounted = false;
         }
@@ -2770,13 +2830,22 @@ void StorageManager_loop() {
         setStatus_("card inserted");
         STOR_LOGI("SD card inserted; attempting mount\n");
         UI::toast("SD inserted", 1200, 1);
-        if (!LoggingManager::isRunning() && mountSdmmc_()) {
+        if (!StorageManager_recordingIoPending() && !LoggingManager::isRunning() && mountSdmmc_()) {
           UI::status("SD ready");
         }
       }
     }
   }
 
+#if !defined(ESP32)
+  storageService_();
+#endif
+}
+
+static void storageService_() {
+  static unsigned long lastFlush = 0;
+  static uint32_t s_rowCount = 0;
+  unsigned long now = millis();
   if (loggingActive && isBdqV2Format_()) {
     const uint32_t drainStartUs = micros();
     uint16_t chunksWritten = 0;
@@ -2878,7 +2947,7 @@ void StorageManager_loop() {
         ++s_flushCount;
         s_flushTotalMs += dt;
         if (dt > s_flushMaxMs) s_flushMaxMs = dt;
-      }
+      } else { ++s_storageWriteFailures; }
 #if BODAQS_TIMING_INSTRUMENTATION
       recordStorageWriteStall_(
           2u,
@@ -2917,3 +2986,86 @@ void StorageManager_loop() {
 
 
 
+
+#if defined(ESP32)
+class LoggerStorageSink final : public RecordingStorageSink {
+ public:
+  bool healthCheck() override {
+    if (!StorageManager_readyForLogging()) return false;
+    const char* path = "/.bodaqs-storage-health";
+    SD_MMC.remove(path);
+    File probe = SD_MMC.open(path, FILE_WRITE);
+    const uint8_t expected[] = {0x42, 0x44, 0x51, 0xA5};
+    bool ok = probe && probe.write(expected, sizeof(expected)) == sizeof(expected);
+    if (probe) { probe.flush(); probe.close(); }
+    probe = SD_MMC.open(path, FILE_READ);
+    for (uint8_t byte : expected) ok = probe && probe.read() == byte && ok;
+    if (probe) probe.close();
+    return SD_MMC.remove(path) && ok;
+  }
+  bool start() override { ::startLog(); return loggingActive; }
+  bool service() override {
+    storageService_();
+    return !s_storageWriteFailures && !logFileMMC.getWriteError() && !(isBdqV2Format_() && s_bdqV2Writer.failed());
+  }
+  bool stop(bool clean) override {
+    if (clean) StorageManager_stopLog();
+    else {
+      // The failed file is terminal. No successful summary/archive is emitted.
+      logFileMMC.close();
+      loggingActive = false;
+      releaseLogSessionBuffers_();
+    }
+    return clean && !s_storageWriteFailures;
+  }
+};
+static RecordingStorageWorker& storageWorker_() {
+  static LoggerStorageSink sink;
+  static RecordingStorageWorker worker(sink);
+  return worker;
+}
+static void storageTaskFn_(void*) {
+  for (;;) { storageWorker_().step(millis()); vTaskDelay(1); }
+}
+#endif
+
+bool StorageManager_recordingIoPending() {
+#if defined(ESP32)
+  return storageWorker_().pending();
+#else
+  return false;
+#endif
+}
+bool StorageManager_recordingReady() {
+#if defined(ESP32)
+  return storageWorker_().recording() && storageWorker_().fault() == RecordingStorageWorker::Fault::None;
+#else
+  return true;
+#endif
+}
+
+bool StorageManager_storageFault() {
+#if defined(ESP32)
+  return storageWorker_().fault() != RecordingStorageWorker::Fault::None;
+#else
+  return false;
+#endif
+}
+bool StorageManager_canAcceptSample() {
+#if defined(ESP32)
+  portENTER_CRITICAL(&s_qMux);
+#endif
+  const bool available = s_qCap && s_qCount < s_qCap;
+#if defined(ESP32)
+  portEXIT_CRITICAL(&s_qMux);
+#endif
+  return available;
+}
+
+bool StorageManager_storageUnresponsive() {
+#if defined(ESP32)
+  return storageWorker_().fault() == RecordingStorageWorker::Fault::Unresponsive;
+#else
+  return false;
+#endif
+}

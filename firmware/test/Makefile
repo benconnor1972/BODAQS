@@ -35,6 +35,8 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_i2c_startup_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_startup_log_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_logging_start_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_logging_start_runtime.py --async-storage --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_storage_worker_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_sensor_config_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_control_recovery_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_remote_mute_runtime.py --compiler "$(CXX)"

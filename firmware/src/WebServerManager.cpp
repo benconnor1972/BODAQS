@@ -1,3 +1,5 @@
+#include "LoggingManager.h"
+#include "StorageManager.h"
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Arduino.h>
@@ -119,7 +121,8 @@ void WebServerManager::setStaConfig(const String& ssid, const String& password) 
 } //no-op. legacy
 
 bool WebServerManager::canStart() {
-  // Only block while logging; storage is owned by StorageManager.
+  if (LoggingManager::configurationLocked() || StorageManager_recordingIoPending()) return false;
+  // Storage remains owned through finalization.
   if (g_isLogging && g_isLogging()) {
     return false;
   }
