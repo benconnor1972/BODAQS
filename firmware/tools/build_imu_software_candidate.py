@@ -112,6 +112,8 @@ def main() -> int:
     output = args.output_dir.resolve()
     if args.jobs < 1:
         raise SystemExit("--jobs must be positive")
+    if sys.flags.optimize or os.environ.get("PYTHONOPTIMIZE"):
+        raise SystemExit("Run acceptance with Python assertions enabled (no PYTHONOPTIMIZE or -O)")
     if output == ROOT or ROOT in output.parents:
         raise SystemExit("Candidate output must be outside the source worktree")
     commands = plan(args, output)
@@ -143,6 +145,9 @@ def main() -> int:
                     "logger": "bodaqs_s3_mini_n4r2"},
         "link_profiles": {"bringup": [500000, 2000000], "acquisition": [1000000, 4000000]},
         "sdk": str(args.sdk.resolve()), "qualification": "physical qualification deferred",
+        "build_environment": {key: env.get(key) for key in (
+            "PATH", "PYTHONPATH", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "MAKEFLAGS",
+            "PLATFORMIO_BUILD_FLAGS", "PLATFORMIO_BUILD_SRC_FLAGS")},
         "production_remote_admission": "unqualified/unsupported until measured bounds supplied",
         "deferred": DEFERRED, "commands": [], "artifacts": [],
     }
