@@ -99,7 +99,22 @@ checks the exact count/range and next accepted gap, and retains old native ticks
 across more than 32 model revisions. It also checks periodic evidence pressure.
 Existing real-writer/independent-reader fixtures cover essential chunk ordering
 and a torn essential predecessor; the node-to-master-to-BDQ fixture remains part
-of regression validation.
+of regression validation, including a real recovered source reopened with two
+segments, sequence-zero recovery, unchanged clock epochs and absent unknown
+loss counts.
+
+After merging verified #170 (`8d5dbc4`), the complete firmware host target,
+all thirteen common protocol binaries, the node SPI/capture/acquisition target
+(eleven acquisition scenarios), and master timing target pass. Focused native
+reader/timing analysis tests report 22 passed. Explicit TI Arm Clang/SDK 2.11
+builds pass for G3507 node and G3518 master; PlatformIO
+`bodaqs_s3_mini_n4r2` passes for A8. Static maps report:
+
+| Target | Flash bytes | Static SRAM bytes, including reserved stack |
+|---|---:|---:|
+| G3507 node | 40,280 | 10,976 |
+| G3518 master | 39,752 | 50,286 in bank 0; bank 1 unused |
+| A8 | 2,013,881 | 264,500 |
 
 Target compilation and host checks establish software behavior only. Physical
 FIFO/DRDY association, interrupt latency, SPI/DMA/CAN service deadlines, actual
