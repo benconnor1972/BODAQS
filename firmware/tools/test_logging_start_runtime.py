@@ -34,7 +34,7 @@ def main():
             "LoggingConfigIssue LoggingManager::configurationIssue(",
             "const char* LoggingManager::configurationDetail(", "bool LoggingManager::isStarting(",
             "void LoggingManager::cancelStart(", "bool LoggingManager::configurationLocked(", "LoggingManager::StartResult LoggingManager::requestStart(",
-            "void LoggingManager::loop(", "bool LoggingManager::start(")))
+            "void LoggingManager::loop(", "void LoggingManager::stop(", "bool LoggingManager::start(")))
     fixture = fixture.replace("// PRODUCTION_FORMAT", definition(config, "bool ConfigManager::setLogFormat("))
     fixture = fixture.replace("// PRODUCTION_TOGGLE", definition(buttons, "void ButtonActions::onToggleLogging(").replace("void ButtonActions::onToggleLogging(", "void onToggleLogging("))
     fixture = fixture.replace("// PRODUCTION_BUTTON", definition(buttons, "  void handleButtonBinding_("))

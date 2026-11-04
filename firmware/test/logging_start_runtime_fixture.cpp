@@ -68,6 +68,7 @@ uint8_t excludedSensors = 0;
 int prepares = 0;
 LogFormat preparedFormat, fileFormat;
 
+extern bool s_stopping;
 namespace SensorManager {
   Sensor* s_list[MAX_SENSORS] = {};
   SensorAssignment s_liveAssignment[MAX_SENSORS];
@@ -83,9 +84,10 @@ namespace SensorManager {
   bool onLoggingStart(char*, size_t) { events.push_back("sensors"); return sensorsStartOk; }
   void startLoggingAcquisition() { events.push_back("acquire"); }
   void onLoggingStop() { events.push_back("sensor_stop"); }
-  void onLoggingFinalized() { events.push_back("finalize"); }
+  void onLoggingFinalized() { events.push_back(s_stopping ? "finalize_locked" : "finalize"); }
   uint8_t sessionExcludedCount() { return excludedSensors; }
   uint8_t activeCount() { return 2; }
+  size_t pendingLoggingRows() { return 0; }
 }
 
 class ConfigManager {
@@ -112,13 +114,16 @@ namespace UI {
   void println(const char*, const char*, int, int) {}
 }
 namespace UploadModeManager { bool isActive() { return upload; } }
-namespace PowerManager { bool canStartLogging() { return powerOk; } }
+namespace PowerManager { bool canStartLogging() { return powerOk; } void restoreCpuFreqAfterLogging() {} }
 bool StorageManager_readyForLogging() { return storageOk; }
 const char* StorageManager_lastStatus() { return "test"; }
 uint32_t StorageManager_getSampleIntervalUs() { return 2000; }
 void StorageManager_setSampleRate(uint16_t) {}
 unsigned StorageManager_getSampleRateHz() { return 500; }
 bool StorageManager_startLog() { events.push_back("file"); fileFormat = g_cfg.logFormat; return openOk; }
+void StorageManager_drainQueuedSamples() {}
+bool StorageManager_usesIndependentStreams() { return false; }
+bool sampleOnce_(bool) { return false; }
 void StorageManager_stopLog() { events.push_back("close"); }
 namespace AnalogInputManager {
   uint16_t configureFromConfig(const LoggerConfig&, uint16_t rate) { return rate; }
@@ -131,7 +136,7 @@ namespace WiFiManager { void suspendForLogging() {} void resumeAfterLogging() { 
 bool RTCManager_hasValidTime() { return true; }
 uint64_t RTCManager_getEpochMs() { return 100000; }
 namespace DisplayManager { void prepareLoggingScreen(uint16_t, uint8_t) { events.push_back("screen"); } }
-namespace IndicatorManager { void ledOn() {} }
+namespace IndicatorManager { void ledOn() {} void ledOff() {} }
 
 namespace CanMasterManager {
   bool handoffReady = true, fenced = false;
@@ -151,7 +156,11 @@ namespace LoggingManager {
   enum class StartFailureHint { None, RestartNow, ConfigConflict };
   enum class StopReason { StartFailure, UserRequest };
   void stop(StopReason, const char*);
-  struct StopContext {};
+  struct StopContext {
+    StopReason reason=StopReason::StartFailure; uint32_t uptimeMs=0;
+    const char* triggerEvent=""; bool sdDetectAvailable=false,sdCardDetected=true,analogRailFault=false;
+  };
+  const char* stopReasonName(StopReason) { return "test"; }
   void refreshConfigurationStatus();
   LoggingConfigIssue configurationIssue();
   const char* configurationDetail();
@@ -191,7 +200,7 @@ Binding s_bindings[] = {{0, BUTTON_PRESSED, 1}, {0, BUTTON_RELEASED, 1}};
 uint8_t s_bindingCount = 2;
 // PRODUCTION_BUTTON
 const char* evName(ButtonEvent) { return "test"; }
-namespace LoggingManager { void stop(StopReason,const char*) { s_running=false; } }
+
 namespace ButtonActions {
 // PRODUCTION_TOGGLE
 }
@@ -248,6 +257,8 @@ int main() {
   check(LoggingManager::requestStart()==LoggingManager::StartResult::Pending);
   CanMasterManager::handoffReady=true; LoggingManager::loop();
   check(s_running && !LoggingManager::isStarting() && has("acquire"));
+  LoggingManager::stop(LoggingManager::StopReason::UserRequest,"test");
+  check(!LoggingManager::configurationLocked() && !CanMasterManager::fenced && has("finalize_locked"));
   reset();
   CanMasterManager::handoffReady=false;
   check(LoggingManager::requestStart()==LoggingManager::StartResult::Pending);

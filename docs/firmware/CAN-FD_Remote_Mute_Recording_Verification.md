@@ -56,12 +56,13 @@ cannot reuse that identity with different data.
 
 The logger handoff has a fixed original 5500 ms limit. The control client already
 has a five-second knowledge deadline; 100 ms service cadence plus 400 ms scheduler
-allowance gives this local upper bound under regularly serviced host-loop time.
+allowance gives this local deadline; admission checks it on the next loop service.
+Actual elapsed wait includes bounded SPI calls and main-loop service latency.
 The master independently allows three one-second CAN attempts, the node allows
 two seconds after accepted COMMIT, and staging expires after five seconds. These
 budgets overlap; 5500 ms is a bound on logger admission waiting, not a proof that
 all physical work finished. Scheduler/transport outages can prevent observing an
-accepted COMMIT. At the limit the continuation is quarantined, current proof is
+accepted COMMIT. At the first service at/after the deadline the continuation is quarantined, current proof is
 invalidated, diagnostics report an uncertain outcome, and healthy local recording
 can proceed. A previously accepted hardware application cannot be remotely
 cancelled by this configuration-only protocol and could finish after fallback.

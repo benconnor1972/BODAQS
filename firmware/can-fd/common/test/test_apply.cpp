@@ -406,6 +406,7 @@ void loggerAcrossRealSpiCanApplyAndSnapshot(bool enabled)
     if(enabled) disabled[4]=disabled[8]=disabled[10]=1;
     assert(bodaqs_control_apply_client_start(&client, &authority, 99, 0, 1, 0, disabled, f.now));
     bool lostCommit = false;
+    BodaqsControlRecord committedRequest = {};
     for (unsigned i = 0; i < 4900 && client.phase; i++, f.now++)
     {
         bodaqs_control_apply_tick(&f.apply, f.now);
@@ -417,6 +418,7 @@ void loggerAcrossRealSpiCanApplyAndSnapshot(bool enabled)
         assert(bodaqs_control_decode_wrapped(response.payload, 64, &r));
         assert(bodaqs_control_apply_client_accept(&client, &authority,
                                                   static_cast<uint8_t>(response.type), &r, f.now));
+        if (type == 6 && q.record.opcode == 0x12) committedRequest = q.record;
         const bool drop = type == 6 && q.record.opcode == 0x12 && !lostCommit;
         deliverCan(master, f, snapshot, drop);
         lostCommit = lostCommit || drop;
@@ -448,6 +450,10 @@ void loggerAcrossRealSpiCanApplyAndSnapshot(bool enabled)
     assert(bodaqs_control_get_u64(endpoint.effective + 24) == 1 &&
            bodaqs_control_get_u64(endpoint.effective + 32) == 1);
     assert(bodaqs_control_get_u64(endpoint.effective + 184) == observer.nodes[0].endpoint_epoch[0]);
+    const auto writes = f.regs.writes;
+    f.view.flags |= 14; // synthetic recording/lease/acquisition after completion
+    f.send(committedRequest);
+    assert(f.reply.data[0] == 3 && f.regs.writes == writes && f.regs.resets == 1);
 }
 // Production config-only firmware does not raise recording/lease/acquisition
 // flags. These fault injections verify defensive admission through SPI/CAN.

@@ -20,6 +20,7 @@
 #include "CanMasterProtocol.h"
 #include "BoardSelect.h"
 #include "SensorRegistry.h"
+#include "SensorManager.h"
 #include "SensorAssignment.h"
 #include "UploadAckIndex.h"
 #include "UploadModeManager.h"
