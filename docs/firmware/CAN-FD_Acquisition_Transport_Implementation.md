@@ -16,8 +16,8 @@ are part of this implementation.
 |---|---|---|
 | #165 responsive storage worker | Merged and verified | `66ed1ab`, merged at `9c20ead`; [storage evidence](Storage_Worker_Implementation.md) |
 | #166 measurement-mode negotiation | Merged and verified | `93ef410`, merged at `918fa87`; [mode evidence](CAN-FD_Measurement_Mode_Implementation.md) |
-| #167 bounded fragmented transfer | Implementing | Depends on verified #166 |
-| #168 leased recording lifecycle | Pending | Depends on #167 |
+| #167 bounded fragmented transfer | Merged and verified | `a00e81b`, merged at `655bbcd`; [fragment evidence](CAN-FD_Fragment_Transport_Implementation.md) |
+| #168 leased recording lifecycle | Implementing | Depends on verified #167 |
 | #169 one-node native BDQ recording | Pending | Depends on #165 and #168 |
 | #170 synchronization and analysis timing | Pending | Depends on #169 |
 | #171 bounded loss and continuity recovery | Pending | Depends on #169 |
@@ -30,6 +30,12 @@ host/runtime suite, asynchronous storage-controller fixtures and explicit A8
 `bodaqs_s3_mini_n4r2` build pass. The #166 master production build also passes.
 The unchanged baseline BDQ analysis suite passes 42 tests with `PYTHONPATH=analysis`.
 Final software acceptance and independent Standards/Spec review remain pending.
+
+At `655bbcd`, all ten common binaries and production measurement, recording,
+recovery and mute runtime fixtures pass, including pipelined four-node traffic
+interleaved with protected control. The merged source tree exactly matches the
+tested child: master TI and A8 build evidence remains applicable. CAN receive
+ticks are explicitly quantized to 1 ms until the acquisition-clock slice #170.
 
 ## Deferred physical qualification
 
