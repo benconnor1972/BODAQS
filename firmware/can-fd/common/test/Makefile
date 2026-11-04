@@ -1,7 +1,7 @@
 CXX ?= g++
 CXXFLAGS := -std=c++17 -Wall -Wextra -Werror -O2
 
-TEST_BINS := test_master_retention.exe test_acquisition.exe test_frag_transport.exe test_measurement.exe test_apply.exe test_authority.exe test_master_protocol.exe test_can_network.exe test_deferred_transport.exe test_control.exe test_control_transport.exe test_snapshot.exe
+TEST_BINS := test_timing.exe test_master_retention.exe test_acquisition.exe test_frag_transport.exe test_measurement.exe test_apply.exe test_authority.exe test_master_protocol.exe test_can_network.exe test_deferred_transport.exe test_control.exe test_control_transport.exe test_snapshot.exe
 LOGGER_PROTOCOL := ../../../src/CanMasterProtocol.cpp
 MASTER_PROTOCOL := ../protocol/bodaqs_master_protocol.c
 CONTROL := ../protocol/bodaqs_control_acquisition.c ../protocol/bodaqs_control_apply.c ../protocol/bodaqs_control_apply_client.c ../protocol/bodaqs_imu_disabled.c ../protocol/bodaqs_control_authority.c ../protocol/bodaqs_control_authority_client.c ../protocol/bodaqs_control_snapshot.c ../protocol/bodaqs_control_observer.c ../protocol/bodaqs_control.c ../protocol/bodaqs_control_exchange.c
@@ -18,6 +18,7 @@ endif
 .PHONY: test clean
 
 test: $(TEST_BINS)
+	./test_timing.exe
 	./test_master_retention.exe
 	./test_acquisition.exe
 	./test_frag_transport.exe
@@ -74,4 +75,7 @@ test_acquisition.exe: test_acquisition.cpp $(CONTROL) $(MASTER_PROTOCOL) ../prot
 	$(CXX) $(CXXFLAGS) -I../protocol -o $@ $(filter %.cpp %.c,$^)
 
 test_master_retention.exe: test_master_retention.cpp $(MASTER_PROTOCOL) $(MASTER_SERVICE)
+	$(CXX) $(CXXFLAGS) -I../protocol -o $@ $(filter %.cpp %.c,$^)
+
+test_timing.exe: test_timing.cpp $(MASTER_PROTOCOL) $(MASTER_SERVICE)
 	$(CXX) $(CXXFLAGS) -I../protocol -o $@ $(filter %.cpp %.c,$^)

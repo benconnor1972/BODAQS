@@ -112,7 +112,7 @@ bool RemoteImuStream::configure(const RemoteImuBinding& b,uint16_t sample,uint16
       2*(x*z-y*w),2*(y*z+x*w),1-2*(x*x+y*y));
   }
   const int provenanceLength=std::snprintf(provenance_,sizeof provenance_,
-    "\"provider_uid\":\"%llu\",\"node_address\":%u,\"node_boot\":%lu,\"master_boot\":\"%llu\","
+    "\"provider_uid\":\"%llu\",\"node_address\":%u,\"node_boot\":%lu,\"master_boot\":\"%llu\",\"master_uid\":\"%llu\","
     "\"recording_id\":\"%llu\",\"control_session\":\"%llu\",\"measurement_context\":\"%llu\","
     "\"desired_generation\":\"%llu\",\"applied_revision\":\"%llu\",\"effective_descriptor_hex\":\"%s\","
     "\"known_mask\":%lu,\"historical_mask\":%lu,\"engine_power_bits\":%u,"
@@ -122,13 +122,13 @@ bool RemoteImuStream::configure(const RemoteImuBinding& b,uint16_t sample,uint16
     "\"nominal_sensitivities\":{\"accel_g_numerator\":%lu,\"accel_g_denominator\":%lu,"
     "\"gyro_dps_numerator\":%lu,\"gyro_dps_denominator\":%lu},"
     "\"sensor_clock_id\":\"can%u_sensor_boot_%lu\",\"master_clock_id\":\"master_boot_%llu_native\","
-    "\"logger_clock_id\":\"logger_monotonic_creation\","
+    "\"logger_clock_id\":\"logger_monotonic_creation\",\"master_clock_epoch_scope\":\"one_per_boot_fail_closed_on_discontinuity\",\"master_timestamp_nominal_hz\":1000000,\"master_timestamp_modulus\":4294967296,\"physical_timing_bounds\":\"unknown_pending_qualification\",\"bridge_methods\":{\"1\":\"complete_causal_bracket\",\"2\":\"expired_token_only_no_master_observation\"},"
     "\"sensor_timestamp_nominal_hz\":40000,\"sensor_timestamp_modulus\":4294967296,"
     "\"tick_semantics\":\"modelled_acceleration_output_ready\",\"inter_node_alignment\":\"unknown\","
     "\"uncertainty_validity\":\"validity_mask bit13\",\"snapshot_flag_semantics\":\"acquisition_contract_5.1\","
     "\"validity_mask_semantics\":\"acquisition_contract_6.1\",\"tag_decoding\":\"LSM6DSO32X FIFO_DATA_OUT_TAG\","
     "\"companion_prefix_semantics\":\"logger_creation_observation_not_sample_time\"",
-    (unsigned long long)b.uid,b.node,(unsigned long)b.boot,(unsigned long long)b.masterBoot,
+    (unsigned long long)b.uid,b.node,(unsigned long)b.boot,(unsigned long long)b.masterBoot,(unsigned long long)b.masterUid,
     (unsigned long long)b.recording,(unsigned long long)b.session,(unsigned long long)b.context,
     (unsigned long long)BdqV2Format::getU64(b.effective+24),(unsigned long long)BdqV2Format::getU64(b.effective+32),raw,
     (unsigned long)u32(b.effective+12),(unsigned long)u32(b.effective+16),b.effective[5],mount,sample,
@@ -214,18 +214,29 @@ RemoteImuStream::Acceptance RemoteImuStream::accept(uint16_t id,const uint8_t* p
     a.numerator=u32(p+20);a.denominator=u16(p+24);
     return Accepted;
   }
+  if(p[1]==0x21) {
+    if(n!=24 || p[6]!=16 || u16(p+22) || u32(p+16)!=binding_.boot ||
+       u16(p+4)!=uint16_t(u32(p+8))) return Invalid;
+    uint8_t out[224]={};put(out+4,logger);out[12]=3;
+    put(out+16,(1u<<0)|(1u<<1)|(1u<<3)|(1u<<7)|(1u<<9)|(1u<<10)|(1u<<22));
+    put(out+20,segment_);put(out+28,binding_.boot);put(out+36,1);put(out+40,1);
+    put(out+64,u32(p+8));put(out+68,u32(p+12));put(out+76,tick);
+    put(out+80,(uint32_t)order);put(out+188,(uint32_t)(order>>32));
+    BdqV2Format::putU16(out+140,u16(p+20));out[184]=0x21;out[185]=1;out[186]=24;
+    return pushShared(out);
+  }
   if(n!=64 || p[6]!=56 || p[1]<0x23 || p[1]>0x25) return Invalid;
   if(u32(p+8)!=binding_.boot || p[12]) return Invalid;
   return evidence(p[1],p+8,tick,order,logger);
 }
-RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t* b,uint32_t tick,uint64_t order,uint32_t logger) {
+RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t* b,uint32_t tick,uint64_t order,uint32_t logger,bool local) {
   if(evidence_.size()==evidence_.capacity() || nextEvidence_==UINT32_MAX) {failed_=true;return Invalid;}
   uint8_t out[224]={};put(out,nextEvidence_);put(out+4,logger);out[12]=type==0x23?1:type==0x24?2:b[6]==3?7:6;
   out[13]=b[4];out[14]=b[5];put(out+28,binding_.boot);put(out+76,tick);put(out+80,(uint32_t)order);put(out+188,(uint32_t)(order>>32));
-  out[184]=type;out[185]=1;out[186]=64;
+  if(!local) {out[184]=type;out[185]=1;out[186]=64;}
   uint32_t valid=(1u<<0)|(1u<<9)|(1u<<10);
   if(type==0x25) {
-    put(out+48,u32(b+8));
+    if(!local) put(out+48,u32(b+8));
     const uint16_t v=u16(b+46);if(v&~2047u || b[6]<1 || b[6]>8) return Invalid;
     if(b[6]==2) {
       if(segment_==UINT32_MAX) {failed_=true;return Invalid;}
@@ -314,9 +325,44 @@ RemoteImuStream::Acceptance RemoteImuStream::samples(const uint8_t* p,size_t n) 
     uint16_t status=BdqV2Format::NativeTickEstimated;
     if(!(m.flags&2) || (p[3]&64)) status|=BdqV2Format::TimingDegraded;
     if(i==0 && (!haveSequence_ || delta || (p[3]&8))) status|=BdqV2Format::DiscontinuityBefore;
+    if(i==0 && !haveSequence_ && (m.flags&16)) status|=BdqV2Format::SourceRecoveryBefore;
     if(i==0 && (p[3]&48)) status|=BdqV2Format::ProducerQueueDropBefore;
     BdqV2Format::putU16(out.bytes+8,status);put(out.bytes+12,segment_);std::memcpy(out.bytes+16,p+4+12*i,12);
     out.dependency=m.dependency;if(!samples_.push(out)) return Invalid;
   }
   nextSequence_=seq+count;haveSequence_=true;return Accepted;
+}
+
+RemoteImuStream::Acceptance RemoteImuStream::pushShared(uint8_t out[224]) {
+  if(failed_ || !sampleId_ || nextEvidence_==UINT32_MAX) return Invalid;
+  if(evidence_.size()==evidence_.capacity()) return Blocked;
+  put(out,nextEvidence_);
+  if(!evidence_.push(out,224)) return Blocked;
+  ++nextEvidence_;return Accepted;
+}
+RemoteImuStream::Acceptance RemoteImuStream::acceptSharedSync(uint32_t sequence,uint32_t tick,uint32_t epoch,uint32_t logger) {
+  if(!epoch) return Invalid;
+  uint8_t out[224]={};put(out+4,logger);out[12]=4;
+  put(out+16,(1u<<3)|(1u<<8)|(1u<<22));put(out+40,epoch);put(out+64,sequence);put(out+72,tick);
+  return pushShared(out);
+}
+RemoteImuStream::Acceptance RemoteImuStream::acceptBridge(uint32_t token,uint32_t tick,uint32_t epoch,uint64_t lower,uint64_t upper,uint32_t logger) {
+  if(!token || !epoch || upper<lower || upper-lower>=300000) return Invalid;
+  uint8_t out[224]={};put(out+4,logger);out[12]=5;
+  put(out+16,(1u<<3)|(1u<<14)|(1u<<15)|(1u<<22));put(out+40,epoch);
+  BdqV2Format::putU64(out+120,lower);BdqV2Format::putU64(out+128,upper);
+  put(out+136,tick);BdqV2Format::putU16(out+140,1);put(out+144,token);
+  return pushShared(out);
+}
+RemoteImuStream::Acceptance RemoteImuStream::acceptLocalLoss(const uint8_t b[56],uint32_t tick,uint64_t order,uint32_t logger) {
+  return evidence(0x25,b,tick,order,logger,true);
+}
+
+RemoteImuStream::Acceptance RemoteImuStream::acceptMissingBridge(uint32_t token,uint32_t logger) {
+  if(!token) return Invalid;
+  uint8_t out[224]={};put(out+4,logger);out[12]=5;
+  // Method 2 records an expired token only. No epoch, M or logger interval is
+  // present. It can never be composed as a bounded clock observation.
+  put(out+16,(1u<<15)|(1u<<22));BdqV2Format::putU16(out+140,2);put(out+144,token);
+  return pushShared(out);
 }

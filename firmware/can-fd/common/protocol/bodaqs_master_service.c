@@ -1,3 +1,4 @@
+#include "bodaqs_timing.h"
 #include "bodaqs_master_service.h"
 
 #include <string.h>
@@ -395,6 +396,25 @@ static bool measurement_transfer(BodaqsMasterService *s,const BodaqsMeasurementS
     uint8_t cls=bodaqs_fragment_class(r->kind); unsigned i;
     transfer_context(s); memset(out,0,sizeof(*out)); out->context=s->transfer_context; out->node=255;
     if(r->context!=s->transfer_context) { transfer_error(r,out,4); return true; }
+    if(r->kind==10) {
+        if(!bodaqs_bridge_valid(r,0)) return false;
+        if(s->bridge_context!=r->context) {
+            s->bridge_context=r->context;s->bridge_token=0;
+        }
+        if(r->object<s->bridge_token) return false;
+        if(r->object!=s->bridge_token) {
+            s->bridge_epoch=0;
+            s->bridge_tick=s->native_clock?s->native_clock(s->clock_context,&s->bridge_epoch):0;
+            if(!s->bridge_epoch) s->bridge_tick=0;
+            s->bridge_token=r->object;
+        }
+        *out=*r;out->kind=11;out->total=16;memset(out->body,0,40);
+        bodaqs_measurement_put(out->body,r->object,4);
+        bodaqs_measurement_put(out->body+4,s->bridge_tick,4);
+        bodaqs_measurement_put(out->body+8,s->bridge_epoch,4);
+        bodaqs_measurement_put(out->body+12,bodaqs_bridge_crc(out,1),4);
+        return true;
+    }
     if(cls==3 || cls==4) {
         BodaqsMeasurementControlLane *lane; BodaqsControlWrapped request,reply;
         BodaqsControlExchange *exchange; uint8_t type; int result;
