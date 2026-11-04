@@ -45,6 +45,9 @@ uint8_t bodaqs_control_authority_admit(BodaqsControlAuthority *s, const BodaqsCo
 void bodaqs_control_authority_complete(BodaqsControlAuthority *s, const BodaqsControlRecord *q,
                                        const BodaqsControlRecord *r)
 {
+    /* Late completion of a canceled operation never rewinds the authority. */
+    if (q->operation < s->high_water && s->latest_valid && q->session == s->latest_request.session)
+        return;
     s->high_water = q->operation;
     s->latest_request = *q;
     s->latest_result = *r;
@@ -155,7 +158,8 @@ bool bodaqs_control_authority_process(BodaqsControlAuthority *s, BodaqsControlNo
         reason = 5;
         field = 6;
     }
-    else if (v->flags & (1U << 1))
+    else if ((v->flags & (1U << 1)) &&
+             !(q->opcode == BODAQS_CONTROL_BIND_SESSION && v->membership_cleanup_allowed))
     {
         reason = 8;
         field = 12;

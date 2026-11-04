@@ -4,6 +4,7 @@
 #include <SPI.h>
 #include <esp_system.h>
 #include <string.h>
+#include <atomic>
 
 #include "CanMasterProtocol.h"
 #include "CanMasterDiscovery.h"
@@ -652,8 +653,28 @@ bool refreshInventory_() {
 
 namespace CanMasterManager {
 
+static std::atomic<bool (*)()> s_measurementOwner{nullptr};
+static bool measurementAccess_() { auto owner=s_measurementOwner.load();return !owner || owner(); }
+bool claimMeasurementControl(bool (*owner)()) {
+  if (!owner || s_measurementOwner || !s_recordingFence || !s_handoffReady ||
+      s_diagnostics.apply.phase || s_diagnostics.authority.pending || s_diagnostics.control.pending) return false;
+  s_measurementOwner=owner;
+  return true;
+}
+void releaseMeasurementControl() {
+  if (s_measurementOwner && measurementAccess_() && !s_diagnostics.measurementUnavailable &&
+      !s_diagnostics.measurement.phase) s_measurementOwner=nullptr;
+}
+void retainMeasurementAllocators(uint32_t read,const uint32_t mutations[4],uint64_t transfer) {
+  if (!s_measurementOwner || !measurementAccess_()) return;
+  s_diagnostics.authority.next_read=read;
+  for(uint8_t n=0;n<4;++n) s_diagnostics.authority.nodes[n].next_mutation=mutations[n];
+  s_diagnostics.apply.next_transfer=transfer;
+}
+
 bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
                              BodaqsMeasurementSlot& response) {
+  if (!measurementAccess_()) return false;
   if (!s_started || !s_profile.supported || s_profile.cs_pin < 0 ||
       s_profile.spi_bus_index != 0 || s_diagnostics.mode == CanMasterMode::Off) return false;
   uint8_t tx[64], rx[64];
@@ -669,11 +690,13 @@ static MeasurementInbox* transportInbox_(MeasurementTransport& transport,uint8_t
   return &transport.inboxes[cls-1][cls==5?0:node];
 }
 void releaseMeasurementObject(MeasurementInbox& inbox) {
+  if (!measurementAccess_()) return;
   if(inbox.state.complete) {inbox.admitted=true;inbox.ackPending=true;bodaqs_fragment_ack(&inbox.state,1,&inbox.pendingAck);}
 }
 
 bool queueMeasurementControl(MeasurementTransport& transport,const BodaqsControlWrapped& wrapped,
                              uint32_t objectId,bool authorization) {
+  if (!measurementAccess_()) return false;
   if(!measurementReady() || wrapped.node_address>3 || !objectId ||
      (transport.context && transport.context!=s_diagnostics.measurement.context)) return false;
   transport.context=s_diagnostics.measurement.context;
@@ -691,6 +714,7 @@ bool queueMeasurementControl(MeasurementTransport& transport,const BodaqsControl
 int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint8_t node,
                                 MeasurementInbox*& completed) {
   completed=nullptr;
+  if (!measurementAccess_()) return -8;
   if(!measurementReady() || cls<1 || cls>5 || (node>3 && node!=255)) return -4;
   if(transport.context && transport.context!=s_diagnostics.measurement.context) return -4;
   transport.context=s_diagnostics.measurement.context;
@@ -702,7 +726,13 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
     if(candidate.state.complete && static_cast<uint32_t>(millis()-candidate.startedMs)>=300) {
       candidate.state.complete=0;candidate.error=12;++s_diagnostics.measurementTransferErrors;return -12;
     }
-    if(!outgoing && candidate.state.complete) {
+    const auto& retained=transport.inboxes[lane+2][n];
+    // Retire the previous immutable result before sending the successor on
+    // this lane. Otherwise its new fragments indefinitely suppress the RAM
+    // ACK and the master correctly refuses to replace its pinned result.
+    const bool retireFirst=retained.admitted && retained.ackPending &&
+        !(lane==1 && candidate.bytes[12]==0x25);
+    if(!outgoing && candidate.state.complete && !retireFirst) {
       outgoing=&candidate;
       (void)bodaqs_fragment_emit(&candidate.state,candidate.bytes,candidate.nextFragment,&request);
       candidate.nextFragment=(candidate.nextFragment+1)%2;
@@ -764,6 +794,7 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
   return result;
 }
 bool acknowledgeMeasurementObject(MeasurementInbox& inbox) {
+  if (!measurementAccess_()) return false;
   if(!measurementReady() || !inbox.state.complete) return false;
   BodaqsMeasurementSlot ack={}, response={};
   bodaqs_fragment_ack(&inbox.state,1,&ack);
@@ -771,6 +802,7 @@ bool acknowledgeMeasurementObject(MeasurementInbox& inbox) {
   inbox.ackPending=false; return true;
 }
 int pollMeasurementObject(uint8_t cls,uint8_t node,MeasurementInbox& inbox) {
+  if (!measurementAccess_()) return -8;
   if(!measurementReady() || cls<1 || cls>5 || (node>3 && node!=255)) return -4;
   if(inbox.ackPending) return acknowledgeMeasurementObject(inbox)?0:-8;
   BodaqsMeasurementSlot request={},response={};
@@ -797,6 +829,7 @@ int pollMeasurementObject(uint8_t cls,uint8_t node,MeasurementInbox& inbox) {
   return accepted;
 }
 uint32_t nextMeasurementObjectId(uint8_t cls,uint8_t node) {
+  if (!measurementAccess_()) return 0;
   static uint64_t context=0, boot=0;
   static uint32_t ids[2][4]={};
   if(!measurementReady() || cls<3 || cls>4 || node>3) return 0;
@@ -808,6 +841,7 @@ uint32_t nextMeasurementObjectId(uint8_t cls,uint8_t node) {
   return id==UINT32_MAX?0:++id;
 }
 bool submitMeasurementControl(const BodaqsControlWrapped& wrapped,uint32_t objectId,bool authorization) {
+  if (!measurementAccess_()) return false;
   if(!measurementReady()) return false;
   uint8_t data[68]={};BodaqsFragmentState tx={};
   if(!bodaqs_control_encode_wrapped(&wrapped,data) ||
@@ -829,6 +863,7 @@ bool submitMeasurementControl(const BodaqsControlWrapped& wrapped,uint32_t objec
   ++s_diagnostics.measurementTransferErrors;return false;
 }
 bool queryMeasurementNodeState(uint8_t node,uint32_t boot,uint32_t operation,BodaqsControlWrapped& result) {
+  if (!measurementAccess_()) return false;
   static uint64_t context=0;
   static MeasurementInbox inboxes[4];
   if(!measurementReady() || node>3 || !operation || !boot) return false;
@@ -881,6 +916,7 @@ static bool modeObservation_(const BodaqsMeasurementSlot& response, uint32_t tok
 }
 
 bool inspectMeasurementMode() {
+  if (!measurementAccess_()) return false;
   if (!s_nextSequence || s_nextSequence==UINT32_MAX) return false;
   const uint32_t token=nextSequence_();
   if (s_diagnostics.measurementUnavailable || s_diagnostics.measurement.phase!=0) {
@@ -947,6 +983,7 @@ static bool transitionMode_(BodaqsMeasurementMode requested, bool exitMode) {
 }
 
 bool enterMeasurementMode(uint64_t recording, uint64_t context) {
+  if (!measurementAccess_()) return false;
   if(!recording || !context || !present() || !s_diagnostics.controlInfoValid ||
      !s_diagnostics.authority.session || s_diagnostics.measurementUnavailable ||
      s_diagnostics.measurement.phase!=0 ||
@@ -959,6 +996,7 @@ bool enterMeasurementMode(uint64_t recording, uint64_t context) {
 }
 
 bool exitMeasurementMode() {
+  if (!measurementAccess_()) return false;
   if(!s_diagnostics.measurementConfirmed) return false;
   return transitionMode_(s_diagnostics.measurement,true);
 }
@@ -969,6 +1007,7 @@ bool measurementReady() {
 }
 
 void enableControlAuthority(uint64_t session) {
+  if (!measurementAccess_()) return;
   if (LoggingManager::configurationLocked() || s_recordingFence) return;
   if (session && session==s_diagnostics.authority.session) return;
   const uint32_t nextRead=s_diagnostics.authority.next_read;
@@ -990,6 +1029,7 @@ void enableControlAuthority(uint64_t session) {
 }
 
 bool releaseControlAuthority(uint8_t address) {
+  if (!measurementAccess_()) return false;
   if (s_diagnostics.apply.phase) return false;
   return !LoggingManager::configurationLocked() && !s_recordingFence &&
       bodaqs_control_authority_client_release(&s_diagnostics.authority, address);
@@ -1017,6 +1057,7 @@ bool configurationReconciled(uint8_t address) {
 }
 
 void scheduleConfigurationReconciliation() {
+  if (!measurementAccess_()) return;
   if (LoggingManager::configurationLocked() || s_recordingFence) return;
   for(auto& dirty:s_configurationDirty) dirty=true;
 }
@@ -1024,6 +1065,7 @@ void scheduleConfigurationReconciliation() {
 bool recordingHandoffActive() { return s_recordingFence; }
 
 void beginRecordingHandoff() {
+  if (!measurementAccess_()) return;
   if (s_recordingFence) return;
   s_recordingFence = true;
   s_handoffReady = false;
@@ -1031,6 +1073,7 @@ void beginRecordingHandoff() {
 }
 
 bool recordingHandoffReady() {
+  if (!measurementAccess_()) return false;
   if (!s_recordingFence) return false;
   if (s_handoffReady) return true;
   auto& apply = s_diagnostics.apply;
@@ -1054,12 +1097,14 @@ bool recordingHandoffReady() {
 }
 
 void endRecordingHandoff() {
+  if (!measurementAccess_()) return;
   s_recordingFence = false;
   s_handoffReady = false;
   s_probeRequested = true;
 }
 
 void begin(const board::BoardProfile& profile, const LoggerConfig& cfg) {
+  if (s_measurementOwner) return;
   s_board = &profile;
   s_profile = profile.can_fd_master;
   s_diagnostics = Diagnostics{};
@@ -1118,6 +1163,7 @@ void begin(const board::BoardProfile& profile, const LoggerConfig& cfg) {
 }
 
 void applyConfig(const LoggerConfig& cfg) {
+  if (!measurementAccess_()) return;
   if (!s_started) return;
   const State previous = s_diagnostics.state;
   s_diagnostics.mode = cfg.canMasterMode;
@@ -1136,6 +1182,7 @@ void applyConfig(const LoggerConfig& cfg) {
 }
 
 bool probeNow() {
+  if (!measurementAccess_()) return false;
   if (!s_started || !s_profile.supported ||
       s_diagnostics.mode == CanMasterMode::Off) {
     return false;
@@ -1223,11 +1270,13 @@ bool probeNow() {
 }
 
 void requestProbe() {
+  if (!measurementAccess_()) return;
   if (!s_started || s_diagnostics.mode == CanMasterMode::Off) return;
   s_probeRequested = true;
 }
 
 void loop() {
+  if (s_measurementOwner) return;
   if (s_diagnostics.measurementUnavailable || s_diagnostics.measurement.phase!=0) return;
   if (!s_started || !s_profile.supported ||
       s_diagnostics.mode == CanMasterMode::Off ||

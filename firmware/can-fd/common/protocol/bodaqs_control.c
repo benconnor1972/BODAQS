@@ -114,9 +114,9 @@ bool bodaqs_control_request_valid(const BodaqsControlRecord *r)
     case BODAQS_CONTROL_OPEN_EFFECTIVE:
         return r->endpoint < 6 && !r->page && !r->transfer && !r->data_length;
     case BODAQS_CONTROL_READ_PAGE:
-        return r->endpoint < 6 && r->transfer && !r->data_length;
+        return r->transfer && !r->data_length;
     case BODAQS_CONTROL_RELEASE_SNAPSHOT:
-        return r->endpoint < 6 && !r->page && r->transfer && !r->data_length;
+        return !r->page && r->transfer && !r->data_length;
     case BODAQS_CONTROL_BEGIN_APPLY:
     case BODAQS_CONTROL_COMMIT_APPLY:
         return r->endpoint < 6 && !r->page && r->session &&
@@ -130,6 +130,36 @@ bool bodaqs_control_request_valid(const BodaqsControlRecord *r)
     case BODAQS_CONTROL_GET_OPERATION:
         return !r->page && r->session && !r->transfer && r->data_length == 4 &&
                bodaqs_control_get_u32(r->data) != 0;
+    case BODAQS_CONTROL_BEGIN_PREPARE:
+        return r->endpoint == 255 && !r->page && r->session && r->transfer &&
+               r->data_length == 24 && zeros(r->data + 16,8);
+    case BODAQS_CONTROL_WRITE_PREPARE_PAGE:
+        return r->endpoint == 255 && r->session && r->transfer && r->page < 5 &&
+               r->data_length == (r->page == 4 ? 16 : 24);
+    case BODAQS_CONTROL_COMMIT_PREPARE:
+        return r->endpoint == 255 && !r->page && r->session && r->transfer &&
+               r->data_length == 24 && zeros(r->data+20,4);
+    case BODAQS_CONTROL_ABORT_PREPARE_STAGING:
+        return r->endpoint == 255 && !r->page && r->session && r->transfer && !r->data_length;
+    case BODAQS_CONTROL_START:
+        return r->endpoint == 255 && !r->page && r->session && !r->transfer && r->data_length == 24;
+    case BODAQS_CONTROL_STOP:
+        return r->endpoint == 255 && !r->page && r->session && !r->transfer &&
+               r->data_length == 24 && zeros(r->data+9,15);
+    case BODAQS_CONTROL_GET_LEASE_CHALLENGE:
+        return r->endpoint == 255 && !r->page && r->session && r->data_length == 16 &&
+               r->data[12] <= 1 && r->data[13] == 1 && zeros(r->data+14,2) &&
+               (r->data[12] ? !r->transfer : r->transfer != 0) &&
+               bodaqs_control_get_u32(r->data+8) != 0;
+    case BODAQS_CONTROL_RENEW_LEASE:
+        return r->endpoint == 255 && !r->page && r->session && !r->transfer &&
+               r->data_length == 24 && zeros(r->data+20,4);
+    case BODAQS_CONTROL_OPEN_ACQ_STATE:
+        return r->endpoint == 255 && !r->page && !r->transfer && r->data_length == 8;
+    case BODAQS_CONTROL_RELEASE_MEMBERSHIP:
+    case BODAQS_CONTROL_FENCE_OLD_DATA:
+        return r->endpoint == 255 && !r->page && r->session && !r->transfer &&
+               r->data_length == 24 && zeros(r->data+8,16);
     default:
         return true; /* Well-formed future commands receive explicit
                         unsupported. */
@@ -334,7 +364,10 @@ const char *bodaqs_control_reason_key(uint8_t reason)
                                         "unsupported_endpoint",
                                         "invalid_request_value",
                                         "stale_master_boot",
-                                        "can_exchange_timeout"};
+                                        "can_exchange_timeout", "native_not_ready", "recording_mismatch",
+                                        "lease_expired", "authorization_terminal", "essential_metadata_unavailable",
+                                        "recovery_budget_exceeded", "fence_incomplete", "model_conflict",
+                                        "clock_untrusted", "measurement_context_mismatch"};
     return reason < sizeof(names) / sizeof(names[0]) ? names[reason]
                                                      : "unknown";
 }

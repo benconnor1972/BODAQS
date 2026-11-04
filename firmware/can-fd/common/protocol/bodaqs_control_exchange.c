@@ -14,6 +14,8 @@ static bool inspection(uint8_t opcode)
            opcode == BODAQS_CONTROL_GET_NODE_STATE ||
            opcode == BODAQS_CONTROL_OPEN_CAPABILITIES ||
            opcode == BODAQS_CONTROL_OPEN_EFFECTIVE ||
+           opcode == BODAQS_CONTROL_OPEN_ACQ_STATE ||
+           opcode == BODAQS_CONTROL_GET_LEASE_CHALLENGE ||
            opcode == BODAQS_CONTROL_READ_PAGE ||
            opcode == BODAQS_CONTROL_RELEASE_SNAPSHOT ||
            opcode == BODAQS_CONTROL_GET_OPERATION;
@@ -242,7 +244,8 @@ bool bodaqs_control_exchange_receive(BodaqsControlExchange *exchange,
     if (reply->opcode != BODAQS_CONTROL_ERROR &&
         (slot->request.opcode == BODAQS_CONTROL_GET_CHALLENGE ||
          slot->request.opcode == BODAQS_CONTROL_OPEN_CAPABILITIES ||
-         slot->request.opcode == BODAQS_CONTROL_OPEN_EFFECTIVE) &&
+         slot->request.opcode == BODAQS_CONTROL_OPEN_EFFECTIVE ||
+         slot->request.opcode == BODAQS_CONTROL_OPEN_ACQ_STATE) &&
         slot->request.transfer == 0 && identity.transfer != 0)
     {
         identity.transfer = 0;
