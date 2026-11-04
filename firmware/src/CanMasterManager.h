@@ -168,6 +168,9 @@ void enableControlAuthority(uint64_t session);
 bool releaseControlAuthority(uint8_t address);
 // Current epoch-checked hardware agreement; configuration-only, never readiness.
 bool configurationReconciled(uint8_t address);
+// Explicit selected-link capabilities; protocol compatibility alone is insufficient.
+uint8_t acquisitionLinkProfile(uint8_t address);
+bool acquisitionLinkCompatible(uint8_t address);
 void begin(const board::BoardProfile& profile, const LoggerConfig& cfg);
 void applyConfig(const LoggerConfig& cfg);
 void loop();

@@ -9,16 +9,20 @@
 #include <Arduino.h>
 #include <esp_timer.h>
 #include <cstring>
+#include "ImuAdmission.h"
+#include "AnalogInputManager.h"
+#include <new>
 
 namespace RemoteImuRecording {
 namespace {
+enum Phase { Idle, Allocated, Prepare, PreparedSnapshot, Ready, Starting, Recording, Stop, Tail, Fence, Release, Exit, Done };
+struct Participant {
 RemoteImuStream stream;
-enum Phase { Idle, Prepare, PreparedSnapshot, Ready, Starting, Recording, Stop,
-             Tail, Fence, Release, Exit, Done };
+
 Phase phase=Idle;
 uint8_t node=0;
 uint64_t record=0,revision=0,epoch=0;
-uint64_t allocatedSession=0,nextRecording=1;
+
 uint32_t serial=0,began=0,tailBegan=0;
 std::atomic<bool> fault{false};
 bool stopIntent=false,startIntent=false;
@@ -37,7 +41,7 @@ bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint
     if(tailDiscards.load()!=UINT32_MAX) tailDiscards.fetch_add(1);
     return true;
   }
-  struct Retire {~Retire(){dataGate.fetch_and(1,std::memory_order_release);}} retire;
+  struct Retire {std::atomic<uint8_t>& gate;~Retire(){gate.fetch_and(1,std::memory_order_release);}} retire{dataGate};
   if(address==255 && cls==6) {
     if(total!=32) {fault=true;return true;}
     if(p[12]==2) return stream.acceptMissingBridge(BdqV2Format::getU32(p),
@@ -79,30 +83,15 @@ bool send(AcquisitionControl::Action action) {
   AcquisitionControl::Outcome out;AcquisitionControl::outcome(node,out);serial=out.serial;
   return AcquisitionControl::enqueue(q);
 }
-}
-bool configure(const LoggerConfig& cfg) {
+bool configure(const SensorSpec& chosen,uint64_t sharedRecord) {
   if(phase!=Idle) return false;
   fault=false;
-  SensorSpec chosen;unsigned count=0;
-  for(uint8_t i=0;i<cfg.sensorCount();++i) {
-    SensorSpec spec;bool muted=false;
-    if(!cfg.getSensorSpec(i,spec) || spec.type!=SensorType::LSM6DSO32XImu) continue;
-    if(!SensorManager::getMuted(i,muted)) muted=spec.mutedDefault;
-    if(muted) continue;
-    chosen=spec;++count;
-  }
-  if(!count) return true;
-  // Four-node scheduling/resource admission is a separate implementation slice;
-  // never silently record only the first of several requested remote IMUs.
-  if(count!=1) {fault=true;return true;}
   const auto assignment=sensorAssignment(chosen,board::gBoard);node=assignment.provider.index;
   if(assignment.kind!=SensorAssignment::Kind::NodeImu || node>3 || !CanMasterManager::configurationReconciled(node)) {fault=true;return true;}
   const auto& d=CanMasterManager::diagnostics();const auto& endpoint=d.control.nodes[node].endpoints[0];
   RemoteImuBinding b;b.node=node;b.boot=endpoint.effective_boot;b.uid=endpoint.effective_uid;b.masterBoot=d.control.master_boot_id;b.masterUid=d.hardwareUid;
   b.session=d.authority.session;
-  if(allocatedSession!=b.session) {allocatedSession=b.session;nextRecording=1;}
-  if(!nextRecording || nextRecording==UINT64_MAX) {fault=true;return true;}
-  record=nextRecording++;
+  record=sharedRecord;
   b.recording=record;b.context=record;std::memcpy(b.effective,endpoint.effective,192);
   String text=chosen.name;chosen.params.get("imu_id",text);std::snprintf(b.sensorId,sizeof b.sensorId,"%s",text.c_str());
   text="";chosen.params.get("mount_point",text);std::snprintf(b.mountPoint,sizeof b.mountPoint,"%s",text.c_str());
@@ -115,12 +104,10 @@ bool configure(const LoggerConfig& cfg) {
     if(!chosen.params.getFloat(quaternionKeys[i],b.mountingQuaternion[i])) {fault=true;return true;}
   revision=BdqV2Format::getU64(endpoint.effective+32);epoch=d.control.nodes[node].endpoint_epoch[0];
   // IDs are finalized before catalog generation; sources do not yet contain data.
-  if(!stream.configure(b,34,35) || !AcquisitionControl::setDataConsumer(consume,1u<<node) ||
-     !AcquisitionControl::begin(record,record)) {stream.release();fault=true;return true;}
-  fault=false;stopIntent=startIntent=false;cleanupQueued=false;phase=Prepare;began=millis();serial=0;
+  if(!stream.configure(b,uint16_t(34+2*node),uint16_t(35+2*node)) ) {stream.release();fault=true;return true;}
+  fault=false;stopIntent=startIntent=false;cleanupQueued=false;phase=Allocated;began=millis();serial=0;
   std::memset(objectProgress,0,sizeof objectProgress);std::memset(recordProgress,0,sizeof recordProgress);
   tailDiscards.store(0);dataGate.store(0,std::memory_order_release);
-  if(!send(AcquisitionControl::Action::Prepare)) {fault=true;stop();}
   return true;
 }
 bool configured() {return phase!=Idle;}
@@ -128,18 +115,18 @@ bool prepared() {return phase==Idle || phase==Ready || (phase>=Stop && fault.loa
 bool recording() {return phase==Idle || phase==Recording || (phase>=Stop && fault.load());}
 bool failed() {return fault || stream.failed();}
 void start() {startIntent=true;}
-void stop() {if(!stopIntent) tailBegan=millis();stopIntent=true;}
+void stop() {if(phase==Allocated) {dataGate.store(1);phase=Done;} if(!stopIntent) tailBegan=millis();stopIntent=true;}
 bool stopped() {return phase==Idle || phase==Done;}
 bool tailDrained() {return stopped() || phase>=Fence;}
 uint32_t discardedTailObjects() {return tailDiscards.load();}
-void release() {if(!stopped()) return;stream.release();phase=Idle;fault=false;AcquisitionControl::setDataConsumer(nullptr,0);}
+void release() {if(!stopped()) return;stream.release();phase=Idle;fault=false;}
 uint16_t describe(BdqV2StreamDescriptor* out,uint16_t capacity,uint16_t) {
   if(!configured() || (phase>=Stop && fault.load())) return 0;
   if(out && capacity>=2) {out[0]=stream.descriptor(false);out[1]=stream.descriptor(true);}
   return 2;
 }
 void service() {
-  if(phase==Idle || phase==Done) return;
+  if(phase==Idle || phase==Allocated || phase==Done) return;
   const uint32_t now=millis();
   AcquisitionControl::Outcome out;AcquisitionControl::outcome(node,out);
   const bool fresh=out.serial!=serial;
@@ -177,7 +164,7 @@ void service() {
       }
       break;
     case Release:
-      if(success && out.action==AcquisitionControl::Action::Release) {phase=Exit;cleanupQueued=AcquisitionControl::requestExit();}
+      if(success && out.action==AcquisitionControl::Action::Release) {phase=Exit;cleanupQueued=true;}
       else if(int32_t(now-nextCleanupAttempt)>=0 && (!cleanupQueued || out.result!=AcquisitionControl::Result::Pending)) {
         cleanupQueued=send(AcquisitionControl::Action::Release);nextCleanupAttempt=now+3500;
       }
@@ -185,5 +172,100 @@ void service() {
     case Exit: if(!AcquisitionControl::active()) phase=Done;break;
     default:break;
   }
+}
+};
+Participant peers[4];
+uint8_t selected=0;
+uint64_t allocatedSession=0,nextRecording=1;
+ImuAdmission::Profile profile;
+ImuAdmission::Report report;
+uint8_t sharedPending=0;
+uint32_t sharedObject=0;
+uint8_t sharedClass=0;
+bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint16_t total) {
+ if(address<4) return !(selected&(1u<<address)) || peers[address].consume(cls,address,identity,p,total);
+ if(sharedObject!=identity || sharedClass!=cls) {sharedObject=identity;sharedClass=cls;sharedPending=selected;}
+ for(uint8_t n=0;n<4;++n) if(sharedPending&(1u<<n)) {
+  if(!peers[n].consume(cls,address,identity,p,total)) return false;
+  sharedPending&=uint8_t(~(1u<<n));
+ }
+ return true;
+}
+void discardAllocated() {for(auto& peer:peers) {peer.stream.release();peer.phase=Idle;peer.fault=false;}selected=0;}
+}
+const ImuAdmission::Report& admission() {return report;}
+bool setAdmissionProfile(const ImuAdmission::Profile& p) {
+ if(selected || AcquisitionControl::active()) return false;
+ profile=p;return true;
+}
+bool configure(const LoggerConfig& cfg) {
+ if(selected) return false;
+ report={};SensorSpec chosen[4];uint8_t mask=0;
+ for(uint8_t i=0;i<cfg.sensorCount();++i) {
+  SensorSpec spec;bool muted=false;
+  if(!cfg.getSensorSpec(i,spec) || spec.type!=SensorType::LSM6DSO32XImu) continue;
+  if(!SensorManager::getMuted(i,muted)) muted=spec.mutedDefault;
+  if(muted) continue;
+  auto assignment=sensorAssignment(spec,board::gBoard);uint8_t n=assignment.provider.index;
+  if(assignment.kind!=SensorAssignment::Kind::NodeImu || n>3 || (mask&(1u<<n)) || !CanMasterManager::configurationReconciled(n)) {
+   report.reason=ImuAdmission::Reason::Eligibility;return true;
+  }
+  if(!CanMasterManager::acquisitionLinkCompatible(n)) {report.reason=ImuAdmission::Reason::Link;return true;}
+  chosen[n]=spec;mask|=1u<<n;
+ }
+ ImuAdmission::Demand demand;
+ for(uint8_t n=0;n<4;++n) if(mask&(1u<<n)) ++demand.nodes;
+ for(uint8_t a=0;a<2;++a) if(board::gBoard && a<board::gBoard->external_adc_count && AnalogInputManager::activeChannelCount(a))
+  demand.adc[a]={AnalogInputManager::configuredDataRateSps(a),board::gBoard->external_adcs[a].spi_hz};
+ report=ImuAdmission::evaluate(demand,profile);
+ if(report.reason!=ImuAdmission::Reason::None || !mask) return true;
+ uint64_t session=CanMasterManager::diagnostics().authority.session;
+ if(allocatedSession!=session) {allocatedSession=session;nextRecording=1;}
+ if(!nextRecording || nextRecording==UINT64_MAX) {report.reason=ImuAdmission::Reason::Eligibility;return true;}
+ uint64_t record=nextRecording++;
+ // Allocate every queue and definition buffer before any authorization.
+ for(uint8_t n=0;n<4;++n) if(mask&(1u<<n)) {
+  // Participant configure performs no PREPARE until the complete allocation pass.
+  if(!peers[n].configure(chosen[n],record) || peers[n].fault.load()) {
+   discardAllocated();report.reason=ImuAdmission::Reason::Allocation;return true;
+  }
+ }
+ selected=mask;sharedPending=0;sharedObject=0;
+ return true;
+}
+bool resourcesReady() {
+ if(!selected) return true;
+ bool allocated=false;uint64_t record=0;
+ for(uint8_t n=0;n<4;++n) if(selected&(1u<<n)) {allocated|=peers[n].phase==Allocated;record=peers[n].record;}
+ if(!allocated) return true;
+ if(!AcquisitionControl::setDataConsumer(consume,selected) || !AcquisitionControl::begin(record,record)) {
+  discardAllocated();report.reason=ImuAdmission::Reason::Eligibility;return false;
+ }
+ for(uint8_t n=0;n<4;++n) if(selected&(1u<<n)) {
+  peers[n].phase=Prepare;peers[n].began=millis();
+  if(!peers[n].send(AcquisitionControl::Action::Prepare)) {peers[n].fault=true;peers[n].stop();}
+ }
+ return true;
+}
+bool configured() {return selected!=0;}
+bool failed() {if(report.reason!=ImuAdmission::Reason::None) return true;for(uint8_t n=0;n<4;++n) if((selected&(1u<<n)) && peers[n].failed()) return true;return false;}
+bool prepared() {for(uint8_t n=0;n<4;++n) if((selected&(1u<<n)) && !peers[n].prepared()) return false;return true;}
+bool recording() {for(uint8_t n=0;n<4;++n) if((selected&(1u<<n)) && !peers[n].recording()) return false;return true;}
+void start() {for(uint8_t n=0;n<4;++n) if(selected&(1u<<n)) peers[n].start();}
+void stop() {for(uint8_t n=0;n<4;++n) if(selected&(1u<<n)) peers[n].stop();}
+bool stopped() {for(uint8_t n=0;n<4;++n) if((selected&(1u<<n)) && !peers[n].stopped()) return false;return true;}
+bool tailDrained() {for(uint8_t n=0;n<4;++n) if((selected&(1u<<n)) && !peers[n].tailDrained()) return false;return true;}
+uint32_t discardedTailObjects() {uint32_t total=0;for(auto& p:peers) {uint32_t n=p.discardedTailObjects();if(UINT32_MAX-total<n) return UINT32_MAX;total+=n;}return total;}
+void release() {if(!stopped()) return;for(auto& p:peers) p.release();selected=0;report={};AcquisitionControl::setDataConsumer(nullptr,0);}
+uint16_t describe(BdqV2StreamDescriptor* out,uint16_t capacity,uint16_t firstId) {
+ uint16_t count=0;for(uint8_t n=0;n<4;++n) if(selected&(1u<<n)) {
+  uint16_t remaining=capacity>count?uint16_t(capacity-count):0;
+  count+=peers[n].describe(out && remaining>=2?out+count:nullptr,remaining,firstId+count);
+ }return count;
+}
+void service() {
+ bool exit=true;
+ for(uint8_t n=0;n<4;++n) if(selected&(1u<<n)) {peers[n].service();if(peers[n].phase!=Exit && peers[n].phase!=Done) exit=false;}
+ if(selected && exit && AcquisitionControl::active()) AcquisitionControl::requestExit();
 }
 }

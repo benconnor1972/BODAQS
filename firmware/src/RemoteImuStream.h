@@ -48,14 +48,14 @@ private:
     uint8_t epoch=0;
   };
   RemoteImuBinding binding_;
-  char provenance_[3072]={};
+  char* provenance_=nullptr;
   DynamicSpscQueue<Sample> samples_;
   DynamicSpscRecordQueue evidence_;
   uint16_t sampleId_=0,evidenceId_=0;
   uint32_t segment_=0,nextSequence_=0,nextEvidence_=1,stagedEvidence_=0;
   std::atomic<uint32_t> persistedEvidence_{0};
-  Model models_[32];
-  Anchor anchors_[32];
+  Model* models_=nullptr;
+  Anchor* anchors_=nullptr;
   uint8_t anchorCount_=0;
   uint8_t modelCount_=0,epoch_=0;
   bool haveSequence_=false,haveBoundary_=false;

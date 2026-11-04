@@ -20,12 +20,20 @@ static void recordingSteps(unsigned duration) {
   }
 }
 
-int main() {
+int main(int argc,char**) {
+  ImuAdmission::Profile costs;costs.qualified=true;costs.sampleSlotUs=64;costs.auxiliarySlotUs=64;costs.sampleDrainSlotsPerSecond=14000;
+  assert(RemoteImuRecording::setAdmissionProfile(costs));
   saved.type=SensorType::LSM6DSO32XImu;std::strcpy(saved.name,"remote_imu");
   assert(savedParams.set("provider","can:0"));
   assert(savedParams.set("endpoint","imu"));
   assert(savedParams.set("profile","imu6_3333_32g_2000dps_v1"));
   saved.params.bind(&savedParams);
+  fixtureSensorCount=argc>1?4:1;
+  for(unsigned n=1;n<fixtureSensorCount;++n) {
+    extra[n-1]=saved;extraParams[n-1]=savedParams;
+    char provider[8];std::snprintf(provider,sizeof provider,"can:%u",n);
+    assert(extraParams[n-1].set("provider",provider));extra[n-1].params.bind(&extraParams[n-1]);
+  }
   reset();lifecycleEnabled=true;fastMeasurementClock=true;
   BodaqsMasterDiscoveryRecord records[4]={};
   for(uint8_t n=0;n<4;++n) {
@@ -37,13 +45,20 @@ int main() {
     acquisitionSnapshots[n].capture_context=&f.apply;
     acquisitionSnapshots[n].capture_acquisition=bodaqs_control_acquisition_capture;
     acquisitionSnapshots[n].acquisition_context=&acquisitions[n];
-    records[n].node_address=n;records[n].flags=n==0?1:0;records[n].boot_id=f.view.boot_id;
-    records[n].endpoint_mask=1;records[n].hardware_uid=123+n;
+    records[n].node_address=n;records[n].flags=n<fixtureSensorCount?1:0;records[n].boot_id=f.view.boot_id;
+    records[n].capabilities=BODAQS_CAN_LINK_CAP_ACQUISITION;records[n].endpoint_mask=1;records[n].hardware_uid=123+n;
   }
   bodaqs_master_service_set_inventory(&master,2,records,4);
   assert(CanMasterManager::probeNow());
-  advance(12000);
-  assert(CanMasterManager::configurationReconciled(0));
+  for(unsigned wait=0;wait<300000;++wait) {
+    advance(1);bool ready=true;
+    for(unsigned n=0;n<fixtureSensorCount;++n) ready=ready && CanMasterManager::configurationReconciled(n);
+    if(ready) break;
+  }
+  for(unsigned n=0;n<fixtureSensorCount;++n) if(!CanMasterManager::configurationReconciled(n)) {
+    const auto& d=CanMasterManager::diagnostics();std::fprintf(stderr,"unreconciled %u desired=%d generation=%llu current=%d session=%llu active=%llu phase=%u\n",n,d.desiredEnabled[n],(unsigned long long)d.desiredGeneration[n],d.control.nodes[n].endpoints[0].current,(unsigned long long)d.authority.session,(unsigned long long)peerFixture(n).view.active_session,peerFixture(n).apply.phase);
+    assert(false);
+  }
   // Handoff must drain the observer's page/release chain. Abandoning its
   // pinned effective snapshot makes the next acquisition snapshot reject BUSY.
   CanMasterManager::beginRecordingHandoff();advance(4000);
@@ -51,7 +66,11 @@ int main() {
   assert(RemoteImuRecording::configure(config));
   assert(RemoteImuRecording::configured());
   assert(!RemoteImuRecording::prepared());
-  recordingSteps(3000);
+  recordingSteps(100);
+  for(unsigned n=0;n<fixtureSensorCount;++n) assert(!acquisitions[n].recording && !acquisitions[n].phase);
+  assert(!AcquisitionControl::active()); // no PREPARE before storage allocation
+  assert(RemoteImuRecording::resourcesReady());
+  recordingSteps(8000);
   if(RemoteImuRecording::failed()) {
     AcquisitionControl::Outcome o;AcquisitionControl::outcome(0,o);
     std::fprintf(stderr,"prepare failed: configured=%d prepared=%d result=%u reason=%u action=%u phase=%u lease=%d\n",RemoteImuRecording::configured(),RemoteImuRecording::prepared(),unsigned(o.result),o.reason,unsigned(o.action),acquisitions[0].phase,acquisitions[0].lease_valid);
@@ -60,13 +79,13 @@ int main() {
   assert(!RemoteImuRecording::failed());
   assert(acquisitions[0].phase==2 && acquisitions[0].lease_valid);
   assert(!RemoteImuRecording::recording()); // Preparation cannot start samples.
-  BdqV2StreamDescriptor descriptors[2];
-  assert(RemoteImuRecording::describe(descriptors,2,2)==2);
+  BdqV2StreamDescriptor descriptors[8];
+  assert(RemoteImuRecording::describe(descriptors,8,2)==2*fixtureSensorCount);
   assert(!strcmp(descriptors[0].payloadSchema,"bodaqs.can_imu6.v1"));
   assert(!strcmp(descriptors[1].payloadSchema,"bodaqs.can_timing_evidence.v1"));
-  RemoteImuRecording::start();recordingSteps(500);
+  RemoteImuRecording::start();recordingSteps(2000);
   assert(RemoteImuRecording::recording());
-  assert(acquisitions[0].phase==3 && acquisitions[0].lease_valid);
+  for(unsigned n=0;n<fixtureSensorCount;++n) assert(acquisitions[n].phase==3 && acquisitions[n].lease_valid);
   const uint32_t stoppedAt=clockMs;
   RemoteImuRecording::stop();
   clockMs+=37; // Main-loop scheduling delay must not extend the operator tail.

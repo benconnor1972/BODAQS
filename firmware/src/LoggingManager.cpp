@@ -395,15 +395,19 @@ LoggingManager::StartResult LoggingManager::requestStart() {
 void LoggingManager::loop() {
   RemoteImuRecording::service();
   if(s_running && RemoteImuRecording::failed() && !s_remoteFaultShown) {
-    s_remoteFaultShown=true;UI::toast("Remote IMU excluded",1800,1);
+    s_remoteFaultShown=true;UI::toast(ImuAdmission::reasonText(RemoteImuRecording::admission().reason),1800,1);
   }
   if(s_starting && s_remotePreparing) {
     if(RemoteImuRecording::failed() && !s_remoteFaultShown) {
-      s_remoteFaultShown=true;UI::toast("Remote IMU excluded",1800,1);
+      s_remoteFaultShown=true;UI::toast(ImuAdmission::reasonText(RemoteImuRecording::admission().reason),1800,1);
     }
+    if(!StorageManager_recordingReady()) {
+      if(!StorageManager_recordingIoPending()) stop(StopReason::StartFailure,"storage_start_failure");
+      return;
+    }
+    RemoteImuRecording::resourcesReady();
     if(!RemoteImuRecording::prepared()) return;
     s_remotePreparing=false;
-    if(!StorageManager_startLog()) {stop(StopReason::StartFailure,"storage_start_failure");return;}
 #if defined(ESP32)
     s_storageStartPending=true;s_storageStopRequested=false;
 #else
@@ -606,7 +610,9 @@ bool LoggingManager::start() {
     return false;
   }
   if(RemoteImuRecording::configured()) {
-    s_remotePreparing=true;UI::status("Preparing recording");return false;
+    s_remotePreparing=true;UI::status("Preparing recording");
+    if(!StorageManager_startLog()) {stop(StopReason::StartFailure,"storage_start_failure");return false;}
+    return false;
   }
 
   // Open/create log file

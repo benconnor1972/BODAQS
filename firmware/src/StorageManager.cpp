@@ -28,6 +28,7 @@
 #include "Rates.h"
 #include "esp_timer.h"
 #include <math.h>
+#include <atomic>
 #include <new>
 #include <time.h>
 
@@ -81,6 +82,13 @@ static uint8_t* s_bdqV2OutputBuffer = nullptr;
 static size_t s_bdqV2OutputBufferBytes = 0;
 static uint32_t s_bdqV2EventId = 0;
 static uint32_t s_bdqV2MarkEventsDropped = 0;
+// Read-only diagnostics do not race the independently running I/O owner.
+static std::atomic<size_t> s_bdqV2AllocatedPrimary{0};
+static std::atomic<size_t> s_bdqV2AllocatedWorkspace{0};
+static std::atomic<size_t> s_bdqV2AllocatedOutput{0};
+static std::atomic<size_t> s_bdqV2CatalogPeak{0};
+static std::atomic<size_t> s_bdqV2ColumnsPeak{0};
+static std::atomic<size_t> s_bdqV2MetadataPayload{0};
 
 static char* buffer = nullptr;
 static size_t bufferSize = 0;
@@ -143,6 +151,24 @@ struct BdqV2PendingMark {
 };
 
 static FixedSpscQueue<BdqV2PendingMark, 8> s_bdqV2Marks;
+
+
+StorageRecordingAllocation StorageManager_recordingAllocation() {
+  StorageRecordingAllocation value;
+  value.primaryQueueBytes = s_bdqV2AllocatedPrimary.load();
+  value.workspaceBytes = s_bdqV2AllocatedWorkspace.load();
+  value.outputBufferBytes = s_bdqV2AllocatedOutput.load();
+  value.catalogPeakBytes = s_bdqV2CatalogPeak.load();
+  value.primaryColumnsPeakBytes = s_bdqV2ColumnsPeak.load();
+  value.metadataPayloadBytes = s_bdqV2MetadataPayload.load();
+  value.staticStateBytes = sizeof(s_bdqV2Writer) + sizeof(s_bdqV2PrimarySchema) +
+      sizeof(s_bdqV2Descriptors) + sizeof(s_bdqV2Marks) +
+      sizeof(s_bdqV2PrimaryQueue) + sizeof(s_bdqV2FileSink);
+#if defined(ESP32)
+  value.storageTaskStackBytes = 12288;
+#endif
+  return value;
+}
 
 
 #if defined(ESP32)
@@ -1443,10 +1469,15 @@ static bool allocateBdqV2Workspace_(size_t requestedBytes) {
   s_bdqV2WorkspaceBytes = 0;
   if (requestedBytes < 1024) requestedBytes = 1024;
   if (requestedBytes > 65535) requestedBytes = 65535;
+  const bool exactAllocation = RemoteImuRecording::configured();
   for (size_t attempt = requestedBytes; attempt >= 1024; attempt /= 2) {
     s_bdqV2Workspace = new (std::nothrow) uint8_t[attempt];
-    if (!s_bdqV2Workspace) continue;
+    if (!s_bdqV2Workspace) {
+      if (exactAllocation) return false;
+      continue;
+    }
     s_bdqV2WorkspaceBytes = attempt;
+    s_bdqV2AllocatedWorkspace.store(attempt);
     if (attempt != requestedBytes) {
       STOR_LOGW("BDQ v2 workspace reduced to %u bytes\n", (unsigned)attempt);
     }
@@ -1461,10 +1492,15 @@ static bool allocateBdqV2OutputBuffer_(size_t requestedBytes) {
   s_bdqV2OutputBufferBytes = 0;
   if (requestedBytes < 4096) requestedBytes = 4096;
   if (requestedBytes > 32768) requestedBytes = 32768;
+  const bool exactAllocation = RemoteImuRecording::configured();
   for (size_t attempt = requestedBytes; attempt >= 4096; attempt /= 2) {
     s_bdqV2OutputBuffer = new (std::nothrow) uint8_t[attempt];
-    if (!s_bdqV2OutputBuffer) continue;
+    if (!s_bdqV2OutputBuffer) {
+      if (exactAllocation) return false;
+      continue;
+    }
     s_bdqV2OutputBufferBytes = attempt;
+    s_bdqV2AllocatedOutput.store(attempt);
     if (attempt != requestedBytes) {
       STOR_LOGW("BDQ v2 output buffer reduced to %u bytes\n",
                 (unsigned)attempt);
@@ -1476,6 +1512,12 @@ static bool allocateBdqV2OutputBuffer_(size_t requestedBytes) {
 
 static bool beginBdqV2_(const BdqLogSessionInfo& info) {
   releaseBdqV2Session_();
+  s_bdqV2AllocatedPrimary.store(0);
+  s_bdqV2AllocatedWorkspace.store(0);
+  s_bdqV2AllocatedOutput.store(0);
+  s_bdqV2CatalogPeak.store(0);
+  s_bdqV2ColumnsPeak.store(0);
+  s_bdqV2MetadataPayload.store(0);
 
   const uint16_t primaryColumnCount =
       SensorManager::describeSensorColumns(nullptr, 0, true);
@@ -1483,6 +1525,8 @@ static bool beginBdqV2_(const BdqLogSessionInfo& info) {
   if (primaryColumnCount != 0) {
     primaryColumns = new (std::nothrow)
         SensorColumnDescriptor[primaryColumnCount];
+    if (primaryColumns) s_bdqV2ColumnsPeak.store(
+        primaryColumnCount * sizeof(SensorColumnDescriptor));
     if (!primaryColumns ||
         SensorManager::describeSensorColumns(
             primaryColumns, primaryColumnCount, true) != primaryColumnCount) {
@@ -1519,6 +1563,8 @@ static bool beginBdqV2_(const BdqLogSessionInfo& info) {
         (unsigned)s_bdqV2PrimarySchema.recordSizeBytes());
     return false;
   }
+  s_bdqV2AllocatedPrimary.store(primaryQueueCapacity *
+      s_bdqV2PrimarySchema.recordSizeBytes());
   s_qCap = primaryQueueCapacity;
   s_qMax = 0;
 
@@ -1563,6 +1609,7 @@ static bool beginBdqV2_(const BdqLogSessionInfo& info) {
   char* catalog = catalogLength != 0
       ? new (std::nothrow) char[catalogLength + 1u]
       : nullptr;
+  if (catalog) s_bdqV2CatalogPeak.store(catalogLength + 1u);
   size_t writtenCatalogLength = 0;
   const bool catalogOk = catalog && BdqV2Catalog::write(
       loggerIdText.c_str(),
@@ -1575,6 +1622,7 @@ static bool beginBdqV2_(const BdqLogSessionInfo& info) {
   String metadata;
   const bool metadataOk = BdqLogWriter::buildV2SessionMetadataJson(
       info, s_bdqV2DescriptorCount, metadata);
+  if (metadataOk) s_bdqV2MetadataPayload.store(metadata.length() + 1u);
   delete[] primaryColumns;
 
   const size_t workspaceBytes = info.targetChunkBytes != 0
