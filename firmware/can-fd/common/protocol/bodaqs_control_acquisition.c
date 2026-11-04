@@ -131,6 +131,7 @@ void bodaqs_control_acquisition_exclude(BodaqsControlAcquisition *s, uint8_t rea
     s->challenge_valid = false;
     s->terminal = true;
     s->terminated_record = s->recording;
+    s->terminated_session = s->owner;
     s->ready = false;
     s->reason = reason;
     s->phase = 4;
@@ -532,6 +533,7 @@ bool bodaqs_control_acquisition_process(BodaqsControlAcquisition *s, const Bodaq
         s->challenge_valid = false;
         s->terminal = true;
         s->terminated_record = bodaqs_control_get_u64(q->data);
+        s->terminated_session = q->session;
         s->stopped = true;
         s->known_empty = true;
         s->fenced = false;
@@ -557,7 +559,7 @@ bool bodaqs_control_acquisition_process(BodaqsControlAcquisition *s, const Bodaq
     {
         if (s->recording || (s->view->flags & (2U | 12U)))
             reason = 8;
-        else if (bodaqs_control_get_u64(q->data + 8) == s->terminated_record)
+        else if (bodaqs_control_get_u64(q->data + 8) == s->terminated_record && q->session==s->terminated_session)
             reason = 30;
         else if (s->staged_valid && q->session == s->begin.session &&
                  q->transfer == s->begin.transfer)
@@ -573,6 +575,18 @@ bool bodaqs_control_acquisition_process(BodaqsControlAcquisition *s, const Bodaq
     }
     else if (!reason)
     {
+        /* A freshly bound cleanup owner can fence TX left by an earlier boot.
+         * This creates only a bounded tombstone, never acquisition membership.
+         * The hardware owner must still acknowledge retirement below. */
+        if(op==0x2A && !s->recording && !s->staging && s->stopped && !s->lease_valid &&
+           !s->command && (!s->terminated_record ||
+             (!s->terminal && s->fenced && q->session!=s->terminated_session)) &&
+           bodaqs_control_get_u64(q->data) &&
+           s->authority->bound_retry && s->authority->bind_request.session==q->session) {
+            s->terminal=true;s->terminated_record=bodaqs_control_get_u64(q->data);
+            s->terminated_session=q->session;
+            s->fenced=false;
+        }
         bool canceled_stage = !s->recording && s->terminal &&
                               bodaqs_control_get_u64(q->data) == s->terminated_record &&
                               (op == 0x29 || op == 0x2A);
@@ -636,6 +650,7 @@ bool bodaqs_control_acquisition_process(BodaqsControlAcquisition *s, const Bodaq
         {
             s->terminal = true;
             s->terminated_record = s->recording;
+            s->terminated_session = s->owner;
             s->lease_valid = false;
             s->challenge_valid = false;
             s->ready = false;
@@ -651,10 +666,8 @@ bool bodaqs_control_acquisition_process(BodaqsControlAcquisition *s, const Bodaq
     }
     else if (op == 0x2A)
     {
-        if (s->fenced || !s->recording)
+        if (s->fenced)
         {
-            if (!s->fenced)
-                (void)epoch(s);
             s->fenced = true;
             publish(s, 3, 0);
         }
