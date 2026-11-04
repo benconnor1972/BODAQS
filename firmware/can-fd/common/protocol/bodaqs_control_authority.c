@@ -32,10 +32,10 @@ uint8_t bodaqs_control_authority_admit(BodaqsControlAuthority *s, const BodaqsCo
         return 5;
     if (v->pending_operation)
         return 7;
-    if (q->operation <= s->high_water)
-        return 12;
     if (s->high_water == UINT32_MAX)
         return 22;
+    if (q->operation <= s->high_water)
+        return 12;
     if (q->operation != s->high_water + 1)
         return 24;
     return 0;
@@ -80,6 +80,12 @@ bool bodaqs_control_authority_process(BodaqsControlAuthority *s, BodaqsControlNo
         }
         else
         {
+            if (s->challenge && q->operation == s->challenge_request.operation &&
+                q->session == s->challenge_request.session)
+            {
+                result(q, r, 12, 18);
+                return true;
+            }
             uint64_t value = s->next_challenge;
             if (!s->challenge)
                 value = random ? random(ctx) : 0;
@@ -165,7 +171,7 @@ bool bodaqs_control_authority_process(BodaqsControlAuthority *s, BodaqsControlNo
             reason = 20;
             field = 17;
         }
-        else if (q->session == v->active_session)
+        else if (q->session == v->active_session || (s->release_valid && q->session == s->release_request.session))
         {
             reason = 12;
             field = 6;

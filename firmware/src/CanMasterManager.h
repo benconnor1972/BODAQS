@@ -77,6 +77,8 @@ struct Diagnostics {
 };
 
 void enableControlAuthority(uint64_t session);
+// Idle-only release changes authority and preserves hardware configuration.
+bool releaseControlAuthority(uint8_t address);
 void begin(const board::BoardProfile& profile, const LoggerConfig& cfg);
 void applyConfig(const LoggerConfig& cfg);
 void loop();

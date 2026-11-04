@@ -24,6 +24,8 @@ extern "C"
      * does not advance sequence state. Session is checked before cached evidence. */
     uint8_t bodaqs_control_authority_admit(BodaqsControlAuthority *state, const BodaqsControlNode *view,
                                            const BodaqsControlRecord *request);
+    /* Store pending evidence at admission to reserve the sequence; later completion
+     * replaces it. Caller publishes pending_operation in the single node view. */
     void bodaqs_control_authority_complete(BodaqsControlAuthority *state, const BodaqsControlRecord *request,
                                            const BodaqsControlRecord *result);
 #ifdef __cplusplus

@@ -31,6 +31,23 @@ namespace {
 constexpr uint16_t kSessionListLimit = 24;
 const char* kSessionScanDir = "/";
 
+static void addControlAuthorityJson_(JsonObject node,
+    const BodaqsControlObservation& observation,
+    const BodaqsControlAuthorityPeer& authority, uint64_t session) {
+  char decimal[21];
+  snprintf(decimal, sizeof(decimal), "%llu", static_cast<unsigned long long>(session));
+  node["logger_session_id"] = decimal;
+  node["authority_bound"] = authority.bound;
+  node["authority_observed_current"] = authority.bound && observation.available &&
+      observation.valid && authority.boot == observation.node_boot_id &&
+      observation.active_session == session && session != 0 &&
+      static_cast<int32_t>(observation.observed_ms - authority.confirmed_ms) >= 0;
+  node["authority_reason"] = authority.reason;
+  node["authority_reason_key"] = bodaqs_control_reason_key(authority.reason);
+  node["authority_confirmed_ms"] = authority.confirmed_ms;
+  node["configuration_reconciled"] = false;
+}
+
 static void noteHttpActivity_() {
   WiFiManager::noteUserActivity();
   PowerManager::noteActivity();
@@ -196,6 +213,8 @@ static void handleStatus_(WebServer& srv) {
   for (uint8_t address = 0; address < 4; ++address) {
     const auto& observation = masterDiagnostics.control.nodes[address];
     JsonObject node = controlNodes.add<JsonObject>();
+    addControlAuthorityJson_(node, observation, masterDiagnostics.authority.nodes[address],
+                             masterDiagnostics.authority.session);
     node["address"] = address;
     node["available"] = observation.available;
     node["valid"] = observation.valid;
@@ -246,6 +265,15 @@ static void handleStatus_(WebServer& srv) {
         const uint32_t known = bodaqs_control_get_u32(data + 12);
         const uint32_t historical = bodaqs_control_get_u32(data + 16);
         state["effective_state"] = data[4];
+        auto identity = [&](const char* key, size_t offset) {
+          if (!(known & 1U)) { state[key] = nullptr; return; }
+          snprintf(controlDecimal, sizeof(controlDecimal), "%llu",
+                   static_cast<unsigned long long>(bodaqs_control_get_u64(data + offset)));
+          state[key] = controlDecimal;
+        };
+        identity("accepting_session_id", 144);
+        identity("accepted_desired_generation", 24);
+        identity("applied_revision", 32);
         state["health_flags"] = bodaqs_control_get_u32(data + 20);
         state["applicable_mask"] = applicable;
         state["known_mask"] = known;

@@ -46,8 +46,8 @@ test_control_transport.exe: test_control_transport.cpp $(LOGGER_PROTOCOL) $(MAST
 
 $(filter-out test_can_network.exe,$(TEST_BINS)): $(wildcard ../protocol/bodaqs_control*.h)
 
-test_snapshot.exe: test_snapshot.cpp $(CONTROL)
+test_authority.exe: test_authority.cpp ../protocol/bodaqs_control.c ../protocol/bodaqs_control_authority.c ../protocol/bodaqs_control_authority_client.c
 	$(CXX) $(CXXFLAGS) -I../protocol -o $@ $(filter %.cpp %.c,$^)
 
-test_authority.exe: test_authority.cpp ../protocol/bodaqs_control.c ../protocol/bodaqs_control_authority.c ../protocol/bodaqs_control_authority_client.c
+test_snapshot.exe: test_snapshot.cpp $(CONTROL)
 	$(CXX) $(CXXFLAGS) -I../protocol -o $@ $(filter %.cpp %.c,$^)
