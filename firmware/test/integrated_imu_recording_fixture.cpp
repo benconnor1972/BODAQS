@@ -308,9 +308,9 @@ int main(int argc,char** argv) {
  // Completed old identities cannot authorize a successor. Only another
  // explicit operator start can create fresh membership and a storage owner.
  if(scenario=="good" || scenario=="short") {
-   BodaqsControlRecord stale={},reply={};stale.opcode=0x24;
-   stale.endpoint=255;stale.node_boot_id=17;stale.session=oldSession;stale.operation=1;
-   stale.data_length=24;bodaqs_control_put_u64(stale.data,oldRecording);
+   const BodaqsControlRecord stale=firstStarts[0];BodaqsControlRecord reply={};
+   assert(stale.opcode==0x24 && stale.session==oldSession && stale.node_boot_id==17 && stale.data_length==24);
+   assert(bodaqs_control_get_u64(stale.data)==oldRecording && bodaqs_control_get_u64(stale.data+8) && bodaqs_control_get_u64(stale.data+16));
    assert(dispatchControl(0,stale,reply));assert(reply.opcode==127 || reply.data[0]>=4);
    // Acquisition deliberately changes endpoint epochs. Let the production
    // idle observer reconcile that new configuration-effective state before
@@ -327,6 +327,11 @@ int main(int argc,char** argv) {
    const std::string restarted=std::string(argv[2])+".restart.bdq";storage.path=restarted.c_str();
    storage.blockOperation=0;storage.entered=false;storage.cleanClosed=false;
    awaitRunning();assert(storage.healthChecks==2 && !StorageManager_storageFault() && master.measurement.mode.context!=oldContext && master.measurement.mode.recording!=oldRecording);
+   // Replay the exact earlier valid authorization, including its original
+   // revision/epoch, against the fresh recording. Rejection cannot be credited
+   // merely to an invented malformed payload.
+   assert(dispatchControl(0,stale,reply));assert(reply.opcode==127 || reply.data[0]>=4);
+   assert(acquisitions[0].recording==2 && acquisitions[0].phase==3 && acquisitions[0].lease_valid);
    uint8_t request[64],response[84];BodaqsMeasurementSlot old={};old.kind=1;old.node=0;old.context=oldContext;old.body[0]=1;
    assert(bodaqs_measurement_encode(&old,request,64));
    assert(bodaqs_master_service_process_transfer(&master,request,64,clockMs,response)==BODAQS_MASTER_SLOT_PROCESSED);

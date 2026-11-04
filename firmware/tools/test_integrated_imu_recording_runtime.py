@@ -50,8 +50,9 @@ def main():
         source = source.replace('namespace LoggingManager { bool isRunning() { return recording; } bool configurationLocked() { return recording || starting; } }', '#include "LoggingManager.h"')
         # Lose one *accepted-object* RAM ACK at the SPI boundary. The master
         # retains the immutable head and the production transport must dedupe it.
-        source = source.replace('namespace SharedSpiBus {', 'static bool dropDataAck=true; static unsigned droppedDataAcks=0; static FILE* controlLedger=nullptr;\nnamespace SharedSpiBus {')
+        source = source.replace('namespace SharedSpiBus {', 'static bool dropDataAck=true; static unsigned droppedDataAcks=0; static FILE* controlLedger=nullptr; static BodaqsControlRecord firstStarts[4]={};\nnamespace SharedSpiBus {')
         source = source.replace('assert(dispatchControl(address,request,reply));', r'''
+  if(request.opcode==0x24 && !firstStarts[address].opcode) firstStarts[address]=request;
   if(controlLedger) {
     const bool optional=(request.opcode==0x28 && (master.acquisition_started&(1u<<address))) ||
       ((request.opcode==7 || request.opcode==8) && request.operation==master.diagnostic_operation[address] && request.session==master.diagnostic_session[address]);
