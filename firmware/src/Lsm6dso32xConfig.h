@@ -6,7 +6,7 @@ namespace Lsm6dso32xConfig {
 constexpr const char* profile = "imu6_3333_32g_2000dps_v1";
 inline const ParamDef* paramDefs(size_t& count) {
   static const ParamDef defs[] = {
-    {"profile",ParamType::Enum,profile,nullptr,nullptr,profile,"Verified stopped profile; sample acquisition unavailable"},
+    {"profile",ParamType::Enum,profile,nullptr,nullptr,profile,"Native six-axis recording with fresh preparation"},
     {"imu_id",ParamType::String,"frame_imu_001",nullptr,nullptr,nullptr,"Stable physical IMU identity"},
     {"domain",ParamType::Enum,"frame",nullptr,nullptr,"unsprung,frame,steering","Mechanically co-moving bicycle domain"},
     {"end",ParamType::Enum,"none",nullptr,nullptr,"none,front,rear","Bike end"},

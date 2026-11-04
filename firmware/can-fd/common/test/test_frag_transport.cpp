@@ -23,20 +23,19 @@ int main() {
  BodaqsMasterService service={}; BodaqsMasterIdentity identity={};
  bodaqs_master_service_init(&service,&identity); bodaqs_control_exchange_init(&service.control,99);
  service.measurement.mode.phase=2;service.measurement.mode.context=9;service.measurement.mode.session=1;service.measurement.mode.recording=1;
- for(unsigned n=0;n<4;++n) {service.discovery[n].flags=1;service.discovery[n].boot_id=5;}
+ for(unsigned n=0;n<4;++n) {service.discovery[n].flags=1;service.discovery[n].boot_id=5;service.acquisition_record[n]=1;service.acquisition_boot[n]=5;}
  uint8_t payload[64]={1,2,3},wire[64],response[84];
  for(unsigned n=0;n<4;++n) assert(bodaqs_master_service_receive_can(&service,n,2,0x060+n,payload,64,0,1234,100));
  BodaqsMeasurementSlot poll={};poll.kind=1;poll.context=9;poll.node=255;poll.body[0]=2;
  bodaqs_measurement_encode(&poll,wire,64);
- assert(bodaqs_master_service_process_transfer(&service,wire,64,119,response)==0);
- BodaqsMeasurementSlot got={};bodaqs_measurement_decode(response,64,&got); assert(got.kind==0);
+ BodaqsMeasurementSlot got={};
  for(unsigned n=0;n<4;++n) {
   assert(bodaqs_master_service_process_transfer(&service,wire,64,120,response)==0);
   bodaqs_measurement_decode(response,64,&got);assert(got.kind==3 && got.node==n && got.total==96);
   assert(got.body[0]==1 && got.body[12]==1); // schema and reception count
  }
- assert(!bodaqs_master_service_receive_can(&service,0,2,0x060,payload,64,0,1235,121));
- assert(service.backpressure_frames==1);
+ assert(bodaqs_master_service_receive_can(&service,0,2,0x060,payload,64,0,1235,121));
+ assert(service.backpressure_frames==0);
  // Invalid logical CRC never publishes, and unknown context cannot change a partial assembly.
  BodaqsFragmentState damaged={}, mixed={};uint8_t damagedBytes[68]={},mixedBytes[68]={};
  a.body[0]^=1; // restore the literal vector
@@ -55,7 +54,7 @@ int main() {
  bodaqs_master_service_process_transfer(&service,wire,64,200,response);
  BodaqsMeasurementSlot pinned={};bodaqs_measurement_decode(response,64,&pinned);
  assert(pinned.object==1 && pinned.total==96);
- assert(!bodaqs_master_service_receive_can(&service,0,2,0x060,payload,64,0,9999,201));
+ assert(bodaqs_master_service_receive_can(&service,0,2,0x060,payload,64,0,9999,201));
  bodaqs_master_service_process_transfer(&service,wire,64,220,response);
  bodaqs_measurement_decode(response,64,&got);
  assert(!memcmp(&pinned,&got,sizeof got));
@@ -119,12 +118,6 @@ int main() {
  const auto acked=service.objects_acked;
  bodaqs_master_service_process_transfer(&service,wire,64,712,response);
  assert(service.objects_acked==acked);
- for(unsigned i=0;i<13;++i) assert(bodaqs_master_service_receive_can(&service,0,2,0x060,payload,64,0,2000+i,720));
- assert(!bodaqs_master_service_receive_can(&service,0,2,0x060,payload,64,0,3000,720));
- poll.index=25;poll.object=2;bodaqs_measurement_encode(&poll,wire,64);
- bodaqs_master_service_process_transfer(&service,wire,64,721,response);
- bodaqs_measurement_decode(response,64,&got);
- assert(got.total==1008 && got.index==25 && bodaqs_measurement_zero(got.body+8,32));
  // Duplicate address is excluded even when it has a valid boot and prior anchor.
  service.discovery[1].flags=5;
  assert(!bodaqs_master_service_receive_can(&service,1,2,0x061,payload,64,0,3000,720));
@@ -132,6 +125,7 @@ int main() {
  BodaqsMasterService gated={};bodaqs_master_service_init(&gated,&identity);
  bodaqs_control_exchange_init(&gated.control,99);gated.measurement.mode.phase=2;gated.measurement.mode.context=9;
  gated.discovery[0].flags=1;gated.discovery[0].boot_id=5;
+ gated.measurement.mode.recording=1;gated.acquisition_record[0]=1;gated.acquisition_boot[0]=5;
  uint8_t samples[64]={100,0,3,5};
  assert(!bodaqs_master_service_receive_can(&gated,0,1,0x100,samples,64,0,1000,0));
  uint8_t anchor[32]={1,0x22,1,0,0,0,20,0,0,1,3,0,100,0,0,0,0,0,0,0,1,0,0,0,1,0,0,0,0,0,0,0};

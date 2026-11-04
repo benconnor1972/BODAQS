@@ -1,4 +1,5 @@
 #include "StorageManager.h"
+#include "RemoteImuRecording.h"
 #include "RecordingStorageWorker.h"
 #include "RTCManager.h"
 #include "ConfigManager.h"
@@ -1537,7 +1538,13 @@ static bool beginBdqV2_(const BdqLogSessionInfo& info) {
     delete[] primaryColumns;
     return false;
   }
-  s_bdqV2DescriptorCount = static_cast<uint16_t>(nativeStreamCount + 1u);
+  const uint16_t remoteCount=RemoteImuRecording::describe(nullptr,0,34);
+  if(nativeStreamCount+remoteCount+1u>BdqV2Writer::kMaximumStreams ||
+     RemoteImuRecording::describe(s_bdqV2Descriptors+nativeStreamCount+1,
+       BdqV2Writer::kMaximumStreams-nativeStreamCount-1,34)!=remoteCount) {
+    delete[] primaryColumns;return false;
+  }
+  s_bdqV2DescriptorCount = static_cast<uint16_t>(nativeStreamCount + remoteCount + 1u);
 
   s_bdqV2Writer.clearStreams();
   for (uint16_t index = 0; index < s_bdqV2DescriptorCount; ++index) {
@@ -1661,6 +1668,15 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
   static SensorRuntimeDiagnostics diagnostics;
   JsonDocument document;
   document["summary_format"] = "bdq.final_summary.v2";
+  document["remote_imu_excluded"] = RemoteImuRecording::failed();
+  document["remote_cleanup_complete"] = RemoteImuRecording::stopped();
+  document["remote_tail_objects_discarded"] = RemoteImuRecording::discardedTailObjects();
+  // Storage finalization and membership cleanup do not prove complete source
+  // tails. Preserve unknown coverage until explicit final/accepted boundaries
+  // can be reconciled; any observed deadline discard is explicitly incomplete.
+  document["remote_tail_status"] = !RemoteImuRecording::configured()
+      ? "not_participating" : RemoteImuRecording::discardedTailObjects()
+      ? "incomplete" : "unknown";
   document["session_id"] = s_currentSessionId;
   document["path"] = s_currentLogPath;
   document["clean_shutdown"] = true;

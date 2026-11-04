@@ -221,6 +221,11 @@ void appendStream_(
     appendUnsignedField_(out, "effective_accel_rate_hz", stream.effectiveAccelRateHz);
     out.appendChar(',');
     appendUnsignedField_(out, "effective_gyro_rate_hz", stream.effectiveGyroRateHz);
+    appendOptionalStringField_(out, "payload_schema", stream.payloadSchema);
+    if (nonEmpty_(stream.acquisitionDetailsJson)) {
+      out.appendChar(',');
+      out.append(stream.acquisitionDetailsJson);
+    }
     out.appendChar('}');
   }
 

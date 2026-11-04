@@ -29,6 +29,10 @@ bool enqueue(const Request&);
 bool outcome(uint8_t node, Outcome&);
 bool requestExit();
 bool active();
+// Registered while stopped. Invoked only by the transport owner for complete
+// immutable data objects; true means retained in downstream bounded RAM.
+using DataConsumer = bool (*)(uint8_t cls,uint8_t node,uint32_t object,const uint8_t*,uint16_t);
+bool setDataConsumer(DataConsumer,uint8_t nodeMask);
 // One slot per control step; mode negotiation retains its bounded one-second
 // entry/exit handshake. The lease-only task is not the #169 sample/data drain.
 // Host fixtures call this same seam with physical SPI/time substituted.

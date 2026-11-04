@@ -14,6 +14,10 @@
 static uint32_t clockMs=100, randomWord=100;
 static bool spiAvailable=true, recording=false, muted=false;
 static bool starting=false;
+// Synthetic clock option for sustained acquisition/control fixtures. This is
+// an injected service-cost example, never a physical timing qualification.
+static bool fastMeasurementClock=false;
+static uint32_t measurementSlots=0;
 static std::vector<uint8_t> submitted;
 uint32_t millis() { return clockMs; }
 uint32_t micros() { return clockMs*1000; }
@@ -49,7 +53,7 @@ namespace SharedSpiBus {
 bool begin(const board::SPIProfile&) { return spiAvailable; }
 bool transfer(int8_t,const SPISettings& settings,const uint8_t*tx,uint8_t*rx,size_t length,uint32_t) {
  if(!spiAvailable) return false;
- ++clockMs;
+ if(length!=64 || !fastMeasurementClock || ++measurementSlots%10==0) ++clockMs;
  assert(length==64 || length==84);
  if(length==64) assert(settings.hz==8000000);
  memcpy(rx,preloaded,length);
@@ -116,6 +120,7 @@ int main() {
  // nodes and protected control so a same-request assumption cannot pass.
  for(uint8_t n=0;n<4;++n) {
   master.discovery[n].flags=1;master.discovery[n].boot_id=node.view.boot_id;
+  master.acquisition_record[n]=master.measurement.mode.recording;master.acquisition_boot[n]=node.view.boot_id;master.acquisition_fenced &= ~(1u<<n);
   const uint8_t event[8]={1,4,1,0,0,0,0,0};
   assert(bodaqs_master_service_receive_can(&master,n,2,0x060+n,event,8,0,12345+n,clockMs));
  }

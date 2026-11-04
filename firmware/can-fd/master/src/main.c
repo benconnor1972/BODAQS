@@ -61,6 +61,8 @@ typedef struct {
     uint32_t last_can_decode_result;
     uint16_t can_rx_queue_depth;
     uint16_t can_rx_queue_high_water;
+    uint16_t ingress_capacity[4], ingress_depth[4], ingress_high_water[4];
+    uint32_t ingress_dropped[4];
     uint8_t nodes_present;
     uint8_t nodes_stale;
     uint8_t nodes_duplicate;
@@ -80,7 +82,7 @@ typedef struct {
 #define CAN_RX_CAPACITY (8U)
 typedef struct {
     DL_MCAN_RxBufElement message;
-    uint32_t received_ms;
+    uint32_t received_ms, received_tick;
     uint64_t ordinal;
 } CanReceiveRecord;
 static uint64_t gCanReceiveOrdinal;
@@ -182,7 +184,7 @@ static void note_can_decode_result(BodaqsCanDecodeResult result)
 }
 
 static void process_can_message(
-    const DL_MCAN_RxBufElement *message, uint32_t received_ms, uint64_t ordinal)
+    const DL_MCAN_RxBufElement *message, uint32_t received_ms, uint32_t received_tick, uint64_t ordinal)
 {
     uint16_t identifier;
     size_t length;
@@ -249,13 +251,13 @@ static void process_can_message(
     if(identifier>=BODAQS_CAN_ID_STREAM_BASE && identifier<BODAQS_CAN_ID_STREAM_BASE+32) {
         node_address=(uint8_t)((identifier-BODAQS_CAN_ID_STREAM_BASE)/8);
         (void)bodaqs_master_service_receive_can_ordered(&gService,node_address,1,identifier,
-            message->data,(uint8_t)length,0,received_ms*1000U,ordinal,gUptimeMs);
+            message->data,(uint8_t)length,0,received_tick,ordinal,gUptimeMs);
         return;
     }
     if(bodaqs_can_identifier_node(identifier,BODAQS_CAN_ID_TIMING_BASE,&node_address) ||
        bodaqs_can_identifier_node(identifier,BODAQS_CAN_ID_EVENT_BASE,&node_address)) {
         (void)bodaqs_master_service_receive_can_ordered(&gService,node_address,2,identifier,
-            message->data,(uint8_t)length,0,received_ms*1000U,ordinal,gUptimeMs);
+            message->data,(uint8_t)length,0,received_tick,ordinal,gUptimeMs);
         return;
     }
     ++gMasterRuntimeInfo.can_unknown_frames;
@@ -277,6 +279,9 @@ static void capture_can_receive_fifo(void)
         DL_MCAN_readMsgRam(MCAN0_INST, DL_MCAN_MEM_TYPE_FIFO, 0U,
             fifo_status.num, &record.message);
         record.received_ms = gUptimeMs;
+        /* Quantized capture source until #170 binds the native master clock.
+         * Carry this exact ingress observation through deferred processing. */
+        record.received_tick = record.received_ms * 1000U;
         /* ISR capture order includes frames later rejected or dropped by queues. */
         if(gCanReceiveOrdinal==UINT64_MAX) {
             ++gMasterRuntimeInfo.can_malformed_frames;
@@ -295,7 +300,7 @@ static void service_can_receive(void)
 {
     CanReceiveRecord record;
     if (take_record(&gCanReceiveQueue, &record)) {
-        process_can_message(&record.message, record.received_ms, record.ordinal);
+        process_can_message(&record.message, record.received_ms, record.received_tick, record.ordinal);
     }
 }
 
@@ -452,6 +457,10 @@ static void update_runtime_info(void)
     gMasterRuntimeInfo.nodes_duplicate = 0U;
     for (node = 0U; node < BODAQS_CAN_NODE_COUNT; ++node) {
         const BodaqsNodeInventoryEntry *entry = &gNodeInventory.nodes[node];
+        gMasterRuntimeInfo.ingress_capacity[node]=BODAQS_MASTER_RETENTION_CAPACITY;
+        gMasterRuntimeInfo.ingress_depth[node]=gService.ingress[node].count;
+        gMasterRuntimeInfo.ingress_high_water[node]=gService.ingress[node].high_water;
+        gMasterRuntimeInfo.ingress_dropped[node]=gService.ingress[node].dropped;
         if (entry->present) {
             ++gMasterRuntimeInfo.nodes_present;
         }
@@ -657,7 +666,7 @@ int main(void)
         }
         if (gDiscoveryDue) {
             gDiscoveryDue = false;
-            send_discovery_request();
+            if(gService.measurement.mode.phase==BODAQS_MODE_LEGACY) send_discovery_request();
         }
         if (gCanRecoveryDue &&
             time_reached(gUptimeMs, gCanRecoveryDueMs)) {

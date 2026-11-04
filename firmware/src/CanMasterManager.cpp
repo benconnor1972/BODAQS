@@ -440,7 +440,8 @@ void serviceControl_() {
   const bool authorityRequest = authorityOwnsExchange &&
       bodaqs_control_authority_client_next(&s_diagnostics.authority,
           s_diagnostics.control.master_boot_id, &wrapped, &type);
-  if (!authorityRequest && !applyRequest && s_recordingFence && !s_diagnostics.control.pending) return;
+  if (!authorityRequest && !applyRequest && s_recordingFence &&
+      !s_diagnostics.control.pending && !s_diagnostics.control.snapshot_phase) return;
   if (!authorityRequest && !applyRequest && !bodaqs_control_observer_next(&s_diagnostics.control, &wrapped, &type)) return;
   const uint8_t owner=applyRequest ? 2 : authorityRequest ? 3 : 1;
   if(owner!=s_exchangeOwner || memcmp(&wrapped.record,&s_exchangeIdentity.record,
@@ -752,6 +753,9 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
     if(partial && partial->state.object && !partial->state.complete) {
       request.object=partial->state.object;request.node=partial->state.node;
       for(uint8_t i=0;i<26;++i) if(!(partial->state.mask&(1UL<<i))) {request.index=i;break;}
+      if(cls==4 && node<4 && (transport.terminalNodes&(1u<<node)) && !(partial->state.mask&1u)) {
+        request.object=0;request.index=0;
+      }
     }
     if(cls<3 && !request.object) {
       uint8_t budgetNode=node==255?4:node;
@@ -777,8 +781,26 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
     ++s_diagnostics.measurementTransferErrors;return -response.body[1];
   }
   const uint8_t responseClass=bodaqs_fragment_class(response.kind);
+  if(responseClass==4 && response.node<4 && (transport.terminalNodes&(1u<<response.node)) &&
+     response.index==0 && (response.body[12]==0x26 || response.body[12]==0x27)) return 0;
+  // Only empty-head probing is limited to 50Hz/node. A validated fragment is
+  // evidence of active backlog, so its successor can be selected immediately
+  // after the RAM ACK instead of imposing a 20ms cap on full data batches.
+  if(responseClass<3 && responseClass && response.node<4)
+    transport.nextHeadPollMs[response.node]=millis();
   auto* inbox=transportInbox_(transport,responseClass,response.node);
   if(!inbox) return 0;
+  if(responseClass==4 && (transport.terminalNodes&(1u<<response.node)) &&
+     inbox->state.object && !inbox->state.complete && response.object>inbox->state.object) {
+    // Terminal STOP supersedes the master's old renewal result, including a
+    // response only partly received before STOP. That object can no longer be
+    // completed; retain the last accepted cache while admitting its successor.
+    auto& state=inbox->state;
+    const uint32_t accepted=state.accepted, object=state.accepted_object, checksum=state.accepted_checksum;
+    const uint16_t total=state.accepted_total;
+    state={};state.accepted=accepted;state.accepted_object=object;
+    state.accepted_checksum=checksum;state.accepted_total=total;
+  }
   BodaqsMeasurementSlot ack={};
   int result=bodaqs_fragment_accept(&inbox->state,inbox->bytes,sizeof(inbox->bytes),&response,1,&ack);
   if(result==1) {
@@ -998,6 +1020,12 @@ bool enterMeasurementMode(uint64_t recording, uint64_t context) {
 bool exitMeasurementMode() {
   if (!measurementAccess_()) return false;
   if(!s_diagnostics.measurementConfirmed) return false;
+  // Node RELEASE can precede the master's next physical CS retirement. Remain
+  // in the trustworthy bound context until a fresh status proves both gates;
+  // staging a known-premature exit would otherwise destroy local confirmation.
+  if(!inspectMeasurementMode() || !s_diagnostics.measurementConfirmed ||
+     s_diagnostics.measurement.phase!=2 ||
+     !(s_diagnostics.measurement.flags&2u) || (s_diagnostics.measurement.flags&4u)) return false;
   return transitionMode_(s_diagnostics.measurement,true);
 }
 
@@ -1079,7 +1107,8 @@ bool recordingHandoffReady() {
   auto& apply = s_diagnostics.apply;
   bodaqs_control_apply_client_recording_fence(&apply, &s_diagnostics.authority, millis());
   const bool expired = (uint32_t)(millis() - s_handoffStartedMs) >= kRecordingHandoffMs;
-  const bool owned = apply.phase || s_diagnostics.authority.pending || s_diagnostics.control.pending;
+  const bool owned = apply.phase || s_diagnostics.authority.pending ||
+      s_diagnostics.control.pending || s_diagnostics.control.snapshot_phase;
   if (!expired && owned) return false;
   if (expired) {
     bodaqs_control_apply_client_quarantine(&apply, &s_diagnostics.authority, millis());

@@ -49,6 +49,12 @@
         <property name="buildProfile" value="release"/>
         <property name="isHybrid" value="true"/>
         <file path="../src/main.c" action="copy" />
+        <file path="../src/imu_capture.c" action="copy" />
+        <file path="../src/imu_capture.h" action="copy" />
+        <file path="../src/imu_acquisition.c" action="copy" />
+        <file path="../src/imu_acquisition.h" action="copy" />
+        <file path="../../common/protocol/bodaqs_control_acquisition.c" action="copy" />
+        <file path="../../common/protocol/bodaqs_control_acquisition.h" action="copy" />
         <file path="../src/imu_spi.c" action="copy" />
         <file path="../src/imu_spi.h" action="copy" />
         <file path="../../common/protocol/bodaqs_control_apply.c" action="copy" />
