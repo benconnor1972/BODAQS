@@ -4,6 +4,14 @@ Shared language for the logger, sensor nodes and recorded sensor data.
 
 ## Language
 
+**Six-axis IMU sample**:
+An associated set of three acceleration and three angular-rate values.
+Association does not by itself imply simultaneous physical measurement.
+
+**Source continuity segment**:
+An interval of a sensor stream with a common source-sequence origin. Starting
+another segment does not by itself mean that the source clock reset.
+
 **Desired configuration**:
 The sensor settings saved by the user and owned by the logger.
 

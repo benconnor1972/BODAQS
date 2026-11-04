@@ -848,6 +848,508 @@ Later operation queries/readback use a new exchange; late expired/replaced
 exchange replies are ignored/counted. See wire contract section 7 for encoding
 and section 12 for the consolidated pre-implementation checkpoint.
 
+### 13.17 Acquisition/transport interview: accepted requirements (Q71-Q147, 4 November 2026)
+
+The acquisition/transport interview remains open. The following requirements
+were accepted; they do not enable acquisition or establish measured performance.
+
+- **Q71 — Recoverable sample loss:** FIFO or queue loss may be followed by
+  continued acquisition within the recording while the node remains healthy
+  and its acquisition lease remains valid. Record the loss and a continuity
+  boundary, with an exact missing-sample count where knowable and an explicit
+  unknown count otherwise. Resume only after sample pairing and timing are
+  trustworthy; otherwise exclude the affected endpoint. Existing reboot,
+  bus-off and lease-expiry exclusion rules remain binding.
+- **Q72 — Timing allocation:** Target at most 10 us of relative inter-node
+  sample-time uncertainty attributable to capture and clock reconstruction,
+  leaving part of the existing approximately 10-degree phase allowance at
+  1 kHz for sensor timing differences. This is a design and later validation
+  target, not measured capability or proof of complete sensor phase performance.
+- **Q73 — Preparation and recording boundary:** Pressing Record may enter a
+  visible Preparing phase. Complete required settling, startup discards and
+  initial usable timing evidence before recording valid samples. Discard
+  preparation samples; retain no pre-roll. Resolve admission before starting,
+  applying the existing best-effort policy to unavailable sensors rather than
+  waiting indefinitely. Physically simultaneous first samples are not required.
+  Preparation duration, deadlines and detailed start sequencing remain open.
+- **Q74 — Recording-time priorities:** Acquisition servicing and existing local
+  sensor requirements take priority. Optional web/UI work and background
+  maintenance may be restricted or deferred where needed; Stop and essential
+  status remain available. Derive a service-pause envelope from actual logger
+  paths before selecting queue sizes or lease timing. Physical timing
+  verification remains outstanding.
+- **Q75 — Degraded alignment during recording:** Retain raw samples and timing
+  evidence when sample order and native timestamps remain trustworthy but
+  inter-node alignment no longer meets Q72. Mark the affected interval as
+  timing-degraded; downstream analysis must not treat it as meeting the target.
+  Missing or ambiguous captures introduce timing boundaries as already required.
+  Untrustworthy native sample timing or pairing instead invokes Q71.
+- **Q76 — Software sample queue overflow:** Preserve existing queued contents
+  and reject the newest incoming complete batch. Count the loss and mark the
+  boundary before the next subsequently accepted sample. Hardware FIFO overflow
+  requires a separate recovery procedure; this policy does not imply hardware
+  support for dropping the newest sample.
+- **Q77 — Master-to-logger ownership transfer:** Release a transferred batch
+  from the master only after the logger acknowledges validation and acceptance
+  of the complete batch into a bounded RAM queue. Transfer identities prevent
+  duplicate insertion after a lost acknowledgement. Failed or incomplete
+  transfers leave the master's copy available for retry. Acknowledgement means
+  RAM acceptance, not SD persistence. Subsequent storage backpressure and logger
+  queue loss remain observable; power-loss recovery remains bounded by the last
+  complete CRC-valid file chunk. This SPI retry policy does not change the CAN
+  sample stream's prohibition on application-level retransmission.
+- **Q78 — SPI measurement mode:** Extend SPI with a separately versioned,
+  explicitly negotiated high-throughput measurement-transfer mode, preserving
+  existing bootstrap/control compatibility. Transfer sizes and pacing require
+  their own capacity/timing contract; bootstrap slots and guard times are not
+  assumed sufficient for recording throughput.
+- **Q79 — Recording-time service task:** One dedicated task owns recording-time
+  master communication, including sample draining and forwarding logger-issued
+  lease renewals, independently of main-loop SD writes. Coordinate shared SPI
+  access with ADC tasks using bounded transactions. Priorities, transaction
+  limits, queue sizes and a verified service-pause bound remain open. This does
+  not authorize autonomous master renewal.
+- **Q80 — Timing quality is not an admission gate:** Admit otherwise eligible
+  sensors even when inter-node timing cannot meet Q72; only some analyses
+  require tightly aligned timing. Retain samples with explicit timing quality
+  and available uncertainty evidence from the beginning of the recording.
+  Q72 remains a design/validation target, not an admission requirement. Q73's
+  preparation gate requires trustworthy native sample timing and pairing, not
+  proof of the inter-node target. Analyses requiring tight alignment must use
+  the recorded quality/evidence to determine suitability.
+- **Q81 — Orderly stop and finalization:** Stop sample production first, then
+  allow a finite drain interval for remaining accepted samples, with a visible
+  Finalizing phase and a specified deadline. Preserve final partial batches
+  where possible and explicitly report undelivered tails and uncertain counts.
+  Do not wait indefinitely for a failed participant. Recording membership
+  remains until recording ends and explicit release occurs. The deadline and
+  exact stop/release exchanges remain open.
+- **Q82 — Combined timing evidence:** Develop acquisition around tagged FIFO
+  samples with sensor timestamps, supplemented by hardware-captured IMU
+  data-ready edges and trunk SYNC. FIFO tags/timestamps establish sample order
+  and slot identity; captures relate sensor output timing to the node clock.
+  Preserve sufficient evidence for downstream uncertainty assessment. Mark
+  ambiguous associations rather than deriving exact times from nominal ODR.
+  Association algorithms, capture rates and stored evidence remain open; this
+  direction does not establish the Q72 target.
+- **Q83 — Hardware FIFO policy:** Use continuous FIFO mode with timestamp
+  insertion for every FIFO slot. After overrun, use ST's documented timestamp
+  resynchronization approach: discard entries until a fresh timestamp supplies
+  a reconstruction boundary, then resume only once pairing and native timing
+  are trustworthy. Missing counts remain explicitly unknown where evidence
+  cannot establish them. This hardware overwrite-oldest behavior is separate
+  from Q76's software drop-newest policy. See the exact-part evidence in
+  [the acquisition timing research](CAN-FD_IMU_Acquisition_Timing_Research.md).
+- **Q84 — Protected control and timing service:** Reserve bounded queue capacity
+  and service opportunities for lease renewals, Stop, status and timing
+  evidence. Sample backlog must not consume all of these resources. Prefer
+  explicit sample loss to avoidable lease expiry or loss of interpretation
+  evidence. Exact reservations and scheduling limits remain capacity work;
+  this does not imply protection from physical bus faults or indefinite stalls.
+- **Q85 — Six-axis item identity:** One recorded six-axis item contains
+  acceleration and gyro outputs from the same validated FIFO slot. Pair using
+  decoded slot identity, not merely adjacent entries. Discard incomplete or
+  ambiguous pairs with explicit loss/boundary evidence. Slot membership does
+  not assert simultaneous physical measurements; retain the distinction
+  between slot timing and sensor-specific measurement/filter delay for analysis.
+- **Q86 — Conservative preparation:** The first implementation applies a full
+  conservative settling/discard sequence at every recording preparation,
+  including already-running sensing engines. The research's cold-start gyro
+  allowance of 70 ms plus 270 discarded samples and ten acceleration samples
+  inform the procedure, not its complete duration or measured sufficiency.
+  Shortening preparation using warm-up history is a later evidence-supported
+  optimization. Detailed sequencing remains to be specified.
+- **Q87 — Per-stream stop boundaries:** Request stopping promptly and drain
+  each stream through its own confirmed final sample-sequence boundary. Record
+  the operator's Stop request time separately; do not trim all streams to that
+  instant. An unconfirmed final boundary at the finalization deadline leaves
+  the tail explicitly incomplete or uncertain. This does not require tight
+  inter-node alignment to finish recording.
+- **Q88 — Separate timing evidence:** Retain the existing compact five-sample
+  CAN axis-data packets and transport additional timing evidence in explicitly
+  defined messages associated with sample sequences and continuity segments.
+  Preserve selected raw sensor timestamps and hardware-capture values. Times
+  reconstructed from a constant rational tick step are modeled times with
+  supporting evidence and uncertainty, not individually observed captures.
+  Evidence-message and stored-schema definitions remain open.
+- **Q89 — Bounded timing evidence retention:** Inspect per-slot timing evidence
+  on the node, but transport and store a bounded selection sufficient to assess
+  the timing model: startup, periodic checks, discontinuities and detected
+  inconsistencies. Record evidence loss explicitly. Selection cadence and
+  uncertainty rules require specification and validation. Downstream analysis
+  cannot reconstruct every discarded raw observation; insufficient alignment
+  quality does not by itself prohibit recording.
+- **Q90 — Unknown source loss:** Assign source sequences before software
+  queues, so subsequent software drops produce exact gaps. Unknown FIFO loss
+  ends the old source-sequence continuity segment; recovery establishes a new
+  sequence origin and anchor rather than inventing a missing-sample count.
+  Clock continuity is separate: FIFO recovery does not itself assert a sensor
+  or node clock reset. Exact segment/epoch encoding remains open.
+- **Q91 — Stored companion evidence streams:** Register one explicitly defined
+  companion timing-evidence stream per participating node before recording,
+  separate from its six-axis sample stream. Link evidence to sample sequences
+  and source continuity segments, retaining sensor/node/master clock-domain
+  identities. This adds an evidence schema, not another configured logical
+  sensor, and does not repurpose reserved BDQ observation fields. Account for
+  companion streams in the recording stream budget.
+- **Q92 — Unknown uncertainty:** Explicitly represent unknown alignment
+  uncertainty when no defensible finite bound exists. Retain raw evidence and
+  native sample timing, but omit unsupported bounded mapping observations.
+  Downstream estimates must be distinguishable from established bounds.
+- **Q93 — FIFO servicing:** Use watermark-triggered SPI burst reads with DMA
+  and bounded burst buffers; decode outside interrupt handlers. Include bounded
+  fallback status checks for missed interrupts and serialize register/config
+  access with acquisition. Watermark, burst limits, deadlines and any sensor
+  SPI clock change remain to be specified and validated.
+- **Q94 — Sensor SPI target:** Target 4 MHz for FIFO acquisition and retain
+  1 MHz for initial register bring-up. Electrical timing and reliable burst
+  operation require qualification. This target does not change sample rate or
+  FIFO capacity and is not evidence of measured board-level operation.
+- **Q95 — Epoch reuse and stale-data fence:** Never reuse an eight-bit stream
+  epoch within a recording. Advance it for acquisition restarts and unknown
+  FIFO-loss recovery; exhaustion excludes the endpoint for the remainder.
+  Before reuse across recordings, confirm the old producer is stopped and
+  clear or retire stale data throughout node, master and logger transfers.
+  A node without an established fence remains unavailable. An anchor alone is
+  not a fence across different CAN identifiers. Exact fencing remains open;
+  this does not impose a lifetime limit of 256 segments per node boot.
+- **Q96 — Persisted source segment identity:** Add a schema-defined source
+  continuity segment ID to every new LSM BDQ sample record, leaving the common
+  prefix intact. Timing evidence refers to that ID and sample sequence, so
+  evidence loss cannot make sample segment identity ambiguous. Define the new
+  record schema and corresponding analysis support. Source segments,
+  timing-model changes and actual clock resets remain separate concepts.
+- **Q97 — Preparation authority:** Establish recording membership and freeze
+  the participant endpoint mask before preparation sample collection. The
+  recording's explicit acquisition authorization and renewable lease cover
+  preparation as well as recording; preparation is not an unleased mode.
+  A later explicit start marks the transition to recorded samples. Cancellation
+  stops preparation acquisition and explicitly releases membership through a
+  defined cleanup sequence. Exact operations remain to be specified.
+- **Q98 — Initial acquisition CAN link:** Target 1 Mbit/s arbitration and
+  4 Mbit/s data for the initial four-IMU acquisition configuration, subject to
+  physical qualification and complete admission calculations against the
+  existing 70% conservative utilization target. Compact sample traffic alone
+  is approximately 52.3% under the current model, not a complete admission
+  result. Retain the slower discovery/control bring-up profile; do not admit
+  sample configurations exceeding the active link budget or silently reduce
+  sensor rates.
+- **Q99 — IMU interrupt allocation:** Route acceleration data-ready to INT1
+  for clean hardware timing capture and FIFO watermark to INT2 for servicing.
+  Gyro values remain paired by validated FIFO slot identity, without separately
+  captured gyro data-ready times; timing quality must reflect this limitation.
+  Do not OR watermark onto the acceleration capture signal.
+- **Q100 — Acquisition clocks:** Use nominal 1 MHz free-running node and master
+  acquisition clocks, hardware edge capture, and explicit extension of the
+  16-bit timer into a 32-bit tick domain. Ordinary 65.536 ms hardware wraps and
+  approximately 71.6 minute extended wraps are not resets. Detect and mark lost
+  overflow/capture evidence rather than guessing. Keep the sensor's nominal
+  25 us timestamp clock separately identified. This clock choice does not
+  establish the Q72 uncertainty target.
+- **Q101 — Sample timestamp convention:** A six-axis item's node-clock
+  timestamp represents its associated acceleration output-ready instant,
+  reconstructed where necessary. Mark modeled timestamps as estimated and
+  retain supporting evidence. Sensor/filter delays remain separate; this
+  convention does not assert simultaneous acceleration/gyro measurement.
+- **Q102 — Initial FIFO service requirements:** Watermark 96 FIFO words;
+  bounded DMA bursts of up to 96 words; fallback status checks at least every
+  5 ms; threshold crossing to first FIFO word freed at most 10 ms. Repeat
+  draining until below watermark, with at most 1 ms between successive drain
+  bursts. These are requirements to validate, not measured capabilities. Final
+  proof includes maximum sample-rate variation, status reads, DMA scheduling,
+  decoding and interrupt load; unmet requirements require design review before
+  readiness is claimed.
+- **Q103 — Initial synchronization/evidence cadence:** Target 10 Hz hardware
+  SYNC and 10 Hz selected sample-timing evidence snapshots per node, plus
+  required boundary/inconsistency evidence. Retain existing per-edge SYNC
+  captures separately. Budget actual snapshot message sizes rather than
+  assuming one frame each. Cadence requires validation and does not establish
+  Q72; unknown or degraded alignment remains recordable under Q80/Q92.
+- **Q104 — Acquisition recording identity:** Use a new nonzero 64-bit
+  acquisition recording ID shared by participating nodes, unique within the
+  logger control session. Bind each node's authorization to node boot, control
+  session, recording ID and frozen participant mask. Command operation numbers
+  remain separate. Store the association with the existing textual BDQ
+  recording_id without changing that field's interface.
+- **Q105 — Start boundary:** An explicit START independently selects the first
+  recorded sample on each prepared node. On acceptance, discard remaining
+  preparation samples; the first subsequent complete validated FIFO slot is
+  sequence zero of a fresh stream epoch. Its anchor precedes master acceptance
+  of its sample data. Keep the existing lease, sensing engines, clocks and
+  renewal history running. Return the actual boundary to distinguish confirmed
+  participation from uncertain command outcome. First samples need not be
+  simultaneous across nodes.
+- **Q106 — Master restart containment:** A confirmed master boot-identity
+  change excludes all remote CAN participants for the remainder of the
+  recording. Record the interruption, continue healthy local sensors, and
+  reconcile CAN after recording ends. Do not automatically rebuild remote
+  participation. Still-acquiring nodes stop under existing lease-expiry rules;
+  the master never renews autonomously. One missed SPI response alone does not
+  establish a master restart.
+- **Q107 — Fragmented measurement SPI:** Refine Q78's larger-transfer direction
+  into logical batches fragmented over short physical transactions, allowing
+  ADC access between fragments. Initially require at most 100 us uninterrupted
+  SPI mutex ownership per measurement transaction, including software overhead.
+  Select fragment size, clock and pacing to meet this requirement and sustained
+  throughput. Q77 acknowledgement remains complete-batch acceptance. Preserve
+  bootstrap compatibility outside measurement mode. The limit is not measured
+  performance; admission includes local ADC and remote acquisition traffic.
+- **Q108 — Fresh renewal authorization:** Use fresh node-issued time-bounded
+  challenges bound to the acquisition authorization and a deadline on the node
+  clock. A valid logger response authorizes acquisition only through that
+  pre-established deadline, not a new full lease period starting on receipt.
+  Duplicate or late responses cannot move that deadline forward. Define lease
+  duration, cadence, challenge lifetime and messages separately. This avoids
+  assuming accurate logger-to-node clock alignment for renewal freshness.
+- **Q109 — Abandoned membership cleanup:** While idle after logger restart,
+  inspect the abandoned recording identity, establish fresh authority under
+  existing rules, verify acquisition stopped and lease expired, then explicitly
+  release that observed old membership. Binding never implicitly clears the
+  lock. Cleanup enables reconciliation and a new recording, not resumption of
+  the abandoned recording.
+- **Q110 — Initial buffer/service coverage:** Require 50 ms of node software
+  sample-queue coverage for healthy CAN-output backlog, 100 ms of master
+  retention without logger acceptance, and one second of logger remote-stream
+  RAM coverage for SD-write stalls. Size actual representations for timing
+  evidence, boundary bursts and in-flight reserve; allocate the complete budget
+  before preparation. Include existing local-sensor buffers in admission.
+  Node FIFO service still meets Q102 during CAN backlog. Longer SD stalls may
+  cause explicit sample loss but must not block the dedicated lease-service
+  task. Planning byte estimates are not final allocations or measured coverage.
+- **Q111 — Terminal stop/cancel:** An accepted STOP permanently ends the node's
+  acquisition authorization for that recording. Reject later renewals or START
+  under that authorization and retain the final boundary/result for idempotent
+  retries. Preparation cancellation is also terminal. Membership remains
+  locked until explicit release. Starting again requires a new recording.
+- **Q112 — Initial lease timing:** Authorization horizon one second from node
+  challenge issuance; attempt renewal every 100 ms; challenge response deadline
+  300 ms from issuance. Receipt time does not create a fresh full lease.
+  Duplicates and late responses cannot extend the deadline. Invalidate at
+  expiry and stop firmware acquisition within 10 ms. Previously agreed
+  enabled-stopped sensing-engine behavior remains; collection stops. These
+  are requirements to validate against the service envelope.
+- **Q113 — Remote preparation deadlines:** Node native readiness within five
+  seconds of preparation acceptance; logger remote-readiness wait at most ten
+  seconds overall. Timed-out nodes are unavailable for that recording; healthy
+  participants may proceed. Stop renewal and initiate terminal cancellation
+  and cleanup. Late readiness cannot cause joining. These are remote deadlines,
+  not bounds on filesystem operations; tight alignment is not an admission gate.
+- **Q114 — Remote final drain:** Five-second deadline from the operator Stop
+  request for remote tail collection. Send STOP promptly, collect final
+  boundaries and drain accepted remote batches within this interval. At the
+  deadline report missing tails/uncertain boundaries and stop waiting for
+  remote completion. SD persistence/file finalization need separate failure
+  handling; this is not a total file-close deadline.
+- **Q115 — Measurement SPI physical target:** Target 8 MHz and 64 total wire
+  bytes per physical measurement transaction, including headers and CRC.
+  Nominal wire time is 64 us, leaving 36 us inside Q107 for software and CS
+  handling. Fragment logical batches and release the bus between slots. This
+  is separate from the 4 MHz sensor SPI target. Preserve 84-byte/4 MHz bootstrap
+  exchanges. Board timing, overhead, rearming and sustained throughput require
+  qualification; chip capability is not measured board performance.
+- **Q116 — Measurement integrity:** Protect each physical slot and each complete
+  logical batch with CRC-32/ISO-HDLC. Bind fragments and acknowledgements to
+  immutable batch identity, length and fragment position, never mutable queue
+  position. Publish to logger RAM only after complete validation; duplicate
+  acknowledgement must not duplicate insertion. Exact fields/coverage remain
+  wire-layout work.
+- **Q117 — Per-node fairness:** Reserve sample-retention capacity and bounded
+  service opportunities per node. Use per-node queues and round-robin fragment
+  service for initial equal-rate IMUs alongside Q84 protected traffic. Size
+  reservations from admitted rates and Q110 coverage. Interleaved control does
+  not mutate the selected sample batch.
+- **Q118 — Confirmed writer failure:** A confirmed unrecoverable writer failure
+  stops the entire recording, including local and remote acquisition. Report
+  storage failure, request remote STOP, cease lease renewal, and preserve
+  recoverable complete chunks. Claim clean finalization only if successful.
+  This changes the current writer-failure behavior. A still-outstanding slow
+  write is distinct; exceeding one-second buffer coverage alone is not proof
+  of permanent failure.
+- **Q119 — Same-boot measurement recovery:** Permit up to 300 ms for SPI
+  measurement resynchronization while recording/batch/deduplication state stays
+  trustworthy. Require matching master boot and acquisition recording identity
+  before resumed acceptance. Preserve accepted batches and immutable pending
+  transfers. Deadline failure or untrustworthy retained state excludes remote
+  participants for the remainder, stops renewal, and leaves healthy local
+  recording running. Loss beyond coverage is explicit. Confirmed master reboot
+  follows Q106 immediately.
+- **Q120 — Unresponsive storage:** An SD operation outstanding for five seconds
+  triggers acquisition shutdown and visible Storage unresponsive state. Isolate
+  recording I/O behind one storage worker; monitoring and Stop handling remain
+  outside it. Stop acquisition without waiting for blocked I/O. Do not forcibly
+  kill the worker, concurrently close its file or unmount beneath it. Report
+  finalization unsuccessful or pending, never falsely clean. One-second buffer
+  coverage is not this failure threshold.
+- **Q121 — Post-failure recording:** Require explicit operator start only after
+  outstanding I/O finishes and storage passes a health check. Never resume the
+  failed recording automatically or reuse its file as uninterrupted recording.
+  New recording remains unavailable while old operations are outstanding.
+- **Q122 — Bounded measurement batches:** Limit logical sample/evidence batches
+  to 1 KiB and at most one unacknowledged batch per node. Keep the selected
+  batch immutable until acknowledgement, permit control/other-node fragments
+  between its fragments, and preallocate assembly storage. Other queue retention
+  follows Q110/Q117.
+- **Q123 — Initial LSM BDQ record:** Use a new 28-byte record: unchanged BDQ
+  prefix at bytes 0-11; uint32 source-continuity segment ID at 12-15; six raw
+  int16 axes, acceleration then gyro, at 16-27. Segment IDs are nonzero and
+  never reused within that sample stream in the recording. Evidence identifies
+  sample stream, segment and sequence. Mark reconstructed ticks as estimated.
+  Existing BMI270 records retain their format.
+- **Q124 — Compact reception forwarding:** The master forwards compact CAN
+  reception records retaining identifier, length, payload, master receive tick
+  and reception ordering. Preserve master stream-acceptance checks; construct
+  final 28-byte BDQ sample records in the logger. Do not expand per-sample BDQ
+  prefixes on the SPI link.
+- **Q125 — Bound measurement context:** Negotiate a fresh 64-bit context ID
+  bound to full master boot, logger control session, acquisition recording ID
+  and protocol version. Every fragment carries context, batch identity, node,
+  position, length and CRC; reject unknown/stale contexts. Preserve context
+  through trustworthy same-boot resynchronization and retire at recording end.
+  Compact context references do not replace full identity checks at negotiation
+  and recovery.
+- **Q126 — Partial logical batches:** Stop normal sample-batch filling once
+  the oldest received packet has waited 20 ms. Full batches become eligible
+  immediately; startup, stop and discontinuity boundaries also trigger partial
+  batches. Control/timing evidence does not wait for normal sample filling.
+  Delivery still obeys scheduling and retention requirements; 20 ms is not an
+  end-to-end delivery guarantee.
+- **Q127 — Acquisition runtime ownership:** Treat defined PREPARE/STOP FIFO,
+  interrupt-routing and sensor-timestamp changes as verified acquisition-runtime
+  transitions, preserving applied configuration revision and advancing state
+  epoch. Desired profile settings stay locked. Publish phase-appropriate current
+  register proof and separate preparation/active-readiness checks; retain stopped
+  reconciliation for stopped configuration. Historical stopped proof alone is
+  insufficient. This explicitly extends stopped-baseline register ownership,
+  without authorizing recording-time profile edits.
+- **Q128 — Causal master/logger bridge:** Add a 10 Hz exchange with a fresh
+  token: logger time before request, master clock sampled after request
+  validation, logger time after matching validated response. Persist token,
+  raw master tick and logger interval. Preloaded responses/old receive ticks
+  cannot inherit the bracket. Bounds can exceed 10 us; absolute logger mapping
+  is separate from the inter-node target.
+- **Q129 — Companion prefix clock:** Use logger monotonic time at evidence
+  record creation in the companion BDQ prefix. Explicitly label this observation
+  creation time, not sample time. Payload fields separately identify raw sensor,
+  node and master clocks and validity. Companion event sequence is distinct
+  from node evidence ordinal and linked sample sequence; unknown node-time
+  association does not prevent evidence storage.
+- **Q130 — Model applicability:** Each model revision declares its exact
+  source-sequence applicability boundary. Match model, anchor and source/clock
+  identities before accepting dependent samples. Retain definitions referenced
+  by queued data; arrival recency is not model selection. Ordinary model
+  revisions do not reset source sequence, stream epoch or clocks. Record a
+  timing boundary where continuity is not established.
+- **Q131 — Native recovery limits:** FIFO-overrun or native sample/capture
+  association recovery has a 100 ms deadline and at most three attempts in any
+  rolling second. Timeout or another required attempt beyond that limit excludes
+  the endpoint for the remaining recording. Healthy independent participants
+  continue only with verified shared-resource health. Ordinary software queue
+  loss and degraded inter-node alignment do not consume these attempts.
+- **Q132 — Essential versus periodic metadata:** Missing source/clock/model
+  boundaries prevent acceptance of dependent samples. Protect essential
+  interpretation metadata and referenced definitions; inability to preserve
+  essential state in bounded storage excludes the endpoint. Periodic snapshot
+  loss instead reports an evidence gap and unknown/degraded alignment while
+  samples with trustworthy native timing continue.
+- **Q133 — Protected authorization exchange:** Add one bounded protected
+  authorization/urgent-STOP exchange slot per node alongside the unchanged
+  ordinary Q70 lane. Renewals use their authorization sequence, not ordinary
+  mutation high-water. STOP cancels pending preparation through the single
+  hardware owner without concurrent register writes. This explicitly extends
+  the earlier one-exchange arrangement so pending work cannot block leases.
+- **Q134 — Coalesced known queue loss:** Aggregate repeated known software
+  queue-drop reports, limiting additional loss-triggered anchors/reports to
+  10 Hz per node. Preserve sample gap flags and exact counters, baseline anchors
+  and model updates. Require a fresh anchor for ambiguous sequence extension.
+  This refines the earlier immediate-per-loss rule to avoid congestion storms.
+  Essential source/clock/model boundaries still precede dependent samples;
+  unknown FIFO loss retains its separate recovery rules.
+- **Q135 — Companion schema:** Adopt the review draft's fixed 192-byte companion
+  record with snapshot/model/SYNC/host-bridge/boundary/loss kinds, logger-time
+  prefix, explicit validity and separately identified raw clocks. Encode wider
+  quantities through declared uint32 low/high channels. Include actual traffic
+  and RAM in admission. Field layout is in section 6 of
+  [the acquisition contract](CAN-FD_Acquisition_Transport_Contract.md).
+- **Q136 — Local model cadence/validity:** Refresh local sample-to-node models
+  at 10 Hz; limit applicability to 500 samples or 150 ms from the anchor,
+  whichever comes first. Apply limits to acquisition position, not delivery
+  time. Unknown uncertainty alone does not invalidate established native
+  association. Samples beyond every valid model wait for fresh association
+  under bounded recovery. These are initial requirements to validate.
+- **Q137 — Shared-SPI admission:** Require at most 85% steady scheduling
+  occupancy and at least 1.25 times admitted sample-ingress drain capacity while
+  mandatory ADC/control/timing traffic remains active. Include qualified
+  software, arbitration, CS and non-overlapped rearming costs, and prove queue
+  coverage against bursts/service pauses. Apply the stricter test; explicit
+  capacity diagnostics replace unsupported combinations, never silent rate
+  reduction. These are qualification requirements, not universal rate support.
+- **Q138 — Measurement rearming:** Target master rearm within 25 us of CS
+  release and require at least 25 us inactive master CS between measurement
+  transactions. Release the SPI mutex during this gap; allow ADC work and count
+  non-overlapped gaps in admission. Existing fixed-length transport needs
+  changes; failure to qualify requires protocol/configuration review.
+- **Q139 — Acquisition control layouts:** Adopt section 3.1 of the acquisition
+  contract: reserved-range opcodes, 112-byte staged PREPARE request, 128-byte
+  acquisition snapshot, existing common record/paging interfaces, initial
+  challenge after staging, actual START boundary, known-empty versus unknown
+  final state, explicit membership release and old-data fence. Mode handover
+  and final registry/error details remain separate review work.
+- **Q140 — Read-only mode recovery:** Accept a legacy-format MODE_INFO query
+  while measurement mode is active. Return observed identities/mode with a
+  fresh echoed nonce and validated request/fetch response; initially preloaded
+  measurement data is not the query result. Inspection cannot clear context,
+  renew or authorize takeover. A restarted logger verifies stopped/expired
+  nodes and explicitly cleans up before new recording. Entry/exit handshakes
+  have a one-second total deadline that retries cannot extend. Ambiguous entry
+  leaves acquisition unavailable.
+- **Q141 — Evidence-before-data persistence:** Append complete essential
+  source/clock/model evidence chunks before dependent sample chunks, preserving
+  this order through the storage worker and valid-prefix recovery. This does
+  not require a physical SD flush after every evidence record. Periodic
+  diagnostic snapshots retain the separate loss-tolerant policy.
+- **Q142 — Packet layout package:** Adopt acquisition-contract sections 2, 4
+  and 5: 20-byte measurement header, 40-byte fragment, CRC, scoped immutable
+  identities and acknowledgement/error rules; compact reception objects;
+  snapshot/model/boundary bodies and registries. Preserve existing control
+  values and reserved-zero rules. Final consistency review and shared-
+  understanding confirmation remain before implementation.
+- **Q143 — Complete companion persistence:** Extend the new companion schema
+  from 192 to 224 bytes, preserving offsets 0-191 and appending boundary tick,
+  recovery duration, original event kind/presence and complete flag masks.
+  Recalculate evidence RAM/storage costs. LSM samples remain 28 bytes. This
+  explicitly supersedes Q135's size to fix the reviewed mapping gap.
+- **Q144 — Restart cleanup transport:** Permit strictly allowlisted legacy
+  administrative exchanges while an old measurement context is retained:
+  inspection, then fresh binding/fencing/membership release after verified
+  stopped acquisition and expired/invalid authorization. Preserve boot/session/
+  challenge checks. No APPLY/PREPARE/START/RENEW on this cleanup route. Retire
+  the context only after explicit fences; no automatic old-record resumption.
+- **Q145 — Explicit protected fragment classes:** Add physical kinds 12 and 13
+  for authorization and master-local evidence, respectively, with independent
+  assembly/acknowledgement state and unchanged header size. Ordinary transfers
+  cannot supersede authorization replies; local observations are not invented
+  CAN receptions. This extends Q142's registry explicitly.
+- **Q146 — Bounded emission:** Adopt acquisition-contract section 9.4 budgets:
+  eight unsolicited essential CAN frames per native recovery attempt;
+  coalesced loss cycles at most 10 Hz/node with one report plus one anchor;
+  authorization requests 20/s/node with burst two and one response per request;
+  urgent STOP up to three identical attempts within 300 ms, preempting renewal;
+  ordinary diagnostics four requests/s globally, burst four, retries included;
+  empty polls 50/s/node, burst one. No catch-up traffic beyond these budgets.
+  Discovery stays idle-only; insufficient essential capacity follows Q132.
+  Complete scheduling qualification remains required.
+- **Q147 — Shared understanding confirmed:** The user confirmed the combined
+  design and closed the acquisition/transport interview on 4 November 2026.
+  Implementation and physical qualification remain separate. The subsequent
+  to-tickets request authorizes drafting; tracker publication follows the
+  repository preview/write rules. Existing bench deferrals remain in force.
+
+Operator-reported functional happy-path evidence remains distinct from physical
+qualification. CAN disconnect/reconnect, CCS halt/resume and node/master reset
+fault tests remain deferred until a practical harness is available. No result
+is claimed for these tests, broader fault tests, physical SPI/reset/apply timing,
+multi-node load or stack-watermark qualification.
+
 ## 14. Streaming and recovery rules
 
 - CAN automatic retransmission is enabled.
@@ -860,9 +1362,10 @@ and section 12 for the consolidated pre-implementation checkpoint.
 - A node entering bus-off stops acquisition transmission, records a continuity
   break, performs bounded controller recovery and announces again. Recovery
   policy and counters are reported in status.
-- Queue overflow drops a complete oldest or newest batch according to the
-  published implementation policy; it must never create a partially corrupted
-  batch. The next transmitted batch carries the applicable loss flag.
+- Software sample queue overflow rejects the newest incoming complete batch
+  (Q76), never a partial batch. Mark the loss before the next subsequently
+  accepted sample, without attributing that future gap to older queued samples.
+  Hardware FIFO overwrite and recovery follow Q83 separately.
 - Master and node queues expose capacity, current depth, high-water and exact
   drop counters through diagnostics.
 - The master must retain the CAN identifier, payload length, payload, reception
