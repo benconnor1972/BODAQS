@@ -9,8 +9,14 @@ struct Adc { uint32_t conversionsPerSecond=0, spiHz=0; };
 struct Profile {
  bool qualified=false;
  uint32_t nominalBitrate=1000000, dataBitrate=4000000;
+ double sampleMutexHoldUs=64, auxiliaryMutexHoldUs=64;
+ double maximumSourceSamplesPerSecond=0;
  double sampleSlotUs=0, auxiliarySlotUs=0, adcTransactionUs=0, adcPollUsPerConversion=0;
  double canFrameUs=196.25;
+ double adcAttemptsPerConversion=0;
+ // Independent finite service envelopes, including START/STOP/fence and
+ // controller-error/retry bursts. Qualified profiles must supply nonzero bounds.
+ uint32_t canBurstFrames=0, spiBurstSlots=0;
  uint32_t canExceptionalFramesPerSecond=0, spiExceptionalSlotsPerSecond=0;
  uint32_t nodeServiceBlackoutUs=50000, masterServiceBlackoutUs=100000, storageBlackoutUs=1000000;
  uint32_t arrivalBurstPackets=0, arrivalBurstEvidence=0;

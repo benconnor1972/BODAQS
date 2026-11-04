@@ -36,22 +36,22 @@ static struct {
 static struct {
     uint16_t id;
     uint8_t length, bytes[64];
-} tx_frames[32];
+} tx_frames[64];
 static uint8_t tx_head, tx_tail, tx_depth;
 static bool queue_frame(uint16_t id, const uint8_t *p, size_t n) {
-    if (tx_depth == 32 || n > 64)
+    if (tx_depth == 64 || n > 64)
         return false;
     tx_frames[tx_head].id = id;
     tx_frames[tx_head].length = (uint8_t)n;
     memcpy(tx_frames[tx_head].bytes, p, n);
-    tx_head = (uint8_t)((tx_head + 1) % 32);
+    tx_head = (uint8_t)((tx_head + 1) % 64);
     ++tx_depth;
     return true;
 }
 static void service_transmit(void) {
     if (tx_depth &&
         a.send(tx_frames[tx_tail].id, tx_frames[tx_tail].bytes, tx_frames[tx_tail].length)) {
-        tx_tail = (uint8_t)((tx_tail + 1) % 32);
+        tx_tail = (uint8_t)((tx_tail + 1) % 64);
         --tx_depth;
     }
 }
@@ -125,7 +125,7 @@ static bool snapshot(uint32_t seq, uint32_t tick, uint32_t ts) {
     uint8_t p[64], *b = p + 8;
     if(!evidence_available()) return false;
     uint32_t sync_sequence=0,sync_tick=0;
-    if(seq && tx_depth>=24) {
+    if(seq && tx_depth>=56) {
         if(a.loss_evidence==UINT32_MAX || a.evidence==UINT32_MAX) return false;
         ++a.loss_evidence; ++a.evidence; a.evidence_gap=true;
         return true;
@@ -207,7 +207,7 @@ static bool flush(bool final) {
         n = 64;
     /* Keep eight slots unavailable to data so an already full CAN lane cannot
      * destroy essential recovery definitions. Sequence is assigned upstream. */
-    if (tx_depth >= 24) {
+    if (tx_depth >= 56) {
         if (UINT32_MAX - a.loss_count < a.count)
             return false;
         if (!a.loss_count) a.loss_first = a.sequence - a.count;
@@ -227,7 +227,7 @@ static bool loss_report(uint32_t now, bool anchor) {
     uint8_t p[64], *b=p+8;
     if ((!a.loss_count && !a.loss_evidence) || (uint32_t)(now-a.loss_ms)<100) return true;
     if(!evidence_available()) return false;
-    if (tx_depth>(anchor?30:31)) return false;
+    if (tx_depth>(anchor?62:63)) return false;
     envelope(p,0x25,56);
     bodaqs_control_put_u32(b,a.boot); b[5]=a.epoch; b[6]=3; b[7]=4;
     bodaqs_control_put_u32(b+8,++a.evidence);
@@ -271,7 +271,7 @@ static void recover(uint8_t stage,uint32_t now) {
         if((uint32_t)(now-a.attempts[i])<1000) a.attempts[active++]=a.attempts[i];
     a.recovery_count=(uint8_t)active;
     if(active==3 || (a.phase==RECOVER && (uint32_t)(now-a.recovery_ms)>=100)) {fail(32);return;}
-    if(tx_depth>23 || a.epoch==255 || a.evidence>UINT32_MAX-8 || a.model_id==UINT32_MAX) {fail(31);return;}
+    if(tx_depth>55 || a.epoch==255 || a.evidence>UINT32_MAX-8 || a.model_id==UINT32_MAX) {fail(31);return;}
     a.attempts[a.recovery_count++]=now;
     if(a.phase!=RECOVER) {
         a.recovery_ms=now; a.recovery_tick=clock_tick(); a.recovery_stage=stage;
@@ -578,7 +578,7 @@ void bodaqs_node_acquisition_service(uint32_t now) {
             bodaqs_control_put_u32(b+4,raw_sync.tick);bodaqs_control_put_u32(b+8,a.boot);
             /* Sequence/association unknown. flags=0 preserves that distinction;
              * the independently retained master edge does not supply a pairing. */
-            if(!(tx_depth<24 && queue_frame((uint16_t)(0x90+a.address),p,24))) {
+            if(!(tx_depth<56 && queue_frame((uint16_t)(0x90+a.address),p,24))) {
                 if(a.loss_evidence==UINT32_MAX) {fail(31);return;}
                 ++a.loss_evidence;a.evidence_gap=true;
             }

@@ -8,6 +8,7 @@
 #include "ConfigManager.h"
 #include <Arduino.h>
 #include <esp_timer.h>
+#include <esp_system.h>
 #include <cstring>
 #include "ImuAdmission.h"
 #include "AnalogInputManager.h"
@@ -91,7 +92,7 @@ bool send(AcquisitionControl::Action action) {
   AcquisitionControl::Outcome out;AcquisitionControl::outcome(node,out);serial=out.serial;
   return AcquisitionControl::enqueue(q);
 }
-bool configure(const SensorSpec& chosen,uint64_t sharedRecord) {
+bool configure(const SensorSpec& chosen,uint64_t sharedRecord,uint64_t sharedContext) {
   if(phase!=Idle) return false;
   fault=false;
   const auto assignment=sensorAssignment(chosen,board::gBoard);node=assignment.provider.index;
@@ -100,7 +101,7 @@ bool configure(const SensorSpec& chosen,uint64_t sharedRecord) {
   RemoteImuBinding b;b.node=node;b.boot=endpoint.effective_boot;b.uid=endpoint.effective_uid;b.masterBoot=d.control.master_boot_id;b.masterUid=d.hardwareUid;
   b.session=d.authority.session;
   record=sharedRecord;
-  b.recording=record;b.context=record;std::memcpy(b.effective,endpoint.effective,192);
+  b.recording=record;b.context=sharedContext;std::memcpy(b.effective,endpoint.effective,192);
   String text=chosen.name;chosen.params.get("imu_id",text);std::snprintf(b.sensorId,sizeof b.sensorId,"%s",text.c_str());
   text="";chosen.params.get("mount_point",text);std::snprintf(b.mountPoint,sizeof b.mountPoint,"%s",text.c_str());
   text="";chosen.params.get("calibration_ref",text);std::snprintf(b.calibrationRef,sizeof b.calibrationRef,"%s",text.c_str());
@@ -185,7 +186,7 @@ void service() {
 };
 Participant peers[4];
 uint8_t selected=0;
-uint64_t allocatedSession=0,nextRecording=1;
+uint64_t allocatedSession=0,nextRecording=1,context=0;
 ImuAdmission::Profile profile;
 ImuAdmission::Report report;
 uint8_t sharedPending=0;
@@ -232,22 +233,29 @@ bool configure(const LoggerConfig& cfg) {
  if(allocatedSession!=session) {allocatedSession=session;nextRecording=1;}
  if(!nextRecording || nextRecording==UINT64_MAX) {report.reason=ImuAdmission::Reason::Eligibility;return true;}
  uint64_t record=nextRecording++;
+ const uint64_t previous=context;
+ context=(uint64_t(esp_random())<<32)|esp_random();
+ context^=session^(record*UINT64_C(0x9e3779b97f4a7c15));
+ if(!context || context==previous) {report.reason=ImuAdmission::Reason::Eligibility;return true;}
  // Allocate every queue and definition buffer before any authorization.
  for(uint8_t n=0;n<4;++n) if(mask&(1u<<n)) {
   // Participant configure performs no PREPARE until the complete allocation pass.
-  if(!peers[n].configure(chosen[n],record) || peers[n].fault.load()) {
+  if(!peers[n].configure(chosen[n],record,context) || peers[n].fault.load()) {
    discardAllocated();report.reason=ImuAdmission::Reason::Allocation;return true;
   }
  }
+ report.loggerBytes=sizeof(peers)+demand.nodes*RemoteImuStream::allocatedBufferBytes()+
+    AcquisitionControl::reservedBytes()+sizeof(CanMasterManager::Diagnostics);
  selected=mask;sharedPending=0;sharedObject=0;
  return true;
 }
-bool resourcesReady() {
+bool resourcesReady(size_t storageReservedBytes) {
  if(!selected) return true;
  bool allocated=false;uint64_t record=0;
  for(uint8_t n=0;n<4;++n) if(selected&(1u<<n)) {allocated|=peers[n].phase==Allocated;record=peers[n].record;}
  if(!allocated) return true;
- if(!AcquisitionControl::setDataConsumer(consume,selected) || !AcquisitionControl::begin(record,record)) {
+ report.loggerBytes+=storageReservedBytes;
+ if(!AcquisitionControl::setDataConsumer(consume,selected) || !AcquisitionControl::begin(record,context)) {
   discardAllocated();report.reason=ImuAdmission::Reason::Eligibility;return false;
  }
  for(uint8_t n=0;n<4;++n) if(selected&(1u<<n)) {
@@ -257,6 +265,7 @@ bool resourcesReady() {
  return true;
 }
 bool configured() {return selected!=0;}
+const char* failureReason() {return report.reason==ImuAdmission::Reason::None?"Remote IMU excluded":ImuAdmission::reasonText(report.reason);}
 bool failed() {if(report.reason!=ImuAdmission::Reason::None) return true;for(uint8_t n=0;n<4;++n) if((selected&(1u<<n)) && peers[n].failed()) return true;return false;}
 bool prepared() {for(uint8_t n=0;n<4;++n) if((selected&(1u<<n)) && !peers[n].prepared()) return false;return true;}
 bool recording() {for(uint8_t n=0;n<4;++n) if((selected&(1u<<n)) && !peers[n].recording()) return false;return true;}

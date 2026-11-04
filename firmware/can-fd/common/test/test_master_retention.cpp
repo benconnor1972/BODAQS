@@ -57,8 +57,8 @@ int main() {
     reset(); anchor(0);
     const auto pinned = poll(2, 0, 0, 0);
     assert(pinned.kind == 3 && pinned.total == 96); // Essential evidence never waits 20ms.
-    for (unsigned i = 0; i < 96; ++i) assert(samples(i * 5, 1));
-    assert(!samples(480, 1)); // Drop newest whole reception, preserve selected and queued data.
+    for (unsigned i = 0; i < 128; ++i) assert(samples(i * 5, 1));
+    assert(!samples(640, 1)); // Drop newest whole reception, preserve selected and queued data.
     const auto repeat = poll(2, 0, pinned.object, 19);
     assert(std::memcmp(&pinned, &repeat, sizeof pinned) == 0);
     assert(poll(1, 0, 0, 19).kind == 0); // Data cannot overtake its evidence head.

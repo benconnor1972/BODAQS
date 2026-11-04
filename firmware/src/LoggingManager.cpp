@@ -395,17 +395,27 @@ LoggingManager::StartResult LoggingManager::requestStart() {
 void LoggingManager::loop() {
   RemoteImuRecording::service();
   if(s_running && RemoteImuRecording::failed() && !s_remoteFaultShown) {
-    s_remoteFaultShown=true;UI::toast(ImuAdmission::reasonText(RemoteImuRecording::admission().reason),1800,1);
+    s_remoteFaultShown=true;UI::toast(RemoteImuRecording::failureReason(),1800,1);
   }
   if(s_starting && s_remotePreparing) {
     if(RemoteImuRecording::failed() && !s_remoteFaultShown) {
-      s_remoteFaultShown=true;UI::toast(ImuAdmission::reasonText(RemoteImuRecording::admission().reason),1800,1);
+      s_remoteFaultShown=true;UI::toast(RemoteImuRecording::failureReason(),1800,1);
     }
+#if defined(ESP32)
     if(!StorageManager_recordingReady()) {
       if(!StorageManager_recordingIoPending()) stop(StopReason::StartFailure,"storage_start_failure");
       return;
     }
+#endif
+#if defined(ESP32)
+    const auto allocation=StorageManager_recordingAllocation();
+    const size_t storageBytes=allocation.primaryQueueBytes+allocation.workspaceBytes+
+        allocation.outputBufferBytes+allocation.catalogPeakBytes+allocation.primaryColumnsPeakBytes+
+        allocation.metadataPayloadBytes+allocation.staticStateBytes+allocation.storageTaskStackBytes;
+    RemoteImuRecording::resourcesReady(storageBytes);
+#else
     RemoteImuRecording::resourcesReady();
+#endif
     if(!RemoteImuRecording::prepared()) return;
     s_remotePreparing=false;
 #if defined(ESP32)

@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <stddef.h>
 #include "CanControlProtocol.h"
 
 // The control task is independent of sampling and storage. Requests are copied
@@ -29,6 +30,7 @@ bool enqueue(const Request&);
 bool outcome(uint8_t node, Outcome&);
 bool requestExit();
 bool active();
+size_t reservedBytes();
 // Registered while stopped. Invoked only by the transport owner for complete
 // immutable data objects; true means retained in downstream bounded RAM.
 using DataConsumer = bool (*)(uint8_t cls,uint8_t node,uint32_t object,const uint8_t*,uint16_t);

@@ -26,7 +26,7 @@ def main():
     fixture += '\nint64_t esp_timer_get_time() { return int64_t(clockMs)*1000; }\nnamespace board { const BoardProfile* gBoard=&profile; }\n'
     fixture += (root / "src/AcquisitionControl.cpp").read_text().replace('#include <Arduino.h>', '')
     coordinator = (root / "src/RemoteImuRecording.cpp").read_text()
-    for header in ('#include <Arduino.h>', '#include <esp_timer.h>', '#include "SensorManager.h"'):
+    for header in ('#include <Arduino.h>', '#include <esp_timer.h>', '#include <esp_system.h>', '#include "SensorManager.h"'):
         coordinator = coordinator.replace(header, '')
     fixture += '\nnamespace AnalogInputManager { uint8_t activeChannelCount(uint8_t) {return 0;} uint16_t configuredDataRateSps(uint8_t) {return 0;} }\n'
     fixture = fixture.replace('static SensorSpec saved;', 'static SensorSpec saved; static unsigned fixtureSensorCount=1; static SensorSpec extra[3]; static ParamStore extraParams[3];')
@@ -41,7 +41,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="bodaqs-remote-lifecycle-") as temp:
         cpp, exe = Path(temp)/"fixture.cpp", Path(temp)/"fixture.exe"
         cpp.write_text(fixture)
-        subprocess.run([args.compiler, "-std=c++17", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-I", str(root/"test/stubs"), "-I", str(root/"src"), "-I", str(protocol), "-I", str(root/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
+        subprocess.run([args.compiler, "-std=c++17", "-DBODAQS_QUEUE_ALLOCATION_TEST", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-I", str(root/"test/stubs"), "-I", str(root/"src"), "-I", str(protocol), "-I", str(root/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
         subprocess.run([str(exe), "four"], check=True)
 

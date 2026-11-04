@@ -20,6 +20,7 @@ class RemoteImuStream {
 public:
   enum Acceptance { Invalid=-1, Blocked=0, Accepted=1 };
   bool configure(const RemoteImuBinding&,uint16_t sampleId,uint16_t evidenceId);
+  static size_t allocatedBufferBytes();
   void release(); // only after both producer and storage owner stop
   Acceptance accept(uint16_t identifier,const uint8_t*,size_t length,
                     uint32_t masterTick,uint64_t masterOrder,uint32_t loggerTick,uint8_t receptionFlags=0);

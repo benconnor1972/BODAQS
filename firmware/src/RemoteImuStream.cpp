@@ -90,7 +90,7 @@ const BdqV2CatalogChannel evidenceChannels[]={
 }
 bool RemoteImuStream::configure(const RemoteImuBinding& b,uint16_t sample,uint16_t companion) {
   release(); if(!b.boot || b.node>3 || !sample || !companion || sample==companion) return false;
-  if(!samples_.allocate(4096) || !evidence_.allocate(224,128)) {release();return false;}
+  if(!samples_.allocate(8192) || !evidence_.allocate(224,128)) {release();return false;}
   provenance_=static_cast<char*>(DynamicSpscQueueDetail::allocateBytes(3072));
   models_=static_cast<Model*>(DynamicSpscQueueDetail::allocateBytes(32*sizeof(Model)));
   anchors_=static_cast<Anchor*>(DynamicSpscQueueDetail::allocateBytes(32*sizeof(Anchor)));
@@ -143,6 +143,9 @@ bool RemoteImuStream::configure(const RemoteImuBinding& b,uint16_t sample,uint16
     b.node,(unsigned long)b.boot,(unsigned long long)b.masterBoot);
   if(provenanceLength<0 || size_t(provenanceLength)>=3072) {release();return false;}
   return true;
+}
+size_t RemoteImuStream::allocatedBufferBytes() {
+ return 8192*sizeof(Sample)+128*224+3072+32*sizeof(Model)+32*sizeof(Anchor);
 }
 void RemoteImuStream::release() {
   samples_.release();evidence_.release();sampleId_=evidenceId_=0;

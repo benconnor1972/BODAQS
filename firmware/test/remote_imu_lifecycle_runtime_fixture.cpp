@@ -21,7 +21,7 @@ static void recordingSteps(unsigned duration) {
 }
 
 int main(int argc,char**) {
-  ImuAdmission::Profile costs;costs.qualified=true;costs.sampleSlotUs=64;costs.auxiliarySlotUs=64;costs.sampleDrainSlotsPerSecond=14000;
+  ImuAdmission::Profile costs;costs.maximumSourceSamplesPerSecond=3333;costs.qualified=true;costs.adcAttemptsPerConversion=1;costs.canBurstFrames=20;costs.spiBurstSlots=32;costs.sampleSlotUs=64;costs.auxiliarySlotUs=64;costs.sampleDrainSlotsPerSecond=14000;
   assert(RemoteImuRecording::setAdmissionProfile(costs));
   saved.type=SensorType::LSM6DSO32XImu;std::strcpy(saved.name,"remote_imu");
   assert(savedParams.set("provider","can:0"));
@@ -63,6 +63,13 @@ int main(int argc,char**) {
   // pinned effective snapshot makes the next acquisition snapshot reject BUSY.
   CanMasterManager::beginRecordingHandoff();advance(4000);
   assert(CanMasterManager::recordingHandoffReady());
+  // Fail a real queue/model allocation, before any control owner is entered.
+  DynamicSpscQueueDetail::allocationsBeforeFailure=fixtureSensorCount==4?7:2;
+  assert(RemoteImuRecording::configure(config));
+  assert(!RemoteImuRecording::configured() && RemoteImuRecording::failed());
+  assert(RemoteImuRecording::admission().reason==ImuAdmission::Reason::Allocation);
+  assert(!AcquisitionControl::active() && DynamicSpscQueueDetail::liveAllocations==0);
+  DynamicSpscQueueDetail::allocationsBeforeFailure=-1;
   assert(RemoteImuRecording::configure(config));
   assert(RemoteImuRecording::configured());
   assert(!RemoteImuRecording::prepared());
