@@ -1,4 +1,5 @@
 #include "bodaqs_control.h"
+#include "bodaqs_control_authority.h"
 #include "bodaqs_control_exchange.h"
 #include "bodaqs_control_observer.h"
 #include <cassert>
@@ -232,10 +233,116 @@ void conflictingPendingAndLateIdentitiesCannotReplaceAnExchange()
            tx == 1);
     assert(!bodaqs_control_exchange_receive(&master, 0, tx, &result));
 }
+// Run the real snapshot/observer exchange so health captured before a transition
+// cannot pass the final fresh endpoint-state check.
+void clockHealthInvalidatesCapturedSnapshot()
+{
+    BodaqsControlNode node = {};
+    node.boot_id = 55;
+    node.endpoint_mask = 1;
+    node.endpoint_epoch[0] = 1;
+    BodaqsControlSnapshot snapshot = {};
+    BodaqsControlObserver observer;
+    bodaqs_control_observer_init(&observer);
+    bodaqs_control_observer_boot(&observer, 99, 3);
+    bodaqs_control_observer_node(&observer, 0, 55, 1, true);
+    bool changed = false, refreshed = false;
+    for (unsigned step = 0; step < 32 && !refreshed; ++step)
+    {
+        BodaqsControlWrapped query, answer;
+        uint8_t type;
+        assert(bodaqs_control_observer_next(&observer, &query, &type));
+        answer = query;
+        assert(bodaqs_control_snapshot_process(&snapshot, &node, &query.record,
+                                               step, &answer.record) ||
+               bodaqs_control_node_process(&node, &query.record, &answer.record));
+        if (query.record.opcode == BODAQS_CONTROL_OPEN_EFFECTIVE)
+        {
+            assert(bodaqs_control_node_update_clock_fault(&node, true));
+            changed = true;
+        }
+        assert(bodaqs_control_observer_accept(&observer,
+                    BODAQS_CONTROL_POLL_RESPONSE, &answer, step));
+        if (changed && query.record.opcode == BODAQS_CONTROL_GET_NODE_STATE)
+            refreshed = true;
+    }
+    assert(refreshed);
+    const auto& endpoint = observer.nodes[0].endpoints[0];
+    assert(endpoint.effective_valid);
+    assert(bodaqs_control_get_u32(endpoint.effective + 20) == 32);
+    assert(bodaqs_control_get_u64(endpoint.effective + 184) == 1);
+    assert(observer.nodes[0].endpoint_epoch[0] == 2);
+    assert(observer.nodes[0].flags & (1U << 7));
+    assert(!endpoint.current);
+}
+void clockHealthChangesOnlyFittedEpochsAndFailsClosedAtExhaustion()
+{
+    BodaqsControlNode node = {};
+    node.boot_id = 55;
+    node.active_session = 99;
+    node.flags = 1;
+    node.endpoint_mask = 5;
+    node.endpoint_epoch[0] = 8;
+    node.endpoint_epoch[1] = UINT64_MAX; // unfitted endpoints consume nothing
+    node.endpoint_epoch[2] = UINT64_MAX - 1;
+    assert(bodaqs_control_node_update_clock_fault(&node, true));
+    assert(node.endpoint_epoch[0] == 9 && node.endpoint_epoch[2] == UINT64_MAX);
+    assert(node.flags == 129);
+    assert(bodaqs_control_node_update_clock_fault(&node, true));
+    assert(node.endpoint_epoch[0] == 9 && node.endpoint_epoch[2] == UINT64_MAX);
+    assert(!bodaqs_control_node_update_clock_fault(&node, false));
+    assert(node.endpoint_epoch[0] == 9 && node.endpoint_epoch[2] == UINT64_MAX);
+    assert(node.boot_id == 55 && node.active_session == 99 && node.flags == 129);
+    // Exhaustion stays closed even if health later returns to its prior value.
+    assert(!bodaqs_control_node_update_clock_fault(&node, true));
+    BodaqsControlRecord query = {}, reply;
+    query.opcode = BODAQS_CONTROL_GET_NODE_STATE;
+    query.node_boot_id = 55;
+    query.operation = 1;
+    assert(bodaqs_control_node_process(&node, &query, &reply));
+    assert(reply.opcode == BODAQS_CONTROL_ERROR && reply.data[1] == 22);
+    BodaqsControlSnapshot snapshot = {};
+    query.opcode = BODAQS_CONTROL_OPEN_EFFECTIVE;
+    assert(bodaqs_control_snapshot_process(&snapshot, &node, &query, 0, &reply));
+    assert(reply.opcode == BODAQS_CONTROL_ERROR && reply.data[1] == 22);
+    BodaqsControlAuthority authority = {};
+    query.opcode = BODAQS_CONTROL_RELEASE_SESSION;
+    query.session = 99;
+    query.endpoint = BODAQS_CONTROL_NODE_WIDE;
+    assert(bodaqs_control_authority_process(&authority, &node, &query, 0,
+                                          nullptr, nullptr, &reply));
+    assert(reply.opcode == BODAQS_CONTROL_ERROR && reply.data[1] == 22);
+    // Boot mismatch still wins before any exhausted-state semantics.
+    query.node_boot_id = 54;
+    assert(bodaqs_control_authority_process(&authority, &node, &query, 0,
+                                          nullptr, nullptr, &reply));
+    assert(reply.data[1] == 4);
+    assert(bodaqs_control_authority_admit(&authority, &node, &query) == 4);
+    query.opcode = BODAQS_CONTROL_OPEN_EFFECTIVE;
+    query.endpoint = 0;
+    assert(bodaqs_control_snapshot_process(&snapshot, &node, &query, 0, &reply));
+    assert(reply.data[1] == 4);
+    query.opcode = BODAQS_CONTROL_GET_NODE_STATE;
+    assert(bodaqs_control_node_process(&node, &query, &reply));
+    assert(reply.data[1] == 4);
+
+    node = {};
+    node.endpoint_mask = 1;
+    node.endpoint_epoch[0] = 1;
+    assert(bodaqs_control_node_update_clock_fault(&node, false));
+    assert(node.endpoint_epoch[0] == 1);
+    assert(bodaqs_control_node_update_clock_fault(&node, true));
+    assert(bodaqs_control_node_update_clock_fault(&node, false));
+    assert(node.endpoint_epoch[0] == 3 && node.flags == 0);
+    assert(bodaqs_control_node_update_clock_fault(&node, false));
+    assert(node.endpoint_epoch[0] == 3);
+}
 int main()
 {
     assert(strcmp(bodaqs_control_reason_key(26), "can_exchange_timeout") == 0);
     assert(strcmp(bodaqs_control_reason_key(255), "unknown") == 0);
+    clockHealthInvalidatesCapturedSnapshot();
+    clockHealthChangesOnlyFittedEpochsAndFailsClosedAtExhaustion();
     wireExchangeAndBootRecovery();
     nodeDistinguishesUnsupportedStaleAndMalformed();
     wrappersEnforceVersionReservedAndIndependentOffsets();

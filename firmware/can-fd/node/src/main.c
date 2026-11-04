@@ -354,8 +354,9 @@ static void process_can_message(
         BodaqsControlRecord control, reply;
         uint16_t transaction;
         uint8_t payload[64];
-        gControlNode.flags = (gControlNode.flags & ~(1UL << 7)) |
-            (gNodeRuntimeInfo.clock_fault ? (1UL << 7) : 0U);
+        /* Exhaustion is latched in the view; all services then reject control. */
+        (void)bodaqs_control_node_update_clock_fault(
+            &gControlNode, gNodeRuntimeInfo.clock_fault);
         if (bodaqs_control_decode_can(message->data, bodaqs_can_dlc_to_length((uint8_t)message->dlc), false, &transaction, &control) &&
             (bodaqs_control_authority_process(&gControlAuthority, &gControlNode,
                  &control, gUptimeMs, challenge_random, NULL, &reply) ||

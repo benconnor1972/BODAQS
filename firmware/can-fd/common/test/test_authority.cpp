@@ -119,6 +119,14 @@ int main()
         assert(bodaqs_control_authority_client_accept(&client, 0x87, &reply, 10 + step));
     }
     assert(client.nodes[0].bound && n.active_session == 1000);
+    BodaqsControlAuthorityClient observed = client;
+    bodaqs_control_authority_client_observe_session(&observed, 0, 1000);
+    assert(observed.nodes[0].bound && observed.nodes[0].reason == 0);
+    bodaqs_control_authority_client_observe_session(&observed, 0, 2000);
+    assert(!observed.nodes[0].bound && observed.nodes[0].reason == 5);
+    assert(!bodaqs_control_authority_client_next(&observed, 55, &request, &type));
+    bodaqs_control_authority_client_observe_session(&observed, 0, 1000);
+    assert(!observed.nodes[0].bound); // observation never grants authority
     assert(bodaqs_control_authority_client_release(&client, 0));
     assert(bodaqs_control_authority_client_next(&client, 55, &request, &type));
     reply = request;

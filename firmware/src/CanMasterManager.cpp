@@ -304,13 +304,8 @@ void serviceControl_() {
   } else if (!authorityRequest && reply.record.opcode == BODAQS_CONTROL_GET_NODE_STATE &&
              reply.record.endpoint == BODAQS_CONTROL_NODE_WIDE &&
              response.type == CanMasterProtocol::MessageType::ControlPollResponse) {
-    auto& authority = s_diagnostics.authority.nodes[reply.node_address];
-    const auto& observation = s_diagnostics.control.nodes[reply.node_address];
-    if (authority.bound && observation.active_session != s_diagnostics.authority.session) {
-      authority.bound = false;
-      authority.phase = 3;
-      authority.reason = 5;
-    }
+    bodaqs_control_authority_client_observe_session(&s_diagnostics.authority,
+        reply.node_address, s_diagnostics.control.nodes[reply.node_address].active_session);
   }
   if (reply.master_boot_id != wrapped.master_boot_id) {
     s_diagnostics.controlInfoValid = false;
