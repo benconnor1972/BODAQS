@@ -48,6 +48,7 @@
         <property name="buildProfile" value="release"/>
         <property name="isHybrid" value="true"/>
         <file path="../src/main.c" action="copy" />
+        <file path="../../common/transport/bodaqs_record_queue.h" action="copy" />
         <file path="../../common/network/bodaqs_can_network.c" action="copy" />
         <file path="../../common/network/bodaqs_can_network.h" action="copy" />
         <file path="../node.syscfg" openOnCreation="true" action="copy" />
