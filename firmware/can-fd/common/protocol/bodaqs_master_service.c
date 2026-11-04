@@ -169,6 +169,7 @@ static void transfer_context(BodaqsMasterService *s) {
     s->master_evidence_next_id=0;
     s->transfer_context=s->measurement.mode.context;
     bodaqs_control_exchange_init(&s->authorization,s->control.master_boot_id);
+    s->authorization.excluded_addresses=s->control.excluded_addresses;
     memset(s->anchor_boot,0,sizeof(s->anchor_boot));
     memset(s->authorization_tokens,2,sizeof(s->authorization_tokens));
 }
@@ -187,12 +188,19 @@ static bool seal_receptions(BodaqsMasterService *s,uint8_t node) {
 bool bodaqs_master_service_receive_can(BodaqsMasterService *s,uint8_t node,
     uint8_t cls,uint16_t identifier,const uint8_t *payload,uint8_t length,
     uint8_t flags,uint32_t tick,uint32_t now) {
-    BodaqsReceptionBatch *b; uint8_t *r; uint64_t ordinal; bool anchor=false; uint32_t sequence=0;
+    if(!s || s->reception_ordinal==UINT64_MAX) return false;
+    return bodaqs_master_service_receive_can_ordered(s,node,cls,identifier,payload,length,flags,
+        tick,s->reception_ordinal+1,now);
+}
+bool bodaqs_master_service_receive_can_ordered(BodaqsMasterService *s,uint8_t node,
+    uint8_t cls,uint16_t identifier,const uint8_t *payload,uint8_t length,
+    uint8_t flags,uint32_t tick,uint64_t ordinal,uint32_t now) {
+    BodaqsReceptionBatch *b; uint8_t *r; bool anchor=false; uint32_t sequence=0;
     if(!s || !payload || node>3 || cls<1 || cls>2 || length>64 || identifier>0x7ff ||
        s->measurement.mode.phase!=2) return false;
     transfer_context(s);
-    if(s->reception_ordinal==UINT64_MAX) {++s->backpressure_frames;return false;}
-    ordinal=++s->reception_ordinal;
+    if(!ordinal || ordinal<=s->reception_ordinal) {++s->backpressure_frames;return false;}
+    s->reception_ordinal=ordinal;
     if(!(s->discovery[node].flags&1) || (s->discovery[node].flags&(BODAQS_MASTER_DISCOVERY_FLAG_STALE|BODAQS_MASTER_DISCOVERY_FLAG_DUPLICATE)) || !s->discovery[node].boot_id) return false;
     if(cls==1) {
         unsigned count=length>=4?(payload[3]&7):0;
@@ -245,7 +253,7 @@ bool bodaqs_master_service_control_transmit(BodaqsMasterService *s,uint32_t now,
     bodaqs_control_exchange_tick(&s->control,now);
     /* Authorization never queues behind ordinary retry timers. STOP has three
      * identical attempts in 300ms; renewal deadline ownership stays at node. */
-    for(priority=0;priority<2;++priority) for(node=0;node<4;++node) {
+    for(priority=0;s->measurement.mode.phase==2 && priority<2;++priority) for(node=0;node<4;++node) {
         BodaqsControlExchangeSlot *slot=&s->authorization.slots[node];
         bool stop=slot->request.opcode==0x25;
         if(slot->state!=1 || stop!=(priority==0)) continue;
@@ -276,7 +284,12 @@ bool bodaqs_master_service_control_receive(BodaqsMasterService *s,uint8_t addres
     return bodaqs_control_exchange_receive(&s->control,address,transaction,reply);
 }
 bool bodaqs_master_service_publish_evidence(BodaqsMasterService *s,const uint8_t *data,uint16_t length) {
-    if(!s || !data || s->measurement.mode.phase!=2 || length>1020) return false;
+    unsigned i,count;
+    if(!s || !data || s->measurement.mode.phase!=2 || length<24 || length>1020 || (length-8)%16) return false;
+    count=(length-8)/16;
+    if(bodaqs_measurement_get(data,2)!=1 || data[2]!=1 ||
+       bodaqs_measurement_get(data+4,2)!=count || !bodaqs_measurement_zero(data+6,2)) return false;
+    for(i=0;i<count;++i) if(data[8+i*16]!=1 || data[9+i*16]) return false;
     transfer_context(s);
     if(s->master_evidence.complete || !next_object(&s->master_evidence_next_id)) return false;
     memcpy(s->master_evidence_bytes,data,length);
@@ -285,7 +298,8 @@ bool bodaqs_master_service_publish_evidence(BodaqsMasterService *s,const uint8_t
 }
 static void transfer_error(const BodaqsMeasurementSlot *r,BodaqsMeasurementSlot *out,uint8_t reason) {
     *out=*r; out->kind=7; out->index=0; memset(out->body,0,40);
-    out->body[0]=bodaqs_fragment_class(r->kind); out->body[1]=reason;
+    out->body[0]=(r->kind==1 || r->kind==5)?r->body[0]:bodaqs_fragment_class(r->kind);
+    out->body[1]=reason;
 }
 static bool measurement_transfer(BodaqsMasterService *s,const BodaqsMeasurementSlot *r,
     uint32_t now,BodaqsMeasurementSlot *out) {
@@ -308,13 +322,15 @@ static bool measurement_transfer(BodaqsMasterService *s,const BodaqsMeasurementS
         }
         result=bodaqs_fragment_accept(&lane->rx,lane->incoming,68,r,0,out);
         if(result<0) { transfer_error(r,out,(uint8_t)-result); return true; }
+        if(result==2 && lane->rx_rejection) {transfer_error(r,out,lane->rx_rejection);return true;}
         if(result!=1) return true;
+        lane->rx_rejection=0;
         if(!bodaqs_control_decode_wrapped(lane->incoming,64,&request) || request.node_address!=r->node ||
            (cls==4 && request.record.opcode!=0x25 && request.record.opcode!=0x26 && request.record.opcode!=0x27) ||
            (cls==3 && (request.record.opcode==0x25 || request.record.opcode==0x26 || request.record.opcode==0x27)) ||
            !bodaqs_control_request_valid(&request.record)) {
             /* Do not cache transport acceptance of an invalid control object. */
-            memset(&lane->rx,0,sizeof(lane->rx)); transfer_error(r,out,13); return true;
+            lane->rx_rejection=13; transfer_error(r,out,13); return true;
         }
         if(cls==4 && request.record.opcode==0x25 && exchange->slots[r->node].request.opcode!=0x25) {
             if(exchange->slots[r->node].state==1) exchange->slots[r->node].state=3;
@@ -331,7 +347,7 @@ static bool measurement_transfer(BodaqsMasterService *s,const BodaqsMeasurementS
         } else lane->awaiting_result=true;
         return true;
     }
-    if(r->kind==0) return !r->object && !r->index && !r->total && bodaqs_measurement_zero(r->body,40);
+    if(r->kind==0) return r->node==255 && !r->object && !r->index && !r->total && bodaqs_measurement_zero(r->body,40);
     if(r->kind==5) {
         cls=r->body[0];
         if(cls<1 || cls>5 || (cls==5?r->node!=255:r->node>3)) return false;
@@ -356,7 +372,7 @@ static bool measurement_transfer(BodaqsMasterService *s,const BodaqsMeasurementS
         } else return false;
         ++s->objects_acked; return true;
     }
-    if(r->kind!=1 || !bodaqs_measurement_zero(r->body+1,39)) return false;
+    if(r->kind!=1 || r->total || (!r->object && r->index) || !bodaqs_measurement_zero(r->body+1,39)) return false;
     cls=r->body[0]; if(cls<1 || cls>5) return false;
     if(cls==5) {
         if(r->node!=255) return false;

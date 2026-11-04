@@ -21,6 +21,7 @@ typedef struct {
     uint8_t incoming[68], outgoing[68];
     uint32_t next_id;
     bool awaiting_result;
+    uint8_t rx_rejection;
 } BodaqsMeasurementControlLane;
 typedef struct {
     BodaqsControlExchange control;
@@ -67,6 +68,12 @@ typedef enum {
 bool bodaqs_master_service_receive_can(BodaqsMasterService *, uint8_t node,
     uint8_t cls, uint16_t identifier, const uint8_t *payload, uint8_t length,
     uint8_t flags, uint32_t receive_tick, uint32_t now_ms);
+/* Hardware ingress supplies the ISR-assigned global ordinal, including gaps
+ * from dropped/unforwarded CAN traffic. The convenience ingress above allocates
+ * a local ordinal for host callers without a capture driver. */
+bool bodaqs_master_service_receive_can_ordered(BodaqsMasterService *, uint8_t node,
+    uint8_t cls, uint16_t identifier, const uint8_t *payload, uint8_t length,
+    uint8_t flags, uint32_t receive_tick, uint64_t ordinal, uint32_t now_ms);
 bool bodaqs_master_service_control_transmit(BodaqsMasterService *, uint32_t now,
     uint8_t *, uint16_t *, uint8_t payload[64]);
 bool bodaqs_master_service_control_receive(BodaqsMasterService *, uint8_t,

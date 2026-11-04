@@ -671,19 +671,52 @@ static MeasurementInbox* transportInbox_(MeasurementTransport& transport,uint8_t
 void releaseMeasurementObject(MeasurementInbox& inbox) {
   if(inbox.state.complete) {inbox.admitted=true;inbox.ackPending=true;bodaqs_fragment_ack(&inbox.state,1,&inbox.pendingAck);}
 }
+
+bool queueMeasurementControl(MeasurementTransport& transport,const BodaqsControlWrapped& wrapped,
+                             uint32_t objectId,bool authorization) {
+  if(!measurementReady() || wrapped.node_address>3 || !objectId ||
+     (transport.context && transport.context!=s_diagnostics.measurement.context)) return false;
+  transport.context=s_diagnostics.measurement.context;
+  auto& outbox=transport.controls[authorization?1:0][wrapped.node_address];
+  uint8_t bytes[68]={};
+  if(!bodaqs_control_encode_wrapped(&wrapped,bytes)) return false;
+  if(outbox.state.complete) {
+    if(outbox.state.object==objectId) return memcmp(outbox.bytes,bytes,64)==0;
+    if(!authorization || wrapped.record.opcode!=0x25 || objectId<=outbox.state.object) return false;
+  }
+  memcpy(outbox.bytes,bytes,64);outbox.nextFragment=0;outbox.error=0;outbox.startedMs=millis();
+  return bodaqs_fragment_seal(&outbox.state,outbox.bytes,68,transport.context,objectId,
+      wrapped.node_address,authorization?4:3,0,64);
+}
 int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint8_t node,
                                 MeasurementInbox*& completed) {
   completed=nullptr;
   if(!measurementReady() || cls<1 || cls>5 || (node>3 && node!=255)) return -4;
+  if(transport.context && transport.context!=s_diagnostics.measurement.context) return -4;
+  transport.context=s_diagnostics.measurement.context;
   BodaqsMeasurementSlot request={},response={};MeasurementInbox* acked=nullptr;
+  MeasurementOutbox* outgoing=nullptr;
+  for(int lane=1;lane>=0;--lane) for(uint8_t i=0;i<4;++i) {
+    uint8_t n=(transport.nextControlNode[lane]+i)%4;
+    auto& candidate=transport.controls[lane][n];
+    if(candidate.state.complete && static_cast<uint32_t>(millis()-candidate.startedMs)>=300) {
+      candidate.state.complete=0;candidate.error=12;++s_diagnostics.measurementTransferErrors;return -12;
+    }
+    if(!outgoing && candidate.state.complete) {
+      outgoing=&candidate;
+      (void)bodaqs_fragment_emit(&candidate.state,candidate.bytes,candidate.nextFragment,&request);
+      candidate.nextFragment=(candidate.nextFragment+1)%2;
+      transport.nextControlNode[lane]=(n+1)%4;
+    }
+  }
   const uint8_t priority[5]={4,3,5,1,2};
   for(uint8_t p:priority) for(uint8_t n=0;n<(p==5?1:4);++n) {
     auto& inbox=transport.inboxes[p-1][n];
-    if(!acked && inbox.admitted && inbox.ackPending) {
+    if(!outgoing && !acked && inbox.admitted && inbox.ackPending) {
       request=inbox.pendingAck;acked=&inbox;
     }
   }
-  if(!acked) {
+  if(!acked && !outgoing) {
     request.kind=1;request.context=s_diagnostics.measurement.context;request.node=node;request.body[0]=cls;
     MeasurementInbox* partial=transportInbox_(transport,cls,node);
     if(partial && partial->state.object && !partial->state.complete) {
@@ -699,7 +732,20 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
   if(!exchangeMeasurementSlot(request,response)) return 0;
   if(acked) acked->ackPending=false;
   if(response.context!=s_diagnostics.measurement.context) return 0;
-  if(response.kind==7) {++s_diagnostics.measurementTransferErrors;return -response.body[1];}
+  if(response.kind==5 && response.node<4 && (response.body[0]==3 || response.body[0]==4)) {
+    auto& sent=transport.controls[response.body[0]-3][response.node];
+    if(bodaqs_fragment_ack_matches(&sent.state,&response)) {
+      sent.state.complete=0;++s_diagnostics.measurementControlSubmitted;
+    }
+    return 0;
+  }
+  if(response.kind==7) {
+    if(response.node<4 && (response.body[0]==3 || response.body[0]==4)) {
+      auto& failed=transport.controls[response.body[0]-3][response.node];
+      if(failed.state.object==response.object) {failed.state.complete=0;failed.error=response.body[1];}
+    }
+    ++s_diagnostics.measurementTransferErrors;return -response.body[1];
+  }
   const uint8_t responseClass=bodaqs_fragment_class(response.kind);
   auto* inbox=transportInbox_(transport,responseClass,response.node);
   if(!inbox) return 0;
@@ -750,6 +796,17 @@ int pollMeasurementObject(uint8_t cls,uint8_t node,MeasurementInbox& inbox) {
   }
   return accepted;
 }
+uint32_t nextMeasurementObjectId(uint8_t cls,uint8_t node) {
+  static uint64_t context=0, boot=0;
+  static uint32_t ids[2][4]={};
+  if(!measurementReady() || cls<3 || cls>4 || node>3) return 0;
+  if(context!=s_diagnostics.measurement.context || boot!=s_diagnostics.measurement.boot) {
+    context=s_diagnostics.measurement.context;boot=s_diagnostics.measurement.boot;
+    memset(ids,0,sizeof(ids));
+  }
+  auto& id=ids[cls-3][node];
+  return id==UINT32_MAX?0:++id;
+}
 bool submitMeasurementControl(const BodaqsControlWrapped& wrapped,uint32_t objectId,bool authorization) {
   if(!measurementReady()) return false;
   uint8_t data[68]={};BodaqsFragmentState tx={};
@@ -773,19 +830,17 @@ bool submitMeasurementControl(const BodaqsControlWrapped& wrapped,uint32_t objec
 }
 bool queryMeasurementNodeState(uint8_t node,uint32_t boot,uint32_t operation,BodaqsControlWrapped& result) {
   static uint64_t context=0;
-  static uint32_t ids[4]={};
   static MeasurementInbox inboxes[4];
   if(!measurementReady() || node>3 || !operation || !boot) return false;
   if(context!=s_diagnostics.measurement.context) {
     context=s_diagnostics.measurement.context;
-    memset(ids,0,sizeof(ids));for(auto& inbox:inboxes) inbox=MeasurementInbox{};
+    for(auto& inbox:inboxes) inbox=MeasurementInbox{};
   }
-  if(ids[node]==UINT32_MAX) return false;
   BodaqsControlWrapped request={};request.master_boot_id=s_diagnostics.measurement.boot;
   request.node_address=node;request.record.opcode=BODAQS_CONTROL_GET_NODE_STATE;
   request.record.endpoint=BODAQS_CONTROL_NODE_WIDE;request.record.operation=operation;
   request.record.node_boot_id=boot;
-  if(!submitMeasurementControl(request,++ids[node])) return false;
+  if(!submitMeasurementControl(request,nextMeasurementObjectId(3,node))) return false;
   const uint32_t began=millis();
   do {
     int received=pollMeasurementObject(3,node,inboxes[node]);

@@ -109,10 +109,24 @@ struct MeasurementInbox {
 };
 // Caller allocates this bank persistently (not on a task stack). It demultiplexes
 // all pipelined traffic, including MISO received while sending another lane/ACK.
+struct MeasurementOutbox {
+  BodaqsFragmentState state = {};
+  uint8_t bytes[68] = {};
+  uint8_t nextFragment = 0;
+  uint8_t error = 0;
+  uint32_t startedMs = 0;
+};
 struct MeasurementTransport {
   MeasurementInbox inboxes[5][4];
+  MeasurementOutbox controls[2][4];
+  uint64_t context = 0;
+  uint8_t nextControlNode[2] = {};
   uint32_t nextHeadPollMs[5] = {};
 };
+// Queue immutable control; repeated identical queueing is idempotent. STOP can
+// replace a queued renewal. Service routes all concurrent MISO into the bank.
+bool queueMeasurementControl(MeasurementTransport&, const BodaqsControlWrapped&,
+                             uint32_t objectId, bool authorization = false);
 int serviceMeasurementTransport(MeasurementTransport&, uint8_t pollClass,
                                 uint8_t pollNode, MeasurementInbox*& completed);
 // Call only after the whole validated object is retained in downstream bounded
@@ -125,6 +139,9 @@ void releaseMeasurementObject(MeasurementInbox&);
 // Keep a distinct inbox per class/node; the master pins one data object per node.
 int pollMeasurementObject(uint8_t cls, uint8_t node, MeasurementInbox& inbox);
 bool acknowledgeMeasurementObject(MeasurementInbox& inbox);
+// Shared logger-to-master ID allocator for classes 3/4. Zero means unavailable
+// or exhausted. All callers, including lifecycle code, use this allocator.
+uint32_t nextMeasurementObjectId(uint8_t cls, uint8_t node);
 // Caller retains immutable ID/content across retries, never wraps/reuses IDs.
 bool submitMeasurementControl(const BodaqsControlWrapped&, uint32_t objectId,
                               bool authorization = false);

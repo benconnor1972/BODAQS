@@ -120,21 +120,34 @@ int main() {
   assert(bodaqs_master_service_receive_can(&master,n,2,0x060+n,event,8,0,12345+n,clockMs));
  }
  static CanMasterManager::MeasurementTransport transport;
- uint8_t delivered=0;
- for(unsigned i=0;i<150 && delivered!=15;++i) {
+ BodaqsControlWrapped protectedRequest={};protectedRequest.master_boot_id=99;
+ protectedRequest.node_address=0;protectedRequest.record.opcode=0x26;
+ protectedRequest.record.endpoint=255;protectedRequest.record.node_boot_id=node.view.boot_id;
+ protectedRequest.record.operation=901;protectedRequest.record.session=1;
+ assert(CanMasterManager::queueMeasurementControl(transport,protectedRequest,
+     CanMasterManager::nextMeasurementObjectId(4,0),true));
+ uint8_t delivered=0;bool authorizationDelivered=false;
+ for(unsigned i=0;i<200 && (delivered!=15 || !authorizationDelivered);++i) {
   CanMasterManager::MeasurementInbox* completed=nullptr;
   const uint8_t n=i%5;
   int result=CanMasterManager::serviceMeasurementTransport(transport,n==4?4:2,n==4?0:n,completed);
   assert(result>=0);
   if(result==1) {
-   assert(completed && completed->state.cls==2 && completed->state.total==96);
+   assert(completed);
+   if(completed->state.cls==4) {
+    BodaqsControlWrapped reply={};
+    assert(bodaqs_control_decode_wrapped(completed->bytes,64,&reply));
+    assert(reply.record.operation==901);authorizationDelivered=true;
+    CanMasterManager::releaseMeasurementObject(*completed);continue;
+   }
+   assert(completed->state.cls==2 && completed->state.total==96);
    assert(!(delivered&(1U<<completed->state.node)));
    assert(bodaqs_measurement_get(completed->bytes+20,4)==12345U+completed->state.node);
    delivered|=1U<<completed->state.node;
    CanMasterManager::releaseMeasurementObject(*completed);
   }
  }
- assert(delivered==15);
+ assert(delivered==15 && authorizationDelivered);
  // Drain RAM ACKs, including retained duplicates received while sending ACKs.
  for(unsigned i=0;i<12;++i) {
   CanMasterManager::MeasurementInbox* completed=nullptr;

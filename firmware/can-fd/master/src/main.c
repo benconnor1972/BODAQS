@@ -81,7 +81,9 @@ typedef struct {
 typedef struct {
     DL_MCAN_RxBufElement message;
     uint32_t received_ms;
+    uint64_t ordinal;
 } CanReceiveRecord;
+static uint64_t gCanReceiveOrdinal;
 static CanReceiveRecord gCanReceiveStorage[CAN_RX_CAPACITY];
 static BodaqsRecordQueue gCanReceiveQueue;
 static volatile bool gHealthDue;
@@ -180,7 +182,7 @@ static void note_can_decode_result(BodaqsCanDecodeResult result)
 }
 
 static void process_can_message(
-    const DL_MCAN_RxBufElement *message, uint32_t received_ms)
+    const DL_MCAN_RxBufElement *message, uint32_t received_ms, uint64_t ordinal)
 {
     uint16_t identifier;
     size_t length;
@@ -246,14 +248,14 @@ static void process_can_message(
      * Stream data is gated on a same-boot/epoch anchor below. */
     if(identifier>=BODAQS_CAN_ID_STREAM_BASE && identifier<BODAQS_CAN_ID_STREAM_BASE+32) {
         node_address=(uint8_t)((identifier-BODAQS_CAN_ID_STREAM_BASE)/8);
-        (void)bodaqs_master_service_receive_can(&gService,node_address,1,identifier,
-            message->data,(uint8_t)length,0,received_ms*1000U,gUptimeMs);
+        (void)bodaqs_master_service_receive_can_ordered(&gService,node_address,1,identifier,
+            message->data,(uint8_t)length,0,received_ms*1000U,ordinal,gUptimeMs);
         return;
     }
     if(bodaqs_can_identifier_node(identifier,BODAQS_CAN_ID_TIMING_BASE,&node_address) ||
        bodaqs_can_identifier_node(identifier,BODAQS_CAN_ID_EVENT_BASE,&node_address)) {
-        (void)bodaqs_master_service_receive_can(&gService,node_address,2,identifier,
-            message->data,(uint8_t)length,0,received_ms*1000U,gUptimeMs);
+        (void)bodaqs_master_service_receive_can_ordered(&gService,node_address,2,identifier,
+            message->data,(uint8_t)length,0,received_ms*1000U,ordinal,gUptimeMs);
         return;
     }
     ++gMasterRuntimeInfo.can_unknown_frames;
@@ -275,6 +277,11 @@ static void capture_can_receive_fifo(void)
         DL_MCAN_readMsgRam(MCAN0_INST, DL_MCAN_MEM_TYPE_FIFO, 0U,
             fifo_status.num, &record.message);
         record.received_ms = gUptimeMs;
+        /* ISR capture order includes frames later rejected or dropped by queues. */
+        if(gCanReceiveOrdinal==UINT64_MAX) {
+            ++gMasterRuntimeInfo.can_malformed_frames;
+            record.ordinal=0; /* Fail closed while still retiring the hardware FIFO. */
+        } else record.ordinal=++gCanReceiveOrdinal;
         DL_MCAN_writeRxFIFOAck(
             MCAN0_INST, fifo_status.num, fifo_status.getIdx);
         ++gMasterRuntimeInfo.can_rx_frames;
@@ -288,7 +295,7 @@ static void service_can_receive(void)
 {
     CanReceiveRecord record;
     if (take_record(&gCanReceiveQueue, &record)) {
-        process_can_message(&record.message, record.received_ms);
+        process_can_message(&record.message, record.received_ms, record.ordinal);
     }
 }
 

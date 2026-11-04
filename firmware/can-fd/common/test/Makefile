@@ -65,3 +65,5 @@ $(filter-out test_can_network.exe,$(TEST_BINS)): ../protocol/bodaqs_measurement.
 
 test_frag_transport.exe: test_frag_transport.cpp $(MASTER_PROTOCOL) $(MASTER_SERVICE) ../protocol/bodaqs_fragment_transport.h
 	$(CXX) $(CXXFLAGS) -I../protocol -o $@ $(filter %.cpp %.c,$^)
+
+$(filter-out test_can_network.exe,$(TEST_BINS)): ../protocol/bodaqs_fragment_transport.h

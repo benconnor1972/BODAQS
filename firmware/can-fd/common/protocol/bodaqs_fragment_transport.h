@@ -67,7 +67,7 @@ static inline int bodaqs_fragment_accept(BodaqsFragmentState *s,uint8_t *data,si
     if(a->total<4 || a->total>1024 || a->total>capacity || offset>=a->total ||
        ((cls==3 || cls==4) && a->total!=68) ||
        ((cls==1 || cls==2) && (a->total<96 || (a->total-20)%76)) ||
-       (cls==5 && a->total<12)) return -2;
+       (cls==5 && (a->total<28 || (a->total-12)%16))) return -2;
     count=a->total-offset; if(count>40) count=40;
     if(!bodaqs_measurement_zero(a->body+count,40-count)) return -2;
     if(s->object && (s->context!=a->context || s->node!=a->node || s->cls!=cls || s->direction!=direction)) return -4;
@@ -111,6 +111,14 @@ static inline int bodaqs_fragment_accept(BodaqsFragmentState *s,uint8_t *data,si
                 s->mask=0;return -13;
             }
         }
+    }
+    if(cls==5) {
+        unsigned i,count=(s->total-12)/16;
+        if(bodaqs_measurement_get(data,2)!=1 || data[2]!=1 ||
+           bodaqs_measurement_get(data+4,2)!=count || !bodaqs_measurement_zero(data+6,2)) {
+            s->mask=0;return -13;
+        }
+        for(i=0;i<count;++i) if(data[8+i*16]!=1 || data[9+i*16]) {s->mask=0;return -13;}
     }
     s->complete=1; ++s->accepted;
     s->accepted_object=s->object;s->accepted_checksum=s->checksum;s->accepted_total=s->total;

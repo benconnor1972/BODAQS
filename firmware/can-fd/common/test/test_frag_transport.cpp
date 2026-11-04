@@ -103,7 +103,7 @@ int main() {
  BodaqsFragmentState reception={};uint8_t bytes[1024]={};
  poll.node=0;poll.body[0]=2;
  for(uint8_t index=0;index<3;++index) {
-  poll.index=index;bodaqs_measurement_encode(&poll,wire,64);
+  poll.index=index;poll.object=1;bodaqs_measurement_encode(&poll,wire,64);
   bodaqs_master_service_process_transfer(&service,wire,64,710,response);
   bodaqs_measurement_decode(response,64,&got);
   assert(bodaqs_fragment_accept(&reception,bytes,1024,&got,1,&ack)==(index==2?1:0));
@@ -117,12 +117,32 @@ int main() {
  assert(service.objects_acked==acked);
  for(unsigned i=0;i<13;++i) assert(bodaqs_master_service_receive_can(&service,0,2,0x060,payload,64,0,2000+i,720));
  assert(!bodaqs_master_service_receive_can(&service,0,2,0x060,payload,64,0,3000,720));
- poll.index=25;bodaqs_measurement_encode(&poll,wire,64);
+ poll.index=25;poll.object=2;bodaqs_measurement_encode(&poll,wire,64);
  bodaqs_master_service_process_transfer(&service,wire,64,721,response);
  bodaqs_measurement_decode(response,64,&got);
  assert(got.total==1008 && got.index==25 && bodaqs_measurement_zero(got.body+8,32));
  // Duplicate address is excluded even when it has a valid boot and prior anchor.
  service.discovery[1].flags=5;
  assert(!bodaqs_master_service_receive_can(&service,1,2,0x061,payload,64,0,3000,720));
+ // The actual forwarding seam rejects data until a retained same-boot/epoch anchor.
+ BodaqsMasterService gated={};bodaqs_master_service_init(&gated,&identity);
+ bodaqs_control_exchange_init(&gated.control,99);gated.measurement.mode.phase=2;gated.measurement.mode.context=9;
+ gated.discovery[0].flags=1;gated.discovery[0].boot_id=5;
+ uint8_t samples[64]={100,0,3,5};
+ assert(!bodaqs_master_service_receive_can(&gated,0,1,0x100,samples,64,0,1000,0));
+ uint8_t anchor[32]={1,0x22,1,0,0,0,20,0,0,1,3,0,100,0,0,0,0,0,0,0,1,0,0,0,1,0,0,0,0,0,0,0};
+ assert(bodaqs_master_service_receive_can(&gated,0,2,0x090,anchor,32,0,1000,0));
+ samples[2]=4;assert(!bodaqs_master_service_receive_can(&gated,0,1,0x100,samples,64,0,1001,1));samples[2]=3;
+ BodaqsFragmentState gateEvidence={};uint8_t gateBytes[1024]={};
+ poll.node=0;poll.body[0]=2;poll.object=1;
+ for(uint8_t index=0;index<3;++index) {
+  poll.index=index;bodaqs_measurement_encode(&poll,wire,64);
+  bodaqs_master_service_process_transfer(&gated,wire,64,20,response);bodaqs_measurement_decode(response,64,&got);
+  assert(bodaqs_fragment_accept(&gateEvidence,gateBytes,1024,&got,1,&ack)==(index==2?1:0));
+ }
+ bodaqs_measurement_encode(&ack,wire,64);bodaqs_master_service_process_transfer(&gated,wire,64,21,response);
+ assert(bodaqs_master_service_receive_can(&gated,0,1,0x100,samples,64,0,1002,22));
+ gated.discovery[0].boot_id=6;
+ assert(!bodaqs_master_service_receive_can(&gated,0,1,0x100,samples,64,0,1003,23));
  puts("fragment complete RAM acceptance and duplicate/conflict checks passed");
 }
