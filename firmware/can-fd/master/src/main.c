@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "bodaqs_can_network.h"
+#include "bodaqs_record_queue.h"
 #include "bodaqs_master_service.h"
 #include "bodaqs_node_inventory.h"
 #include "master_identity.h"
@@ -34,10 +35,18 @@ typedef struct {
     uint32_t invalid_argument_slots;
     uint32_t last_decode_result;
     uint32_t cs_release_timeouts;
+    uint32_t spi_rx_dropped;
+    uint16_t spi_rx_capacity;
+    uint16_t spi_rx_high_water;
     uint32_t buck_gpio_doe31_0;
     uint32_t buck_gpio_dout31_0;
     uint32_t buck_gpio_din31_0;
     uint32_t can_rx_frames;
+    uint32_t can_rx_dropped;
+    uint32_t can_rx_hardware_losses;
+    uint16_t can_rx_capacity;
+    uint16_t can_rx_pending;
+    uint16_t can_rx_pending_high_water;
     uint32_t can_tx_frames;
     uint32_t can_error_events;
     uint32_t can_bus_off_recovery_attempts;
@@ -67,6 +76,27 @@ typedef struct {
     bool rear_power_fault;
 } MasterRuntimeInfo;
 
+/* Snapshot at most the configured hardware FIFO depth per interrupt. */
+#define CAN_RX_CAPACITY (8U)
+typedef struct {
+    DL_MCAN_RxBufElement message;
+    uint32_t received_ms;
+} CanReceiveRecord;
+static CanReceiveRecord gCanReceiveStorage[CAN_RX_CAPACITY];
+static BodaqsRecordQueue gCanReceiveQueue;
+static volatile bool gHealthDue;
+
+/* Queue metadata and record copies are serialized; decoding never masks IRQs. */
+static bool take_record(BodaqsRecordQueue *queue, void *record)
+{
+    uint32_t primask = __get_PRIMASK();
+    bool available;
+    __disable_irq();
+    available = bodaqs_record_queue_pop(queue, record);
+    __set_PRIMASK(primask);
+    return available;
+}
+
 volatile MasterRuntimeInfo gMasterRuntimeInfo;
 BodaqsNodeInventory gNodeInventory;
 
@@ -77,6 +107,10 @@ static uint8_t gTransmitSlots[2][BODAQS_MASTER_SLOT_BYTES];
 static uint8_t gReceiveSlots[2][BODAQS_MASTER_SLOT_BYTES];
 static uint8_t gTransmitIndex;
 static uint8_t gReceiveIndex;
+/* DMA stays unarmed until this completed slot has been serviced. */
+static uint8_t gSpiReceiveStorage[1][BODAQS_MASTER_SLOT_BYTES];
+static BodaqsRecordQueue gSpiReceiveQueue;
+static volatile bool gSpiOverflow;
 static volatile uint32_t gUptimeMs;
 static volatile bool gDiscoveryDue;
 static uint16_t gDiscoveryTransaction;
@@ -143,7 +177,8 @@ static void note_can_decode_result(BodaqsCanDecodeResult result)
     }
 }
 
-static void process_can_message(const DL_MCAN_RxBufElement *message)
+static void process_can_message(
+    const DL_MCAN_RxBufElement *message, uint32_t received_ms)
 {
     uint16_t identifier;
     size_t length;
@@ -175,7 +210,7 @@ static void process_can_message(const DL_MCAN_RxBufElement *message)
             return;
         }
         (void) bodaqs_node_inventory_observe_announce(
-            &gNodeInventory, &announce, gUptimeMs);
+            &gNodeInventory, &announce, received_ms);
         return;
     }
 
@@ -189,7 +224,7 @@ static void process_can_message(const DL_MCAN_RxBufElement *message)
         note_can_decode_result(result);
         if (result == BODAQS_CAN_DECODE_OK) {
             (void) bodaqs_node_inventory_observe_status(
-                &gNodeInventory, node_address, &status, gUptimeMs);
+                &gNodeInventory, node_address, &status, received_ms);
         }
         return;
     }
@@ -197,31 +232,37 @@ static void process_can_message(const DL_MCAN_RxBufElement *message)
     ++gMasterRuntimeInfo.can_unknown_frames;
 }
 
-static void drain_can_receive_fifo(void)
+static void capture_can_receive_fifo(void)
 {
-    DL_MCAN_RxBufElement message;
+    CanReceiveRecord record;
     DL_MCAN_RxFIFOStatus fifo_status = {0};
+    uint32_t remaining;
 
     fifo_status.num = DL_MCAN_RX_FIFO_NUM_0;
     DL_MCAN_getRxFIFOStatus(MCAN0_INST, &fifo_status);
-    gMasterRuntimeInfo.can_rx_queue_depth =
-        (uint16_t) fifo_status.fillLvl;
-    if (fifo_status.fillLvl >
-        gMasterRuntimeInfo.can_rx_queue_high_water) {
-        gMasterRuntimeInfo.can_rx_queue_high_water =
-            (uint16_t) fifo_status.fillLvl;
+    remaining = fifo_status.fillLvl;
+    if (remaining > CAN_RX_CAPACITY) {
+        remaining = CAN_RX_CAPACITY;
     }
-
-    while (fifo_status.fillLvl != 0U) {
+    while (remaining-- != 0U) {
         DL_MCAN_readMsgRam(MCAN0_INST, DL_MCAN_MEM_TYPE_FIFO, 0U,
-            fifo_status.num, &message);
+            fifo_status.num, &record.message);
+        record.received_ms = gUptimeMs;
         DL_MCAN_writeRxFIFOAck(
             MCAN0_INST, fifo_status.num, fifo_status.getIdx);
         ++gMasterRuntimeInfo.can_rx_frames;
-        process_can_message(&message);
+        (void) bodaqs_record_queue_push(&gCanReceiveQueue, &record);
         DL_MCAN_getRxFIFOStatus(MCAN0_INST, &fifo_status);
     }
-    gMasterRuntimeInfo.can_rx_queue_depth = 0U;
+}
+
+/* One record per turn leaves time for SPI, announcements and recovery. */
+static void service_can_receive(void)
+{
+    CanReceiveRecord record;
+    if (take_record(&gCanReceiveQueue, &record)) {
+        process_can_message(&record.message, record.received_ms);
+    }
 }
 
 static bool send_can_frame(
@@ -360,6 +401,8 @@ static void update_runtime_info(void)
 {
     uint8_t node;
 
+    gMasterRuntimeInfo.can_rx_queue_depth = gCanReceiveQueue.depth;
+    gMasterRuntimeInfo.can_rx_queue_high_water = gCanReceiveQueue.high_water;
     gMasterRuntimeInfo.uptime_ms = gUptimeMs;
     gMasterRuntimeInfo.slots_received = gService.slots_received;
     gMasterRuntimeInfo.probes_received = gService.probes_received;
@@ -453,9 +496,9 @@ static void update_service_status(void)
     status.can_rx_frames = gMasterRuntimeInfo.can_rx_frames;
     status.can_tx_frames = gMasterRuntimeInfo.can_tx_frames;
     status.can_error_events = gMasterRuntimeInfo.can_error_events;
-    status.can_rx_queue_depth = gMasterRuntimeInfo.can_rx_queue_depth;
+    status.can_rx_queue_depth = gCanReceiveQueue.depth;
     status.can_rx_queue_high_water =
-        gMasterRuntimeInfo.can_rx_queue_high_water;
+        gCanReceiveQueue.high_water;
     bodaqs_master_service_set_status(&gService, &status);
 
     do {
@@ -506,6 +549,8 @@ static void update_service_status(void)
         BODAQS_MASTER_DISCOVERY_NODE_COUNT);
 }
 
+static void service_spi_receive(void);
+
 int main(void)
 {
     BodaqsMasterIdentity identity;
@@ -525,6 +570,12 @@ int main(void)
     gTransmitIndex = 0U;
     gReceiveIndex = 0U;
     gUptimeMs = 0U;
+    bodaqs_record_queue_init(&gCanReceiveQueue, gCanReceiveStorage,
+        sizeof(gCanReceiveStorage[0]), CAN_RX_CAPACITY);
+    gHealthDue = true;
+    bodaqs_record_queue_init(&gSpiReceiveQueue, gSpiReceiveStorage,
+        BODAQS_MASTER_SLOT_BYTES, 1U);
+    gSpiOverflow = false;
     gDiscoveryTransaction = 0U;
     gDiscoveryNonce = (uint32_t) identity.hardware_uid ^
         (uint32_t) (identity.hardware_uid >> 32);
@@ -551,6 +602,21 @@ int main(void)
     NVIC_EnableIRQ(MCAN0_INST_INT_IRQN);
 
     while (1) {
+        service_spi_receive();
+        gMasterRuntimeInfo.spi_rx_capacity = gSpiReceiveQueue.capacity;
+        gMasterRuntimeInfo.spi_rx_high_water = gSpiReceiveQueue.high_water;
+        gMasterRuntimeInfo.spi_rx_dropped = gSpiReceiveQueue.dropped;
+        service_can_receive();
+        gMasterRuntimeInfo.can_rx_capacity = gCanReceiveQueue.capacity;
+        gMasterRuntimeInfo.can_rx_pending = gCanReceiveQueue.depth;
+        gMasterRuntimeInfo.can_rx_pending_high_water = gCanReceiveQueue.high_water;
+        gMasterRuntimeInfo.can_rx_dropped = gCanReceiveQueue.dropped;
+        if (gHealthDue) {
+            gHealthDue = false;
+            bodaqs_node_inventory_update_stale(
+                &gNodeInventory, gUptimeMs, NODE_STALE_AFTER_MS);
+            update_runtime_info();
+        }
         if (gDiscoveryDue) {
             gDiscoveryDue = false;
             send_discovery_request();
@@ -575,6 +641,9 @@ void MCAN0_INST_IRQHandler(void)
         gMasterRuntimeInfo.can_last_interrupts = interrupt_status;
         DL_MCAN_clearIntrStatus(MCAN0_INST, interrupt_status,
             DL_MCAN_INTR_SRC_MCAN_LINE_1);
+        if ((interrupt_status & DL_MCAN_INTERRUPT_RF0L) != 0U) {
+            ++gMasterRuntimeInfo.can_rx_hardware_losses;
+        }
         if ((interrupt_status & gCanErrorInterruptMask) != 0U) {
             ++gMasterRuntimeInfo.can_error_events;
         }
@@ -584,50 +653,68 @@ void MCAN0_INST_IRQHandler(void)
         if ((interrupt_status & (DL_MCAN_INTERRUPT_RF0N |
                 DL_MCAN_INTERRUPT_RF0W |
                 DL_MCAN_INTERRUPT_RF0F)) != 0U) {
-            drain_can_receive_fifo();
+            capture_can_receive_fifo();
         }
-        update_can_state();
+        gHealthDue = true;
     }
+}
+
+static void service_spi_receive(void)
+{
+    uint8_t received[BODAQS_MASTER_SLOT_BYTES];
+    if (gSpiOverflow) {
+        gSpiOverflow = false;
+        (void) take_record(&gSpiReceiveQueue, received);
+        recover_spi_transport();
+        return;
+    }
+    if (!take_record(&gSpiReceiveQueue, received)) {
+        return;
+    }
+    uint8_t next_transmit_index = gTransmitIndex ^ 1U;
+    BodaqsMasterSlotResult result;
+
+    /*
+     * DMA completion can precede the controller releasing chip select.
+     * Do not rearm either DMA channel inside the previous slot boundary.
+     */
+    if (!wait_for_spi_chip_select_inactive()) {
+        ++gMasterRuntimeInfo.cs_release_timeouts;
+        recover_spi_transport();
+        update_runtime_info();
+        return;
+    }
+
+    update_service_status();
+    result = bodaqs_master_service_process_slot(&gService,
+        received,
+        gTransmitSlots[next_transmit_index]);
+    if (BODAQS_ENABLE_BUCK && BODAQS_ENABLE_FRONT_BRANCH &&
+        !gLoggerCommunicationEstablished &&
+        ((gService.probes_received != 0U) ||
+            (gService.status_requests_received != 0U))) {
+        gLoggerCommunicationEstablished = true;
+        DL_GPIO_setPins(
+            GPIO_BOARD_PORT, GPIO_BOARD_FRONT_ENABLE_PIN);
+    }
+    if (result == BODAQS_MASTER_SLOT_MALFORMED) {
+        recover_spi_transport();
+    } else {
+        gTransmitIndex = next_transmit_index;
+        gReceiveIndex ^= 1U;
+        arm_spi_slot();
+    }
+    update_runtime_info();
 }
 
 void SPI_A8_INST_IRQHandler(void)
 {
     if (DL_SPI_getPendingInterrupt(SPI_A8_INST) ==
         DL_SPI_IIDX_DMA_DONE_RX) {
-        uint8_t next_transmit_index = gTransmitIndex ^ 1U;
-        BodaqsMasterSlotResult result;
-
-        /*
-         * DMA completion can precede the controller releasing chip select.
-         * Do not rearm either DMA channel inside the previous slot boundary.
-         */
-        if (!wait_for_spi_chip_select_inactive()) {
-            ++gMasterRuntimeInfo.cs_release_timeouts;
-            recover_spi_transport();
-            update_runtime_info();
-            return;
+        if (!bodaqs_record_queue_push(&gSpiReceiveQueue,
+                gReceiveSlots[gReceiveIndex])) {
+            gSpiOverflow = true;
         }
-
-        update_service_status();
-        result = bodaqs_master_service_process_slot(&gService,
-            gReceiveSlots[gReceiveIndex],
-            gTransmitSlots[next_transmit_index]);
-        if (BODAQS_ENABLE_BUCK && BODAQS_ENABLE_FRONT_BRANCH &&
-            !gLoggerCommunicationEstablished &&
-            ((gService.probes_received != 0U) ||
-                (gService.status_requests_received != 0U))) {
-            gLoggerCommunicationEstablished = true;
-            DL_GPIO_setPins(
-                GPIO_BOARD_PORT, GPIO_BOARD_FRONT_ENABLE_PIN);
-        }
-        if (result == BODAQS_MASTER_SLOT_MALFORMED) {
-            recover_spi_transport();
-        } else {
-            gTransmitIndex = next_transmit_index;
-            gReceiveIndex ^= 1U;
-            arm_spi_slot();
-        }
-        update_runtime_info();
     }
 }
 
@@ -647,8 +734,6 @@ void SysTick_Handler(void)
         discovery_ticks = 0U;
         gDiscoveryDue = true;
     }
-    bodaqs_node_inventory_update_stale(
-        &gNodeInventory, gUptimeMs, NODE_STALE_AFTER_MS);
-    update_runtime_info();
+    gHealthDue = true;
 }
 

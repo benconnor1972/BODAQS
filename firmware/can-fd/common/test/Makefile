@@ -1,7 +1,7 @@
 CXX ?= g++
 CXXFLAGS := -std=c++17 -Wall -Wextra -Werror -O2
 
-TEST_BINS := test_master_protocol.exe test_can_network.exe
+TEST_BINS := test_master_protocol.exe test_can_network.exe test_deferred_transport.exe
 LOGGER_PROTOCOL := ../../../src/CanMasterProtocol.cpp
 MASTER_PROTOCOL := ../protocol/bodaqs_master_protocol.c
 MASTER_SERVICE := ../protocol/bodaqs_master_service.c
@@ -19,12 +19,16 @@ endif
 test: $(TEST_BINS)
 	./test_master_protocol.exe
 	./test_can_network.exe
+	./test_deferred_transport.exe
 
 test_master_protocol.exe: test_master_protocol.cpp $(LOGGER_PROTOCOL) $(MASTER_PROTOCOL) $(MASTER_SERVICE)
 	$(CXX) $(CXXFLAGS) -I../protocol -I../../../src -o $@ $^
 
 test_can_network.exe: test_can_network.cpp $(CAN_NETWORK) $(NODE_INVENTORY)
 	$(CXX) $(CXXFLAGS) -I../network -o $@ $^
+
+test_deferred_transport.exe: test_deferred_transport.cpp $(LOGGER_PROTOCOL) $(MASTER_PROTOCOL) $(MASTER_SERVICE) ../transport/bodaqs_record_queue.h
+	$(CXX) $(CXXFLAGS) -I../protocol -I../../../src -o $@ $(filter %.cpp %.c,$^)
 
 clean:
 	-$(REMOVE) $(TEST_BINS)
