@@ -14,7 +14,7 @@ static bool group_zero(const uint8_t *d, unsigned bit) {
 }
 bool bodaqs_control_descriptor_valid(const uint8_t *d,size_t len,uint16_t schema,uint8_t endpoint) {
  unsigned i; uint32_t applicable,known,historical;
- if(!d || u16(d)!=schema || u16(d+2)!=1) return false;
+ if(!d || len<4 || endpoint>=6 || u16(d)!=schema || u16(d+2)!=1) return false;
  if(schema==2) {
   if(len!=128 || d[4]!=endpoint || d[5]>1 || d[6]>16 || d[7] ||
    (bodaqs_control_get_u32(d+8)&~31U) || (bodaqs_control_get_u32(d+12)&~15U) ||
