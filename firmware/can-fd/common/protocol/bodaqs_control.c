@@ -90,7 +90,7 @@ bool bodaqs_control_request_valid(const BodaqsControlRecord *r)
     {
         return false;
     }
-    if ((r->opcode == BODAQS_CONTROL_BEGIN_APPLY && r->transfer) ||
+    if ((r->opcode == BODAQS_CONTROL_BEGIN_APPLY && !r->transfer) ||
         (r->opcode == BODAQS_CONTROL_COMMIT_APPLY && !r->transfer))
     {
         return false;

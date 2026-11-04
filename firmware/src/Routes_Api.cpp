@@ -48,6 +48,30 @@ static void addControlAuthorityJson_(JsonObject node,
   node["configuration_reconciled"] = false;
 }
 
+static void addControlApplyJson_(JsonObject node, const BodaqsControlApplyClient& apply,
+    uint8_t address, uint64_t generation, bool disabled, bool reconciled) {
+  node["configuration_reconciled"] = reconciled;
+  node["desired_mode"] = !generation ? "unknown" : disabled ? "disabled" : "unresolved_active";
+  char decimal[21];
+  snprintf(decimal, sizeof(decimal), "%llu", static_cast<unsigned long long>(generation));
+  node["desired_generation"] = decimal;
+  const auto& outcome = apply.nodes[address];
+  JsonObject operation = node["apply_operation"].to<JsonObject>();
+  operation["pending"] = apply.phase && apply.current.node_address == address;
+  operation["outcome_valid"] = outcome.valid;
+  operation["sequence"] = outcome.operation;
+  operation["kind"] = outcome.kind;
+  operation["reason"] = outcome.reason;
+  operation["reason_key"] = bodaqs_control_reason_key(outcome.reason);
+  operation["observed_ms"] = outcome.observed_ms;
+  if (outcome.valid) {
+    snprintf(decimal, sizeof(decimal), "%llu", static_cast<unsigned long long>(outcome.revision));
+    operation["applied_revision"] = decimal;
+    snprintf(decimal, sizeof(decimal), "%llu", static_cast<unsigned long long>(outcome.accepted_generation));
+    operation["accepted_desired_generation"] = decimal;
+  }
+}
+
 static void noteHttpActivity_() {
   WiFiManager::noteUserActivity();
   PowerManager::noteActivity();
@@ -215,6 +239,9 @@ static void handleStatus_(WebServer& srv) {
     JsonObject node = controlNodes.add<JsonObject>();
     addControlAuthorityJson_(node, observation, masterDiagnostics.authority.nodes[address],
                              masterDiagnostics.authority.session);
+    addControlApplyJson_(node, masterDiagnostics.apply, address,
+        masterDiagnostics.desiredGeneration[address], masterDiagnostics.desiredDisabled[address],
+        CanMasterManager::configurationReconciled(address));
     node["address"] = address;
     node["available"] = observation.available;
     node["valid"] = observation.valid;

@@ -1,10 +1,10 @@
 CXX ?= g++
 CXXFLAGS := -std=c++17 -Wall -Wextra -Werror -O2
 
-TEST_BINS := test_authority.exe test_master_protocol.exe test_can_network.exe test_deferred_transport.exe test_control.exe test_control_transport.exe test_snapshot.exe
+TEST_BINS := test_apply.exe test_authority.exe test_master_protocol.exe test_can_network.exe test_deferred_transport.exe test_control.exe test_control_transport.exe test_snapshot.exe
 LOGGER_PROTOCOL := ../../../src/CanMasterProtocol.cpp
 MASTER_PROTOCOL := ../protocol/bodaqs_master_protocol.c
-CONTROL := ../protocol/bodaqs_control_authority.c ../protocol/bodaqs_control_authority_client.c ../protocol/bodaqs_control_snapshot.c ../protocol/bodaqs_control_observer.c ../protocol/bodaqs_control.c ../protocol/bodaqs_control_exchange.c
+CONTROL := ../protocol/bodaqs_control_apply.c ../protocol/bodaqs_control_apply_client.c ../protocol/bodaqs_imu_disabled.c ../protocol/bodaqs_control_authority.c ../protocol/bodaqs_control_authority_client.c ../protocol/bodaqs_control_snapshot.c ../protocol/bodaqs_control_observer.c ../protocol/bodaqs_control.c ../protocol/bodaqs_control_exchange.c
 MASTER_SERVICE := ../protocol/bodaqs_master_service.c $(CONTROL)
 CAN_NETWORK := ../network/bodaqs_can_network.c
 NODE_INVENTORY := ../network/bodaqs_node_inventory.c
@@ -18,6 +18,7 @@ endif
 .PHONY: test clean
 
 test: $(TEST_BINS)
+	./test_apply.exe
 	./test_authority.exe
 	./test_master_protocol.exe
 	./test_can_network.exe
@@ -51,3 +52,6 @@ test_authority.exe: test_authority.cpp ../protocol/bodaqs_control.c ../protocol/
 
 test_snapshot.exe: test_snapshot.cpp $(CONTROL)
 	$(CXX) $(CXXFLAGS) -I../protocol -o $@ $(filter %.cpp %.c,$^)
+
+test_apply.exe: test_apply.cpp $(CONTROL) $(LOGGER_PROTOCOL) $(MASTER_PROTOCOL) ../protocol/bodaqs_master_service.c
+	$(CXX) $(CXXFLAGS) -I../protocol -I../../../src -o $@ $(filter %.cpp %.c,$^)

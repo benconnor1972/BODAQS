@@ -60,6 +60,9 @@ struct Diagnostics {
   bool controlInfoValid = false;
   BodaqsControlObserver control = {};
   BodaqsControlAuthorityClient authority = {};
+  BodaqsControlApplyClient apply = {};
+  uint64_t desiredGeneration[4] = {};
+  bool desiredDisabled[4] = {};
   bool inventorySupported = false;
   bool inventoryValid = false;
   uint32_t inventoryAttempts = 0;
@@ -79,6 +82,8 @@ struct Diagnostics {
 void enableControlAuthority(uint64_t session);
 // Idle-only release changes authority and preserves hardware configuration.
 bool releaseControlAuthority(uint8_t address);
+// Current epoch-checked hardware agreement; configuration-only, never readiness.
+bool configurationReconciled(uint8_t address);
 void begin(const board::BoardProfile& profile, const LoggerConfig& cfg);
 void applyConfig(const LoggerConfig& cfg);
 void loop();

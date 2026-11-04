@@ -117,6 +117,8 @@ interpret this profile through the BMI270 serializer.
 
 `BEGIN_APPLY` uses all 24 data bytes. `COMMIT_APPLY` repeats the same metadata;
 the session/operation/transfer/endpoint header must also match.
+The client allocates a nonzero transfer ID before BEGIN and retains that ID
+through pages, commit and staging abort. BEGIN does not assign a node ID.
 
 | Data offset | Bytes | Field |
 |---:|---:|---|

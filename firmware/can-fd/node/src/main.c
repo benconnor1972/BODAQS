@@ -7,6 +7,8 @@
 #include "bodaqs_control.h"
 #include "bodaqs_control_authority.h"
 #include "bodaqs_control_snapshot.h"
+#include "bodaqs_control_apply.h"
+#include "imu_spi.h"
 #include "bodaqs_record_queue.h"
 #include "ti_msp_dl_config.h"
 
@@ -80,6 +82,8 @@ volatile NodeRuntimeInfo gNodeRuntimeInfo;
 static BodaqsControlNode gControlNode;
 static BodaqsControlAuthority gControlAuthority;
 static BodaqsControlSnapshot gControlSnapshot;
+static BodaqsControlApply gControlApply;
+static BodaqsImuDisabled gImuDisabled;
 static uint64_t gChallengeEntropy;
 static unsigned gChallengeEntropyWords;
 static volatile uint32_t gUptimeMs;
@@ -185,7 +189,7 @@ static void capture_endpoint_descriptor(void *context,
     uint8_t *data)
 {
     (void)context;
-    bodaqs_control_unconfigured_descriptor(view, endpoint, effective, data);
+    bodaqs_control_apply_capture(&gControlApply, view, endpoint, effective, data);
     if (!effective) {
         bodaqs_control_put_u32(data + 36, NODE_FIRMWARE_VERSION);
         bodaqs_control_put_u64(data + 40, gNodeRuntimeInfo.hardware_uid);
@@ -311,7 +315,8 @@ static bool send_status(void)
 
     status.boot_id = gNodeRuntimeInfo.boot_id;
     status.uptime_ms = gUptimeMs;
-    status.status_flags = 0U;
+    status.status_flags = (gControlNode.flags & (1UL << 8)) ? 1U : 0U;
+    if (gControlNode.flags & (1UL << 3)) status.status_flags |= 2U;
     if (gNodeRuntimeInfo.can_error_passive) {
         status.status_flags |= (1UL << 2);
     }
@@ -361,6 +366,7 @@ static void process_can_message(
                  &control, gUptimeMs, challenge_random, NULL, &reply) ||
              bodaqs_control_snapshot_process(&gControlSnapshot, &gControlNode,
                  &control, gUptimeMs, &reply) ||
+             bodaqs_control_apply_process(&gControlApply, &control, gUptimeMs, &reply) ||
              bodaqs_control_node_process(&gControlNode, &control, &reply)) &&
             bodaqs_control_encode_can(&reply, true, transaction, payload)) {
             if (!send_can_frame((uint16_t)(BODAQS_CAN_ID_RESPONSE_BASE + gNodeRuntimeInfo.node_address), payload, sizeof(payload))) {
@@ -449,6 +455,8 @@ int main(void)
     gControlNode.boot_id = gNodeRuntimeInfo.boot_id;
     gControlNode.endpoint_mask = NODE_ENDPOINT_MASK;
     gControlNode.endpoint_epoch[0] = 1U;
+    bodaqs_imu_disabled_init(&gImuDisabled, bodaqs_node_imu_register, bodaqs_node_imu_cancel, NULL);
+    bodaqs_control_apply_init(&gControlApply, &gControlAuthority, &gControlNode, &gImuDisabled);
     gUptimeMs = 0U;
     bodaqs_record_queue_init(&gCanReceiveQueue, gCanReceiveStorage,
         sizeof(gCanReceiveStorage[0]), CAN_RX_CAPACITY);
@@ -473,6 +481,7 @@ int main(void)
     while (1) {
         uint32_t now = gUptimeMs;
         service_challenge_entropy();
+        bodaqs_control_apply_tick(&gControlApply, now);
         service_can_receive();
         gNodeRuntimeInfo.can_rx_capacity = gCanReceiveQueue.capacity;
         gNodeRuntimeInfo.can_rx_pending = gCanReceiveQueue.depth;
