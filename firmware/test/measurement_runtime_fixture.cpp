@@ -56,6 +56,13 @@ bool transfer(int8_t,const SPISettings& settings,const uint8_t*tx,uint8_t*rx,siz
  uint8_t next[84];
  assert(bodaqs_master_service_process_transfer(&master,tx,length,clockMs,next)==BODAQS_MASTER_SLOT_PROCESSED);
  memcpy(preloaded,next,84);
+ uint8_t address,payload[64]; uint16_t transaction;
+ if(bodaqs_master_service_control_transmit(&master,clockMs,&address,&transaction,payload)) {
+  BodaqsControlRecord request,reply;uint16_t decoded;
+  assert(bodaqs_control_decode_can(payload,64,false,&decoded,&request));
+  assert(bodaqs_control_node_process(&node.view,&request,&reply));
+  assert(bodaqs_master_service_control_receive(&master,address,transaction,&reply));
+ }
  if(length==64 && loseMeasurementReplies) memset(rx,0,length);
  return true;
 }
@@ -101,6 +108,38 @@ int main() {
  assert(master.measurement.mode.phase==2 && master.measurement.mode.context==456);
  assert(CanMasterManager::inspectMeasurementMode());
  assert(CanMasterManager::measurementReady());
+ BodaqsControlWrapped observed={};
+ assert(CanMasterManager::queryMeasurementNodeState(0,node.view.boot_id,77,observed));
+ assert(observed.record.opcode==BODAQS_CONTROL_GET_NODE_STATE && observed.record.data_length==24);
+ assert(CanMasterManager::diagnostics().measurementObjectsReceived==1);
+ // Every SPI exchange receives the previous request's response. Rotate four
+ // nodes and protected control so a same-request assumption cannot pass.
+ for(uint8_t n=0;n<4;++n) {
+  master.discovery[n].flags=1;master.discovery[n].boot_id=node.view.boot_id;
+  const uint8_t event[8]={1,4,1,0,0,0,0,0};
+  assert(bodaqs_master_service_receive_can(&master,n,2,0x060+n,event,8,0,12345+n,clockMs));
+ }
+ static CanMasterManager::MeasurementTransport transport;
+ uint8_t delivered=0;
+ for(unsigned i=0;i<150 && delivered!=15;++i) {
+  CanMasterManager::MeasurementInbox* completed=nullptr;
+  const uint8_t n=i%5;
+  int result=CanMasterManager::serviceMeasurementTransport(transport,n==4?4:2,n==4?0:n,completed);
+  assert(result>=0);
+  if(result==1) {
+   assert(completed && completed->state.cls==2 && completed->state.total==96);
+   assert(!(delivered&(1U<<completed->state.node)));
+   assert(bodaqs_measurement_get(completed->bytes+20,4)==12345U+completed->state.node);
+   delivered|=1U<<completed->state.node;
+   CanMasterManager::releaseMeasurementObject(*completed);
+  }
+ }
+ assert(delivered==15);
+ // Drain RAM ACKs, including retained duplicates received while sending ACKs.
+ for(unsigned i=0;i<12;++i) {
+  CanMasterManager::MeasurementInbox* completed=nullptr;
+  assert(CanMasterManager::serviceMeasurementTransport(transport,4,0,completed)>=0);
+ }
  const auto slots=master.slots_received;
  advance(1000);
  assert(master.slots_received==slots); // active mode suppresses legacy background polling

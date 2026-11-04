@@ -662,6 +662,144 @@ bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
   return transferSlot_(settings,tx,rx,64,25) && bodaqs_measurement_decode(rx,64,&response);
 }
 
+
+
+static MeasurementInbox* transportInbox_(MeasurementTransport& transport,uint8_t cls,uint8_t node) {
+  if(cls<1 || cls>5 || (cls==5?node!=255:node>3)) return nullptr;
+  return &transport.inboxes[cls-1][cls==5?0:node];
+}
+void releaseMeasurementObject(MeasurementInbox& inbox) {
+  if(inbox.state.complete) {inbox.admitted=true;inbox.ackPending=true;bodaqs_fragment_ack(&inbox.state,1,&inbox.pendingAck);}
+}
+int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint8_t node,
+                                MeasurementInbox*& completed) {
+  completed=nullptr;
+  if(!measurementReady() || cls<1 || cls>5 || (node>3 && node!=255)) return -4;
+  BodaqsMeasurementSlot request={},response={};MeasurementInbox* acked=nullptr;
+  const uint8_t priority[5]={4,3,5,1,2};
+  for(uint8_t p:priority) for(uint8_t n=0;n<(p==5?1:4);++n) {
+    auto& inbox=transport.inboxes[p-1][n];
+    if(!acked && inbox.admitted && inbox.ackPending) {
+      request=inbox.pendingAck;acked=&inbox;
+    }
+  }
+  if(!acked) {
+    request.kind=1;request.context=s_diagnostics.measurement.context;request.node=node;request.body[0]=cls;
+    MeasurementInbox* partial=transportInbox_(transport,cls,node);
+    if(partial && partial->state.object && !partial->state.complete) {
+      request.object=partial->state.object;request.node=partial->state.node;
+      for(uint8_t i=0;i<26;++i) if(!(partial->state.mask&(1UL<<i))) {request.index=i;break;}
+    }
+    if(cls<3 && !request.object) {
+      uint8_t budgetNode=node==255?4:node;
+      if(static_cast<int32_t>(millis()-transport.nextHeadPollMs[budgetNode])<0) return 0;
+      transport.nextHeadPollMs[budgetNode]=millis()+20;
+    }
+  }
+  if(!exchangeMeasurementSlot(request,response)) return 0;
+  if(acked) acked->ackPending=false;
+  if(response.context!=s_diagnostics.measurement.context) return 0;
+  if(response.kind==7) {++s_diagnostics.measurementTransferErrors;return -response.body[1];}
+  const uint8_t responseClass=bodaqs_fragment_class(response.kind);
+  auto* inbox=transportInbox_(transport,responseClass,response.node);
+  if(!inbox) return 0;
+  BodaqsMeasurementSlot ack={};
+  int result=bodaqs_fragment_accept(&inbox->state,inbox->bytes,sizeof(inbox->bytes),&response,1,&ack);
+  if(result==1) {
+    inbox->admitted=false;inbox->ackPending=false;completed=inbox;
+    ++s_diagnostics.measurementObjectsReceived;
+  } else if(result==2) {
+    ++s_diagnostics.measurementDuplicates;
+    if(inbox->admitted) {inbox->ackPending=true;inbox->pendingAck=ack;}
+  } else if(result<0) ++s_diagnostics.measurementTransferErrors;
+  s_diagnostics.measurementAssemblyBytes=inbox->state.complete?0:inbox->state.total;
+  s_diagnostics.measurementLastClass=responseClass;s_diagnostics.measurementLastNode=response.node;
+  s_diagnostics.measurementLastObject=response.object;
+  return result;
+}
+bool acknowledgeMeasurementObject(MeasurementInbox& inbox) {
+  if(!measurementReady() || !inbox.state.complete) return false;
+  BodaqsMeasurementSlot ack={}, response={};
+  bodaqs_fragment_ack(&inbox.state,1,&ack);
+  if(!exchangeMeasurementSlot(ack,response)) return false;
+  inbox.ackPending=false; return true;
+}
+int pollMeasurementObject(uint8_t cls,uint8_t node,MeasurementInbox& inbox) {
+  if(!measurementReady() || cls<1 || cls>5 || (node>3 && node!=255)) return -4;
+  if(inbox.ackPending) return acknowledgeMeasurementObject(inbox)?0:-8;
+  BodaqsMeasurementSlot request={},response={};
+  request.kind=1;request.context=s_diagnostics.measurement.context;request.node=node;request.body[0]=cls;
+  if(inbox.state.object && !inbox.state.complete) {
+    request.object=inbox.state.object; request.node=inbox.state.node;
+    for(uint8_t i=0;i<26;++i) if(!(inbox.state.mask&(1UL<<i))) {request.index=i;break;}
+  }
+  if(!exchangeMeasurementSlot(request,response)) return 0;
+  if(response.context!=request.context) return 0;
+  if(response.kind==7) {++s_diagnostics.measurementTransferErrors;return -response.body[1];}
+  if(bodaqs_fragment_class(response.kind)!=cls || (node!=255 && response.node!=node)) return 0;
+  BodaqsMeasurementSlot ack={};
+  const int accepted=bodaqs_fragment_accept(&inbox.state,inbox.bytes,sizeof(inbox.bytes),&response,1,&ack);
+  s_diagnostics.measurementAssemblyBytes=inbox.state.complete?0:inbox.state.total;
+  if(accepted<0) ++s_diagnostics.measurementTransferErrors;
+  if(accepted>0) {
+    inbox.ackPending=true;
+    if(accepted==1) ++s_diagnostics.measurementObjectsReceived;
+    else ++s_diagnostics.measurementDuplicates;
+    s_diagnostics.measurementLastClass=cls;s_diagnostics.measurementLastNode=response.node;
+    s_diagnostics.measurementLastObject=response.object;
+  }
+  return accepted;
+}
+bool submitMeasurementControl(const BodaqsControlWrapped& wrapped,uint32_t objectId,bool authorization) {
+  if(!measurementReady()) return false;
+  uint8_t data[68]={};BodaqsFragmentState tx={};
+  if(!bodaqs_control_encode_wrapped(&wrapped,data) ||
+     !bodaqs_fragment_seal(&tx,data,sizeof(data),s_diagnostics.measurement.context,objectId,
+        wrapped.node_address,authorization?4:3,0,64)) return false;
+  const uint32_t began=millis();
+  do {
+    for(uint8_t index=0;index<2;++index) {
+      BodaqsMeasurementSlot request={},response={};
+      (void)bodaqs_fragment_emit(&tx,data,index,&request);
+      if(exchangeMeasurementSlot(request,response) && bodaqs_fragment_ack_matches(&tx,&response)) {
+        ++s_diagnostics.measurementControlSubmitted;return true;
+      }
+      if(response.kind==7 && response.context==tx.context && response.object==tx.object && response.node==tx.node) {
+        ++s_diagnostics.measurementTransferErrors;return false;
+      }
+    }
+  } while(static_cast<uint32_t>(millis()-began)<300);
+  ++s_diagnostics.measurementTransferErrors;return false;
+}
+bool queryMeasurementNodeState(uint8_t node,uint32_t boot,uint32_t operation,BodaqsControlWrapped& result) {
+  static uint64_t context=0;
+  static uint32_t ids[4]={};
+  static MeasurementInbox inboxes[4];
+  if(!measurementReady() || node>3 || !operation || !boot) return false;
+  if(context!=s_diagnostics.measurement.context) {
+    context=s_diagnostics.measurement.context;
+    memset(ids,0,sizeof(ids));for(auto& inbox:inboxes) inbox=MeasurementInbox{};
+  }
+  if(ids[node]==UINT32_MAX) return false;
+  BodaqsControlWrapped request={};request.master_boot_id=s_diagnostics.measurement.boot;
+  request.node_address=node;request.record.opcode=BODAQS_CONTROL_GET_NODE_STATE;
+  request.record.endpoint=BODAQS_CONTROL_NODE_WIDE;request.record.operation=operation;
+  request.record.node_boot_id=boot;
+  if(!submitMeasurementControl(request,++ids[node])) return false;
+  const uint32_t began=millis();
+  do {
+    int received=pollMeasurementObject(3,node,inboxes[node]);
+    if(received<0) return false;
+    if(received==1 && bodaqs_control_decode_wrapped(inboxes[node].bytes,64,&result)) {
+      const bool match=result.master_boot_id==request.master_boot_id && result.node_address==node &&
+        result.record.operation==operation && result.record.node_boot_id==boot &&
+        result.record.opcode==BODAQS_CONTROL_GET_NODE_STATE && result.record.data_length==24;
+      if(!acknowledgeMeasurementObject(inboxes[node])) return false;
+      if(match) return true;
+    }
+  } while(static_cast<uint32_t>(millis()-began)<3500);
+  return false;
+}
 static bool modeObservation_(const BodaqsMeasurementSlot& response, uint32_t token,
                              uint64_t queryContext, const BodaqsMeasurementMode* expected) {
   if (response.kind!=6 || response.node!=255 || response.index || response.total ||
