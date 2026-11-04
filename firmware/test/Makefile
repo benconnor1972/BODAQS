@@ -50,6 +50,7 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_remote_imu_recording_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_remote_imu_loss_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_node_master_bdq_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_integrated_imu_recording_runtime.py --compiler "$(CXX)"
 	@echo "All tests passed."
 
 $(TEST_BIN): $(PROD_SRCS) $(STUB_SRCS) $(TEST_SRCS)
