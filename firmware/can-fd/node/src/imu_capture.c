@@ -6,12 +6,14 @@ static volatile uint32_t high, ordinal;
 static volatile unsigned head, tail;
 static volatile bool fault, watermark;
 static BodaqsNodeCapture captures[128], sync_capture;
-static volatile bool sync_pending;
+static volatile bool sync_pending, sync_lost;
+static bool sync_seed, sync_valid;
+static uint32_t marker_sequence, marker_tick, paired_tick, paired_ordinal;
 static uint32_t sync_ordinal, last_service_ms;
 void bodaqs_node_capture_init(void) {
     last_service_ms = 0;
     high = ordinal = sync_ordinal = 0;
-    sync_pending = false;
+    sync_pending = sync_lost = sync_seed = sync_valid = false;
     head = tail = 0;
     fault = watermark = false;
     DL_TimerA_setTimerCount(ACQ_CAPTURE_INST, 0);
@@ -41,6 +43,7 @@ void bodaqs_node_capture_irq(void) {
     }
     if (raw & DL_TIMER_INTERRUPT_CC3_UP_EVENT) {
         uint32_t low = DL_TimerA_getCaptureCompareValue(ACQ_CAPTURE_INST, DL_TIMER_CC_3_INDEX);
+        if(sync_pending) sync_lost=true;
         sync_capture.tick =
             base + (((raw & DL_TIMER_INTERRUPT_ZERO_EVENT) && low <= now) ? 65536U : 0U) + low;
         sync_capture.ordinal = ++sync_ordinal;
@@ -129,4 +132,22 @@ void bodaqs_node_capture_supervise(uint32_t milliseconds) {
     if ((uint32_t)(milliseconds - last_service_ms) >= 65U)
         fault = true;
     last_service_ms = milliseconds;
+}
+
+void bodaqs_node_sync_marker(uint32_t sequence,uint32_t master_tick) {
+    BodaqsNodeCapture capture;
+    bool lost=sync_lost;sync_lost=false;
+    bool present=bodaqs_node_capture_sync_take(&capture);
+    sync_valid=false;
+    if(!present || lost || (sync_seed && sequence<=marker_sequence)) {sync_seed=false;return;}
+    if(sync_seed && sequence==marker_sequence+1 && capture.ordinal==paired_ordinal+1 &&
+       master_tick-marker_tick==100000U && capture.tick-paired_tick>=99000U &&
+       capture.tick-paired_tick<=101000U) sync_valid=true;
+    marker_sequence=sequence;marker_tick=master_tick;paired_tick=capture.tick;paired_ordinal=capture.ordinal;
+    sync_seed=true;
+}
+bool bodaqs_node_sync_latest(uint32_t *sequence,uint32_t *tick) {
+    uint32_t e,now=bodaqs_node_capture_clock(0,&e);
+    if(!sync_valid || (uint32_t)(now-paired_tick)>150000U) return false;
+    *sequence=marker_sequence;*tick=paired_tick;return true;
 }
