@@ -226,6 +226,56 @@ void DL_SPI_reset(struct TestSpi *s) { (void)s; }
 void DL_SPI_enablePower(struct TestSpi *s) { (void)s; }
 void SYSCFG_DL_IMU_SPI_init(void) {}
 void NVIC_ClearPendingIRQ(int n) { (void)n; }
+static void completed_recording_turnovers(unsigned recordings) {
+    BodaqsAcquisitionEvent e;
+        /* Exercise the real register/FIFO/DMA adapter across boot-lifetime
+         * capacity. Each successor starts only after stopped proof and an idle
+         * hardware transmit fence, without reinitializing acquisition. */
+        for (unsigned recording = 1; recording <= recordings; ++recording) {
+            memset(&e, 0, sizeof e);
+            bodaqs_node_acquisition_backend(0, BODAQS_ACQ_STOP, 3, recording, sim_tick/1000, &e);
+            bool done = false;
+            uint32_t deadline = sim_tick + 100000;
+            while (sim_tick < deadline) {
+                advance(sim_tick + 100); bodaqs_node_imu_spi_irq(); memset(&e, 0, sizeof e);
+                bodaqs_node_acquisition_backend(0, BODAQS_ACQ_POLL, 3, recording, sim_tick/1000, &e);
+                assert(e.kind != BODAQS_ACQ_FAILED);
+                if (e.kind == BODAQS_ACQ_STOPPED) {done = true; break;}
+            }
+            assert(done);
+            next_tx_tick = sim_tick + 500;
+            memset(&e, 0, sizeof e);
+            bodaqs_node_acquisition_backend(0, BODAQS_ACQ_FENCE, 4, recording, sim_tick/1000, &e);
+            assert(e.kind == BODAQS_ACQ_NO_EVENT);
+            advance(sim_tick + 500); memset(&e, 0, sizeof e);
+            bodaqs_node_acquisition_backend(0, BODAQS_ACQ_POLL, 4, recording, sim_tick/1000, &e);
+            assert(e.kind == BODAQS_ACQ_FENCED);
+            if (recording == recordings) break;
+            used = 0; next_slot = sim_tick + 300;
+            seen_boundary = seen_model = seen_anchor = seen_snapshot = false;
+            previous_end = 0;
+            memset(&e, 0, sizeof e);
+            bodaqs_node_acquisition_backend(0, BODAQS_ACQ_PREPARE, 5, recording+1, sim_tick/1000, &e);
+            done = false; deadline = sim_tick + 200000;
+            while (sim_tick < deadline) {
+                advance(sim_tick + 100); bodaqs_node_imu_spi_irq(); memset(&e, 0, sizeof e);
+                bodaqs_node_acquisition_backend(0, BODAQS_ACQ_POLL, 5, recording+1, sim_tick/1000, &e);
+                assert(e.kind != BODAQS_ACQ_FAILED);
+                if (e.kind == BODAQS_ACQ_READY) {done = true; break;}
+            }
+            assert(done);
+            memset(&e, 0, sizeof e);
+            bodaqs_node_acquisition_backend(0, BODAQS_ACQ_START, 6, recording+1, sim_tick/1000, &e);
+            done = false; deadline = sim_tick + 20000;
+            while (sim_tick < deadline) {
+                advance(sim_tick + 100); bodaqs_node_imu_spi_irq(); memset(&e, 0, sizeof e);
+                bodaqs_node_acquisition_backend(0, BODAQS_ACQ_POLL, 6, recording+1, sim_tick/1000, &e);
+                assert(e.kind != BODAQS_ACQ_FAILED);
+                if (e.kind == BODAQS_ACQ_FIRST) {assert(e.boundary[8] == 1); done = true; break;}
+            }
+            assert(done);
+        }
+}
 int main(int argc, char **argv) {
     unsigned selected_fault = argc > 1 ? (unsigned)strtoul(argv[1], 0, 10) : 1;
     const char *out = getenv("BODAQS_NODE_FIXTURE_OUT");
@@ -282,6 +332,10 @@ int main(int argc, char **argv) {
     }
     assert(raw_sync_events==1);
     assert(first && samples >= 5 && saved_sample[4] == 0 && saved_sample[5] == 0x80 && frames > 4);
+    if (selected_fault == 13) {
+        completed_recording_turnovers(260);
+        return 0;
+    }
     if (selected_fault >= 6) {
         unsigned before_recovery = samples;
         fault_mode = selected_fault>=9?0:6;
@@ -305,7 +359,11 @@ int main(int argc, char **argv) {
         if(selected_fault==7 || selected_fault==8) assert(recovery_failed && failure_reason==32);
         if(selected_fault==12) assert(!recovery_failed && detected_loss==0 && reported_loss==0 && !gap_seen && samples>before_recovery);
         if(selected_fault==9) assert(!recovery_failed && detected_loss>0 && reported_loss==detected_loss && gap_seen);
-        if(selected_fault==10) assert(recovery_failed && failure_reason==31 && recovery_events==254);
+        if(selected_fault==10) {
+            assert(recovery_failed && failure_reason==31 && recovery_events==254);
+            fault_mode=0;
+            completed_recording_turnovers(2);
+        }
         if(selected_fault==11) {
             assert(recovery_failed && failure_reason==35);
             memset(&e,0,sizeof e);

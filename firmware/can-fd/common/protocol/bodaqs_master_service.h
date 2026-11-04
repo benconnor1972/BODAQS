@@ -82,6 +82,9 @@ typedef struct {
     uint32_t acquisition_boot[4], acquisition_fence_operation[4];
     uint8_t acquisition_fenced;
     bool acquisition_retirement_pending;
+    /* Main-owner generation: every completed node fence invalidates prior
+     * physical SPI retirement evidence, even within the same context. */
+    uint32_t acquisition_retirement_generation;
     BodaqsMeasurementState measurement;
     BodaqsMasterIdentity identity;
     BodaqsMasterStatus status;

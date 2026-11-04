@@ -315,6 +315,7 @@ int main()
     operation.data[0] = 5;
     assert(rig.send(operation).data[0] == 3);
     assert(rig.master.acquisition_retirement_pending && !rig.master.measurement.fenced);
+    assert(rig.master.acquisition_retirement_generation == 1);
     bodaqs_master_service_measurement_fence(&rig.master, true, false);
     assert(!rig.master.measurement.fenced);
     bodaqs_master_service_measurement_fence(&rig.master, true, true);

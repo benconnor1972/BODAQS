@@ -128,6 +128,10 @@ static uint8_t gReceiveIndex;
 /* DMA stays unarmed until this completed slot has been serviced. */
 static uint8_t gSpiReceiveStorage[1][BODAQS_MASTER_SLOT_BYTES];
 static BodaqsRecordQueue gSpiReceiveQueue;
+/* Main publishes requests and consumes proof under a short IRQ fence. Only
+ * the ISR adapter touches hardware; it never mutates the protocol service. */
+typedef struct { uint32_t generation; uint64_t context; } SpiRetirement;
+static volatile SpiRetirement gSpiRetirementRequest, gSpiRetirementProof;
 static volatile bool gSpiRetiring;
 static volatile bool gSpiTransmitReady;
 static volatile uint16_t gSpiReceiveLength;
@@ -308,7 +312,7 @@ static void capture_can_receive_fifo(void)
         ++gMasterRuntimeInfo.can_rx_frames;
         if(!bodaqs_record_queue_push(&gCanReceiveQueue, &record) && !record.message.xtd &&
            !record.message.rtr && record.message.fdf) {
-            uint16_t id=(uint16_t)record.message.id;
+            uint16_t id=can_standard_identifier(&record.message);
             bool sample=id>=0x100 && id<=0x118 && !(id&7);
             bool evidence=id>=0x90 && id<=0x93;
             uint8_t node=sample?(uint8_t)((id-0x100)/8):(uint8_t)(id-0x90);
@@ -652,6 +656,7 @@ static void service_sync(void) {
 
 static void service_spi_receive(void);
 static void retire_spi_boundary(void);
+static void service_spi_retirement(void);
 
 int main(void)
 {
@@ -718,7 +723,9 @@ int main(void)
         bodaqs_master_timing_supervise(gUptimeMs);
         service_sync();
         bodaqs_control_exchange_tick(&gService.control, gUptimeMs);
+        service_spi_retirement();
         retire_spi_boundary();
+        service_spi_retirement();
         service_spi_receive();
         gMasterRuntimeInfo.spi_rx_capacity = gSpiReceiveQueue.capacity;
         gMasterRuntimeInfo.spi_rx_high_water = gSpiReceiveQueue.high_water;
@@ -791,6 +798,39 @@ void MCAN0_INST_IRQHandler(void)
     }
 }
 
+/* Called only for a DMA-owned buffer or by its main-loop writer before
+ * publication. Control replies are retained. */
+static void retire_measurement_slot(uint8_t *bytes,uint64_t context)
+{
+    BodaqsMeasurementSlot object;
+    if(bodaqs_measurement_decode(bytes,64,&object) &&
+       (object.kind==2 || object.kind==3 || object.kind==13)) {
+        memset(&object,0,sizeof object);object.context=context;object.node=255;
+        (void)bodaqs_measurement_encode(&object,bytes,64);
+    }
+}
+
+static void service_spi_retirement(void)
+{
+    SpiRetirement proof;
+    uint32_t primask=__get_PRIMASK();
+    __disable_irq();
+    proof.generation=gSpiRetirementProof.generation;
+    proof.context=gSpiRetirementProof.context;
+    /* Saturation fails closed: no previously issued proof can be recycled. */
+    gSpiRetirementRequest.generation=gService.acquisition_retirement_pending &&
+        gService.acquisition_retirement_generation!=UINT32_MAX ?
+        gService.acquisition_retirement_generation:0;
+    gSpiRetirementRequest.context=gService.measurement.mode.context;
+    __DMB();
+    __set_PRIMASK(primask);
+    if(gService.acquisition_retirement_pending && proof.generation &&
+       proof.generation==gService.acquisition_retirement_generation &&
+       proof.context==gService.measurement.mode.context &&
+       gService.acquisition_retirement_generation!=UINT32_MAX)
+        bodaqs_master_service_measurement_fence(&gService,true,true);
+}
+
 /* Retire from the CS boundary and remaining RX DMA count, not DMA completion.
  * Keeping the 84-byte capacity permits observational legacy MODE_INFO while
  * the active protocol uses 64 bytes. SPI reset empties prefetched TX FIFO bytes
@@ -811,21 +851,13 @@ static void retire_spi_boundary(void)
         DL_SPI_isBusy(SPI_A8_INST)) { gSpiRetiring=false; return; }
     DL_DMA_disableChannel(DMA, DMA_SPI_RX_CHAN_ID);
     DL_DMA_disableChannel(DMA, DMA_SPI_TX_CHAN_ID);
-    /* The node owner has fenced its producer; now retire any old preloaded data
-     * only at the real CS boundary with DMA disabled. Control replies survive. */
-    if(gService.acquisition_retirement_pending) {
-        unsigned slot;
-        for(slot=0;slot<2;++slot) {
-            BodaqsMeasurementSlot object;
-            if(bodaqs_measurement_decode(gTransmitSlots[slot],64,&object) &&
-               (object.kind==2 || object.kind==3 || object.kind==13)) {
-                memset(&object,0,sizeof(object));object.context=gService.measurement.mode.context;object.node=255;
-                (void)bodaqs_measurement_encode(&object,gTransmitSlots[slot],64);
-            }
-        }
-        /* RX FIFO/TX FIFO are reset below before rearming. This proof cannot
-         * be manufactured by MODE_INFO or an ordinary control acknowledgement. */
-        bodaqs_master_service_measurement_fence(&gService,true,true);
+    /* Snapshot the owner-published identity, never partially updated service
+     * state. Only the active or fully published inactive DMA buffer is ours. */
+    SpiRetirement retirement = {gSpiRetirementRequest.generation,gSpiRetirementRequest.context};
+    if(retirement.generation) {
+        retire_measurement_slot(gTransmitSlots[gTransmitIndex],retirement.context);
+        if(gSpiTransmitReady)
+            retire_measurement_slot(gTransmitSlots[gTransmitIndex^1U],retirement.context);
     }
     remaining = DL_DMA_getTransferSize(DMA, DMA_SPI_RX_CHAN_ID);
     length = BODAQS_MASTER_SLOT_BYTES - remaining;
@@ -850,6 +882,13 @@ static void retire_spi_boundary(void)
     delay_cycles(POWER_STARTUP_DELAY);
     SYSCFG_DL_SPI_A8_init();
     (void)DL_SPI_getPendingInterrupt(SPI_A8_INST);
+    /* Proof follows DMA disable and FIFO/peripheral reset, before rearm. It
+     * authorizes exactly the captured generation/context, never a later fence. */
+    if(retirement.generation) {
+        gSpiRetirementProof.context=retirement.context;
+        __DMB();
+        gSpiRetirementProof.generation=retirement.generation;
+    }
     gReceiveIndex ^= 1U;
     arm_spi_slot();
     gSpiRetiring = false;
@@ -873,6 +912,8 @@ static void service_spi_receive(void)
     update_service_status();
     if (bodaqs_master_service_process_transfer(&gService,received,length,
         gUptimeMs,gTransmitSlots[next_index])==BODAQS_MASTER_SLOT_PROCESSED) {
+        if(gService.acquisition_retirement_pending)
+            retire_measurement_slot(gTransmitSlots[next_index],gService.measurement.mode.context);
         __DMB();
         gSpiTransmitReady=true;
     } else {

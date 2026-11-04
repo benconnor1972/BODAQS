@@ -19,6 +19,10 @@ struct Exchange {
   uint32_t object = 0, started = 0;
   bool pending = false;
 };
+enum class Phase : uint8_t {
+  Idle = 0, Begin = 1, PreparePages = 2, InitialProof = 3,
+  Commit = 4, SnapshotPages = 5, ReleaseSnapshot = 6
+};
 struct Peer {
   Request intent;
   Exchange ordinary, protectedLane;
@@ -28,7 +32,7 @@ struct Peer {
   uint32_t proposedWireDeadline = 0;
   uint64_t transfer = 0, recording = 0;
   uint8_t prepare[112] = {}, snapshot[128] = {}, page = 0;
-  uint8_t phase = 0; // 1 begin, 2 pages, 3 initial proof, 4 commit, 5 snapshot pages, 6 release snapshot
+  Phase phase = Phase::Idle;
   bool leased = false;
   bool excluded = false;
   bool observing = false;
@@ -89,7 +93,7 @@ static bool send(uint8_t n,Exchange& exchange,BodaqsControlWrapped q,bool protec
 }
 static void fail(uint8_t n,Result result,uint8_t reason) {
 
-  auto& p=peers[n];p.phase=0;p.ordinary.pending=false;p.pendingMutation=0;
+  auto& p=peers[n];p.phase=Phase::Idle;p.ordinary.pending=false;p.pendingMutation=0;
   if(p.observing && (reason==7 || reason==10)) {
     p.observing=false;return; // Busy/aged optional diagnostics are not a node fault.
   }
@@ -134,7 +138,7 @@ static void beginRequest(uint8_t n,const Request& intent,bool observing=false) {
   }
   if(intent.action==Action::Stop) {
     // Terminal locally before dispatch. A delayed challenge can never renew.
-    p.leased=false;p.monitoring=false;p.protectedLane.pending=false;p.ordinary.pending=false;p.phase=0;p.pendingMutation=0;
+    p.leased=false;p.monitoring=false;p.protectedLane.pending=false;p.ordinary.pending=false;p.phase=Phase::Idle;p.pendingMutation=0;
     transport.terminalNodes|=1u<<n;
     auto& retired=transport.inboxes[3][n];
     if(!retired.state.complete) retired=MeasurementInbox{};
@@ -147,7 +151,7 @@ static void beginRequest(uint8_t n,const Request& intent,bool observing=false) {
   q.record.data_length=24;bodaqs_control_put_u64(q.record.data,intent.recording);
   if(intent.action==Action::Prepare) {
     if(nextTransfer==UINT64_MAX) {fail(n,Result::Unavailable,22);return;}
-    p.transfer=++nextTransfer;p.phase=1;p.page=0;p.renewal=0;
+    p.transfer=++nextTransfer;p.phase=Phase::Begin;p.page=0;p.renewal=0;
     memset(p.prepare,0,sizeof p.prepare);p.prepare[0]=4;p.prepare[2]=1;p.prepare[4]=112;p.prepare[6]=1;
     bodaqs_control_put_u64(p.prepare+8,intent.recording);
     bodaqs_control_put_u64(p.prepare+16,intent.revision);
@@ -182,14 +186,14 @@ static void accept(uint8_t n,bool protectedLane,const BodaqsControlWrapped& wrap
       exclude(n,r.data[1]);return;
     }
     if(protectedLane) p.leased=false;
-    if((q.record.opcode==0x20 && p.phase==1) || q.record.opcode==0x24 ||
+    if((q.record.opcode==0x20 && p.phase==Phase::Begin) || q.record.opcode==0x24 ||
        q.record.opcode==0x25 || q.record.opcode==0x29 || q.record.opcode==0x2a) {
       if(p.mutation==q.record.operation+1) p.mutation=q.record.operation;
     }
     fail(n,Result::Rejected,r.data[1]);return;
   }
   if(q.record.opcode==0x26) {
-    const bool initial=p.phase==3;
+    const bool initial=p.phase==Phase::InitialProof;
     if((!initial && !p.leased) || r.data_length!=24 ||
        bodaqs_control_get_u32(r.data+20)!=p.renewal || !bodaqs_control_get_u64(r.data) ||
        static_cast<uint32_t>(bodaqs_control_get_u32(r.data+12)-bodaqs_control_get_u32(r.data+8))!=300000 ||
@@ -203,7 +207,7 @@ static void accept(uint8_t n,bool protectedLane,const BodaqsControlWrapped& wrap
     auto proof=request(n,initial?0x22:0x27,initial?p.ordinary.request.record.operation:q.record.operation,initial?p.transfer:0);
     proof.record.data_length=24;bodaqs_control_put_u64(proof.record.data,p.recording);
     memcpy(proof.record.data+8,r.data,8);bodaqs_control_put_u32(proof.record.data+16,p.renewal);
-    if(initial) p.phase=4;
+    if(initial) p.phase=Phase::Commit;
     if(!send(n,initial?p.ordinary:p.protectedLane,proof,!initial)) {p.leased=false;fail(n,Result::Uncertain,26);}
     return;
   }
@@ -216,9 +220,9 @@ static void accept(uint8_t n,bool protectedLane,const BodaqsControlWrapped& wrap
     } else exclude(n,1);
     return;
   }
-  if(p.phase==1 || p.phase==2) {
-    p.phase=2;
-    if(p.page==5) {p.phase=3;challenge(n,true);return;}
+  if(p.phase==Phase::Begin || p.phase==Phase::PreparePages) {
+    p.phase=Phase::PreparePages;
+    if(p.page==5) {p.phase=Phase::InitialProof;challenge(n,true);return;}
     auto page=q;page.record.opcode=0x21;page.record.page=p.page;
     page.record.data_length=p.page==4?16:24;memset(page.record.data,0,24);
     memcpy(page.record.data,p.prepare+24*p.page,page.record.data_length);++p.page;
@@ -229,9 +233,9 @@ static void accept(uint8_t n,bool protectedLane,const BodaqsControlWrapped& wrap
     if(r.data_length!=24 || r.data[0]!=5 || r.data[2]!=1 || r.data[4]!=128 || r.data[5] || !r.transfer) {
       fail(n,Result::Rejected,1);return;
     }
-    p.transfer=r.transfer;p.page=0;p.phase=5;
+    p.transfer=r.transfer;p.page=0;p.phase=Phase::SnapshotPages;
   }
-  if(p.phase==5) {
+  if(p.phase==Phase::SnapshotPages) {
     if(q.record.opcode==7) {
       const uint8_t length=p.page==5?8:24;
       if(r.data_length!=length) {fail(n,Result::Rejected,1);return;}
@@ -239,11 +243,11 @@ static void accept(uint8_t n,bool protectedLane,const BodaqsControlWrapped& wrap
     }
     auto page=request(n,p.page==6?8:7,q.record.operation,p.transfer);
     page.record.page=p.page==6?0:p.page;
-    if(p.page==6) p.phase=6;
+    if(p.page==6) p.phase=Phase::ReleaseSnapshot;
     if(!page.record.operation || !send(n,p.ordinary,page,false)) fail(n,Result::Uncertain,26);
     return;
   }
-  if(p.phase==6) {
+  if(p.phase==Phase::ReleaseSnapshot) {
     if(!bodaqs_control_descriptor_valid(p.snapshot,128,5,255) ||
        bodaqs_control_get_u32(p.snapshot+24)!=r.node_boot_id ||
        (p.intent.recording && bodaqs_control_get_u64(p.snapshot+8)!=p.intent.recording)) {
@@ -258,10 +262,10 @@ static void accept(uint8_t n,bool protectedLane,const BodaqsControlWrapped& wrap
        !(bodaqs_control_get_u32(p.snapshot+28)&1u) || p.snapshot[60])) {
       exclude(n,p.snapshot[60]?p.snapshot[60]:29);return;
     }
-    p.phase=0;publish(n,Result::Succeeded);return;
+    p.phase=Phase::Idle;publish(n,Result::Succeeded);return;
   }
   if(q.record.opcode==0x22 && (r.data[0]==2 || r.data[0]==3)) {
-    p.leased=true;p.leaseDeadline=p.proposedDeadline;p.nextRenewal=millis()+100;p.phase=0;
+    p.leased=true;p.leaseDeadline=p.proposedDeadline;p.nextRenewal=millis()+100;p.phase=Phase::Idle;
   }
   if(r.data_length!=24) {fail(n,Result::Uncertain,1);return;}
   if(r.data[0]==2) {
@@ -345,7 +349,7 @@ void service() {
       memset(&transport,0,sizeof transport);
       for(uint8_t n=0;n<4;++n) {
         peers[n].ordinary.pending=peers[n].protectedLane.pending=false;
-        peers[n].phase=0;peers[n].pendingMutation=0;
+        peers[n].phase=Phase::Idle;peers[n].pendingMutation=0;
         {Lock lock;mailboxes[n].pending=false;outcomes[n].localFenceComplete=true;}
       }
       CanMasterManager::releaseMeasurementControl();
@@ -357,7 +361,7 @@ void service() {
     for(uint8_t n=0;n<4;++n) publish(n,Result::Unavailable,26);
   }
   if(exit) {
-    bool live=false;for(const auto& p:peers) live|=p.leased || p.ordinary.pending || p.protectedLane.pending || p.phase || p.pendingMutation;
+    bool live=false;for(const auto& p:peers) live|=p.leased || p.ordinary.pending || p.protectedLane.pending || p.phase!=Phase::Idle || p.pendingMutation;
     if(!live && CanMasterManager::exitMeasurementMode()) {
       uint32_t mutations[4];for(uint8_t n=0;n<4;++n) mutations[n]=peers[n].mutation;
       CanMasterManager::retainMeasurementAllocators(nextRead,mutations,nextTransfer);
@@ -371,7 +375,7 @@ void service() {
   for(uint8_t n=0;n<4;++n) {
     auto& p=peers[n];Request intent;bool have=false;
     if(p.leased && due(now,p.leaseDeadline)) exclude(n,29);
-    {Lock lock;if(mailboxes[n].pending && (mailboxes[n].request.action==Action::Stop || (!p.ordinary.pending && !p.phase && !p.pendingMutation && !transport.controls[0][n].state.complete))) {
+    {Lock lock;if(mailboxes[n].pending && (mailboxes[n].request.action==Action::Stop || (!p.ordinary.pending && p.phase==Phase::Idle && !p.pendingMutation && !transport.controls[0][n].state.complete))) {
       intent=mailboxes[n].request;mailboxes[n].pending=false;have=true;
     }}
     if(have) beginRequest(n,intent);
@@ -380,7 +384,7 @@ void service() {
       if(x->pending && static_cast<uint32_t>(now-x->started)>=deadline) {
         x->pending=false;if(x==&p.protectedLane) p.leased=false;
         if(x==&p.protectedLane) {exclude(n,26);continue;}
-        if(x==&p.ordinary && p.observing) {p.observing=false;p.phase=0;continue;}
+        if(x==&p.ordinary && p.observing) {p.observing=false;p.phase=Phase::Idle;continue;}
         fail(n,Result::Uncertain,26);
         if(p.leased) {
           Request stop;stop.node=n;stop.action=Action::Stop;stop.recording=p.recording;stop.reason=26;
@@ -388,7 +392,7 @@ void service() {
         }
       }
     }
-    if(p.pendingMutation && !p.ordinary.pending && !p.phase && !transport.controls[0][n].state.complete && due(now,p.nextPoll)) {
+    if(p.pendingMutation && !p.ordinary.pending && p.phase==Phase::Idle && !transport.controls[0][n].state.complete && due(now,p.nextPoll)) {
       if(static_cast<uint32_t>(now-p.waitStarted)>=10000) {
         p.pendingMutation=0;publish(n,Result::Uncertain,26);
         if(p.leased) {
@@ -412,7 +416,7 @@ void service() {
   // observation supplements them without spending 32 requests/s on four nodes.
   if(due(now,nextHealthObservation)) for(unsigned i=0;i<4;++i) {
     const uint8_t peer=(healthCursor+i)%4;auto& p=peers[peer];
-    if(!p.monitoring || !p.leased || p.excluded || p.ordinary.pending || p.phase || p.pendingMutation) continue;
+    if(!p.monitoring || !p.leased || p.excluded || p.ordinary.pending || p.phase!=Phase::Idle || p.pendingMutation) continue;
     bool pending;{Lock lock;pending=mailboxes[peer].pending;}
     if(pending || transport.controls[0][peer].state.complete) continue;
     nextHealthObservation=now+2000;healthCursor=(peer+1)%4;
