@@ -23,7 +23,7 @@ are part of this implementation.
 | #171 bounded loss and continuity recovery | Merged and verified | `6e64f66`, merged at `bd86b0d`; [bounded loss evidence](CAN-FD_Bounded_Loss_Recovery_Implementation.md) |
 | #172 link/restart containment and cleanup | Merged and verified | `1113809`, merged at `647811a`; [link/restart evidence](CAN-FD_Link_Restart_Implementation.md) |
 | #173 four-node resource admission | Merged and verified | `0628154`, merged at `e8c5123`; [admission evidence](CAN-FD_Four_Node_Admission_Implementation.md), [link profiles](CAN-FD_Link_Profile_Implementation.md) |
-| #174 integrated software acceptance | Candidate verified; integration merge/review pending | Tested source `144175e`, [combined acceptance and exact candidate evidence](CAN-FD_Integrated_Software_Acceptance.md), [reusable candidate runner](CAN-FD_Software_Candidate_Bundle.md) |
+| #174 integrated software acceptance | Merged and verified; final review pending | `cbf2e67`, merged at `03ab248`; [combined acceptance and exact candidate evidence](CAN-FD_Integrated_Software_Acceptance.md), [reusable candidate runner](CAN-FD_Software_Candidate_Bundle.md) |
 
 At `9c20ead`, the combined common CAN/control suite (nine binaries), full logger
 host/runtime suite, asynchronous storage-controller fixtures and explicit A8
@@ -103,9 +103,15 @@ confirms unchanged HEAD and tracked source. The retained local bundle is
 its complete 70-file SHA-256 inventory was independently verified. Exact
 source/archive/manifest/image identities, target allocation and reproduction
 commands are recorded in the #174 evidence above. Later evidence-only docs do
-not alter the tested firmware, analysis or tools. Final integration merge and
-independent Standards/Spec review remain pending; physical qualification remains
-deferred and production remote admission remains unsupported/unqualified.
+not alter the tested firmware, analysis or tools. Conflict-free integration merge
+`03ab248` exactly matches child tree `984e8422a44aa51087b0a71bb7410173927eb8ee`.
+Fresh merged-tree combined runtime and independent file/ledger/prefix checks pass,
+as do all fourteen common host binaries. All 70 candidate inventory hashes and
+the recorded archive/manifest/inventory identities were rechecked. Full analysis
+and target builds were reused because only the two evidence Markdown files differ
+from the tested source. Independent Standards/Spec review remains pending;
+physical qualification remains deferred and production remote admission remains
+unsupported/unqualified.
 
 ## Deferred physical qualification
 
