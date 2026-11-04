@@ -44,6 +44,10 @@ typedef struct {
     uint8_t rx_rejection;
 } BodaqsMeasurementControlLane;
 typedef struct {
+    uint32_t (*native_clock)(void *, uint32_t *epoch);
+    void *clock_context;
+    uint64_t bridge_context;
+    uint32_t bridge_token, bridge_tick, bridge_epoch;
     BodaqsControlExchange control;
     BodaqsControlExchange authorization;
     BodaqsReceptionBatch receptions[4];

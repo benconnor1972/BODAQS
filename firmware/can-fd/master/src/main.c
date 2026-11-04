@@ -1,3 +1,4 @@
+#include "master_timing.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -289,11 +290,11 @@ static void capture_can_receive_fifo(void)
         DL_MCAN_readMsgRam(MCAN0_INST, DL_MCAN_MEM_TYPE_FIFO, 0U,
             fifo_status.num, &record.message);
         record.received_ms = gUptimeMs;
-        /* Quantized capture source until #170 binds the native master clock.
-         * Carry this exact ingress observation through deferred processing. */
-        record.received_tick = record.received_ms * 1000U;
+        uint32_t clock_epoch;
+        record.received_tick = bodaqs_master_timing_clock(NULL,&clock_epoch);
+        if(!clock_epoch) record.ordinal=0;
         /* ISR capture order includes frames later rejected or dropped by queues. */
-        if(gCanReceiveOrdinal==UINT64_MAX) {
+        if(!clock_epoch || gCanReceiveOrdinal==UINT64_MAX) {
             ++gMasterRuntimeInfo.can_malformed_frames;
             record.ordinal=0; /* Fail closed while still retiring the hardware FIFO. */
         } else record.ordinal=++gCanReceiveOrdinal;
@@ -617,6 +618,30 @@ static void update_service_status(void)
         BODAQS_MASTER_DISCOVERY_NODE_COUNT);
 }
 
+static void service_sync(void) {
+    static uint32_t sequence, edge, evidence_sequence, evidence_edge;
+    static bool marker_pending, evidence_pending;
+    uint8_t p[64]={0};
+    if(!marker_pending && bodaqs_master_timing_take(&sequence,&edge)) {
+        marker_pending=true;
+        if(!evidence_pending && gService.measurement.mode.phase==2) {
+            evidence_sequence=sequence;evidence_edge=edge;evidence_pending=true;
+        }
+    }
+    if(marker_pending) {
+        p[0]=1;p[1]=0x20;p[2]=1;p[4]=(uint8_t)sequence;p[5]=(uint8_t)(sequence>>8);p[6]=8;
+        bodaqs_control_put_u32(p+8,sequence);bodaqs_control_put_u32(p+12,edge);
+        if(send_can_frame(0x20,p,16)) marker_pending=false;
+    }
+    if(evidence_pending) {
+        memset(p,0,sizeof p);p[0]=1;p[2]=1;p[4]=1;p[8]=1;
+        bodaqs_control_put_u32(p+12,evidence_sequence);bodaqs_control_put_u32(p+16,evidence_edge);
+        bodaqs_control_put_u32(p+20,1);
+        if(gService.measurement.mode.phase!=2 || bodaqs_master_service_publish_evidence(&gService,p,24))
+            evidence_pending=false;
+    }
+}
+
 static void service_spi_receive(void);
 static void retire_spi_boundary(void);
 
@@ -635,6 +660,8 @@ int main(void)
 
     identity = master_identity_read();
     bodaqs_master_service_init(&gService, &identity);
+    bodaqs_master_timing_init();
+    gService.native_clock=bodaqs_master_timing_clock;
     bodaqs_control_exchange_init(&gService.control, master_control_boot_id_read());
     bodaqs_node_inventory_init(&gNodeInventory);
     gTransmitIndex = 0U;
@@ -678,6 +705,8 @@ int main(void)
     NVIC_EnableIRQ(MCAN0_INST_INT_IRQN);
 
     while (1) {
+        bodaqs_master_timing_supervise(gUptimeMs);
+        service_sync();
         bodaqs_control_exchange_tick(&gService.control, gUptimeMs);
         retire_spi_boundary();
         service_spi_receive();
@@ -877,3 +906,5 @@ void SysTick_Handler(void)
     if ((gUptimeMs % 100U)==0U) gHealthDue = true;
 }
 
+
+void TIMA0_IRQHandler(void) { bodaqs_master_timing_irq(); }

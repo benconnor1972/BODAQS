@@ -37,6 +37,22 @@ int main() {
   assert(std::strstr(provenance,"\"gyro_udps_per_count\":70000"));
   assert(std::strstr(provenance,"stopped_configuration_at_admission"));
   assert(!std::strstr(provenance,"\"verification_phase\":3"));
+  assert(stream.acceptSharedSync(5,123456,9,201)==RemoteImuStream::Accepted);
+  assert(evidence.popRecord(evidence.context,record,sizeof record));
+  assert(record[12]==4 && BdqV2Format::getU32(record+40)==9);
+  assert(BdqV2Format::getU32(record+16)==((1u<<3)|(1u<<8)|(1u<<22)));
+  assert(BdqV2Format::getU32(record+64)==5 && BdqV2Format::getU32(record+72)==123456);
+  assert(stream.acceptBridge(11,654321,9,0x100000002ULL,0x100000063ULL,202)==RemoteImuStream::Accepted);
+  assert(evidence.popRecord(evidence.context,record,sizeof record));
+  assert(record[12]==5 && BdqV2Format::getU32(record+144)==11);
+  assert(BdqV2Format::getU64(record+120)==0x100000002ULL && BdqV2Format::getU64(record+128)==0x100000063ULL);
+  assert(BdqV2Format::getU32(record+16)==((1u<<3)|(1u<<14)|(1u<<15)|(1u<<22)));
+  assert(BdqV2Format::getU32(record+180)==0); // No invented physical uncertainty.
+  assert(stream.acceptMissingBridge(12,203)==RemoteImuStream::Accepted);
+  assert(evidence.popRecord(evidence.context,record,sizeof record));
+  assert(record[12]==5 && BdqV2Format::getU32(record+144)==12 && record[140]==2);
+  assert(BdqV2Format::getU32(record+16)==((1u<<15)|(1u<<22)));
+  assert(BdqV2Format::getU32(record+40)==0 && BdqV2Format::getU64(record+120)==0);
   // A conflicting definition cannot silently replace an already used origin.
   model[32]^=1;
   assert(stream.accept(0x91,model,64,54,6,104)==RemoteImuStream::Invalid);

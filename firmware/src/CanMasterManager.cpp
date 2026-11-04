@@ -1,3 +1,7 @@
+#include "../can-fd/common/protocol/bodaqs_timing.h"
+#if defined(ARDUINO_ARCH_ESP32)
+#include <esp_timer.h>
+#endif
 #include "CanMasterManager.h"
 
 #include <Arduino.h>
@@ -712,6 +716,13 @@ bool queueMeasurementControl(MeasurementTransport& transport,const BodaqsControl
   return bodaqs_fragment_seal(&outbox.state,outbox.bytes,68,transport.context,objectId,
       wrapped.node_address,authorization?4:3,0,64);
 }
+static uint64_t loggerClockUs_() {
+#if defined(ARDUINO_ARCH_ESP32)
+  return static_cast<uint64_t>(esp_timer_get_time());
+#else
+  return micros();
+#endif
+}
 int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint8_t node,
                                 MeasurementInbox*& completed) {
   completed=nullptr;
@@ -763,7 +774,34 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
       transport.nextHeadPollMs[budgetNode]=millis()+20;
     }
   }
+  if(transport.timingEnabled && transport.bridgePending &&
+     static_cast<uint32_t>(millis()-transport.bridgeStarted)>=300) {
+    transport.bridgePending=false;transport.bridgeNext=millis()+100;
+    transport.bridgeExpired=true;transport.bridgeReady=true;
+    // Persist the expired token, with no clock observation or interval validity.
+  }
+  if(transport.timingEnabled && !outgoing && !acked && !transport.bridgeReady &&
+     ((transport.bridgePending && static_cast<int32_t>(millis()-transport.bridgeRetry)>=0) ||
+      (!transport.bridgePending && static_cast<int32_t>(millis()-transport.bridgeNext)>=0))) {
+    if(!transport.bridgePending && transport.bridgeToken!=UINT32_MAX) {
+      ++transport.bridgeToken;transport.bridgeStarted=millis();
+      transport.bridgeLower=loggerClockUs_();transport.bridgePending=true;transport.bridgeExpired=false;
+    }
+    if(transport.bridgePending) {
+      bodaqs_bridge_request(&request,transport.context,transport.bridgeToken);
+      transport.bridgeRetry=millis()+20; // normal data/ACK polls run between retries
+    }
+  }
   if(!exchangeMeasurementSlot(request,response)) return 0;
+  const uint64_t receivedUs=loggerClockUs_();
+  if(response.context==transport.context && transport.bridgePending &&
+     static_cast<uint32_t>(millis()-transport.bridgeStarted)<300 &&
+     response.object==transport.bridgeToken && bodaqs_bridge_valid(&response,1)) {
+    transport.bridgeTick=static_cast<uint32_t>(bodaqs_measurement_get(response.body+4,4));
+    transport.bridgeEpoch=static_cast<uint32_t>(bodaqs_measurement_get(response.body+8,4));
+    transport.bridgeUpper=receivedUs;transport.bridgeExpired=transport.bridgeEpoch==0;transport.bridgeReady=true;
+    transport.bridgePending=false;transport.bridgeNext=transport.bridgeStarted+100;
+  }
   if(acked) acked->ackPending=false;
   if(response.context!=s_diagnostics.measurement.context) return 0;
   if(response.kind==5 && response.node<4 && (response.body[0]==3 || response.body[0]==4)) {
