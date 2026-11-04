@@ -16,6 +16,7 @@ static bool randomHigh=true;
 static bool spiAvailable=true, recording=false, muted=false, dropCommit=false, dropInspection=false, corruptReplies=false;
 static unsigned commitAttempts=0, sensorAttempts=0;
 static bool malformedCachedResult=false;
+static bool changeEpochOnEffectiveRelease=false;
 uint32_t millis() { return clockMs; }
 uint32_t micros() { return clockMs*1000; }
 uint32_t esp_random() {
@@ -68,6 +69,10 @@ bool transfer(int8_t,const SPISettings&,const uint8_t*tx,uint8_t*rx,size_t lengt
    bodaqs_control_apply_process(&peer.apply,&q,clockMs,&r) ||
    bodaqs_control_snapshot_process(&peerSnapshot,&peer.view,&q,clockMs,&r) ||
    bodaqs_control_node_process(&peer.view,&q,&r));
+  if(!address && changeEpochOnEffectiveRelease &&
+      q.opcode==BODAQS_CONTROL_RELEASE_SNAPSHOT && peerSnapshot.length==192) {
+   ++peer.view.endpoint_epoch[0]; changeEpochOnEffectiveRelease=false;
+  }
   assert(bodaqs_control_encode_can(&r,true,transaction,bytes));
   assert(bodaqs_control_decode_can(bytes,64,true,&decoded,&r));
   if(q.opcode==BODAQS_CONTROL_COMMIT_APPLY) ++commitAttempts;
@@ -136,6 +141,25 @@ int main(int argc,char**) {
  profile.can_fd_master.cs_pin=5;profile.can_fd_master.spi_bus_index=0;
  config.canMasterMode=CanMasterMode::Auto;
  CanMasterManager::begin(profile,config);reconcile();
+ for(unsigned t=0;t<10000;t+=100) {
+  advance(100);
+  if(!CanMasterManager::configurationReconciled(0))
+   fprintf(stderr,"healthy unchanged endpoint lost current agreement during observation refresh\n");
+  assert(CanMasterManager::configurationReconciled(0));
+ }
+ // A real change after capture rejects the candidate and keeps old provenance.
+ const auto verifiedEpoch=node.view.endpoint_epoch[0];
+ const auto verifiedResets=node.regs.resets;
+ changeEpochOnEffectiveRelease=true;
+ unsigned changedWait=0;
+ while((changeEpochOnEffectiveRelease || CanMasterManager::configurationReconciled(0)) && changedWait<10000) {
+  advance(100); changedWait+=100;
+ }
+ assert(changedWait<10000 && !CanMasterManager::diagnostics().control.nodes[0].endpoints[0].current);
+ assert(bodaqs_control_get_u64(CanMasterManager::diagnostics().control.nodes[0].endpoints[0].effective+184)==verifiedEpoch);
+ reconcile();
+ assert(bodaqs_control_get_u64(CanMasterManager::diagnostics().control.nodes[0].endpoints[0].effective+184)==verifiedEpoch+1);
+ assert(node.regs.resets==verifiedResets);
  auto session=CanMasterManager::diagnostics().authority.session;
  auto operation=CanMasterManager::diagnostics().authority.nodes[0].next_mutation;
  auto resets=node.regs.resets;

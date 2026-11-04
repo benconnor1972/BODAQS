@@ -72,6 +72,14 @@ The additional production JSON projections are reproducible with
 `firmware/tools/test_control_apply_runtime.py` and
 `firmware/tools/test_control_authority_api.py`.
 
+An unchanged, epoch-verified effective observation remains current during normal
+refresh. A replacement snapshot is published only after its final fresh epoch
+comparison succeeds. Epoch changes, transport/identity faults and a new apply
+invalidate currentness; background refresh alone does not. Configuration-only
+remote sensors report the additive `acquisition_unavailable` diagnostic and stay
+excluded from acquisition without requiring a logger restart. Existing local
+driver configuration changes retain their restart diagnostics.
+
 Remote temporary mute is a bounded runtime override separate from the saved
 muted default. It survives unrelated rebuilds and clears on configured
 identity/assignment/type/default changes or reboot. Starting/running/stopping

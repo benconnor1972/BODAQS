@@ -817,8 +817,8 @@ const SensorDiagnosticList& configurationDiagnostics(const LoggerConfig& cfg) {
       // remote acquisition/data-plane driver is implemented. Keep it out of
       // the live session without misreporting the hardware as absent.
       if (!diagnostics.excludesSensor(i)) {
-        add(SensorIssueCode::RuntimeConfigurationDiffers,
-            SensorIssueSeverity::Warning,
+        add(SensorIssueCode::AcquisitionUnavailable,
+            SensorIssueSeverity::Info,
             SensorIssueImpact::ExcludeSensor, i, 0xFF, assignment);
       }
       continue;

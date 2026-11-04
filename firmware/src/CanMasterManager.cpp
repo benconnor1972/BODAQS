@@ -137,6 +137,7 @@ void scheduleDisabled_() {
     if (bodaqs_control_apply_client_start(&s_diagnostics.apply, &s_diagnostics.authority,
         s_diagnostics.control.master_boot_id, address, generation,
         bodaqs_control_get_u64(endpoint.effective + 32), descriptor, millis())) {
+      s_diagnostics.control.nodes[address].endpoints[0].current=false;
       s_nextRecoveryMs[address]=millis()+30000;
       return;
     }

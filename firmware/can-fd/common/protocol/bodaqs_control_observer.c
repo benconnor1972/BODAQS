@@ -311,15 +311,8 @@ bool bodaqs_control_observer_accept(BodaqsControlObserver *observer,
                     memcpy(ep->capability, observer->snapshot_bytes, 128);
                     ep->capability_valid = true;
                 }
-                else
-                {
-                    memcpy(ep->effective, observer->snapshot_bytes, 192);
-                    ep->effective_valid = true;
-                    ep->effective_boot = observer->nodes[reply->node_address].node_boot_id;
-                    ep->effective_uid = bodaqs_control_get_u64(ep->capability + 40);
-                    ep->observed_ms = now;
-                    ep->current = false;
-                }
+                /* Keep the previous observation until the candidate effective
+                 * snapshot has passed the final fresh epoch comparison. */
                 ++observer->snapshot_phase;
             }
             return true;
@@ -406,14 +399,23 @@ bool bodaqs_control_observer_accept(BodaqsControlObserver *observer,
             &node->endpoints[record->endpoint];
         if (observer->snapshot_phase == SNAPSHOT_REFRESH_EPOCH)
         {
-            ep->current = ep->effective_valid &&
-                          bodaqs_control_get_u64(ep->effective + 184) ==
-                              node->endpoint_epoch[record->endpoint];
+            ep->current = observer->snapshot_epoch ==
+                          node->endpoint_epoch[record->endpoint];
+            if (ep->current)
+            {
+                memcpy(ep->effective, observer->snapshot_bytes, 192);
+                ep->effective_valid = true;
+                ep->effective_boot = node->node_boot_id;
+                ep->effective_uid = bodaqs_control_get_u64(ep->capability + 40);
+                ep->observed_ms = now;
+            }
             observer->snapshot_phase = 0;
         }
         else
         {
-            ep->current = false;
+            ep->current = ep->current && ep->effective_valid &&
+                          bodaqs_control_get_u64(ep->effective + 184) ==
+                              node->endpoint_epoch[record->endpoint];
             observer->snapshot_phase = SNAPSHOT_OPEN_CAPABILITY;
             observer->snapshot_address = reply->node_address;
             observer->snapshot_endpoint = record->endpoint;

@@ -268,12 +268,26 @@ void clockHealthInvalidatesCapturedSnapshot()
     }
     assert(refreshed);
     const auto& endpoint = observer.nodes[0].endpoints[0];
-    assert(endpoint.effective_valid);
-    assert(bodaqs_control_get_u32(endpoint.effective + 20) == 32);
-    assert(bodaqs_control_get_u64(endpoint.effective + 184) == 1);
+    // An initial candidate contradicted by the final epoch check is not published.
+    assert(!endpoint.effective_valid);
     assert(observer.nodes[0].endpoint_epoch[0] == 2);
     assert(observer.nodes[0].flags & (1U << 7));
     assert(!endpoint.current);
+    for (unsigned step = 32; step < 96 && !endpoint.current; ++step)
+    {
+        BodaqsControlWrapped query, answer;
+        uint8_t type;
+        assert(bodaqs_control_observer_next(&observer, &query, &type));
+        answer = query;
+        assert(bodaqs_control_snapshot_process(&snapshot, &node, &query.record,
+                                               step, &answer.record) ||
+               bodaqs_control_node_process(&node, &query.record, &answer.record));
+        assert(bodaqs_control_observer_accept(&observer,
+                    BODAQS_CONTROL_POLL_RESPONSE, &answer, step));
+    }
+    assert(endpoint.current && endpoint.effective_valid);
+    assert(bodaqs_control_get_u64(endpoint.effective + 184) == 2);
+    assert(bodaqs_control_get_u32(endpoint.effective + 20) & (1U << 3));
 }
 void clockHealthChangesOnlyFittedEpochsAndFailsClosedAtExhaustion()
 {

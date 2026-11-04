@@ -248,6 +248,18 @@ bool has(const char* event) { return std::find(events.begin(), events.end(), eve
 int index(const char* event) { return std::find(events.begin(), events.end(), event) - events.begin(); }
 int main() {
   using T = SensorType; using I = LoggingConfigIssue;
+  reset();
+  add(T::LSM6DSO32XImu,"imu0",0,0,false);
+  set(0,"provider","can:0"); set(0,"endpoint","imu");
+  set(0,"profile","imu6_3333_32g_2000dps_v1");
+  const String remoteNotice=configurationNotice_();
+  if(remoteNotice.indexOf("Restart required")>=0)
+    fprintf(stderr,"config-only remote IMU incorrectly reports Restart required\n");
+  check(remoteNotice.indexOf("Restart required")<0);
+  check(remoteNotice.indexOf("acquisition_unavailable")>=0);
+  check(remoteNotice.indexOf("Remote acquisition is not implemented yet")>=0);
+  check(issue()==I::None);
+  check(SensorManager::configurationDiagnostics(g_cfg).excludesSensor(0));
   reset(); check(issue() == I::None);
   add(T::AnalogPot,"local",0,0);
   CanMasterManager::handoffReady=false;

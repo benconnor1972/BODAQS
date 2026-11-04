@@ -74,6 +74,9 @@ static String configurationNotice_(bool outOfBand = false) {
         case SensorIssueCode::CapabilityMismatch:
           action = "Reduce the requested rate/features or select compatible hardware.";
           break;
+        case SensorIssueCode::AcquisitionUnavailable:
+          action = "Remote acquisition is not implemented yet. Configuration can be verified; restarting will not enable samples.";
+          break;
         case SensorIssueCode::DuplicateSensorName:
         case SensorIssueCode::DuplicateSensorIdentity:
           action = "Give each configured sensor a unique logical identity.";
