@@ -27,6 +27,10 @@ All ten software slices are integrated. GitHub issues remain open; local
 implementation does not close them automatically. Physical acceptance remains
 pending.
 
+Final code integration: `d39891f2185fecb8f08a55927dae5875b65206f4`.
+Both [review axes](CAN-FD_Control_Review.md) completed with no unresolved
+findings after correction and independent verification.
+
 The profile is configuration-only. Enabled-stopped runs sensing engines at
 nominal 3333 Hz, +/-32 g and +/-2000 degrees/s, with the confirmed filter
 policy. Explicit disable uses zero ODR. Neither mode collects, sequences,
