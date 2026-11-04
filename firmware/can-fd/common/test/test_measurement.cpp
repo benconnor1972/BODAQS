@@ -79,6 +79,42 @@ static void transitions() {
     assert(CanMasterProtocol::decodeSlot(rx,84,observed)==CanMasterProtocol::DecodeResult::Ok);
     assert(static_cast<unsigned>(observed.type)==0x8a && observed.payload[48]==57 && observed.payload[38]==2);
     assert(master.measurement.mode.context==23);
+    // Administrative legacy traffic cannot grant acquisition in an old context.
+    CanMasterProtocol::Frame forbidden;
+    forbidden.type=CanMasterProtocol::MessageType::ControlSubmitRequest;
+    forbidden.sequence=61;forbidden.payloadLength=64;
+    BodaqsControlWrapped grant={};grant.master_boot_id=7;grant.node_address=0;
+    grant.record.opcode=BODAQS_CONTROL_START;grant.record.node_boot_id=9;
+    grant.record.endpoint=255;grant.record.operation=2;grant.record.session=11;
+    grant.record.data_length=24;bodaqs_control_put_u64(grant.record.data,mode.recording);
+    assert(bodaqs_control_request_valid(&grant.record));
+    assert(bodaqs_control_encode_wrapped(&grant,forbidden.payload));
+    assert(CanMasterProtocol::encodeSlot(forbidden,tx,sizeof tx));
+    assert(bodaqs_master_service_process_transfer(&master,tx,84,1501,rx)==BODAQS_MASTER_SLOT_MALFORMED);
+    assert(master.control.slots[0].state==0 && master.measurement.mode.context==23);
+    // Optional post-START health snapshots use the 4/s burst-four bucket for
+    // OPEN, continuation pages, release and retries, not the lifecycle bucket.
+    static BodaqsMasterService diagnostic;
+    BodaqsMasterIdentity diagnosticIdentity={};
+    bodaqs_master_service_init(&diagnostic,&diagnosticIdentity);
+    bodaqs_control_exchange_init(&diagnostic.control,7);
+    diagnostic.measurement.mode.phase=2;diagnostic.acquisition_started=15;
+    for(unsigned n=0;n<4;++n) {
+        auto& pending=diagnostic.control.slots[n];pending.state=1;pending.transaction=n+1;
+        pending.request.opcode=0x28;pending.request.operation=100+n;pending.request.node_boot_id=9;
+        pending.request.endpoint=255;pending.request.session=11;pending.request.data_length=8;
+    }
+    uint8_t address,canPayload[64];uint16_t transaction;
+    for(unsigned n=0;n<4;++n)
+        assert(bodaqs_master_service_control_transmit(&diagnostic,100,&address,&transaction,canPayload));
+    auto& continuation=diagnostic.control.slots[0];
+    continuation.attempts=0;continuation.request.opcode=7;continuation.request.data_length=0;
+    continuation.request.transfer=123;
+    assert(!bodaqs_master_service_control_transmit(&diagnostic,249,&address,&transaction,canPayload));
+    assert(bodaqs_master_service_control_transmit(&diagnostic,250,&address,&transaction,canPayload));
+    continuation.attempts=0;continuation.request.opcode=8;
+    assert(!bodaqs_master_service_control_transmit(&diagnostic,499,&address,&transaction,canPayload));
+    assert(bodaqs_master_service_control_transmit(&diagnostic,500,&address,&transaction,canPayload));
     BodaqsMeasurementMode invalid=mode; invalid.boot=8;
     assert(bodaqs_measurement_stage(&master.measurement,&invalid,43,1500,false)==4);
     invalid=mode; invalid.maximum=1000;

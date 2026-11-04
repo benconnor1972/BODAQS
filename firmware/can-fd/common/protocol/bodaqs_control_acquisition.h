@@ -55,7 +55,7 @@ extern "C"
         BodaqsControlRecord begin, pending, commit, challenge_request, renewal_request,
             renewal_result;
         uint8_t staged[112], first[16], final[16];
-        uint64_t recording, owner, challenge, terminated_record;
+        uint64_t recording, owner, challenge, terminated_record, terminated_session;
         uint32_t staged_ms, prepared_ms, issued_ms, lease_deadline, renewal_sequence;
         uint32_t generation, node_clock_epoch, sensor_clock_epoch;
         uint32_t issued_tick, prepared_tick, lease_tick;

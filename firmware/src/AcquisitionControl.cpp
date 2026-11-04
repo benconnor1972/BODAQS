@@ -30,6 +30,9 @@ struct Peer {
   uint8_t prepare[112] = {}, snapshot[128] = {}, page = 0;
   uint8_t phase = 0; // 1 begin, 2 pages, 3 initial proof, 4 commit, 5 snapshot pages, 6 release snapshot
   bool leased = false;
+  bool excluded = false;
+  bool observing = false;
+  bool monitoring = false;
 };
 struct Mailbox { Request request; bool pending = false; };
 static Peer peers[4];
@@ -39,9 +42,12 @@ static CanMasterManager::MeasurementTransport transport;
 static uint64_t recordingId, contextId, session, masterBoot, nextTransfer;
 static uint32_t nextRead;
 static bool owned = false, enterPending = false, exitPending = false, servicing = false;
+static bool cleanupRequested=false;
 static uint8_t cursor;
 static DataConsumer dataConsumer=nullptr;
 static uint8_t dataMask=0,dataCursor=0,serviceCursor=0;
+static uint32_t nextHealthObservation=0;
+static uint8_t healthCursor=0;
 #if defined(ARDUINO_ARCH_ESP32)
 static TaskHandle_t task = nullptr;
 static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
@@ -58,6 +64,11 @@ static uint32_t allocate(uint32_t& value) {
 }
 static void publish(uint8_t n,Result result,uint8_t reason=0,const BodaqsControlRecord* reply=nullptr) {
   (void)reply; // Node-wide generic results contain no endpoint revision/epoch.
+  if(result==Result::Succeeded && peers[n].intent.action==Action::Start) peers[n].monitoring=true;
+  if(peers[n].observing && (result==Result::Pending || result==Result::Succeeded)) {
+    if(result==Result::Succeeded) peers[n].observing=false;
+    return;
+  }
   Lock lock;
   auto& out=outcomes[n];
   ++out.serial;out.action=peers[n].intent.action;out.result=result;out.reason=reason;
@@ -79,23 +90,39 @@ static bool send(uint8_t n,Exchange& exchange,BodaqsControlWrapped q,bool protec
 static void fail(uint8_t n,Result result,uint8_t reason) {
 
   auto& p=peers[n];p.phase=0;p.ordinary.pending=false;p.pendingMutation=0;
+  if(p.observing && (reason==7 || reason==10)) {
+    p.observing=false;return; // Busy/aged optional diagnostics are not a node fault.
+  }
+  if(p.recording && !p.observing) {
+    p.excluded=true;p.leased=false;p.protectedLane.pending=false;
+    transport.terminalNodes|=1u<<n;
+    Lock lock;outcomes[n].excluded=true;
+  }
   publish(n,result,reason);
+}
+static void exclude(uint8_t n,uint8_t reason) {
+  auto& p=peers[n];
+  p.excluded=true;p.leased=false;p.observing=false;p.protectedLane.pending=false;
+  transport.terminalNodes|=1u<<n;
+  {Lock lock;outcomes[n].excluded=true;}
+  fail(n,Result::Unavailable,reason);
 }
 static void challenge(uint8_t n,bool initial) {
   auto& p=peers[n];
-  if(p.renewal==UINT32_MAX) {p.leased=false;fail(n,Result::Unavailable,22);return;}
+  if(p.renewal==UINT32_MAX) {exclude(n,22);return;}
   auto q=request(n,0x26,allocate(nextRead),initial?p.transfer:0);
-  if(!q.record.operation) {p.leased=false;fail(n,Result::Unavailable,22);return;}
+  if(!q.record.operation) {exclude(n,22);return;}
   q.record.data_length=16;
   bodaqs_control_put_u64(q.record.data,p.recording);
   bodaqs_control_put_u32(q.record.data+8,++p.renewal);
   q.record.data[12]=initial?0:1;q.record.data[13]=1;
-  if(!send(n,p.protectedLane,q,true)) {p.leased=false;fail(n,Result::Uncertain,26);}
+  if(!send(n,p.protectedLane,q,true)) exclude(n,26);
 }
-static void beginRequest(uint8_t n,const Request& intent) {
-  auto& p=peers[n];p.intent=intent;p.began=millis();
-  {Lock lock;outcomes[n].snapshotValid=false;}
+static void beginRequest(uint8_t n,const Request& intent,bool observing=false) {
+  auto& p=peers[n];p.intent=intent;p.began=millis();p.observing=observing;
+  if(!observing) {Lock lock;outcomes[n].snapshotValid=false;}
   if(intent.action==Action::Fence) {
+    if(transport.failed || p.excluded) cleanupRequested=true;
     bool discarded=false;
     for(uint8_t cls:{1,2,5}) {
       auto& inbox=transport.inboxes[cls-1][cls==5?0:n];
@@ -107,7 +134,7 @@ static void beginRequest(uint8_t n,const Request& intent) {
   }
   if(intent.action==Action::Stop) {
     // Terminal locally before dispatch. A delayed challenge can never renew.
-    p.leased=false;p.protectedLane.pending=false;p.ordinary.pending=false;p.phase=0;p.pendingMutation=0;
+    p.leased=false;p.monitoring=false;p.protectedLane.pending=false;p.ordinary.pending=false;p.phase=0;p.pendingMutation=0;
     transport.terminalNodes|=1u<<n;
     auto& retired=transport.inboxes[3][n];
     if(!retired.state.complete) retired=MeasurementInbox{};
@@ -151,6 +178,9 @@ static void accept(uint8_t n,bool protectedLane,const BodaqsControlWrapped& wrap
   const auto q=x.request;const auto& r=wrapped.record;x.pending=false;
   if(r.opcode==BODAQS_CONTROL_ERROR || (r.data_length==24 && r.data[0]==1 &&
       q.record.opcode!=0x26 && q.record.opcode!=0x27 && q.record.opcode!=0x28 && q.record.opcode!=7)) {
+    if(p.recording && (r.data[1]==4 || r.data[1]==27 || r.data[1]==29 || protectedLane)) {
+      exclude(n,r.data[1]);return;
+    }
     if(protectedLane) p.leased=false;
     if((q.record.opcode==0x20 && p.phase==1) || q.record.opcode==0x24 ||
        q.record.opcode==0x25 || q.record.opcode==0x29 || q.record.opcode==0x2a) {
@@ -164,10 +194,10 @@ static void accept(uint8_t n,bool protectedLane,const BodaqsControlWrapped& wrap
        bodaqs_control_get_u32(r.data+20)!=p.renewal || !bodaqs_control_get_u64(r.data) ||
        static_cast<uint32_t>(bodaqs_control_get_u32(r.data+12)-bodaqs_control_get_u32(r.data+8))!=300000 ||
        static_cast<uint32_t>(bodaqs_control_get_u32(r.data+16)-bodaqs_control_get_u32(r.data+8))!=1000000) {
-      p.leased=false;fail(n,Result::Uncertain,1);return;
+      exclude(n,1);return;
     }
     // Node ticks are not logger ticks. Bound transit by local request age.
-    if(static_cast<uint32_t>(millis()-x.started)>=300) {p.leased=false;fail(n,Result::Uncertain,26);return;}
+    if(static_cast<uint32_t>(millis()-x.started)>=300) {exclude(n,26);return;}
     p.proposedDeadline=x.started+1000;
     p.proposedWireDeadline=bodaqs_control_get_u32(r.data+16);
     auto proof=request(n,initial?0x22:0x27,initial?p.ordinary.request.record.operation:q.record.operation,initial?p.transfer:0);
@@ -183,7 +213,7 @@ static void accept(uint8_t n,bool protectedLane,const BodaqsControlWrapped& wrap
        bodaqs_control_get_u32(r.data+8)==p.proposedWireDeadline) {
       p.leaseDeadline=p.proposedDeadline;
       Lock lock;outcomes[n].leaseAcknowledged=p.leased;
-    } else {p.leased=false;fail(n,Result::Uncertain,1);}
+    } else exclude(n,1);
     return;
   }
   if(p.phase==1 || p.phase==2) {
@@ -222,6 +252,12 @@ static void accept(uint8_t n,bool protectedLane,const BodaqsControlWrapped& wrap
     {Lock lock;memcpy(outcomes[n].snapshot,p.snapshot,128);outcomes[n].snapshotValid=true;
       outcomes[n].revision=bodaqs_control_get_u64(p.snapshot+72);
       outcomes[n].epoch=bodaqs_control_get_u64(p.snapshot+64);}
+    // A current node-issued snapshot is observational: it cannot grant a lease
+    // or rejoin a participant excluded by boot, bus-off or lease expiry.
+    if(p.leased && (bodaqs_control_get_u64(p.snapshot+16)!=session ||
+       !(bodaqs_control_get_u32(p.snapshot+28)&1u) || p.snapshot[60])) {
+      exclude(n,p.snapshot[60]?p.snapshot[60]:29);return;
+    }
     p.phase=0;publish(n,Result::Succeeded);return;
   }
   if(q.record.opcode==0x22 && (r.data[0]==2 || r.data[0]==3)) {
@@ -261,7 +297,8 @@ bool begin(uint64_t recording,uint64_t context) {
   nextRead=d.authority.next_read;nextTransfer=d.apply.next_transfer;
   for(uint8_t n=0;n<4;++n) {peers[n]=Peer{};peers[n].mutation=d.authority.nodes[n].next_mutation;mailboxes[n]=Mailbox{};outcomes[n]=Outcome{};}
   memset(&transport,0,sizeof transport);recordingId=recording;contextId=context;cursor=0;
-  {Lock lock;owned=true;enterPending=true;exitPending=false;}
+  nextHealthObservation=millis()+2000;healthCursor=0;
+  {Lock lock;owned=true;enterPending=true;exitPending=false;cleanupRequested=false;}
   return true;
 }
 bool active() {Lock lock;return owned;}
@@ -272,6 +309,7 @@ bool setDataConsumer(DataConsumer consumer,uint8_t mask) {
 bool enqueue(const Request& request) {
   if(request.node>3 || static_cast<unsigned>(request.action)>static_cast<unsigned>(Action::Release)) return false;
   Lock lock;
+  if(outcomes[request.node].excluded && (request.action==Action::Prepare || request.action==Action::Start)) return false;
   if(!owned || (exitPending && request.action!=Action::Stop && request.action!=Action::Fence && request.action!=Action::Release && request.action!=Action::Snapshot) || (mailboxes[request.node].pending && request.action!=Action::Stop)) return false;
   mailboxes[request.node].request=request;mailboxes[request.node].pending=true;return true;
 }
@@ -284,6 +322,31 @@ void service() {
   bool enter=false,exit=false;
   {Lock lock;if(!owned) return;enter=enterPending;enterPending=false;exit=exitPending;}
   servicing=true;
+  if(transport.failed) for(uint8_t n=0;n<4;++n) {
+    Request terminal;bool queued=false;
+    {Lock lock;if(mailboxes[n].pending) {
+      terminal=mailboxes[n].request;mailboxes[n].pending=false;queued=true;
+    }}
+    if(queued && terminal.action==Action::Fence) cleanupRequested=true;
+    // The unavailable measurement context cannot carry another command. STOP
+    // has already stopped renewal; the node's original lease must expire.
+  }
+  bool liveRemote=false;for(const auto& peer:peers) liveRemote|=peer.leased;
+  if(cleanupRequested && !liveRemote) {
+    if(CanMasterManager::cleanupUnavailableMeasurement()) {
+      // Retire all old assemblers, deduplication and ACK state only after the
+      // node/master physical fences and explicit administrative release.
+      memset(&transport,0,sizeof transport);
+      for(uint8_t n=0;n<4;++n) {
+        peers[n].ordinary.pending=peers[n].protectedLane.pending=false;
+        peers[n].phase=0;peers[n].pendingMutation=0;
+        {Lock lock;mailboxes[n].pending=false;outcomes[n].localFenceComplete=true;}
+      }
+      CanMasterManager::releaseMeasurementControl();
+      {Lock lock;owned=false;exitPending=false;cleanupRequested=false;}
+    }
+    servicing=false;return;
+  }
   if(enter && !CanMasterManager::enterMeasurementMode(recordingId,contextId)) {
     for(uint8_t n=0;n<4;++n) publish(n,Result::Unavailable,26);
   }
@@ -301,7 +364,7 @@ void service() {
   const uint32_t now=millis();
   for(uint8_t n=0;n<4;++n) {
     auto& p=peers[n];Request intent;bool have=false;
-    if(p.leased && due(now,p.leaseDeadline)) {p.leased=false;publish(n,Result::Uncertain,29);}
+    if(p.leased && due(now,p.leaseDeadline)) exclude(n,29);
     {Lock lock;if(mailboxes[n].pending && (mailboxes[n].request.action==Action::Stop || (!p.ordinary.pending && !p.phase && !p.pendingMutation && !transport.controls[0][n].state.complete))) {
       intent=mailboxes[n].request;mailboxes[n].pending=false;have=true;
     }}
@@ -310,6 +373,8 @@ void service() {
       const uint32_t deadline=x==&p.protectedLane?300:3500;
       if(x->pending && static_cast<uint32_t>(now-x->started)>=deadline) {
         x->pending=false;if(x==&p.protectedLane) p.leased=false;
+        if(x==&p.protectedLane) {exclude(n,26);continue;}
+        if(x==&p.ordinary && p.observing) {p.observing=false;p.phase=0;continue;}
         fail(n,Result::Uncertain,26);
         if(p.leased) {
           Request stop;stop.node=n;stop.action=Action::Stop;stop.recording=p.recording;stop.reason=26;
@@ -335,6 +400,19 @@ void service() {
       if(!p.protectedLane.pending) challenge(n,false);
     }
   }
+  // One eight-request immutable acquisition snapshot per two seconds globally
+  // costs at most four ordinary requests/s before bounded transport retries.
+  // Protected renewals remain the fast fault detector; this fair, optional
+  // observation supplements them without spending 32 requests/s on four nodes.
+  if(due(now,nextHealthObservation)) for(unsigned i=0;i<4;++i) {
+    const uint8_t peer=(healthCursor+i)%4;auto& p=peers[peer];
+    if(!p.monitoring || !p.leased || p.excluded || p.ordinary.pending || p.phase || p.pendingMutation) continue;
+    bool pending;{Lock lock;pending=mailboxes[peer].pending;}
+    if(pending || transport.controls[0][peer].state.complete) continue;
+    nextHealthObservation=now+2000;healthCursor=(peer+1)%4;
+    Request observation;observation.node=peer;observation.action=Action::Snapshot;observation.recording=p.recording;
+    beginRequest(peer,observation,true);break;
+  }
   MeasurementInbox* inbox=nullptr;
   uint8_t n=cursor%4,cls=(cursor/4)%2?3:4;
   bool urgent=false;
@@ -355,6 +433,8 @@ void service() {
   transport.timingEnabled=dataConsumer && dataMask;
   if(!urgent && transport.timingEnabled && (serviceCursor%20)==0) {cls=5;n=255;}
   const int result=CanMasterManager::serviceMeasurementTransport(transport,cls,n,inbox);
+  if(result==-14) for(uint8_t peer=0;peer<4;++peer)
+    if(peers[peer].recording && !peers[peer].excluded) exclude(peer,26);
   if(result==1 && inbox && (inbox->state.cls==3 || inbox->state.cls==4)) {
     BodaqsControlWrapped reply={};
     if(bodaqs_control_decode_wrapped(inbox->bytes,64,&reply) && reply.node_address<4)
@@ -363,6 +443,11 @@ void service() {
   }
   if(dataConsumer) for(uint8_t node=0;node<4;++node) for(uint8_t dataClass:{2,1}) {
     auto& data=transport.inboxes[dataClass-1][node];
+    if(peers[node].excluded && data.state.complete && !data.admitted) {
+      CanMasterManager::releaseMeasurementObject(data);
+      Lock lock;outcomes[node].tailDiscarded=true;
+      continue;
+    }
     if(data.state.complete && !data.admitted &&
        dataConsumer(dataClass,node,data.state.object,data.bytes,data.state.total))
       CanMasterManager::releaseMeasurementObject(data);

@@ -147,6 +147,7 @@ uint16_t describe(BdqV2StreamDescriptor* out,uint16_t capacity,uint16_t) {
 void service() {
   if(phase==Idle || phase==Done) return;
   const uint32_t now=millis();
+  if(phase>=Fence && !AcquisitionControl::active()) {phase=Done;return;}
   AcquisitionControl::Outcome out;AcquisitionControl::outcome(node,out);
   const bool fresh=out.serial!=serial;
   const bool success=fresh && out.result==AcquisitionControl::Result::Succeeded;
