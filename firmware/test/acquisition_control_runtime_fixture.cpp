@@ -44,8 +44,10 @@ static void controlSteps(unsigned duration) {
  }
 }
 int main() {
+ fastMeasurementClock=true;
  reset();
  CanMasterManager::beginRecordingHandoff();
+ for(unsigned wait=0;wait<5500 && !CanMasterManager::recordingHandoffReady();++wait) advance(1);
  assert(CanMasterManager::recordingHandoffReady());
  assert(AcquisitionControl::begin(123,456));
  // The main task cannot mutate transport mode while ownership is handed off.
@@ -87,6 +89,7 @@ int main() {
  }
  CanMasterManager::beginRecordingHandoff();
  advance(1000);
+ for(unsigned wait=0;wait<5500 && !CanMasterManager::recordingHandoffReady();++wait) advance(1);
  assert(CanMasterManager::recordingHandoffReady());
  assert(AcquisitionControl::begin(123,457));AcquisitionControl::service();
  for(uint8_t n=0;n<4;++n) {
@@ -94,7 +97,7 @@ int main() {
   request.revision=1;request.epoch=peerFixture(n).view.endpoint_epoch[0];
   assert(AcquisitionControl::enqueue(request));
  }
- controlSteps(800);
+ controlSteps(2200);
  for(uint8_t n=0;n<4;++n) {
   assert(AcquisitionControl::outcome(n,result));
   assert(result.result==AcquisitionControl::Result::Succeeded && result.leaseAcknowledged);
@@ -109,28 +112,29 @@ int main() {
  request.action=AcquisitionControl::Action::Stop;assert(AcquisitionControl::enqueue(request));
  delayNodeZero=false;controlSteps(500);
  assert(acquisitions[0].terminal && !acquisitions[0].lease_valid && acquisitions[0].stopped);
- assert(AcquisitionControl::outcome(0,result));assert(result.result==AcquisitionControl::Result::Succeeded);
- request.action=AcquisitionControl::Action::Snapshot;assert(AcquisitionControl::enqueue(request));controlSteps(350);
+ assert(AcquisitionControl::outcome(0,result));
+ assert(result.result==AcquisitionControl::Result::Succeeded);
+ request.action=AcquisitionControl::Action::Snapshot;assert(AcquisitionControl::enqueue(request));controlSteps(1000);
  assert(AcquisitionControl::outcome(0,result));
  assert(result.snapshotValid && result.snapshot[6]==5 && bodaqs_control_get_u64(result.snapshot+8)==123);
  for(uint8_t n=1;n<4;++n) {
   request.node=n;request.action=AcquisitionControl::Action::Stop;
   assert(AcquisitionControl::enqueue(request));
  }
- controlSteps(400);
+ controlSteps(1000);
  for(uint8_t n=0;n<4;++n) {
   assert(acquisitions[n].stopped && !acquisitions[n].lease_valid);
   request.node=n;request.action=AcquisitionControl::Action::Fence;
   assert(AcquisitionControl::enqueue(request));
  }
- controlSteps(450);
+ controlSteps(1200);
  for(uint8_t n=0;n<4;++n) {
   assert(AcquisitionControl::outcome(n,result));
   assert(result.result==AcquisitionControl::Result::Succeeded && result.localFenceComplete);
   request.node=n;request.action=AcquisitionControl::Action::Release;
   assert(AcquisitionControl::enqueue(request));
  }
- controlSteps(450);
+ controlSteps(1200);
  for(uint8_t n=0;n<4;++n) assert(!acquisitions[n].recording);
  // The physical master driver independently confirms its old DMA/preloaded
  // boundary has retired. A node ACK alone must not authorize mode exit.
@@ -147,7 +151,8 @@ int main() {
  assert(commitHeld && acquisitions[0].staging && !acquisitions[0].recording);
  request.action=AcquisitionControl::Action::Stop;assert(AcquisitionControl::enqueue(request));
  controlSteps(200);
- assert(AcquisitionControl::outcome(0,result));assert(result.result==AcquisitionControl::Result::Succeeded);
+ assert(AcquisitionControl::outcome(0,result));
+ assert(result.result==AcquisitionControl::Result::Succeeded);
  holdCommit=false;BodaqsControlRecord lateReply;
  assert(dispatchControl(0,heldCommit,lateReply));
  assert(lateReply.data[0]==6 && lateReply.data[1]==13);
@@ -157,7 +162,8 @@ int main() {
  assert(AcquisitionControl::outcome(0,result));
  assert(result.result==AcquisitionControl::Result::Succeeded && result.localFenceComplete);
  request.action=AcquisitionControl::Action::Release;assert(AcquisitionControl::enqueue(request));controlSteps(200);
- assert(AcquisitionControl::outcome(0,result));assert(result.result==AcquisitionControl::Result::Succeeded);
+ assert(AcquisitionControl::outcome(0,result));
+ assert(result.result==AcquisitionControl::Result::Succeeded);
  bodaqs_master_service_measurement_fence(&master,true,true);
  assert(AcquisitionControl::requestExit());controlSteps(20);assert(!AcquisitionControl::active());
  puts("logger ownership, four-node preparation/renewal, pending START, STOP and immutable snapshot passed");

@@ -138,6 +138,14 @@ uint64_t RTCManager_getEpochMs() { return 100000; }
 namespace DisplayManager { void prepareLoggingScreen(uint16_t, uint8_t) { events.push_back("screen"); } }
 namespace IndicatorManager { void ledOn() {} void ledOff() {} }
 
+namespace RemoteImuRecording {
+bool configure(const LoggerConfig&) { return true; }
+bool configured() {return false;} bool prepared() {return true;}
+bool recording() {return true;} bool failed() {return false;}
+void start() {} void stop() {} void service() {} void release() {}
+bool stopped() {return true;}
+bool tailDrained() {return true;}
+}
 namespace CanMasterManager {
   bool handoffReady = true, fenced = false;
   void beginRecordingHandoff() { fenced = true; }
@@ -154,7 +162,7 @@ namespace LoggingManager {
   bool configurationLocked();
   void loop();
   enum class StartFailureHint { None, RestartNow, ConfigConflict };
-  enum class StopReason { StartFailure, UserRequest };
+  enum class StopReason { StartFailure, UserRequest, Unspecified };
   void stop(StopReason, const char*);
   struct StopContext {
     StopReason reason=StopReason::StartFailure; uint32_t uptimeMs=0;
@@ -167,7 +175,7 @@ namespace LoggingManager {
   bool start();
 }
 const LoggerConfig* s_cfg = &g_cfg;
-bool s_running = false, s_starting = false, s_stopping = false;
+bool s_running = false, s_starting = false, s_stopping = false, s_remotePreparing=false, s_remoteFaultShown=false;
 LoggingManager::StartFailureHint s_startFailureHint;
 LoggingManager::StopContext s_stopContext;
 LoggingConfigIssue s_configurationIssue = LoggingConfigIssue::None;
@@ -257,10 +265,10 @@ int main() {
   if(remoteNotice.indexOf("Restart required")>=0)
     fprintf(stderr,"config-only remote IMU incorrectly reports Restart required\n");
   check(remoteNotice.indexOf("Restart required")<0);
-  check(remoteNotice.indexOf("acquisition_unavailable")>=0);
-  check(remoteNotice.indexOf("Remote acquisition is not implemented yet")>=0);
+  check(remoteNotice.indexOf("acquisition_unavailable")<0);
+  check(remoteNotice.indexOf("Remote acquisition is not implemented yet")<0);
   check(issue()==I::None);
-  check(SensorManager::configurationDiagnostics(g_cfg).excludesSensor(0));
+  check(!SensorManager::configurationDiagnostics(g_cfg).excludesSensor(0));
   reset(); check(issue() == I::None);
   add(T::AnalogPot,"local",0,0);
   CanMasterManager::handoffReady=false;

@@ -16,6 +16,20 @@ typedef struct {
     uint16_t count;
     uint8_t cls;
 } BodaqsReceptionBatch;
+
+/* Independent of the immutable selected head. Admission must charge this exact
+ * representation and its finite burst/service envelope, not just CAN axes. */
+#define BODAQS_MASTER_RETENTION_CAPACITY 96U
+typedef struct {
+    uint8_t bytes[76];
+    uint32_t boot, ordinal_high, received_ms;
+    uint8_t cls;
+} BodaqsRetainedReception;
+typedef struct {
+    BodaqsRetainedReception records[BODAQS_MASTER_RETENTION_CAPACITY];
+    uint16_t head, count, high_water;
+    uint32_t dropped;
+} BodaqsReceptionIngress;
 typedef struct {
     BodaqsFragmentState rx, tx;
     uint8_t incoming[68], outgoing[68];
@@ -27,6 +41,7 @@ typedef struct {
     BodaqsControlExchange control;
     BodaqsControlExchange authorization;
     BodaqsReceptionBatch receptions[4];
+    BodaqsReceptionIngress ingress[4];
     BodaqsMeasurementControlLane lanes[2][4];
     BodaqsFragmentState master_evidence;
     uint8_t master_evidence_bytes[1024];

@@ -98,3 +98,5 @@ clean:
 main.obj master_identity.obj bodaqs_master_service.obj bodaqs_control.obj bodaqs_control_exchange.obj: ../../common/protocol/bodaqs_control.h ../../common/protocol/bodaqs_control_exchange.h
 
 main.obj bodaqs_master_service.obj master_identity.obj: ../../common/protocol/bodaqs_measurement.h
+
+main.obj bodaqs_master_service.obj: ../../common/protocol/bodaqs_master_service.h ../../common/protocol/bodaqs_fragment_transport.h

@@ -813,10 +813,9 @@ const SensorDiagnosticList& configurationDiagnostics(const LoggerConfig& cfg) {
     if (!cfg.getSensorSpec(i, current) || !configuredActive_(current)) continue;
     const SensorAssignment assignment = sensorAssignment(current, board::gBoard);
     if (assignment.provider.kind == SensorProviderKind::CanNode) {
-      // Discovery can establish that the physical endpoint exists before the
-      // remote acquisition/data-plane driver is implemented. Keep it out of
-      // the live session without misreporting the hardware as absent.
-      if (!diagnostics.excludesSensor(i)) {
+      // The native LSM recorder owns its fresh readiness and admission checks;
+      // it deliberately has no synchronous Sensor instance or logger-row data.
+      if (current.type!=SensorType::LSM6DSO32XImu && !diagnostics.excludesSensor(i)) {
         add(SensorIssueCode::AcquisitionUnavailable,
             SensorIssueSeverity::Info,
             SensorIssueImpact::ExcludeSensor, i, 0xFF, assignment);
@@ -863,6 +862,7 @@ bool requiresBdqV2(const LoggerConfig& cfg) {
   uint8_t count = 0;
   for (uint8_t i = 0; i < cfg.sensorCount(); ++i) {
     SensorSpec spec;
+    if(cfg.getSensorSpec(i,spec) && spec.type==SensorType::LSM6DSO32XImu && configuredActive_(spec)) return true;
     if (!cfg.getSensorSpec(i, spec) || spec.type != SensorType::BMI270ImuI2C ||
         !configuredActive_(spec) || diagnostics.excludesSensor(i)) continue;
     if (++count > 1) return true;
@@ -894,6 +894,8 @@ bool validateLoggingStart(
     SensorSpec spec;
     if (!cfg.getSensorSpec(i, spec) || spec.mutedDefault ||
         s_sessionDiagnostics.excludesSensor(i)) continue;
+    if(spec.type==SensorType::LSM6DSO32XImu &&
+       sensorAssignment(spec,board::gBoard).kind==SensorAssignment::Kind::NodeImu) continue;
     if (!s_list[i]) {
       addSessionIssue_(SensorIssueCode::SensorAbsent, SensorIssueSeverity::Error,
                        SensorIssueImpact::ExcludeSensor, i);

@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "LoggingManager.h"
 #include "CanMasterManager.h"
+#include "RemoteImuRecording.h"
 #include "ButtonManager.h"
 #include "StorageManager.h"
 #include "RTCManager.h"
@@ -43,6 +44,8 @@ namespace {
 
   bool s_starting = false;
   bool s_stopping = false;
+  bool s_remotePreparing = false;
+  bool s_remoteFaultShown = false;
   // Run-state
   volatile bool   s_running       = false;
   LoggingManager::StartFailureHint s_startFailureHint =
@@ -349,6 +352,13 @@ const char* LoggingManager::configurationDetail() { return s_configurationDetail
 
 bool LoggingManager::isStarting() { return s_starting; }
 void LoggingManager::cancelStart() {
+  if(s_starting && RemoteImuRecording::configured()) {
+    s_starting=false;s_remotePreparing=false;s_stopping=true;
+    RemoteImuRecording::stop();
+    AnalogInputManager::onLoggingStop();SensorManager::onLoggingStop();
+    UI::status("Finalizing recording");
+    return;
+  }
 #if defined(ESP32)
   if (s_starting && s_storageStartPending) {
     s_starting = false;
@@ -383,8 +393,28 @@ LoggingManager::StartResult LoggingManager::requestStart() {
 }
 
 void LoggingManager::loop() {
+  RemoteImuRecording::service();
+  if(s_running && RemoteImuRecording::failed() && !s_remoteFaultShown) {
+    s_remoteFaultShown=true;UI::toast("Remote IMU excluded",1800,1);
+  }
+  if(s_starting && s_remotePreparing) {
+    if(RemoteImuRecording::failed() && !s_remoteFaultShown) {
+      s_remoteFaultShown=true;UI::toast("Remote IMU excluded",1800,1);
+    }
+    if(!RemoteImuRecording::prepared()) return;
+    s_remotePreparing=false;
+    if(!StorageManager_startLog()) {stop(StopReason::StartFailure,"storage_start_failure");return;}
+#if defined(ESP32)
+    s_storageStartPending=true;s_storageStopRequested=false;
+#else
+    RemoteImuRecording::start();
+#endif
+    return;
+  }
 #if defined(ESP32)
   if (s_stopping) {
+    if(!RemoteImuRecording::tailDrained()) return;
+    if(!StorageManager_recordingIoPending() && !RemoteImuRecording::stopped()) return;
     if (!StorageManager_recordingIoPending()) { finishStorageStop(); return; }
     if (s_storageStopRequested) return;
     if (!StorageManager_storageFault() && !StorageManager_usesIndependentStreams()) {
@@ -406,6 +436,8 @@ void LoggingManager::loop() {
   }
   if (s_starting && s_storageStartPending) {
     if (StorageManager_recordingReady()) {
+      RemoteImuRecording::start();
+      if(!RemoteImuRecording::recording()) return;
       s_storageStartPending = false;
       completeStorageStart();
     } else if (!StorageManager_recordingIoPending()) {
@@ -437,6 +469,7 @@ bool LoggingManager::start() {
   // finalization. This guard also covers early power/storage/preflight returns.
   struct StartAdmission {
     ~StartAdmission() {
+      if(s_remotePreparing) return;
 #if defined(ESP32)
       if (s_storageStartPending) return;
 #endif
@@ -566,6 +599,16 @@ bool LoggingManager::start() {
   }
   const uint32_t sensorStartMs = millis() - sensorStartT0;
 
+  s_remoteFaultShown=false;
+  if(!RemoteImuRecording::configure(*s_cfg)) {
+    SensorManager::onLoggingStop();SensorManager::onLoggingFinalized();
+    WiFiManager::resumeAfterLogging();UI::status("Remote IMU unavailable");
+    return false;
+  }
+  if(RemoteImuRecording::configured()) {
+    s_remotePreparing=true;UI::status("Preparing recording");return false;
+  }
+
   // Open/create log file
   TRACE("Entering storagemanager_startlog");
   const uint32_t storageT0 = millis();
@@ -629,7 +672,7 @@ void LoggingManager::completeStorageStart() {
 
   //UI::toast("Logging started");
   const unsigned hz = StorageManager_getSampleRateHz();
-  char st[24]; snprintf(st, sizeof(st), "Logging %uHz", hz);
+  char st[24]; snprintf(st, sizeof(st), "Recording %uHz", hz);
   UI::status(String(st));
   TRACE("exit start()");
 }
@@ -722,6 +765,7 @@ void LoggingManager::stop(StopReason reason, const char* triggerEvent) {
       s_stopContext.analogRailFault ? 1u : 0u);
   s_stopping = true;
   s_running = false;
+  RemoteImuRecording::stop();
 #if defined(ESP32)
   // A sampler that already passed the run-state check may still be copying a
   // row into the storage queue. Let that bounded operation finish before
@@ -809,6 +853,7 @@ void LoggingManager::finishStorageStop() {
                (unsigned long)s_lateMaxLagUs);
 #endif
   s_stopping = false;
+  RemoteImuRecording::release();
   CanMasterManager::endRecordingHandoff();
 }
 

@@ -17,6 +17,8 @@ GENERATED_FILES := device.opt device.cmd.genlibs device_linker.cmd \
 NAME := bodaqs_can_node
 SOURCES := ../src/main.c \
     ../src/imu_spi.c \
+    ../src/imu_capture.c \
+    ../src/imu_acquisition.c \
     ../../common/protocol/bodaqs_control_acquisition.c \
     ../../common/protocol/bodaqs_control_apply.c \
     ../../common/protocol/bodaqs_imu_disabled.c \
@@ -25,7 +27,7 @@ SOURCES := ../src/main.c \
     ../../common/protocol/bodaqs_control_snapshot.c \
     ../../common/protocol/bodaqs_control_exchange.c \
     ../../common/network/bodaqs_can_network.c
-OBJECTS := bodaqs_control_acquisition.obj imu_spi.obj bodaqs_control_apply.obj bodaqs_imu_disabled.obj bodaqs_control_authority.obj bodaqs_control_snapshot.obj bodaqs_control.obj bodaqs_control_exchange.obj main.obj bodaqs_can_network.obj \
+OBJECTS := imu_capture.obj imu_acquisition.obj bodaqs_control_acquisition.obj imu_spi.obj bodaqs_control_apply.obj bodaqs_imu_disabled.obj bodaqs_control_authority.obj bodaqs_control_snapshot.obj bodaqs_control.obj bodaqs_control_exchange.obj main.obj bodaqs_can_network.obj \
     $(patsubst %.c,%.obj,$(notdir $(SYSCFG_C_FILES)))
 
 V := @

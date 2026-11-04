@@ -180,10 +180,10 @@ void bodaqs_control_acquisition_tick(BodaqsControlAcquisition *s, uint32_t now)
     }
     if (s->challenge_valid && reached(now, s->issued_ms + 300U))
         s->challenge_valid = false;
-    if (!s->backend || !s->command)
+    if (!s->backend || (!s->command && !s->recording))
         return;
     memset(&e, 0, sizeof(e));
-    s->backend(s->backend_context, s->command_sent ? (uint8_t)BODAQS_ACQ_POLL : s->command,
+    s->backend(s->backend_context, (!s->command || s->command_sent) ? (uint8_t)BODAQS_ACQ_POLL : s->command,
                s->generation, s->recording, now, &e);
     s->command_sent = true;
     if (e.kind == 0 || e.generation != s->generation)

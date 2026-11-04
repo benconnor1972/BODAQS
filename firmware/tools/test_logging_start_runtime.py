@@ -49,8 +49,8 @@ def main():
             "bool BMI270ImuSensor::loggingRestartRequired(")))
     if args.async_storage:
         fixture = fixture.replace('#include <cassert>', '#include <cassert>\n#include <atomic>\n#include <thread>\n#include "RecordingStorageWorker.h"')
-        fixture = fixture.replace('enum class StopReason { StartFailure, UserRequest };',
-                                  'enum class StopReason { StartFailure, UserRequest, StorageFailure, StorageUnresponsive };')
+        fixture = fixture.replace('enum class StopReason { StartFailure, UserRequest, Unspecified };',
+                                  'enum class StopReason { StartFailure, UserRequest, Unspecified, StorageFailure, StorageUnresponsive };')
         fixture = fixture.replace('bool StorageManager_startLog() { events.push_back("file"); fileFormat = g_cfg.logFormat; return openOk; }', r"""
 std::atomic<bool> blocked{false}, entered{false};
 int blockedOperation = 0;

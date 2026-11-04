@@ -10,6 +10,8 @@
 #include "bodaqs_control_apply.h"
 #include "bodaqs_control_acquisition.h"
 #include "imu_spi.h"
+#include "imu_capture.h"
+#include "imu_acquisition.h"
 #include "bodaqs_record_queue.h"
 #include "ti_msp_dl_config.h"
 
@@ -291,6 +293,13 @@ static bool send_can_frame(
     return true;
 }
 
+static bool can_transmit_idle(void)
+{
+    DL_MCAN_TxFIFOStatus fifo = {0};
+    DL_MCAN_getTxFIFOQueStatus(MCAN0_INST, &fifo);
+    return fifo.freeLvl == TX_FIFO_SIZE;
+}
+
 static bool send_announcement(void)
 {
     BodaqsCanNodeAnnounce announce = {0};
@@ -461,10 +470,12 @@ int main(void)
     gControlNode.endpoint_epoch[0] = 1U;
     bodaqs_imu_disabled_init(&gImuDisabled, bodaqs_node_imu_register, bodaqs_node_imu_cancel, NULL);
     bodaqs_control_apply_init(&gControlApply, &gControlAuthority, &gControlNode, &gImuDisabled);
-    /* Configuration register access is not a native acquisition backend. #169
-     * installs the single main-loop acquisition owner when it is implemented. */
+    bodaqs_node_capture_init();
+    bodaqs_node_acquisition_init(gNodeRuntimeInfo.boot_id, gNodeRuntimeInfo.node_address,
+        &gImuDisabled, send_can_frame, can_transmit_idle);
     bodaqs_control_acquisition_init(&gAcquisition, &gControlAuthority, &gControlNode,
-        gControlApply.effective, NULL, NULL);
+        gControlApply.effective, bodaqs_node_acquisition_backend, NULL);
+    (void)bodaqs_control_acquisition_set_clock(&gAcquisition, bodaqs_node_capture_clock, NULL);
     gControlSnapshot.capture_acquisition = bodaqs_control_acquisition_capture;
     gControlSnapshot.acquisition_context = &gAcquisition;
     gUptimeMs = 0U;
@@ -487,9 +498,11 @@ int main(void)
     DL_SYSTICK_enableInterrupt();
     DL_SYSTICK_enable();
     NVIC_EnableIRQ(MCAN0_INST_INT_IRQN);
+    NVIC_EnableIRQ(IMU_SPI_INST_INT_IRQN);
 
     while (1) {
         uint32_t now = gUptimeMs;
+        bodaqs_node_capture_supervise(now);
         service_challenge_entropy();
         /* Both services are main-loop owned; membership prohibits configuration
          * admission. Never run two physical SPI state machines concurrently. */
@@ -531,7 +544,7 @@ int main(void)
             DL_MCAN_setOpMode(
                 MCAN0_INST, DL_MCAN_OPERATION_MODE_NORMAL);
         }
-        if (gCanReceiveQueue.depth == 0U) {
+        if (gCanReceiveQueue.depth == 0U && !gAcquisition.recording) {
             __WFE();
         }
     }
@@ -582,3 +595,6 @@ void SysTick_Handler(void)
         gHealthDue = true;
     }
 }
+
+void ACQ_CAPTURE_INST_IRQHandler(void) { bodaqs_node_capture_irq(); }
+void IMU_SPI_INST_IRQHandler(void) { bodaqs_node_imu_spi_irq(); }

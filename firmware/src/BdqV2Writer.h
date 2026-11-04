@@ -45,7 +45,7 @@ struct BdqV2WriterStats {
 // round-robin order among streams that have pending data.
 class BdqV2Writer {
 public:
-  static constexpr size_t kMaximumStreams = 16;
+  static constexpr size_t kMaximumStreams = 37;
 
   bool addStream(const BdqV2StreamSource& source);
   void clearStreams();

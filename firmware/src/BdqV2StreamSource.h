@@ -18,6 +18,10 @@ struct BdqV2StreamSource {
   size_t (*pendingObservations)(const void* context) = nullptr;
   bool (*popRecord)(void* context, uint8_t* destination, size_t capacity) = nullptr;
   bool (*popObservation)(void* context, BdqV2Format::TimeObservation& value) = nullptr;
+  // Called only after the complete chunk reaches the sink. A producer can use
+  // this acknowledgement to release dependent streams without confusing queue
+  // consumption with successful persistence of essential definitions.
+  void (*chunkWritten)(void* context) = nullptr;
 
   bool valid() const {
     return streamId != 0 &&

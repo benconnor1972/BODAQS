@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <string.h>
 #include <initializer_list>
+
 #if defined(ARDUINO_ARCH_ESP32)
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -39,6 +40,8 @@ static uint64_t recordingId, contextId, session, masterBoot, nextTransfer;
 static uint32_t nextRead;
 static bool owned = false, enterPending = false, exitPending = false, servicing = false;
 static uint8_t cursor;
+static DataConsumer dataConsumer=nullptr;
+static uint8_t dataMask=0,dataCursor=0,serviceCursor=0;
 #if defined(ARDUINO_ARCH_ESP32)
 static TaskHandle_t task = nullptr;
 static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
@@ -74,6 +77,7 @@ static bool send(uint8_t n,Exchange& exchange,BodaqsControlWrapped q,bool protec
   return true;
 }
 static void fail(uint8_t n,Result result,uint8_t reason) {
+
   auto& p=peers[n];p.phase=0;p.ordinary.pending=false;p.pendingMutation=0;
   publish(n,result,reason);
 }
@@ -104,6 +108,9 @@ static void beginRequest(uint8_t n,const Request& intent) {
   if(intent.action==Action::Stop) {
     // Terminal locally before dispatch. A delayed challenge can never renew.
     p.leased=false;p.protectedLane.pending=false;p.ordinary.pending=false;p.phase=0;p.pendingMutation=0;
+    transport.terminalNodes|=1u<<n;
+    auto& retired=transport.inboxes[3][n];
+    if(!retired.state.complete) retired=MeasurementInbox{};
   }
   const uint8_t opcodes[]={0x20,0x24,0x25,0x28,0x2a,0x29};
   uint32_t operation=intent.action==Action::Snapshot?allocate(nextRead):allocate(p.mutation);
@@ -231,7 +238,15 @@ static void accept(uint8_t n,bool protectedLane,const BodaqsControlWrapped& wrap
   publish(n,r.data[0]==3?Result::Succeeded:r.data[0]==2?Result::Pending:Result::Uncertain,r.data[1],&r);
 }
 #if defined(ARDUINO_ARCH_ESP32)
-static void run(void*) { for(;;) { service();vTaskDelay(1); } }
+static void run(void*) {
+  for(;;) {
+    // Bounded catch-up group; each service transfers one CS-bounded slot and
+    // releases shared SPI before the >=25us rearm/ADC opportunity. The group
+    // removes the lease-only one-slot-per-RTOS-tick throughput cap.
+    for(unsigned i=0;i<8 && active();++i) service();
+    vTaskDelay(1);
+  }
+}
 #endif
 } // namespace
 
@@ -250,6 +265,10 @@ bool begin(uint64_t recording,uint64_t context) {
   return true;
 }
 bool active() {Lock lock;return owned;}
+bool setDataConsumer(DataConsumer consumer,uint8_t mask) {
+  Lock lock;if(owned || (mask&~15u)) return false;
+  dataConsumer=consumer;dataMask=mask;dataCursor=serviceCursor=0;return true;
+}
 bool enqueue(const Request& request) {
   if(request.node>3 || static_cast<unsigned>(request.action)>static_cast<unsigned>(Action::Release)) return false;
   Lock lock;
@@ -317,13 +336,34 @@ void service() {
     }
   }
   MeasurementInbox* inbox=nullptr;
-  const uint8_t n=cursor%4,cls=(cursor/4)%2?3:4;cursor=(cursor+1)%8;
+  uint8_t n=cursor%4,cls=(cursor/4)%2?3:4;
+  bool urgent=false;
+  uint32_t oldest=0;
+  for(uint8_t candidate=0;candidate<4;++candidate) {
+    const auto& exchange=peers[candidate].protectedLane;
+    const uint32_t age=now-exchange.started;
+    if(exchange.pending && (!urgent || age>oldest)) {urgent=true;oldest=age;n=candidate;cls=4;}
+  }
+  // Protected and ordinary lanes retain independent service. Data takes three
+  // slots out of four when registered; lifecycle still advances at each turn.
+  if(!urgent && dataConsumer && dataMask && (++serviceCursor%4)!=0) {
+    for(unsigned i=0;i<4;++i) {
+      n=dataCursor++%4;if(dataMask&(1u<<n)) break;
+    }
+    cls=(serviceCursor%4)==1?2:1;
+  } else if(!urgent) cursor=(cursor+1)%8;
   const int result=CanMasterManager::serviceMeasurementTransport(transport,cls,n,inbox);
   if(result==1 && inbox && (inbox->state.cls==3 || inbox->state.cls==4)) {
     BodaqsControlWrapped reply={};
     if(bodaqs_control_decode_wrapped(inbox->bytes,64,&reply) && reply.node_address<4)
       accept(reply.node_address,inbox->state.cls==4,reply);
     CanMasterManager::releaseMeasurementObject(*inbox);
+  }
+  if(dataConsumer) for(uint8_t node=0;node<4;++node) for(uint8_t dataClass:{2,1}) {
+    auto& data=transport.inboxes[dataClass-1][node];
+    if(data.state.complete && !data.admitted &&
+       dataConsumer(dataClass,node,data.state.object,data.bytes,data.state.total))
+      CanMasterManager::releaseMeasurementObject(data);
   }
   for(uint8_t node=0;node<4;++node) {
     if(peers[node].intent.action!=Action::Fence) continue;

@@ -348,6 +348,7 @@ bool BdqV2Writer::stageAndWriteStream_(size_t streamIndex) {
   if (!writeChunk_(BdqV2Format::ChunkType::StreamData, workspace_, cursor)) {
     return false;
   }
+  if (source.chunkWritten) source.chunkWritten(source.context);
 
   BdqV2WriterStreamStats& streamStats = registered.stats;
   if (recordCount != 0) {
