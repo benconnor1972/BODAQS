@@ -15,7 +15,9 @@ void StorageManager_setBufferSize(size_t bytes);
 unsigned long StorageManager_getSampleIntervalMs();
 uint32_t StorageManager_getSampleIntervalUs();
 unsigned int StorageManager_getSampleRateHz();
+// ESP32: queues open/health I/O; true means accepted, not acquisition ready.
 bool StorageManager_startLog();
+// ESP32: requests owner finalization and returns without waiting for SD.
 void StorageManager_stopLog();
 void StorageManager_loop();
 void StorageManager_setCustomHeader(const char* csv);
@@ -29,8 +31,8 @@ bool StorageManager_enqueueSample(
     uint64_t hostMonotonicUs = 0,
     uint64_t markHostMonotonicUs = 0);
 bool StorageManager_usesIndependentStreams();
-// Requires the logger sampler to be quiesced. Used during orderly shutdown so
-// final sensor FIFO rows cannot be lost behind a full storage queue.
+// Owner-only drain on ESP32; control callers return without performing I/O.
+// The recording controller feeds final sensor rows before requesting Stop.
 void StorageManager_drainQueuedSamples();
 
 bool StorageManager_loadTextFile(const char* path, String& out);
@@ -54,5 +56,12 @@ const char* StorageManager_lastStatus();
 extern volatile bool g_sdWriteSinceLastSample;
 extern bool g_sdTrackEnabled;
 
+
+// Nonblocking observations; pending includes startup, recording and finalization.
+bool StorageManager_recordingIoPending();
+bool StorageManager_recordingReady();
+bool StorageManager_storageFault();
+bool StorageManager_canAcceptSample();
+bool StorageManager_storageUnresponsive();
 
 #endif

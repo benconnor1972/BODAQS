@@ -48,17 +48,27 @@ namespace {
   LoggingManager::StartFailureHint s_startFailureHint =
       LoggingManager::StartFailureHint::None;
   LoggingManager::StopContext s_stopContext;
+#if defined(ESP32)
+  portMUX_TYPE s_stopContextMux = portMUX_INITIALIZER_UNLOCKED;
+#endif
 
   void captureStopContext_(
       LoggingManager::StopReason reason,
       const char* triggerEvent) {
-    s_stopContext = LoggingManager::StopContext{};
-    s_stopContext.reason = reason;
-    s_stopContext.uptimeMs = millis();
-    s_stopContext.triggerEvent = triggerEvent ? triggerEvent : "";
-    s_stopContext.sdDetectAvailable = StorageManager_cardDetectAvailable();
-    s_stopContext.sdCardDetected = StorageManager_cardDetectedCached();
-    s_stopContext.analogRailFault = PowerManager::analogRailFaultActive();
+    LoggingManager::StopContext context;
+    context.reason = reason;
+    context.uptimeMs = millis();
+    context.triggerEvent = triggerEvent ? triggerEvent : "";
+    context.sdDetectAvailable = StorageManager_cardDetectAvailable();
+    context.sdCardDetected = StorageManager_cardDetectedCached();
+    context.analogRailFault = PowerManager::analogRailFaultActive();
+#if defined(ESP32)
+    portENTER_CRITICAL(&s_stopContextMux);
+#endif
+    s_stopContext = context;
+#if defined(ESP32)
+    portEXIT_CRITICAL(&s_stopContextMux);
+#endif
   }
 
   LoggingConfigIssue s_configurationIssue = LoggingConfigIssue::None;
@@ -95,6 +105,8 @@ namespace {
   // ---- Task-based sampling (ESP32) ----
 #if defined(ESP32)
   static TaskHandle_t s_sampleTask = nullptr;
+  static bool s_storageStartPending = false;
+  static bool s_storageStopRequested = false;
   static std::atomic<bool> s_sampleInProgress{false};
 
   // Stats: how often the sampler task woke up "late"
@@ -337,6 +349,18 @@ const char* LoggingManager::configurationDetail() { return s_configurationDetail
 
 bool LoggingManager::isStarting() { return s_starting; }
 void LoggingManager::cancelStart() {
+#if defined(ESP32)
+  if (s_starting && s_storageStartPending) {
+    s_starting = false;
+    s_storageStartPending = false;
+    s_stopping = true;
+    AnalogInputManager::onLoggingStop();
+    SensorManager::onLoggingStop();
+    s_storageStopRequested = true;
+    StorageManager_stopLog();
+    return;
+  }
+#endif
   if (!s_starting) return;
   s_starting = false;
   CanMasterManager::endRecordingHandoff();
@@ -354,10 +378,42 @@ LoggingManager::StartResult LoggingManager::requestStart() {
     UI::status("Preparing logging");
     return StartResult::Pending;
   }
-  return start() ? StartResult::Started : StartResult::Failed;
+  if (start()) return StartResult::Started;
+  return s_starting ? StartResult::Pending : StartResult::Failed;
 }
 
 void LoggingManager::loop() {
+#if defined(ESP32)
+  if (s_stopping) {
+    if (!StorageManager_recordingIoPending()) { finishStorageStop(); return; }
+    if (s_storageStopRequested) return;
+    if (!StorageManager_storageFault() && !StorageManager_usesIndependentStreams()) {
+      for (unsigned i = 0; i < 8 && SensorManager::pendingLoggingRows(); ++i) {
+        if (!StorageManager_canAcceptSample()) return;
+        const size_t before = SensorManager::pendingLoggingRows();
+        if (!sampleOnce_(true) || SensorManager::pendingLoggingRows() >= before) {
+          s_storageStopRequested = true;
+          StorageManager_stopLog();
+          return;
+        }
+      }
+      if (SensorManager::pendingLoggingRows()) return;
+    }
+    s_storageStopRequested = true;
+    StorageManager_stopLog();
+    if (!StorageManager_recordingIoPending()) finishStorageStop();
+    return;
+  }
+  if (s_starting && s_storageStartPending) {
+    if (StorageManager_recordingReady()) {
+      s_storageStartPending = false;
+      completeStorageStart();
+    } else if (!StorageManager_recordingIoPending()) {
+      stop(StopReason::StartFailure, "storage_start_failure");
+    }
+    return;
+  }
+#endif
   if (s_starting) {
     if (CanMasterManager::recordingHandoffReady()) (void)start();
     return;
@@ -381,6 +437,9 @@ bool LoggingManager::start() {
   // finalization. This guard also covers early power/storage/preflight returns.
   struct StartAdmission {
     ~StartAdmission() {
+#if defined(ESP32)
+      if (s_storageStartPending) return;
+#endif
       s_starting = false;
       if (!s_running) CanMasterManager::endRecordingHandoff();
     }
@@ -520,12 +579,30 @@ bool LoggingManager::start() {
     return false;
   }
   const uint32_t storageMs = millis() - storageT0;
-  TRACE("storagemanager_startlog complete");
+  LOGGING_LOGI("start preparation timing: wifiOff=%lu ms storageCall=%lu ms sensors=%lu ms total=%lu ms rtcValid=%d\n",
+               (unsigned long)wifiOffMs, (unsigned long)storageMs,
+               (unsigned long)sensorStartMs, (unsigned long)(millis() - startT0),
+               rtcValid ? 1 : 0);
+  TRACE("storagemanager_startlog submitted");
 
+#if defined(ESP32)
+  s_storageStartPending = true;
+  s_storageStopRequested = false;
+  // Open/header/health I/O is outstanding on the storage task. The loop
+  // observes completion before enabling acquisition; Stop can cancel it.
+  return false;
+#else
+  completeStorageStart();
+  return true;
+#endif
+}
+
+void LoggingManager::completeStorageStart() {
+  s_starting = false;
   // Paint the durable recording frame while the OLED is still allowed to
   // transfer. Auto/freeze policies may suppress every later refresh.
   DisplayManager::prepareLoggingScreen(
-      effectiveRateHz, SensorManager::activeCount());
+      StorageManager_getSampleRateHz(), SensorManager::activeCount());
   AnalogInputManager::onLoggingStart();
   SensorManager::startLoggingAcquisition();
   s_running = true;
@@ -554,15 +631,7 @@ bool LoggingManager::start() {
   const unsigned hz = StorageManager_getSampleRateHz();
   char st[24]; snprintf(st, sizeof(st), "Logging %uHz", hz);
   UI::status(String(st));
-  LOGGING_LOGI("start timing: wifiOff=%lu ms storage=%lu ms sensors=%lu ms total=%lu ms rtcValid=%d\n",
-               (unsigned long)wifiOffMs,
-               (unsigned long)storageMs,
-               (unsigned long)sensorStartMs,
-               (unsigned long)(millis() - startT0),
-               rtcValid ? 1 : 0);
   TRACE("exit start()");
-
-  return true;
 }
 
 LoggingManager::StartFailureHint LoggingManager::startFailureHint() {
@@ -607,15 +676,35 @@ const char* LoggingManager::stopReasonName(StopReason reason) {
     case StopReason::SdCardRemoved: return "sd_card_removed";
     case StopReason::StartFailure: return "start_failure";
     case StopReason::Unspecified: return "unspecified";
+    case StopReason::StorageFailure: return "storage_failure";
+    case StopReason::StorageUnresponsive: return "storage_unresponsive";
     default: return "unknown";
   }
 }
 
 LoggingManager::StopContext LoggingManager::stopContext() {
-  return s_stopContext;
+#if defined(ESP32)
+  portENTER_CRITICAL(&s_stopContextMux);
+#endif
+  const StopContext context = s_stopContext;
+#if defined(ESP32)
+  portEXIT_CRITICAL(&s_stopContextMux);
+#endif
+  return context;
 }
 
 void LoggingManager::stop(StopReason reason, const char* triggerEvent) {
+#if defined(ESP32)
+  if (s_stopping) {
+    if ((reason == StopReason::StorageFailure || reason == StopReason::StorageUnresponsive) &&
+        s_stopContext.reason != reason)
+      captureStopContext_(reason, triggerEvent);
+    return;
+  }
+#endif
+#if defined(ESP32)
+  if (s_starting && s_storageStartPending) captureStopContext_(reason, triggerEvent);
+#endif
   cancelStart();
   if (!s_running) {
     LOGGING_LOGW("stop ignored because logging is not active reason=%s trigger=%s\n",
@@ -646,6 +735,13 @@ void LoggingManager::stop(StopReason reason, const char* triggerEvent) {
   AnalogInputManager::onLoggingStop();
   SensorManager::onLoggingStop();
 
+#if defined(ESP32)
+  IndicatorManager::ledOff();
+  // The loop feeds bounded final sensor rows as queue space becomes available,
+  // then asks the owner to drain and finalize. It never waits for storage.
+  UI::status("Finalizing recording");
+  return;
+#else
   // Existing logger rows are made durable first. The IMU driver has now
   // suspended production and completed its final FIFO drain, so one forced
   // sparse row per remaining queued sample closes the session boundary.
@@ -678,6 +774,22 @@ void LoggingManager::stop(StopReason reason, const char* triggerEvent) {
   }
   IndicatorManager::ledOff();
   StorageManager_stopLog();
+  finishStorageStop();
+#endif
+}
+
+void LoggingManager::finishStorageStop() {
+#if defined(ESP32)
+  s_storageStopRequested = false;
+  if (StorageManager_storageFault()) {
+    const bool stalled = StorageManager_storageUnresponsive();
+    captureStopContext_(stalled ? StopReason::StorageUnresponsive : StopReason::StorageFailure,
+                        stalled ? "storage_timeout" : "storage_failure");
+    UI::status(stalled ? "Storage unresponsive" : "Storage failure");
+  } else {
+    UI::status("Recording finalized");
+  }
+#endif
   // Recovery is deliberately later than StorageManager_stopLog(): the BDQ
   // final summary must observe the session's original sensor diagnostics.
   SensorManager::onLoggingFinalized();

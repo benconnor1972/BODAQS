@@ -364,7 +364,7 @@ static void fuelGaugeInitIfNeeded_()
 }
 
 
-static void preSleep_() {
+static bool preSleep_() {
   // Stop high-level activities cleanly
   if (LoggingManager::isRunning() || LoggingManager::isStarting()) {
     LoggingManager::stop(
@@ -372,6 +372,10 @@ static void preSleep_() {
         "pre_sleep");
   }
 
+  if (StorageManager_recordingIoPending()) {
+    UI::status("Storage busy");
+    return false;
+  }
   WebServerManager::stop();   // safe even if not started
   applyAnalogRailPin_(false);
 
@@ -381,11 +385,12 @@ static void preSleep_() {
   DisplayManager::clear();
   DisplayManager::present();
   delay(2000);
+  return true;
 }
 
 void PowerManager::sleepOnEnterEXT0()
 {
-  preSleep_();
+  if (!preSleep_()) return;
 
   if (g_enterWakePin == GPIO_NUM_NC) {
     PWR_LOGW("No nav_enter wake pin configured; refusing deep sleep\n");

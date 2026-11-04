@@ -175,6 +175,7 @@ char s_configurationDetail[160] = {};
 uint32_t s_intervalUs;
 uint64_t s_t0UnixUs, s_sampleCount;
 void captureStopContext_(LoggingManager::StopReason, const char*) {}
+namespace LoggingManager { void completeStorageStart(); void finishStorageStop(); }
 // PRODUCTION_START
 
 enum ButtonEvent { BUTTON_PRESSED, BUTTON_RELEASED, BUTTON_HELD, BUTTON_CLICK };
