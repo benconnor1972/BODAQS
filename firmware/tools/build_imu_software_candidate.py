@@ -58,6 +58,8 @@ def plan(args: argparse.Namespace, output: Path) -> list[dict]:
 
     make = [args.make, "-B"]
     commands = [
+        step("a8-dependencies", [args.pio, "pkg", "install", "-d", "firmware", "-e",
+             "bodaqs_s3_mini_n4r2"]),
         step("firmware-host", [*make, "-C", "firmware/test", "test",
              f"CXX={args.cxx}", f"PYTHON={Path(sys.executable).as_posix()}"]),
         step("common-host", [*make, "-C", "firmware/can-fd/common/test", "test",
