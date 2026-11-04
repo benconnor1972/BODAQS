@@ -12,6 +12,8 @@ uint32_t bodaqs_node_capture_clock(void *, uint32_t *epoch);
 bool bodaqs_node_capture_take(BodaqsNodeCapture *);
 void bodaqs_node_capture_discard(void);
 bool bodaqs_node_capture_fault(void);
+bool bodaqs_node_capture_clock_trusted(void);
+uint32_t bodaqs_node_capture_loss_take(void);
 /* FIFO transition fence: reject any edge during enable/readback, including a
  * hardware capture still pending at the end of the critical transition. */
 bool bodaqs_node_capture_seed_end(void);

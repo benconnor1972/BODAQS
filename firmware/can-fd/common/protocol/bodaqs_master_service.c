@@ -179,6 +179,9 @@ static void transfer_context(BodaqsMasterService *s) {
     if(s->transfer_context==s->measurement.mode.context) return;
     memset(s->receptions,0,sizeof(s->receptions));
     memset(s->ingress,0,sizeof(s->ingress));
+    memset(s->loss,0,sizeof(s->loss));
+    memset(s->isr_loss,0,sizeof(s->isr_loss));
+    memset(s->loss_report_ms,0,sizeof(s->loss_report_ms));
     memset(s->lanes,0,sizeof(s->lanes));
     memset(s->acknowledged,0,sizeof(s->acknowledged));
     memset(&s->master_evidence,0,sizeof(s->master_evidence));
@@ -236,6 +239,41 @@ bool bodaqs_master_service_receive_can(BodaqsMasterService *s,uint8_t node,
     return bodaqs_master_service_receive_can_ordered(s,node,cls,identifier,payload,length,flags,
         tick,s->reception_ordinal+1,now);
 }
+void bodaqs_master_service_loss(BodaqsMasterService *s,uint8_t node,uint8_t stage,
+    uint8_t cls,const uint8_t *p,uint8_t length,uint32_t tick,uint64_t ordinal) {
+    BodaqsReceptionLoss *l; uint32_t count,first;
+    if(!s || !p || node>3 || !s->acquisition_record[node]) return;
+    l=&s->loss[node]; l->stage=stage; l->tick=tick; l->ordinal=ordinal;
+    if(cls==1 && length>=4 && (count=p[3]&7)!=0 && count<=5) {
+        first=s->anchor_sequence[node]+(uint16_t)((uint16_t)bodaqs_measurement_get(p,2)-(uint16_t)s->anchor_sequence[node]);
+        if(!l->source) l->first=first;
+        l->last=first+count-1; l->epoch=p[2]; l->gap=true;
+        if(UINT32_MAX-l->source<count) l->failed=true; else l->source+=count;
+    } else {
+        if(l->evidence==UINT32_MAX) l->failed=true; else ++l->evidence;
+        l->epoch=length>=14?p[13]:s->anchor_epoch[node];
+        /* Ordinary snapshots may be lost with degraded alignment. All other
+         * interpretation metadata is essential; preserve old heads and exclude. */
+        if(length<8 || p[1]!=0x23) l->failed=true;
+    }
+}
+void bodaqs_master_service_loss_counts(BodaqsMasterService *s,uint8_t node,uint8_t stage,
+    uint8_t epoch,uint16_t first,uint16_t last,uint32_t source,uint32_t evidence,
+    bool essential,uint32_t tick,uint64_t ordinal) {
+    BodaqsReceptionLoss *l; uint32_t base;
+    if(!s || node>3 || !s->acquisition_record[node]) return;
+    l=&s->isr_loss[node];base=s->anchor_sequence[node];
+    if(source) {
+        uint32_t start=base+(uint16_t)(first-(uint16_t)base);
+        if(!l->source) l->first=start;
+        l->last=start+(uint16_t)(last-first);
+        if(UINT32_MAX-l->source<source) essential=true; else l->source+=source;
+        l->gap=true;
+    }
+    if(UINT32_MAX-l->evidence<evidence) essential=true; else l->evidence+=evidence;
+    l->epoch=epoch;l->stage=stage;l->tick=tick;l->ordinal=ordinal;
+    l->failed=l->failed||essential;
+}
 bool bodaqs_master_service_receive_can_ordered(BodaqsMasterService *s,uint8_t node,
     uint8_t cls,uint16_t identifier,const uint8_t *payload,uint8_t length,
     uint8_t flags,uint32_t tick,uint64_t ordinal,uint32_t now) {
@@ -270,8 +308,10 @@ bool bodaqs_master_service_receive_can_ordered(BodaqsMasterService *s,uint8_t no
     }
     advance_receptions(s,node,now);
     q=&s->ingress[node];
+    if(s->loss[node].failed || s->isr_loss[node].failed) {++s->backpressure_frames;return false;}
     if(q->count==BODAQS_MASTER_RETENTION_CAPACITY) {
-        ++q->dropped; ++s->backpressure_frames; return false;
+        ++q->dropped; ++s->backpressure_frames;
+        bodaqs_master_service_loss(s,node,6,cls,payload,length,tick,ordinal); return false;
     }
     entry=&q->records[(q->head+q->count)%BODAQS_MASTER_RETENTION_CAPACITY];
     entry->boot=s->discovery[node].boot_id; entry->ordinal_high=(uint32_t)(ordinal>>32);
@@ -280,6 +320,9 @@ bool bodaqs_master_service_receive_can_ordered(BodaqsMasterService *s,uint8_t no
     bodaqs_measurement_put(r,identifier,2); r[2]=length; r[3]=flags;
     bodaqs_measurement_put(r+4,tick,4); bodaqs_measurement_put(r+8,ordinal,4);
     memcpy(r+12,payload,length); ++q->count; ++s->retained_frames;
+    if(cls==1 && (s->loss[node].gap || s->isr_loss[node].gap)) {
+        r[15]|=16;s->loss[node].gap=s->isr_loss[node].gap=false;
+    }
     if(q->count>q->high_water) q->high_water=q->count;
     if(anchor) {s->anchor_boot[node]=s->discovery[node].boot_id;s->anchor_epoch[node]=payload[10];}
     if(anchor || cls==1) s->anchor_sequence[node]=sequence;
@@ -374,16 +417,40 @@ bool bodaqs_master_service_control_receive(BodaqsMasterService *s,uint8_t addres
 }
 bool bodaqs_master_service_publish_evidence(BodaqsMasterService *s,const uint8_t *data,uint16_t length) {
     unsigned i,count;
-    if(!s || !data || s->measurement.mode.phase!=2 || length<24 || length>1020 || (length-8)%16) return false;
-    count=(length-8)/16;
-    if(bodaqs_measurement_get(data,2)!=1 || data[2]!=1 ||
+    unsigned size;
+    if(!s || !data || s->measurement.mode.phase!=2 || length<24 || length>1020) return false;
+    size=data[2]==1?16:data[2]==2?72:0;
+    if(!size || (length-8)%size) return false;
+    count=(length-8)/size;
+    if(bodaqs_measurement_get(data,2)!=1 || data[3] ||
        bodaqs_measurement_get(data+4,2)!=count || !bodaqs_measurement_zero(data+6,2)) return false;
-    for(i=0;i<count;++i) if(data[8+i*16]!=1 || data[9+i*16]) return false;
+    for(i=0;i<count;++i) {
+        if(data[2]==1 && (data[8+i*16]!=1 || data[9+i*16])) return false;
+        if(data[2]==2 && (data[8+i*72]>3 || !bodaqs_measurement_zero(data+9+i*72,3))) return false;
+    }
     transfer_context(s);
     if(s->master_evidence.complete || !next_object(&s->master_evidence_next_id)) return false;
     memcpy(s->master_evidence_bytes,data,length);
     return bodaqs_fragment_seal(&s->master_evidence,s->master_evidence_bytes,1024,
         s->transfer_context,s->master_evidence_next_id,255,5,1,length);
+}
+static void publish_loss(BodaqsMasterService *s,uint32_t now) {
+    unsigned node,lane;
+    if(s->master_evidence.complete) return;
+    for(lane=0;lane<8;++lane) {
+        BodaqsReceptionLoss *l; uint8_t bytes[80]={0},*b=bytes+24;
+        uint16_t valid=0;
+        node=lane/2;l=lane%2?&s->isr_loss[node]:&s->loss[node];
+        if((!l->source && !l->evidence) || (uint32_t)(now-s->loss_report_ms[node])<100) continue;
+        bytes[0]=1;bytes[2]=2;bytes[4]=1;bytes[8]=(uint8_t)node;
+        bodaqs_measurement_put(bytes+12,l->tick,4);bodaqs_measurement_put(bytes+16,l->ordinal,8);
+        bodaqs_measurement_put(b,s->acquisition_boot[node],4);b[5]=l->epoch;b[6]=3;b[7]=l->stage;
+        if(l->source) {valid|=6;bodaqs_measurement_put(b+24,l->first,4);bodaqs_measurement_put(b+28,l->last,4);bodaqs_measurement_put(b+32,l->source,4);}
+        if(l->evidence) {valid|=8;bodaqs_measurement_put(b+40,l->evidence,4);}
+        bodaqs_measurement_put(b+44,l->failed?31:0,2);bodaqs_measurement_put(b+46,valid,2);
+        if(bodaqs_master_service_publish_evidence(s,bytes,sizeof bytes)) {l->source=l->evidence=0;s->loss_report_ms[node]=now;}
+        return;
+    }
 }
 static void transfer_error(const BodaqsMeasurementSlot *r,BodaqsMeasurementSlot *out,uint8_t reason) {
     *out=*r; out->kind=7; out->index=0; memset(out->body,0,40);
@@ -537,6 +604,7 @@ BodaqsMasterSlotResult bodaqs_master_service_process_transfer(
     if (!service || !received || !next_transmit) return BODAQS_MASTER_SLOT_MALFORMED;
     service->measurement.mode.boot = service->control.master_boot_id;
     bodaqs_measurement_tick(&service->measurement, now_ms);
+    publish_loss(service,now_ms);
     memset(next_transmit, 0, BODAQS_MASTER_SLOT_BYTES);
     if (length == 64) {
         if (!bodaqs_measurement_decode(received, length, &slot)) goto malformed;

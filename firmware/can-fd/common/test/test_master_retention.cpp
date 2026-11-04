@@ -59,6 +59,16 @@ int main() {
     assert(pinned.kind == 3 && pinned.total == 96); // Essential evidence never waits 20ms.
     for (unsigned i = 0; i < 96; ++i) assert(samples(i * 5, 1));
     assert(!samples(480, 1)); // Drop newest whole reception, preserve selected and queued data.
+    // Exact known loss is retained outside the full queue, then published on
+    // the master-local evidence lane without editing the selected old head.
+    BodaqsMeasurementSlot lossRequest={},lossReply={};
+    uint8_t lossWire[64],lossResponse[84];
+    lossRequest.kind=1;lossRequest.context=9;lossRequest.node=255;lossRequest.body[0]=5;
+    assert(bodaqs_measurement_encode(&lossRequest,lossWire,64));
+    assert(bodaqs_master_service_process_transfer(&master,lossWire,64,101,lossResponse)==0);
+    assert(bodaqs_measurement_decode(lossResponse,64,&lossReply));
+    assert(lossReply.kind==13 && lossReply.body[2]==2);
+    assert(lossReply.body[30]==3 && lossReply.body[31]==6); // loss, retention
     const auto repeat = poll(2, 0, pinned.object, 19);
     assert(std::memcmp(&pinned, &repeat, sizeof pinned) == 0);
     assert(poll(1, 0, 0, 19).kind == 0); // Data cannot overtake its evidence head.
