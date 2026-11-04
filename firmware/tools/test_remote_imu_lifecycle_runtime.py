@@ -5,11 +5,8 @@ import subprocess
 import tempfile
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--compiler", default="g++")
-    args = parser.parse_args()
-    root = Path(__file__).resolve().parents[1]
+def fixture_source(root):
+    """Real control/master/coordinator composition shared with acceptance."""
     fixture = (root / "test/measurement_runtime_fixture.cpp").read_text()
     fixture = fixture[:fixture.index("int main() {")]
     fixture = fixture.replace("namespace SharedSpiBus {", "static bool dispatchControl(uint8_t,const BodaqsControlRecord&,BodaqsControlRecord&);\nstatic bool holdControl(const BodaqsControlRecord&);\nnamespace SharedSpiBus {")
@@ -34,6 +31,15 @@ def main():
     fixture = fixture.replace('if(i) return false; spec=saved;', 'if(i>=fixtureSensorCount) return false; spec=i?extra[i-1]:saved;')
     fixture = fixture.replace('identity.capabilities=15;', 'identity.capabilities=15 | BODAQS_CAN_LINK_CAP_ACQUISITION;')
     fixture += coordinator
+    return fixture
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--compiler", default="g++")
+    args = parser.parse_args()
+    root = Path(__file__).resolve().parents[1]
+    fixture = fixture_source(root)
     fixture += (root / "test/remote_imu_lifecycle_runtime_fixture.cpp").read_text()
     protocol = root / "can-fd/common/protocol"
     sources = [*protocol.glob("bodaqs_control*.c"), protocol / "bodaqs_imu_disabled.c", protocol / "bodaqs_master_service.c", protocol / "bodaqs_master_protocol.c"]
