@@ -216,6 +216,7 @@ namespace {
         !strcasecmp(v, "gps_uart") || !strcasecmp(v, "gps")) {
       return SensorType::DANF10NGps;
     }
+    if (!strcasecmp(v, "lsm6dso32x_imu")) return SensorType::LSM6DSO32XImu;
     if (!strcasecmp(v, "bmi270_imu_i2c")) return SensorType::BMI270ImuI2C;
     return SensorType::Unknown;
   }

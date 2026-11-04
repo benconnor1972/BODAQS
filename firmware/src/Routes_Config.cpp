@@ -241,6 +241,7 @@ static bool parseSensorTypeKey_(String text, SensorType& out) {
     out = SensorType::DANF10NGps;
     return true;
   }
+  if (text.equalsIgnoreCase("lsm6dso32x_imu")) { out=SensorType::LSM6DSO32XImu; return true; }
   if (text.equalsIgnoreCase("bmi270_imu_i2c")) {
     out = SensorType::BMI270ImuI2C;
     return true;
@@ -256,6 +257,7 @@ static const char* defaultNamePrefix_(SensorType type) {
     case SensorType::AS5048BAngleI2C: return "as5048";
     case SensorType::AS5600AngleI2C: return "as5600r";
     case SensorType::DANF10NGps: return "gps";
+    case SensorType::LSM6DSO32XImu:
     case SensorType::BMI270ImuI2C: return "imu";
     default: return "sensor";
   }
@@ -352,6 +354,7 @@ static const SensorType kEditableSensorTypes_[] = {
   SensorType::AS5600AngleI2C,
   SensorType::DANF10NGps,
   SensorType::BMI270ImuI2C,
+  SensorType::LSM6DSO32XImu,
 };
 
 static void emitSensorTypeOptions_(ChunkedHtmlResponse& html, SensorType selected) {
@@ -632,6 +635,7 @@ static void emitProviderEndpointRows_(ChunkedHtmlResponse& html,
     html += F("</option>");
   };
   switch (sp.type) {
+    case SensorType::LSM6DSO32XImu:
     case SensorType::BMI270ImuI2C:
       option("imu", "On-node IMU");
       break;
@@ -783,6 +787,30 @@ static void emitSensorEditor_(ChunkedHtmlResponse& html,
   html += F(">Apply Type</button><small>Rebuilds fields and applies the saved sensor configuration immediately.</small></div>");
 
   emitProviderEndpointRows_(html, idx, sp, locked);
+  if (sp.type == SensorType::LSM6DSO32XImu) {
+    const auto assignment = sensorAssignment(sp, board::gBoard);
+    html += F("<p>Configuration only: sensing engines run while stopped. Sample acquisition and assisted orientation capture are unavailable.</p>");
+    if (assignment.provider.kind == SensorProviderKind::CanNode) {
+      const auto address=assignment.provider.index;
+      const auto& status=CanMasterManager::diagnostics();
+      const auto& operation=status.apply.nodes[address];
+      const auto& endpoint=status.control.nodes[address].endpoints[0];
+      html += F("<p>Saved desired profile: "); String profile; sp.params.get("profile",profile); html+=htmlEscape(profile);
+      html += F("; remote apply: ");
+      if(status.apply.phase && status.apply.current.node_address==address && (!operation.valid || operation.kind==2)) html+=F("pending");
+      else if(operation.valid) { html+= operation.kind==3 ? F("accepted") : operation.kind==4 ? F("adjusted") : operation.kind==5 ? F("rejected") : F("outcome unknown");
+        html+=F(" ("); html+=bodaqs_control_reason_key(operation.reason); html+=F(")"); }
+      else html+=F("awaiting reconciliation");
+      html+=F("; effective: ");
+      if(!endpoint.current || !endpoint.effective_valid) html+=F("unavailable");
+      else { const uint8_t* d=endpoint.effective;
+        html+=d[4]==2 ? F("verified enabled") : d[4]==1 ? F("verified disabled") : F("current unknown");
+        if(bodaqs_control_get_u32(d+16)) html+=F("; prior settings retained as historical evidence");
+        html+=F("; health flags "); html+=String(bodaqs_control_get_u32(d+20)); }
+      html+=CanMasterManager::configurationReconciled(address) ? F("; desired agreement verified") : F("; desired agreement unverified");
+      html+=F(". Acquisition readiness: false. Timing, settling and measured performance: unknown.</p>");
+    }
+  }
   emitParamRow_(html, idx, sp, defs, defCount, "i2c_bus", "I2C bus", locked);
   emitParamRow_(html, idx, sp, defs, defCount, "i2c_addr", "I2C address", locked);
   emitAnalogInputRow_(html, idx, sp, defs, defCount, locked);

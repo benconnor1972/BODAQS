@@ -16,6 +16,7 @@ extern "C"
         uint8_t staging[512], effective[192];
         uint32_t started;
         uint8_t phase, pages;
+        bool enabled, adjusted;
         bool valid;
     } BodaqsControlApply;
     void bodaqs_control_apply_init(BodaqsControlApply *, BodaqsControlAuthority *,

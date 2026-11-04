@@ -279,7 +279,7 @@ void invalidStagingNeverTouchesHardware()
     q.data[0] = 1;
     q.data[2] = 1;
     q.data[4] = 1;
-    q.data[8] = 1;
+    q.data[8] = 2;
     q.data[10] = 1;
     unsupported.send(q);
     unsupported.page(1);
@@ -385,7 +385,7 @@ void deliverCan(BodaqsMasterService &master, Fixture &f, BodaqsControlSnapshot &
     if (!drop)
         assert(bodaqs_control_exchange_receive(&master.control, a, decodedTx, &r));
 }
-void loggerDisabledAcrossRealSpiCanApplyAndSnapshot()
+void loggerAcrossRealSpiCanApplyAndSnapshot(bool enabled)
 {
     Fixture f;
     BodaqsMasterService master;
@@ -401,7 +401,8 @@ void loggerDisabledAcrossRealSpiCanApplyAndSnapshot()
     authority.nodes[0].next_mutation = 2;
     BodaqsControlApplyClient client;
     bodaqs_control_apply_client_init(&client);
-    const uint8_t disabled[44] = {1, 0, 1, 0};
+    uint8_t disabled[44] = {1, 0, 1, 0};
+    if(enabled) disabled[4]=disabled[8]=disabled[10]=1;
     assert(bodaqs_control_apply_client_start(&client, &authority, 99, 0, 1, 0, disabled, f.now));
     bool lostCommit = false;
     for (unsigned i = 0; i < 4900 && client.phase; i++, f.now++)
@@ -440,9 +441,9 @@ void loggerDisabledAcrossRealSpiCanApplyAndSnapshot()
     }
     const auto &endpoint = observer.nodes[0].endpoints[0];
     assert(endpoint.current && endpoint.capability_valid && endpoint.effective_valid);
-    assert(endpoint.capability[6] == 0 && endpoint.capability[8] == 3 &&
+    assert(endpoint.capability[6] == 1 && endpoint.capability[8] == 3 &&
            endpoint.capability[12] == 1);
-    assert(endpoint.effective[4] == 1 && bodaqs_control_get_u64(endpoint.effective + 144) == 9);
+    assert(endpoint.effective[4] == (enabled ? 2 : 1) && bodaqs_control_get_u64(endpoint.effective + 144) == 9);
     assert(bodaqs_control_get_u64(endpoint.effective + 24) == 1 &&
            bodaqs_control_get_u64(endpoint.effective + 32) == 1);
     assert(bodaqs_control_get_u64(endpoint.effective + 184) == observer.nodes[0].endpoint_epoch[0]);
@@ -559,15 +560,84 @@ void composedClockHealthAndExhaustion()
     f.send(q);
     assert(f.reply.data[1] == 4);
 }
+void enabledStoppedProfile() {
+    Fixture f;
+    uint8_t d[192], cap[128];
+    f.open(); f.page(0);
+    auto q=f.begin; q.opcode=0x11; q.data_length=24;
+    memset(q.data,0,24); q.data[0]=q.data[2]=1;
+    q.data[4]=1; q.data[8]=q.data[10]=1;
+    // A conflicting page must still be rejected: use a fresh operation.
+    f.send(q); assert(f.reply.data[0]==1);
+    f.open(3); f.send(q=f.begin); // identical BEGIN
+    q.opcode=0x11; memset(q.data,0,24); q.data_length=24;
+    q.data[0]=q.data[2]=q.data[4]=q.data[8]=q.data[10]=1;
+    f.send(q); f.page(1); f.commit(); f.finish();
+    assert(f.authority.latest_result.data[0]==3);
+    assert(f.regs.bytes[0][16]==0x94 && f.regs.bytes[0][17]==0x9c);
+    assert(f.regs.bytes[0][9]==0 && f.regs.bytes[0][10]==0 && f.regs.bytes[0][13]==0 && f.regs.bytes[0][14]==0);
+    f.descriptor(d); assert(d[4]==2 && d[5]==3 && d[6]==0);
+    assert(bodaqs_control_get_u32(d+48)==3333 && bodaqs_control_get_u32(d+52)==1);
+    assert(bodaqs_control_get_u32(d+72)==122 && bodaqs_control_get_u32(d+76)==125000);
+    assert(bodaqs_control_get_u32(d+80)==7 && bodaqs_control_get_u32(d+84)==100);
+    assert(bodaqs_control_get_u32(d+8)==0x7ff && bodaqs_control_get_u32(d+12)==0x47f);
+    assert(d[47]==1 && d[88]==0);
+    bodaqs_control_apply_capture(&f.apply,&f.view,0,false,cap);
+    assert(cap[6]==1 && cap[64]==1 && cap[66]==1 && cap[8]==3 && cap[12]==1);
+    const auto resets=f.regs.resets; const auto reads=f.regs.reads;
+    const auto revision=bodaqs_control_get_u64(d+32);
+    f.open(4,revision,2); q=f.begin; q.opcode=0x11; memset(q.data,0,24); q.data_length=24;
+    q.data[0]=q.data[2]=q.data[4]=q.data[8]=q.data[10]=1;
+    f.send(q); f.page(1); f.commit(); f.finish(); f.descriptor(d);
+    assert(f.regs.resets==resets && f.regs.reads>reads);
+    assert(bodaqs_control_get_u64(d+32)==revision && bodaqs_control_get_u64(d+24)==2);
+}
+void alternativesAndDisableAfterEnabled() {
+ Fixture f; f.open(); auto q=f.begin;q.opcode=0x11;q.data_length=24;memset(q.data,0,24);
+ q.data[0]=q.data[2]=q.data[4]=q.data[5]=1;q.data[8]=99;q.data[10]=q.data[12]=q.data[14]=1;
+ f.send(q);f.page(1);f.commit();f.finish();
+ assert(f.authority.latest_result.data[0]==4);
+ uint8_t d[192];f.descriptor(d);assert(d[4]==2 && d[40]==1);
+ f.open(3,1,2);f.page(0);f.page(1);f.commit();f.finish();f.descriptor(d);
+ assert(d[4]==1 && d[5]==0 && bodaqs_control_get_u32(d+8)==0x441 && bodaqs_control_get_u64(d+32)==2);
+ assert(f.regs.bytes[0][16]==4 && f.regs.bytes[0][17]==12);
+}
+void mismatchInvalidatesBeforeReset() {
+ Fixture f; f.open();f.page(0);f.page(1);f.commit();f.finish();
+ const auto epoch=f.view.endpoint_epoch[0]; f.regs.bytes[0][7]=1;
+ f.open(3,1,2);f.page(0);f.page(1);f.commit();
+ while(f.backend.no_op) bodaqs_control_apply_tick(&f.apply,++f.now);
+ uint8_t d[192]; f.descriptor(d);
+ assert(!f.backend.changed && d[4]==3 && bodaqs_control_get_u32(d+16)==0x441 && f.view.endpoint_epoch[0]>epoch);
+}
+void clientDeadlineWhileDraining() {
+ BodaqsControlApplyClient c={}; BodaqsControlAuthorityClient a={};
+ a.session=9; a.next_read=1; a.nodes[0].available=a.nodes[0].bound=true;a.nodes[0].boot=7;a.nodes[0].next_mutation=2;
+ uint8_t descriptor[44]={1,0,1,0}; BodaqsControlWrapped q,r;uint8_t type;
+ assert(bodaqs_control_apply_client_start(&c,&a,8,0,1,0,descriptor,0));
+ for(unsigned t=0;t<4;t++) {
+  assert(bodaqs_control_apply_client_next(&c,&a,t,&q,&type)); r=q;memset(r.record.data,0,24);r.record.data_length=24;
+  r.record.data[0]=2;r.record.data[3]=q.record.opcode;bodaqs_control_put_u32(r.record.data+4,2);
+  assert(bodaqs_control_apply_client_accept(&c,&a,0x87,&r,t));
+ }
+ assert(bodaqs_control_apply_client_next(&c,&a,4900,&q,&type));
+ assert(bodaqs_control_apply_client_next(&c,&a,5003,&q,&type) && type==7 && c.pending);
+ assert(c.nodes[0].valid && c.nodes[0].kind==6 && c.nodes[0].reason==19);
+}
 int main()
 {
     failedBankSelectionCannotInventAuxiliaryProof();
     reservedFieldsAndInspectionWhileBackendPending();
     composedClockHealthAndExhaustion();
+    alternativesAndDisableAfterEnabled();
+    mismatchInvalidatesBeforeReset();
+    clientDeadlineWhileDraining();
+    enabledStoppedProfile();
     stagingExpiry();
     physicalDisableAndFreshNoOp();
     invalidStagingNeverTouchesHardware();
     faultsPreserveHistoricalEvidenceAndScope();
-    loggerDisabledAcrossRealSpiCanApplyAndSnapshot();
+    loggerAcrossRealSpiCanApplyAndSnapshot(false);
+    loggerAcrossRealSpiCanApplyAndSnapshot(true);
     puts("apply tests passed");
 }

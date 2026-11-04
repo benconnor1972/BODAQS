@@ -11,6 +11,7 @@
 #include "LoggingManager.h"
 #include "SensorManager.h"
 #include "SensorAssignment.h"
+#include "Lsm6dso32xConfig.h"
 #include "SharedSpiBus.h"
 
 #define CANMASTER_LOGI(...) LOGI_TAG("CANMASTER", __VA_ARGS__)
@@ -43,6 +44,8 @@ uint32_t s_nextControlMs = 0;
 
 // Saved ownership plus live mute selects explicit disable. An active unresolved
 // remote BMI owner is retained as unresolved; it cannot become a new profile.
+bool s_configurationDirty[4] = {};
+
 bool desiredDisabled_(uint8_t address) {
   const auto& cfg = ConfigManager::get();
   for (uint8_t i = 0; i < cfg.sensorCount(); ++i) {
@@ -58,28 +61,48 @@ bool desiredDisabled_(uint8_t address) {
   return true;
 }
 
+bool desiredEnabled_(uint8_t address) {
+  const auto& cfg=ConfigManager::get();
+  unsigned owners=0; bool enabled=false;
+  for(uint8_t i=0;i<cfg.sensorCount();++i) {
+    SensorSpec spec; if(!cfg.getSensorSpec(i,spec)) continue;
+    const auto assignment=sensorAssignment(spec,s_board);
+    if(assignment.provider.kind!=SensorProviderKind::CanNode || assignment.provider.index!=address ||
+       assignment.kind!=SensorAssignment::Kind::NodeImu) continue;
+    ++owners; bool muted=spec.mutedDefault; (void)SensorManager::getMuted(i,muted);
+    char error[128];
+    enabled=!muted && spec.type==SensorType::LSM6DSO32XImu && Lsm6dso32xConfig::validateSpec(spec,error,sizeof(error));
+  }
+  return owners==1 && enabled;
+}
+
 void scheduleDisabled_() {
   if (LoggingManager::isRunning()) return;
   for (uint8_t address = 0; address < 4; ++address) {
     const bool disabled = desiredDisabled_(address);
+    const bool enabled = desiredEnabled_(address);
     auto& generation = s_diagnostics.desiredGeneration[address];
-    if (!generation || disabled != s_diagnostics.desiredDisabled[address]) {
+    if (!generation || s_configurationDirty[address] || disabled != s_diagnostics.desiredDisabled[address] ||
+        enabled != s_diagnostics.desiredEnabled[address]) {
       if (generation == UINT64_MAX) continue;
       ++generation;
+      s_configurationDirty[address]=false;
+      s_diagnostics.desiredEnabled[address]=enabled;
       s_diagnostics.desiredDisabled[address] = disabled;
       // Preserve an in-flight operation; a changed desired state is picked up
       // after its terminal result and fresh observation.
       if (!s_diagnostics.apply.phase) s_diagnostics.apply.nodes[address].valid = false;
     }
     auto& outcome = s_diagnostics.apply.nodes[address];
-    if (s_diagnostics.apply.phase || !disabled ||
+    if (s_diagnostics.apply.phase || (!disabled && !enabled) ||
         (outcome.valid && outcome.desired_generation == generation)) continue;
     const auto& node = s_diagnostics.control.nodes[address];
     const auto& endpoint = node.endpoints[0];
     if (!node.available || !(node.endpoint_mask & 1) || !endpoint.current ||
         !endpoint.capability_valid || !endpoint.effective_valid ||
         (bodaqs_control_get_u32(endpoint.capability + 8) & 3) != 3) continue;
-    const uint8_t descriptor[44] = {1,0,1,0};
+    uint8_t descriptor[44] = {1,0,1,0};
+    if(enabled) { descriptor[4]=descriptor[8]=descriptor[10]=1; }
     if (bodaqs_control_apply_client_start(&s_diagnostics.apply, &s_diagnostics.authority,
         s_diagnostics.control.master_boot_id, address, generation,
         bodaqs_control_get_u64(endpoint.effective + 32), descriptor, millis())) return;
@@ -544,7 +567,9 @@ bool releaseControlAuthority(uint8_t address) {
 }
 
 bool configurationReconciled(uint8_t address) {
-  if (address >= 4 || !s_diagnostics.desiredDisabled[address]) return false;
+  if (address >= 4 || (!s_diagnostics.desiredDisabled[address] && !s_diagnostics.desiredEnabled[address])) return false;
+  const bool enabled=s_diagnostics.desiredEnabled[address];
+  const uint32_t required=enabled ? 0x47f : 0x441;
   const auto& node = s_diagnostics.control.nodes[address];
   const auto& endpoint = node.endpoints[0];
   const auto& authority = s_diagnostics.authority.nodes[address];
@@ -552,14 +577,17 @@ bool configurationReconciled(uint8_t address) {
   return authority.bound && node.available && node.valid && endpoint.current && endpoint.effective_valid &&
       authority.boot == node.node_boot_id &&
       static_cast<int32_t>(node.observed_ms - authority.confirmed_ms) >= 0 &&
-      node.active_session == s_diagnostics.authority.session && d[4] == 1 &&
-      !(bodaqs_control_get_u32(d + 16) & 0x441) &&
-      (bodaqs_control_get_u32(d + 12) & 0x441) == 0x441 &&
+      node.active_session == s_diagnostics.authority.session && d[4] == (enabled ? 2 : 1) &&
+      (!enabled || (d[40]==1 && !d[41] && d[42]==1 && !d[43] && d[5]==3 && !d[6])) &&
+      !(bodaqs_control_get_u32(d + 16) & required) &&
+      (bodaqs_control_get_u32(d + 12) & required) == required &&
       (bodaqs_control_get_u32(d + 20) & 63) == 3 &&
       bodaqs_control_get_u64(d + 144) == s_diagnostics.authority.session &&
       bodaqs_control_get_u64(d + 24) == s_diagnostics.desiredGeneration[address] &&
       (!s_diagnostics.apply.phase || s_diagnostics.apply.current.node_address != address);
 }
+
+void scheduleConfigurationReconciliation() { for(auto& dirty:s_configurationDirty) dirty=true; }
 
 void begin(const board::BoardProfile& profile, const LoggerConfig& cfg) {
   s_board = &profile;
@@ -786,11 +814,14 @@ const char* controlShortStatus() {
   if (!s_diagnostics.controlSupported) return "C:--";
   if (!s_diagnostics.controlInfoValid) return "C:!";
   bool available = false;
-  if (s_diagnostics.apply.phase) return "C:apply";
+  if (s_diagnostics.apply.phase) {
+    const auto& outcome = s_diagnostics.apply.nodes[s_diagnostics.apply.current.node_address];
+    return outcome.valid && outcome.kind == 6 ? "C:!" : "C:apply";
+  }
   for (uint8_t a = 0; a < 4; ++a) {
     if (!s_diagnostics.control.nodes[a].available) continue;
-    if (s_diagnostics.desiredGeneration[a] && !s_diagnostics.desiredDisabled[a]) return "C:unresolved";
-    if (s_diagnostics.apply.nodes[a].valid && s_diagnostics.apply.nodes[a].kind != 3) return "C:!";
+    if (s_diagnostics.desiredGeneration[a] && !s_diagnostics.desiredDisabled[a] && !s_diagnostics.desiredEnabled[a]) return "C:unresolved";
+    if (s_diagnostics.apply.nodes[a].valid && s_diagnostics.apply.nodes[a].kind != 3 && s_diagnostics.apply.nodes[a].kind != 4) return "C:!";
   }
   for (const auto& node : s_diagnostics.control.nodes) {
     if (!node.available) continue;

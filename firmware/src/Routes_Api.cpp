@@ -19,6 +19,7 @@
 #include "CanMasterProtocol.h"
 #include "BoardSelect.h"
 #include "SensorRegistry.h"
+#include "SensorAssignment.h"
 #include "UploadAckIndex.h"
 #include "UploadModeManager.h"
 #include "UploadSessionCleanup.h"
@@ -49,17 +50,20 @@ static void addControlAuthorityJson_(JsonObject node,
 }
 
 static void addControlApplyJson_(JsonObject node, const BodaqsControlApplyClient& apply,
-    uint8_t address, uint64_t generation, bool disabled, bool reconciled) {
+    uint8_t address, uint64_t generation, bool disabled, bool reconciled, bool enabled = false) {
   node["configuration_reconciled"] = reconciled;
-  node["desired_mode"] = !generation ? "unknown" : disabled ? "disabled" : "unresolved_active";
+  node["desired_mode"] = !generation ? "unknown" : disabled ? "disabled" : enabled ? "enabled" : "unresolved_active";
   char decimal[21];
   snprintf(decimal, sizeof(decimal), "%llu", static_cast<unsigned long long>(generation));
   node["desired_generation"] = decimal;
   const auto& outcome = apply.nodes[address];
   JsonObject operation = node["apply_operation"].to<JsonObject>();
-  operation["pending"] = apply.phase && apply.current.node_address == address;
+  operation["transport_pending"] = apply.pending && apply.current.node_address == address;
+  operation["pending"] = apply.phase && apply.current.node_address == address && (!outcome.valid || outcome.kind == 2);
   operation["outcome_valid"] = outcome.valid;
   operation["sequence"] = outcome.operation;
+  snprintf(decimal, sizeof(decimal), "%llu", static_cast<unsigned long long>(outcome.desired_generation));
+  operation["desired_generation"] = decimal;
   operation["kind"] = outcome.kind;
   operation["reason"] = outcome.reason;
   operation["reason_key"] = bodaqs_control_reason_key(outcome.reason);
@@ -69,6 +73,53 @@ static void addControlApplyJson_(JsonObject node, const BodaqsControlApplyClient
     operation["applied_revision"] = decimal;
     snprintf(decimal, sizeof(decimal), "%llu", static_cast<unsigned long long>(outcome.accepted_generation));
     operation["accepted_desired_generation"] = decimal;
+  }
+}
+
+// Payload values carry the same field-group provenance as the enclosing state.
+static void addImuConfigurationJson_(JsonObject state, const uint8_t* data) {
+  const uint32_t known = bodaqs_control_get_u32(data + 12);
+  if (known & 1) {
+    state["profile_id"] = data[40] | (uint16_t(data[41]) << 8);
+    state["profile_version"] = data[42] | (uint16_t(data[43]) << 8);
+  }
+  if (known & 2) {
+    state["output_format"] = data[44] | (uint16_t(data[45]) << 8);
+    state["axis_convention"] = data[46];
+  }
+  if (known & 8) {
+    state["accel_full_scale_millig"] = bodaqs_control_get_u32(data + 64);
+    state["gyro_full_scale_millidegrees_per_second"] = bodaqs_control_get_u32(data + 68);
+  }
+  for (uint8_t axis = 0; axis < 2; ++axis) {
+    const char* key = axis ? "nominal_gyro_dps_per_count" : "nominal_accel_g_per_count";
+    if (!(known & 16)) { state[key] = nullptr; continue; }
+    const uint8_t offset = axis ? 80 : 72;
+    JsonObject value = state[key].to<JsonObject>();
+    value["numerator"] = bodaqs_control_get_u32(data + offset);
+    value["denominator"] = bodaqs_control_get_u32(data + offset + 4);
+  }
+  if (known & 32) {
+    state["filter_model"] = data[47];
+    state["optional_filter_flags"] = bodaqs_control_get_u32(data + 88);
+  }
+  if (!(known & 128)) state["native_clock"] = nullptr;
+  if (!(known & 256)) {
+    state["measured_accel_hz"] = nullptr;
+    state["measured_gyro_hz"] = nullptr;
+  }
+  if (!(known & 512)) state["filter_delays"] = nullptr;
+  if (known & 64) state["engine_power_bits"] = data[5];
+  state["acquisition_active"] = data[6] != 0;
+  if (known & 1024) {
+    state["register_verified_uptime_ms"] = bodaqs_control_get_u32(data + 108);
+    JsonArray image = state["register_image"].to<JsonArray>();
+    for (uint8_t n = 0; n < 24; ++n) image.add(data[152 + n]);
+  }
+  if (known & 2048) {
+    JsonObject mismatch = state["register_mismatch"].to<JsonObject>();
+    mismatch["address"] = data[176] | (uint16_t(data[177]) << 8);
+    mismatch["expected"] = data[178]; mismatch["observed"] = data[179]; mismatch["mask"] = data[180];
   }
 }
 
@@ -241,7 +292,7 @@ static void handleStatus_(WebServer& srv) {
                              masterDiagnostics.authority.session);
     addControlApplyJson_(node, masterDiagnostics.apply, address,
         masterDiagnostics.desiredGeneration[address], masterDiagnostics.desiredDisabled[address],
-        CanMasterManager::configurationReconciled(address));
+        CanMasterManager::configurationReconciled(address), masterDiagnostics.desiredEnabled[address]);
     node["address"] = address;
     node["available"] = observation.available;
     node["valid"] = observation.valid;
@@ -294,6 +345,7 @@ static void handleStatus_(WebServer& srv) {
         const uint32_t known = bodaqs_control_get_u32(data + 12);
         const uint32_t historical = bodaqs_control_get_u32(data + 16);
         state["effective_state"] = data[4];
+        addImuConfigurationJson_(state, data);
         auto identity = [&](const char* key, size_t offset) {
           if (!(known & 1U)) { state[key] = nullptr; return; }
           snprintf(controlDecimal, sizeof(controlDecimal), "%llu",
@@ -728,6 +780,7 @@ static bool parseSensorTypeKey_(String text, SensorType& out) {
     out = SensorType::DANF10NGps;
     return true;
   }
+  if (text.equalsIgnoreCase("lsm6dso32x_imu")) { out=SensorType::LSM6DSO32XImu; return true; }
   if (text.equalsIgnoreCase("bmi270_imu_i2c")) {
     out = SensorType::BMI270ImuI2C;
     return true;
@@ -817,6 +870,43 @@ static void addSensorJson_(JsonObject obj, uint8_t index, const SensorSpec& sp, 
   sp.params.get("endpoint", endpoint);
   obj["provider"] = provider;
   obj["endpoint"] = endpoint;
+  if (sp.type == SensorType::LSM6DSO32XImu) {
+    JsonObject control = obj["remote_control"].to<JsonObject>();
+    String profile; sp.params.get("profile", profile);
+    control["desired_profile"] = profile;
+    control["acquisition_ready"] = false;
+    const auto assignment = sensorAssignment(sp, nullptr);
+    if (assignment.provider.kind == SensorProviderKind::CanNode) {
+      const uint8_t address = assignment.provider.index;
+      const auto& master = CanMasterManager::diagnostics();
+      addControlApplyJson_(control, master.apply, address, master.desiredGeneration[address],
+          master.desiredDisabled[address], CanMasterManager::configurationReconciled(address),
+          master.desiredEnabled[address]);
+      const auto& observation = master.control.nodes[address].endpoints[0];
+      JsonObject effective = control["effective"].to<JsonObject>();
+      effective["available"] = observation.effective_valid;
+      effective["current"] = observation.current;
+      if (observation.effective_valid) {
+        const uint8_t* data = observation.effective;
+        effective["state"] = data[4];
+        effective["applicable_mask"] = bodaqs_control_get_u32(data + 8);
+        effective["known_mask"] = bodaqs_control_get_u32(data + 12);
+        effective["historical_mask"] = bodaqs_control_get_u32(data + 16);
+        effective["health_flags"] = bodaqs_control_get_u32(data + 20);
+        addImuConfigurationJson_(effective, data);
+        if (bodaqs_control_get_u32(data + 12) & 1) {
+          const char* keys[] = {"accepted_desired_generation", "applied_revision", "accepting_session_id", "state_epoch"};
+          const uint8_t offsets[] = {24,32,144,184};
+          char decimal[21];
+          for (uint8_t n=0; n<4; ++n) {
+            snprintf(decimal,sizeof(decimal),"%llu",static_cast<unsigned long long>(bodaqs_control_get_u64(data+offsets[n])));
+            effective[keys[n]]=decimal;
+          }
+        }
+      }
+    }
+  }
+
 
   const CalModeMask supported = SensorRegistry::supportedCalMask(sp.type);
   const CalModeMask allowed = ConfigManager::calAllowedMaskByIndex(index);
@@ -968,6 +1058,7 @@ static void handleSensorTypes_(WebServer& srv) {
     SensorType::AS5600AngleI2C,
     SensorType::DANF10NGps,
     SensorType::BMI270ImuI2C,
+    SensorType::LSM6DSO32XImu,
   };
   for (const auto type : types) {
     const SensorTypeInfo* ti = SensorRegistry::lookup(type);
