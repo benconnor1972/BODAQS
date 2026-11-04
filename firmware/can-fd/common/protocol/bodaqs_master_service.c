@@ -195,6 +195,7 @@ static void transfer_context(BodaqsMasterService *s) {
     s->transfer_session=s->measurement.mode.session;
     s->transfer_recording=s->measurement.mode.recording;
     s->transfer_boot=s->control.master_boot_id;
+    s->bridge_context=0;s->bridge_token=0;s->bridge_tick=0;s->bridge_epoch=0;
     bodaqs_control_exchange_init(&s->authorization,s->control.master_boot_id);
     s->authorization.excluded_addresses=s->control.excluded_addresses;
     memset(s->anchor_boot,0,sizeof(s->anchor_boot));

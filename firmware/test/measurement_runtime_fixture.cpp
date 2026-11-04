@@ -49,6 +49,7 @@ bool setRemoteEndpointObservation(const SensorEndpointObservation&) { return tru
 }
 static uint8_t preloaded[84];
 static bool loseMeasurementReplies=false;
+static bool loseBridgeReplies=false;
 static bool allowMalformedMeasurement=false;
 static uint32_t dropBindReplyUntil=0;
 namespace SharedSpiBus {
@@ -61,6 +62,8 @@ bool transfer(int8_t,const SPISettings& settings,const uint8_t*tx,uint8_t*rx,siz
  memcpy(rx,preloaded,length);
  uint8_t next[84];
  const auto slotResult=bodaqs_master_service_process_transfer(&master,tx,length,clockMs,next);
+ if(slotResult!=BODAQS_MASTER_SLOT_PROCESSED && !allowMalformedMeasurement)
+  std::fprintf(stderr,"malformed at%u length%u kind%u phase%u context%llu\n",clockMs,unsigned(length),tx[3],master.measurement.mode.phase,(unsigned long long)master.measurement.mode.context);
  assert(slotResult==BODAQS_MASTER_SLOT_PROCESSED ||
    (allowMalformedMeasurement && length==64 && slotResult==BODAQS_MASTER_SLOT_MALFORMED));
  memcpy(preloaded,next,84);
@@ -72,6 +75,13 @@ bool transfer(int8_t,const SPISettings& settings,const uint8_t*tx,uint8_t*rx,siz
   assert(bodaqs_master_service_control_receive(&master,address,transaction,&reply));
  }
  if(length==64 && loseMeasurementReplies) memset(rx,0,length);
+ if(length==64 && loseBridgeReplies) {
+  BodaqsMeasurementSlot bridge={};
+  if(bodaqs_measurement_decode(rx,64,&bridge) && bridge.kind==11) {
+    bridge={};bridge.node=255;bridge.context=master.measurement.mode.context;
+    assert(bodaqs_measurement_encode(&bridge,rx,64));
+  }
+ }
  if(length==84 && int32_t(clockMs-dropBindReplyUntil)<0) {
   BodaqsMasterFrame legacy={};BodaqsControlWrapped reply={};
   if(bodaqs_master_decode_slot(rx,length,&legacy)==BODAQS_MASTER_DECODE_OK &&
@@ -192,13 +202,13 @@ int main() {
  assert(transport.bridgeLower==originalLower && transport.bridgeUpper>=originalLower+50000);
  assert(transport.bridgeTick==987654 && transport.bridgeEpoch==7 && bridgeObservations==1);
  transport.bridgeReady=false;transport.bridgeNext=clockMs;
- loseMeasurementReplies=true;
+ loseBridgeReplies=true;
  CanMasterManager::serviceMeasurementTransport(transport,5,255,bridgeInbox);
  const uint32_t expiringToken=transport.bridgeToken;
  clockMs+=300;
  CanMasterManager::serviceMeasurementTransport(transport,5,255,bridgeInbox);
  assert(!transport.bridgePending && transport.bridgeReady && transport.bridgeExpired && transport.bridgeToken==expiringToken);
- loseMeasurementReplies=false;transport.timingEnabled=false;
+ loseBridgeReplies=false;transport.timingEnabled=false;
  const auto slots=master.slots_received;
  advance(1000);
  assert(master.slots_received==slots); // active mode suppresses legacy background polling

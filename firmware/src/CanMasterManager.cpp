@@ -736,6 +736,11 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
   if(!measurementReady() || cls<1 || cls>5 || (node>3 && node!=255)) return -4;
   if(transport.context && transport.context!=s_diagnostics.measurement.context) return -4;
   transport.context=s_diagnostics.measurement.context;
+  if(transport.timingEnabled && transport.bridgePending &&
+     static_cast<uint32_t>(millis()-transport.bridgeStarted)>=300) {
+    transport.bridgePending=false;transport.bridgeNext=millis()+100;
+    transport.bridgeExpired=true;transport.bridgeReady=true;
+  }
   if(transport.recovering) {
     if(static_cast<uint32_t>(millis()-transport.recoveryStarted)>=300) {
       transport.failed=true;return -14;
@@ -801,12 +806,6 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
       if(static_cast<int32_t>(millis()-transport.nextHeadPollMs[budgetNode])<0) return 0;
       transport.nextHeadPollMs[budgetNode]=millis()+20;
     }
-  }
-  if(transport.timingEnabled && transport.bridgePending &&
-     static_cast<uint32_t>(millis()-transport.bridgeStarted)>=300) {
-    transport.bridgePending=false;transport.bridgeNext=millis()+100;
-    transport.bridgeExpired=true;transport.bridgeReady=true;
-    // Persist the expired token, with no clock observation or interval validity.
   }
   if(transport.timingEnabled && !outgoing && !acked && !transport.bridgeReady &&
      ((transport.bridgePending && static_cast<int32_t>(millis()-transport.bridgeRetry)>=0) ||
@@ -1403,7 +1402,12 @@ void serviceRestartCleanup_() {
   }
   const int completed=cleanupExchange_(q,r);
   if(!completed) return;
-  if(completed==-2) {cleanup.next=millis()+1000;return;}
+  if(completed==-2) {
+    // A new master boot invalidates the old transport, even during cleanup.
+    // Establish it through fresh status before replacing any typed identity.
+    if(inspectMeasurementMode() && s_diagnostics.measurement.boot!=cleanup.abandoned.boot) cleanup={};
+    cleanup.next=millis()+1000;return;
+  }
   if(cleanup.phase!=2 && cleanup.phase!=3) ++cleanup.read;
   if(completed<0) {cleanup.next=millis()+1000;cleanup.phase=1;return;}
   switch(cleanup.phase) {
