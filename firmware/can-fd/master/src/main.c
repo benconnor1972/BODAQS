@@ -301,7 +301,8 @@ static void capture_can_receive_fifo(void)
         DL_MCAN_writeRxFIFOAck(
             MCAN0_INST, fifo_status.num, fifo_status.getIdx);
         ++gMasterRuntimeInfo.can_rx_frames;
-        if(!bodaqs_record_queue_push(&gCanReceiveQueue, &record) && !record.message.xtd) {
+        if(!bodaqs_record_queue_push(&gCanReceiveQueue, &record) && !record.message.xtd &&
+           !record.message.rtr && record.message.fdf) {
             uint16_t id=(uint16_t)record.message.id;
             bool sample=id>=0x100 && id<=0x118 && !(id&7);
             bool evidence=id>=0x90 && id<=0x93;
@@ -309,12 +310,13 @@ static void capture_can_receive_fifo(void)
             if(sample || evidence) {
                 RejectedCan *r=&gRejectedCan[node];
                 uint8_t *p=record.message.data;
-                uint8_t epoch=sample?p[2]:p[13];
+                size_t length=bodaqs_can_dlc_to_length((uint8_t)record.message.dlc);
+                uint8_t epoch=sample&&length>=4?p[2]:!sample&&length>=14?p[13]:0;
                 if((r->source || r->evidence) && r->epoch!=epoch) r->essential=true;
                 r->epoch=epoch;r->tick=record.received_tick;r->ordinal=record.ordinal;
                 if(sample) {
                     uint32_t n=p[3]&7;
-                    if(!n || n>5 || UINT32_MAX-r->source<n) r->essential=true;
+                    if(!n || n>5 || length<4+12*n || UINT32_MAX-r->source<n) r->essential=true;
                     else {
                         if(!r->source) r->first=(uint16_t)bodaqs_measurement_get(p,2);
                         r->last=(uint16_t)(bodaqs_measurement_get(p,2)+n-1);
@@ -322,7 +324,7 @@ static void capture_can_receive_fifo(void)
                     }
                 } else {
                     if(r->evidence==UINT32_MAX) r->essential=true; else ++r->evidence;
-                    if(p[1]!=0x23) r->essential=true;
+                    if(length!=64 || p[1]!=0x23) r->essential=true;
                 }
             }
         }
@@ -762,6 +764,9 @@ void MCAN0_INST_IRQHandler(void)
             DL_MCAN_INTR_SRC_MCAN_LINE_1);
         if ((interrupt_status & DL_MCAN_INTERRUPT_RF0L) != 0U) {
             ++gMasterRuntimeInfo.can_rx_hardware_losses;
+            /* Hardware does not identify how many messages or which source
+             * was overwritten. Preserve unknown counts and fail closed. */
+            for(unsigned node=0;node<4;++node) gRejectedCan[node].essential=true;
         }
         if ((interrupt_status & gCanErrorInterruptMask) != 0U) {
             ++gMasterRuntimeInfo.can_error_events;

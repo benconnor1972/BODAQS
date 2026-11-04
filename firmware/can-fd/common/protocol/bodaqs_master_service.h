@@ -32,9 +32,10 @@ typedef struct {
 } BodaqsReceptionIngress;
 typedef struct {
     uint32_t source, evidence, first, last, tick, last_report_ms;
+    uint32_t reported_source,reported_evidence;
     uint64_t ordinal;
     uint8_t epoch, stage;
-    bool failed, gap;
+    bool failed, gap,failure_reported;
 } BodaqsReceptionLoss;
 typedef struct {
     BodaqsFragmentState rx, tx;
@@ -55,6 +56,7 @@ typedef struct {
     BodaqsReceptionLoss loss[4];
     BodaqsReceptionLoss isr_loss[4];
     uint32_t loss_report_ms[4];
+    uint8_t loss_report_stage[4];
     BodaqsMeasurementControlLane lanes[2][4];
     BodaqsFragmentState master_evidence;
     uint8_t master_evidence_bytes[1024];

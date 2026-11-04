@@ -812,6 +812,14 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
     return 0;
   }
   if(response.kind==7) {
+    const uint16_t stage=static_cast<uint16_t>(bodaqs_measurement_get(response.body+2,2));
+    if(response.node<4 && (response.body[0]==1 || response.body[0]==2) &&
+       (response.body[1]==9 || response.body[1]==14) && (stage==5 || stage==6) &&
+       bodaqs_measurement_zero(response.body+8,32)) {
+      if(transport.lossReady) return -8;
+      transport.lossDiagnostic=response;transport.lossReady=true;
+      return 0;
+    }
     if(response.node<4 && (response.body[0]==3 || response.body[0]==4)) {
       auto& failed=transport.controls[response.body[0]-3][response.node];
       if(failed.state.object==response.object) {failed.state.complete=0;failed.error=response.body[1];}

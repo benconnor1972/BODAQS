@@ -183,6 +183,7 @@ static void transfer_context(BodaqsMasterService *s) {
     memset(s->loss,0,sizeof(s->loss));
     memset(s->isr_loss,0,sizeof(s->isr_loss));
     memset(s->loss_report_ms,0,sizeof(s->loss_report_ms));
+    memset(s->loss_report_stage,0,sizeof(s->loss_report_stage));
     memset(s->lanes,0,sizeof(s->lanes));
     memset(s->acknowledged,0,sizeof(s->acknowledged));
     memset(&s->master_evidence,0,sizeof(s->master_evidence));
@@ -418,40 +419,16 @@ bool bodaqs_master_service_control_receive(BodaqsMasterService *s,uint8_t addres
 }
 bool bodaqs_master_service_publish_evidence(BodaqsMasterService *s,const uint8_t *data,uint16_t length) {
     unsigned i,count;
-    unsigned size;
-    if(!s || !data || s->measurement.mode.phase!=2 || length<24 || length>1020) return false;
-    size=data[2]==1?16:data[2]==2?72:0;
-    if(!size || (length-8)%size) return false;
-    count=(length-8)/size;
-    if(bodaqs_measurement_get(data,2)!=1 || data[3] ||
+    if(!s || !data || s->measurement.mode.phase!=2 || length<24 || length>1020 || (length-8)%16) return false;
+    count=(length-8)/16;
+    if(bodaqs_measurement_get(data,2)!=1 || data[2]!=1 ||
        bodaqs_measurement_get(data+4,2)!=count || !bodaqs_measurement_zero(data+6,2)) return false;
-    for(i=0;i<count;++i) {
-        if(data[2]==1 && (data[8+i*16]!=1 || data[9+i*16])) return false;
-        if(data[2]==2 && (data[8+i*72]>3 || !bodaqs_measurement_zero(data+9+i*72,3))) return false;
-    }
+    for(i=0;i<count;++i) if(data[8+i*16]!=1 || data[9+i*16]) return false;
     transfer_context(s);
     if(s->master_evidence.complete || !next_object(&s->master_evidence_next_id)) return false;
     memcpy(s->master_evidence_bytes,data,length);
     return bodaqs_fragment_seal(&s->master_evidence,s->master_evidence_bytes,1024,
         s->transfer_context,s->master_evidence_next_id,255,5,1,length);
-}
-static void publish_loss(BodaqsMasterService *s,uint32_t now) {
-    unsigned node,lane;
-    if(s->master_evidence.complete) return;
-    for(lane=0;lane<8;++lane) {
-        BodaqsReceptionLoss *l; uint8_t bytes[80]={0},*b=bytes+24;
-        uint16_t valid=0;
-        node=lane/2;l=lane%2?&s->isr_loss[node]:&s->loss[node];
-        if((!l->source && !l->evidence) || (uint32_t)(now-s->loss_report_ms[node])<100) continue;
-        bytes[0]=1;bytes[2]=2;bytes[4]=1;bytes[8]=(uint8_t)node;
-        bodaqs_measurement_put(bytes+12,l->tick,4);bodaqs_measurement_put(bytes+16,l->ordinal,8);
-        bodaqs_measurement_put(b,s->acquisition_boot[node],4);b[5]=l->epoch;b[6]=3;b[7]=l->stage;
-        if(l->source) {valid|=6;bodaqs_measurement_put(b+24,l->first,4);bodaqs_measurement_put(b+28,l->last,4);bodaqs_measurement_put(b+32,l->source,4);}
-        if(l->evidence) {valid|=8;bodaqs_measurement_put(b+40,l->evidence,4);}
-        bodaqs_measurement_put(b+44,l->failed?31:0,2);bodaqs_measurement_put(b+46,valid,2);
-        if(bodaqs_master_service_publish_evidence(s,bytes,sizeof bytes)) {l->source=l->evidence=0;s->loss_report_ms[node]=now;}
-        return;
-    }
 }
 static void transfer_error(const BodaqsMeasurementSlot *r,BodaqsMeasurementSlot *out,uint8_t reason) {
     *out=*r; out->kind=7; out->index=0; memset(out->body,0,40);
@@ -584,6 +561,33 @@ static bool measurement_transfer(BodaqsMasterService *s,const BodaqsMeasurementS
         if(node>3) return false;
         if(cls<3) {
             BodaqsReceptionBatch *b=&s->receptions[node];
+            unsigned turn;
+            for(turn=0;turn<2;++turn) {
+                unsigned stage=(s->loss_report_stage[node]+turn)%2;
+                BodaqsReceptionLoss *l=stage?&s->isr_loss[node]:&s->loss[node];
+                uint8_t loss_class=l->source!=l->reported_source?1:l->evidence!=l->reported_evidence?2:
+                    cls==1?(l->source?1:2):(l->evidence?2:1);
+                uint32_t total=loss_class==1?l->source:l->evidence;
+                uint32_t *reported=loss_class==1?&l->reported_source:&l->reported_evidence;
+                if(total && (total!=*reported || !l->failed || !l->failure_reported) &&
+                   (uint32_t)(now-s->loss_report_ms[node])>=100) {
+                    transfer_error(r,out,9);out->node=node;
+                    out->body[0]=loss_class;
+                    bodaqs_measurement_put(out->body+2,stage?5:6,2);
+                    bodaqs_measurement_put(out->body+4,total,4);
+                    *reported=total;s->loss_report_ms[node]=now;
+                    s->loss_report_stage[node]=(uint8_t)(1-stage);
+                    if(l->failed) l->failure_reported=true;
+                    return true;
+                }
+                if(l->failed && l->source==l->reported_source && l->evidence==l->reported_evidence &&
+                   (uint32_t)(now-s->loss_report_ms[node])>=100) {
+                    transfer_error(r,out,14);out->node=node;
+                    bodaqs_measurement_put(out->body+2,stage?5:6,2);
+                    l->failure_reported=false;s->loss_report_ms[node]=now;
+                    s->loss_report_stage[node]=(uint8_t)(1-stage);return true;
+                }
+            }
             advance_receptions(s,node,now);
             if(b->count && !b->object.complete && b->next_id[b->cls-1]==UINT32_MAX) {
                 transfer_error(r,out,9); return true;
@@ -624,7 +628,6 @@ BodaqsMasterSlotResult bodaqs_master_service_process_transfer(
     if (!service || !received || !next_transmit) return BODAQS_MASTER_SLOT_MALFORMED;
     service->measurement.mode.boot = service->control.master_boot_id;
     bodaqs_measurement_tick(&service->measurement, now_ms);
-    publish_loss(service,now_ms);
     memset(next_transmit, 0, BODAQS_MASTER_SLOT_BYTES);
     if (length == 64) {
         if (!bodaqs_measurement_decode(received, length, &slot)) goto malformed;

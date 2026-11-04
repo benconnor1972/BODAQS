@@ -38,6 +38,12 @@ bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint
     return true;
   }
   struct Retire {~Retire(){dataGate.fetch_and(1,std::memory_order_release);}} retire;
+  if(cls==7 && address==node && total==8) {
+    const auto accepted=stream.acceptManagementLoss(p[0],p[1],BdqV2Format::getU16(p+2),
+      BdqV2Format::getU32(p+4),static_cast<uint32_t>(esp_timer_get_time()));
+    if(accepted==RemoteImuStream::Invalid) fault=true;
+    return accepted!=RemoteImuStream::Blocked;
+  }
   if(address==255 && cls==6) {
     if(total!=32) {fault=true;return true;}
     if(p[12]==2) return stream.acceptMissingBridge(BdqV2Format::getU32(p),
@@ -50,13 +56,6 @@ bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint
   if(address==255 && cls==5) {
     if(total<12 || p[0]!=1 || p[1] || p[3] || p[6] || p[7]) {fault=true;return true;}
     const uint16_t count=BdqV2Format::getU16(p+4);
-    if(p[2]==2) {
-      if(count!=1 || total!=84 || p[8]!=node) {fault=true;return true;}
-      const auto accepted=stream.acceptLocalLoss(p+24,BdqV2Format::getU32(p+12),
-        BdqV2Format::getU64(p+16),static_cast<uint32_t>(esp_timer_get_time()));
-      if(accepted==RemoteImuStream::Invalid) fault=true;
-      return accepted!=RemoteImuStream::Blocked;
-    }
     if(p[2]!=1 || total!=12+16*count || count!=1 || p[8]!=1 || p[9] || p[10] || p[11]) {fault=true;return true;}
     return stream.acceptSharedSync(BdqV2Format::getU32(p+12),BdqV2Format::getU32(p+16),
       BdqV2Format::getU32(p+20),static_cast<uint32_t>(esp_timer_get_time()))!=RemoteImuStream::Blocked;
@@ -172,7 +171,8 @@ void service() {
       // interval. The independent storage worker continues writing throughout.
       if(uint32_t(now-tailBegan)>=5000) {
         dataGate.fetch_or(1,std::memory_order_acq_rel);
-        if(!(dataGate.load(std::memory_order_acquire)&2u)) {
+        if(!(dataGate.load(std::memory_order_acquire)&2u) &&
+           (stream.failed() || stream.finish(static_cast<uint32_t>(esp_timer_get_time())))) {
           phase=Fence;cleanupQueued=send(AcquisitionControl::Action::Fence);nextCleanupAttempt=now+3500;
         }
       }
