@@ -52,5 +52,16 @@ int main(void) {
     bodaqs_node_capture_init();
     bodaqs_node_capture_supervise(140);
     assert(bodaqs_node_capture_fault());
+    bodaqs_node_capture_init();
+    raw=8;count=100;cc[3]=100;bodaqs_node_capture_irq();
+    bodaqs_node_sync_marker(41,900000);
+    uint32_t sequence,tick;
+    assert(!bodaqs_node_sync_latest(&sequence,&tick));
+    raw=1;count=0;bodaqs_node_capture_irq();
+    raw=8;count=34564;cc[3]=34564;bodaqs_node_capture_irq();
+    bodaqs_node_sync_marker(42,1000000);
+    assert(bodaqs_node_sync_latest(&sequence,&tick) && sequence==42 && tick==100100);
+    bodaqs_node_sync_marker(40,800000);
+    assert(!bodaqs_node_sync_latest(&sequence,&tick));
     return 0;
 }
