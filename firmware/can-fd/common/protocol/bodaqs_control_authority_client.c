@@ -173,3 +173,34 @@ void bodaqs_control_authority_client_observe_session(BodaqsControlAuthorityClien
     s->nodes[a].phase = AUTHORITY_PHASE_STOPPED;
     s->nodes[a].reason = AUTHORITY_REASON_STALE_SESSION;
 }
+
+void bodaqs_control_authority_client_reserve_mutation(BodaqsControlAuthorityClient *s,
+                                                       const BodaqsControlWrapped *scope, uint32_t operation)
+{
+    BodaqsControlAuthorityPeer *p;
+    if (scope->node_address >= 4 || !operation || s->session != scope->record.session)
+        return;
+    p = &s->nodes[scope->node_address];
+    if (p->boot == scope->record.node_boot_id && p->next_mutation && p->next_mutation <= operation)
+        p->next_mutation = operation == UINT32_MAX ? 0 : operation + 1;
+}
+void bodaqs_control_authority_client_transport_timeout(BodaqsControlAuthorityClient *s)
+{
+    BodaqsControlAuthorityPeer *p;
+    if (!s->pending) return;
+    p = &s->nodes[s->current.node_address];
+    s->pending = false;
+    p->bound = false;
+    p->phase = AUTHORITY_PHASE_STOPPED;
+    p->reason = BODAQS_CONTROL_REASON_TIMEOUT;
+}
+void bodaqs_control_authority_client_quarantine(BodaqsControlAuthorityClient *s)
+{
+    if (s->pending) {
+        BodaqsControlAuthorityPeer *p = &s->nodes[s->current.node_address];
+        p->bound = false;
+        p->phase = 0;
+        bodaqs_control_authority_client_reserve_mutation(s, &s->current, s->current.record.operation);
+    }
+    s->pending = false;
+}

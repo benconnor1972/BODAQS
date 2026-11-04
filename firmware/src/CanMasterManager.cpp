@@ -66,20 +66,6 @@ uint32_t s_handoffStartedMs = 0;
 // scheduling allowance bounds the logger handoff; this is not a wire cancel.
 constexpr uint32_t kRecordingHandoffMs = 5500;
 
-void abandonApplyForRecording_() {
-  auto& apply = s_diagnostics.apply;
-  if (!apply.phase) return;
-  auto& outcome = apply.nodes[apply.current.node_address];
-  outcome.kind = 6; outcome.reason = 19; outcome.valid = true; outcome.observed_ms = millis();
-  // A lost BEGIN/COMMIT response must never cause a different request to reuse
-  // the old immutable mutation identity after recording stops.
-  auto& peer = s_diagnostics.authority.nodes[apply.current.node_address];
-  if (peer.next_mutation && peer.next_mutation <= outcome.operation)
-    peer.next_mutation = outcome.operation == UINT32_MAX ? 0 : outcome.operation + 1;
-  apply.phase = 0; apply.pending = false; apply.resume_phase = 0;
-}
-
-
 // Saved ownership plus live mute selects explicit disable. An active unresolved
 // remote BMI owner is retained as unresolved; it cannot become a new profile.
 bool s_configurationDirty[4] = {};
@@ -388,18 +374,11 @@ void serviceControl_() {
     // The SPI path and malformed cached replies need their own local deadline.
     // Abandon transport ownership, never assert cancellation of admitted hardware.
     if (pendingOwner==2) {
-      auto& apply=s_diagnostics.apply;
-      auto& outcome=apply.nodes[apply.current.node_address];
-      apply.pending=false;
-      apply.phase=5;
-      apply.resume_phase=0;
-      apply.next_query=now;
-      outcome.valid=true; outcome.kind=6; outcome.reason=26; outcome.observed_ms=now;
+      bodaqs_control_apply_client_transport_timeout(&s_diagnostics.apply, now);
     } else if (pendingOwner==3) {
-      auto& authority=s_diagnostics.authority;
-      auto& peer=authority.nodes[authority.current.node_address];
-      authority.pending=false; peer.bound=false; peer.phase=3; peer.reason=26;
-      s_nextAuthorityRetryMs[authority.current.node_address]=now+5000;
+      const uint8_t address=s_diagnostics.authority.current.node_address;
+      bodaqs_control_authority_client_transport_timeout(&s_diagnostics.authority);
+      s_nextAuthorityRetryMs[address]=now+5000;
     } else {
       s_diagnostics.control.pending=false;
       s_diagnostics.control.snapshot_phase=0;
@@ -733,24 +712,13 @@ bool recordingHandoffReady() {
   if (!s_recordingFence) return false;
   if (s_handoffReady) return true;
   auto& apply = s_diagnostics.apply;
-  // Never continue a staged BEGIN/PAGE toward COMMIT. A submitted exchange is
-  // polled by the sole normal owner, then its continuation is quarantined.
-  if (apply.phase && !apply.pending && !apply.commit_sent) abandonApplyForRecording_();
-  // An accepted COMMIT may finish; only its operation query can continue.
-  if (apply.commit_sent) apply.resume_phase = 0;
+  bodaqs_control_apply_client_recording_fence(&apply, &s_diagnostics.authority, millis());
   const bool expired = (uint32_t)(millis() - s_handoffStartedMs) >= kRecordingHandoffMs;
   const bool owned = apply.phase || s_diagnostics.authority.pending || s_diagnostics.control.pending;
   if (!expired && owned) return false;
   if (expired) {
-    abandonApplyForRecording_();
-    if (s_diagnostics.authority.pending) {
-      auto& peer = s_diagnostics.authority.nodes[s_diagnostics.authority.current.node_address];
-      peer.bound = false; peer.phase = 0;
-      const uint32_t operation = s_diagnostics.authority.current.record.operation;
-      if (peer.next_mutation && peer.next_mutation <= operation)
-        peer.next_mutation = operation == UINT32_MAX ? 0 : operation + 1;
-    }
-    s_diagnostics.authority.pending = false;
+    bodaqs_control_apply_client_quarantine(&apply, &s_diagnostics.authority, millis());
+    bodaqs_control_authority_client_quarantine(&s_diagnostics.authority);
     s_diagnostics.control.pending = false;
     for (auto& node : s_diagnostics.control.nodes) {
       node.valid = false;

@@ -39,6 +39,8 @@ void bodaqs_master_service_init(BodaqsMasterService *service,
 void bodaqs_master_service_set_status(BodaqsMasterService *service,
     const BodaqsMasterStatus *status);
 
+/* Publish current inventory before SPI admission and after CAN discovery changes,
+ * before every dispatch/retry. Duplicate routes fence mutating control traffic. */
 void bodaqs_master_service_set_inventory(BodaqsMasterService *service,
     uint32_t generation, const BodaqsMasterDiscoveryRecord *records,
     uint8_t record_count);

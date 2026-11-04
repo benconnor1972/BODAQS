@@ -55,6 +55,13 @@ proof or replace saved settings with observed values.
 Network section 9's duplicate-address latch remains strict for the entire master
 powered interval. A second UID at the same address stays a duplicate after either
 node disappears or remains silent indefinitely. No quiet interval clears it.
+The master enforces that live latch at SPI admission and again before CAN dispatch
+or retry, independently of the logger's cached inventory. New configuration and
+queued but unsent exchanges receive a busy receipt (reason 7); an exchange that
+may already have been sent becomes transport-outcome-uncertain (reason 26).
+Neither response asserts cancellation or rejection of an admitted node apply.
+Read-only inspection and independent addresses remain serviceable.
+
 Compatible replacement qualification therefore requires removal of the old node,
 a fresh master powered interval and unambiguous fresh discovery. The replacement
 inherits saved address/endpoint settings with its own UID/boot provenance, a new
@@ -79,6 +86,10 @@ replacement provenance/retained metadata and zero-entropy exclusion. The complet
 scenario runs again across uint32 uptime wrap. Common tests additionally check
 exact BIND retry after later mutations/exhaustion, snapshot cancellation between
 exchanges, strict duplicate latch after long silence and relatching after reset.
+The production service/transport fixture also supplies real inventory announces
+with conflicting UIDs before submission, between submission and first dispatch,
+and between first dispatch and retry. It checks blocked CAN traffic, retained
+uncertainty, late-reply exclusion, inspection and independent-address progress.
 
 Compile both production MSPM0 targets and A8 `bodaqs_s3_mini_n4r2`; host fake-clock
 bounds and target compilation are not physical timing/electrical evidence.

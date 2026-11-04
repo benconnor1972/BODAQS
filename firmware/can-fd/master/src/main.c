@@ -620,6 +620,11 @@ int main(void)
         gMasterRuntimeInfo.spi_rx_high_water = gSpiReceiveQueue.high_water;
         gMasterRuntimeInfo.spi_rx_dropped = gSpiReceiveQueue.dropped;
         service_can_receive();
+        /* A newly received conflicting UID must fence this very dispatch,
+         * including retries admitted before the duplicate was observed. */
+        if (gService.discovery_generation != gNodeInventory.generation) {
+            update_service_status();
+        }
         {
             uint8_t address, payload[64];
             uint16_t transaction;

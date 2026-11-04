@@ -32,6 +32,12 @@ extern "C"
     /* A fresh node-wide observation can revoke acknowledged authority, never grant it. */
     void bodaqs_control_authority_client_observe_session(BodaqsControlAuthorityClient *, uint8_t address,
                                                          uint64_t active_session);
+    /* Reserve a possibly admitted mutation only in its original boot/session.
+     * Never rewind a later allocator or revive exhausted sequence zero. */
+    void bodaqs_control_authority_client_reserve_mutation(BodaqsControlAuthorityClient *,
+                                                           const BodaqsControlWrapped *, uint32_t operation);
+    void bodaqs_control_authority_client_transport_timeout(BodaqsControlAuthorityClient *);
+    void bodaqs_control_authority_client_quarantine(BodaqsControlAuthorityClient *);
     bool bodaqs_control_authority_client_release(BodaqsControlAuthorityClient *, uint8_t address);
 #ifdef __cplusplus
 }

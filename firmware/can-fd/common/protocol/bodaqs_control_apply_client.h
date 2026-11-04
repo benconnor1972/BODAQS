@@ -34,6 +34,13 @@ extern "C"
     bool bodaqs_control_apply_client_accept(BodaqsControlApplyClient *,
                                             BodaqsControlAuthorityClient *, uint8_t type,
                                             const BodaqsControlWrapped *, uint32_t now);
+    /* Local transport ownership and recording transitions preserve uncertainty;
+     * neither transition cancels accepted node application. */
+    void bodaqs_control_apply_client_transport_timeout(BodaqsControlApplyClient *, uint32_t now);
+    void bodaqs_control_apply_client_quarantine(BodaqsControlApplyClient *,
+                                                BodaqsControlAuthorityClient *, uint32_t now);
+    void bodaqs_control_apply_client_recording_fence(BodaqsControlApplyClient *,
+                                                     BodaqsControlAuthorityClient *, uint32_t now);
     void bodaqs_control_apply_client_invalidate(BodaqsControlApplyClient *, uint8_t address);
 #ifdef __cplusplus
 }

@@ -3,8 +3,10 @@
 #include "bodaqs_control_authority_client.h"
 #include "bodaqs_control_observer.h"
 #include "bodaqs_master_service.h"
+#include "../network/bodaqs_node_inventory.h"
 #include <cassert>
 #include <cstring>
+#include <initializer_list>
 
 namespace
 {
@@ -27,6 +29,112 @@ CanMasterProtocol::Frame spi(BodaqsMasterService &master, uint8_t type,
            CanMasterProtocol::DecodeResult::Ok);
     assert(reply.sequence == 0x12345678);
     return reply;
+}
+// Publish the actual powered-interval inventory latch through the production
+// service boundary, as the master's main loop does after receiving announces.
+void announce(BodaqsNodeInventory &inventory, BodaqsMasterService &master,
+              uint64_t uid)
+{
+    BodaqsCanNodeAnnounce node = {};
+    node.hardware_uid = uid;
+    node.boot_id = 123;
+    (void)bodaqs_node_inventory_observe_announce(&inventory, &node, 10);
+    BodaqsMasterDiscoveryRecord records[4] = {};
+    for (unsigned i = 0; i < 4; ++i) {
+        const auto &entry = inventory.nodes[i];
+        records[i].flags = (entry.present ? BODAQS_MASTER_DISCOVERY_FLAG_PRESENT : 0) |
+            (entry.duplicate ? BODAQS_MASTER_DISCOVERY_FLAG_DUPLICATE : 0);
+        records[i].hardware_uid = entry.identity.hardware_uid;
+        records[i].conflicting_hardware_uid = entry.conflicting_hardware_uid;
+    }
+    bodaqs_master_service_set_inventory(&master, inventory.generation, records, 4);
+}
+BodaqsControlWrapped commitRequest()
+{
+    BodaqsControlWrapped q = {};
+    q.master_boot_id = 99;
+    auto &r = q.record;
+    r.opcode = BODAQS_CONTROL_COMMIT_APPLY;
+    r.node_boot_id = 123; r.session = 456; r.operation = 2; r.transfer = 789;
+    r.data_length = 24; r.data[0] = 1; r.data[2] = 1; r.data[4] = 44; r.data[8] = 1;
+    return q;
+}
+void duplicateInventoryBlocksNewConfiguration()
+{
+    BodaqsMasterService master;
+    bodaqs_master_service_init(&master, nullptr);
+    bodaqs_control_exchange_init(&master.control, 99);
+    BodaqsNodeInventory inventory;
+    bodaqs_node_inventory_init(&inventory);
+    announce(inventory, master, 11);
+    announce(inventory, master, 22);
+    assert(inventory.nodes[0].duplicate);
+    auto q = commitRequest();
+    auto result = spi(master, 6, &q);
+    BodaqsControlWrapped reply;
+    assert(bodaqs_control_decode_wrapped(result.payload, 64, &reply));
+    assert(result.type == CanMasterProtocol::MessageType::ControlReceiptResponse);
+    assert(reply.record.data[0] == 3 && reply.record.data[1] == 7);
+    uint8_t address, wire[64]; uint16_t transaction;
+    assert(!bodaqs_control_exchange_transmit(&master.control, 0, &address, &transaction, wire));
+    // The duplicate latch does not block independent addresses or inspection.
+    q.node_address = 1;
+    (void)spi(master, 6, &q);
+    assert(bodaqs_control_exchange_transmit(&master.control, 0, &address, &transaction, wire));
+    assert(address == 1);
+    q = {}; q.master_boot_id = 99;
+    q.record.opcode = 4; q.record.endpoint = 255;
+    q.record.operation = 1; q.record.node_boot_id = 123;
+    (void)spi(master, 6, &q);
+    assert(bodaqs_control_exchange_transmit(&master.control, 1, &address, &transaction, wire));
+    assert(address == 0);
+}
+void duplicateDuringExchangePreventsDispatchAndRetry(bool transmitted)
+{
+    BodaqsMasterService master;
+    bodaqs_master_service_init(&master, nullptr);
+    bodaqs_control_exchange_init(&master.control, 99);
+    BodaqsNodeInventory inventory;
+    bodaqs_node_inventory_init(&inventory);
+    announce(inventory, master, 11);
+    auto q = commitRequest();
+    (void)spi(master, 6, &q);
+    uint8_t address, wire[64]; uint16_t transaction = 0;
+    if (transmitted) {
+        assert(bodaqs_control_exchange_transmit(&master.control, 0, &address, &transaction, wire));
+        BodaqsControlRecord decoded; uint16_t decodedTransaction;
+        assert(bodaqs_control_decode_can(wire, 64, false, &decodedTransaction, &decoded));
+        assert(decoded.opcode == BODAQS_CONTROL_COMMIT_APPLY && address == 0);
+    }
+    announce(inventory, master, 22);
+    // Neither initial dispatch nor the one-second retry may cross the latch.
+    assert(!bodaqs_control_exchange_transmit(&master.control, 1000, &address, &transaction, wire));
+    assert(!bodaqs_control_exchange_transmit(&master.control, 10000, &address, &transaction, wire));
+    BodaqsControlWrapped reply;
+    for (uint8_t type : {uint8_t(6), uint8_t(7)}) {
+        auto request = q;
+        if (type == 7) { request.record.data_length = 0; memset(request.record.data, 0, 24); }
+        auto result = spi(master, type, &request);
+        assert(result.type == CanMasterProtocol::MessageType::ControlReceiptResponse);
+        assert(bodaqs_control_decode_wrapped(result.payload, 64, &reply));
+        assert(reply.record.data[0] == (transmitted ? 5 : 3));
+        assert(reply.record.data[1] == (transmitted ? 26 : 7));
+        assert(reply.record.data[3] == BODAQS_CONTROL_COMMIT_APPLY);
+    }
+    // A late accepted reply cannot turn the excluded route into current proof.
+    if (transmitted) {
+        auto late = q.record; late.data[0] = 3;
+        assert(!bodaqs_control_exchange_receive(&master.control, 0, transaction, &late));
+    }
+    // A fresh mutation remains blocked; silence and the original UID do not
+    // clear the inventory's powered-interval duplicate latch.
+    bodaqs_node_inventory_update_stale(&inventory, 100000, 100);
+    announce(inventory, master, 11);
+    ++q.record.operation;
+    auto result = spi(master, 6, &q);
+    assert(bodaqs_control_decode_wrapped(result.payload, 64, &reply));
+    assert(reply.record.data[0] == 3 && reply.record.data[1] == 7);
+    assert(!bodaqs_control_exchange_transmit(&master.control, 100001, &address, &transaction, wire));
 }
 void loggerReadsNodeStateThroughBothRealTransports()
 {
@@ -328,6 +436,9 @@ void authoritySurvivesLostCanBindAndReleaseReplies()
 } // namespace
 int main()
 {
+    duplicateInventoryBlocksNewConfiguration();
+    duplicateDuringExchangePreventsDispatchAndRetry(false);
+    duplicateDuringExchangePreventsDispatchAndRetry(true);
     authoritySurvivesLostCanBindAndReleaseReplies();
     snapshotsCrossBothLinksWithinLifetime(false);
     snapshotsCrossBothLinksWithinLifetime(true);
