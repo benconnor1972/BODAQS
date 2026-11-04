@@ -16,12 +16,14 @@ GENERATED_FILES := device.opt device.cmd.genlibs device_linker.cmd \
 
 NAME := bodaqs_can_master
 SOURCES := ../src/main.c \
+    ../../common/protocol/bodaqs_control.c \
+    ../../common/protocol/bodaqs_control_exchange.c \
     ../src/master_identity.c \
     ../../common/protocol/bodaqs_master_protocol.c \
     ../../common/protocol/bodaqs_master_service.c \
     ../../common/network/bodaqs_can_network.c \
     ../../common/network/bodaqs_node_inventory.c
-OBJECTS := main.obj master_identity.obj bodaqs_master_protocol.obj \
+OBJECTS := bodaqs_control.obj bodaqs_control_exchange.obj main.obj master_identity.obj bodaqs_master_protocol.obj \
     bodaqs_master_service.obj bodaqs_can_network.obj \
     bodaqs_node_inventory.obj \
     $(patsubst %.c,%.obj,$(notdir $(SYSCFG_C_FILES)))
@@ -54,6 +56,7 @@ LFLAGS := -ldevice.cmd.genlibs \
     "-L$(MSPM0_SDK_INSTALL_DIR)/source" \
     -L. \
     device_linker.cmd \
+    -Wl,--stack_size=2048 \
     "-Wl,-m,$(NAME).map" \
     -Wl,--rom_model \
     -Wl,--warn_sections \
@@ -92,3 +95,4 @@ clean:
 	-$(V) $(RM) $(OBJECTS) $(NAME).out $(NAME).map > $(DEVNULL) 2>&1
 	-$(V) $(RM) $(GENERATED_FILES) > $(DEVNULL) 2>&1
 
+main.obj master_identity.obj bodaqs_master_service.obj bodaqs_control.obj bodaqs_control_exchange.obj: ../../common/protocol/bodaqs_control.h ../../common/protocol/bodaqs_control_exchange.h

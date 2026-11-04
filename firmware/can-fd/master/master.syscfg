@@ -11,6 +11,8 @@ const SPI = scripting.addModule("/ti/driverlib/SPI", {}, false);
 const SPI1 = SPI.addInstance();
 const MCAN = scripting.addModule("/ti/driverlib/MCAN", {}, false);
 const MCAN1 = MCAN.addInstance();
+const TRNG = scripting.addModule("/ti/driverlib/TRNG");
+TRNG.clockDivider = "DL_TRNG_CLOCK_DIVIDE_4";
 const SYSCTL = scripting.addModule("/ti/driverlib/SYSCTL");
 
 GPIO1.$name = "GPIO_BOARD";

@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "CanMasterProtocol.h"
+#include "CanMasterDiscovery.h"
 #include "DebugLog.h"
 #include "LoggingManager.h"
 #include "SensorManager.h"
@@ -36,6 +37,7 @@ bool s_lastIrqAsserted = false;
 bool s_haveCompletedSlot = false;
 uint32_t s_lastSlotCompletedUs = 0;
 uint64_t s_statusHardwareUid = 0;
+uint32_t s_nextControlMs = 0;
 
 uint8_t spiDataMode_(uint8_t mode) {
   switch (mode) {
@@ -89,9 +91,19 @@ void clearInventory_(bool clearObservations) {
   if (clearObservations) {
     SensorManager::clearRemoteDiscoveryObservations();
   }
+  for (uint8_t address = 0; address < 4; ++address) {
+    bodaqs_control_observer_node(&s_diagnostics.control, address, 0, 0, false);
+  }
+}
+
+void clearControl_() {
+  s_diagnostics.controlSupported = false;
+  s_diagnostics.controlInfoValid = false;
+  bodaqs_control_observer_init(&s_diagnostics.control);
 }
 
 void clearIdentity_() {
+  clearControl_();
   s_diagnostics.compatible = false;
   s_diagnostics.protocolVersion = 0;
   s_diagnostics.firmwareVersion = 0;
@@ -214,19 +226,60 @@ bool refreshStatus_() {
   return true;
 }
 
-uint32_t providerCapabilities_(uint16_t endpointMask) {
-  uint32_t capabilities = SENSOR_CAP_NONE;
-  if ((endpointMask & (1U << 0)) != 0) {
-    capabilities |= SENSOR_CAP_IMU | SENSOR_CAP_NATIVE_STREAM |
-        SENSOR_CAP_SYNC_CAPTURE;
+bool refreshControlInfo_() {
+  if (!s_diagnostics.controlSupported) {
+    clearControl_();
+    return false;
   }
-  if ((endpointMask & ((1U << 1) | (1U << 2))) != 0) {
-    capabilities |= SENSOR_CAP_ANALOG;
+  CanMasterProtocol::Frame request, response;
+  request.type = CanMasterProtocol::MessageType::ControlInfoRequest;
+  request.sequence = nextSequence_();
+  uint64_t boot = 0;
+  uint32_t features = 0;
+  if (!transferFrame_(request, response) ||
+      response.type != CanMasterProtocol::MessageType::ControlInfoResponse ||
+      response.flags != 0 ||
+      !bodaqs_control_decode_info(response.payload, response.payloadLength,
+                                 &boot, &features)) {
+    s_diagnostics.controlInfoValid = false;
+    bodaqs_control_observer_boot(&s_diagnostics.control, 0, 0);
+    ++s_diagnostics.invalidResponses;
+    return false;
   }
-  if ((endpointMask & ((1U << 3) | (1U << 4))) != 0) {
-    capabilities |= SENSOR_CAP_I2C | SENSOR_CAP_NATIVE_STREAM;
+  bodaqs_control_observer_boot(&s_diagnostics.control, boot, features);
+  s_diagnostics.controlInfoValid = true;
+  return true;
+}
+
+void serviceControl_() {
+  if (!s_diagnostics.controlInfoValid || !s_diagnostics.inventoryValid) return;
+  BodaqsControlWrapped wrapped, reply;
+  uint8_t type;
+  if (!bodaqs_control_observer_next(&s_diagnostics.control, &wrapped, &type)) return;
+  CanMasterProtocol::Frame request, response;
+  request.type = static_cast<CanMasterProtocol::MessageType>(type);
+  request.sequence = nextSequence_();
+  request.payloadLength = 64;
+  if (!bodaqs_control_encode_wrapped(&wrapped, request.payload) ||
+      !transferFrame_(request, response) || response.flags != 0 ||
+      (response.type != CanMasterProtocol::MessageType::ControlReceiptResponse &&
+       response.type != CanMasterProtocol::MessageType::ControlPollResponse) ||
+      !bodaqs_control_decode_wrapped(response.payload, response.payloadLength, &reply)) {
+    ++s_diagnostics.invalidResponses;
+    for (auto& node : s_diagnostics.control.nodes) {
+      node.valid = false;
+      node.epoch_valid_mask = 0;
+    }
+    return;
   }
-  return capabilities;
+  if (!bodaqs_control_observer_accept(&s_diagnostics.control,
+          static_cast<uint8_t>(response.type), &reply, millis())) {
+    ++s_diagnostics.invalidResponses;
+  }
+  if (reply.master_boot_id != wrapped.master_boot_id) {
+    s_diagnostics.controlInfoValid = false;
+    s_probeRequested = true;
+  }
 }
 
 void stageEndpoint_(const CanMasterProtocol::DiscoveryRecord& record,
@@ -239,24 +292,21 @@ void stageEndpoint_(const CanMasterProtocol::DiscoveryRecord& record,
   observation.present = present;
   observation.healthy = healthy;
   observation.deviceIdentity = static_cast<uint32_t>(record.hardwareUid);
+  observation.capabilities = CanMasterDiscovery::endpointTypeCapabilities(endpoint);
   switch (endpoint) {
     case 0:
       observation.endpoint.kind = SensorAssignment::Kind::NodeImu;
       observation.endpoint.input = 0;
-      observation.capabilities = SENSOR_CAP_IMU | SENSOR_CAP_NATIVE_STREAM |
-          SENSOR_CAP_SYNC_CAPTURE;
       break;
     case 1:
     case 2:
       observation.endpoint.kind = SensorAssignment::Kind::NodeAnalog;
       observation.endpoint.input = endpoint - 1;
-      observation.capabilities = SENSOR_CAP_ANALOG;
       break;
     case 3:
     case 4:
       observation.endpoint.kind = SensorAssignment::Kind::NodeI2C;
       observation.endpoint.input = endpoint - 3;
-      observation.capabilities = SENSOR_CAP_I2C | SENSOR_CAP_NATIVE_STREAM;
       break;
     default:
       return;
@@ -290,6 +340,8 @@ void commitInventory_(
          (kNodeStatusFlagErrorPassive | kNodeStatusFlagClockFault)) != 0) {
       healthy = false;
     }
+    bodaqs_control_observer_node(&s_diagnostics.control, node, record.bootId,
+        record.endpointMask, present && !stale && !duplicate);
     if (present) ++s_diagnostics.inventoryPresentCount;
     if (stale) ++s_diagnostics.inventoryStaleCount;
     if (duplicate) ++s_diagnostics.inventoryDuplicateCount;
@@ -303,7 +355,7 @@ void commitInventory_(
     providerObservation.healthy = healthy;
     providerObservation.hardwareUid = record.hardwareUid;
     providerObservation.capabilities =
-        providerCapabilities_(record.endpointMask);
+        CanMasterDiscovery::providerTypeCapabilities(record.endpointMask);
     providerObservation.protocolVersion = CanMasterProtocol::kProtocolVersion;
     (void)SensorManager::setRemoteProviderObservation(providerObservation);
 
@@ -396,6 +448,8 @@ void begin(const board::BoardProfile& profile, const LoggerConfig& cfg) {
   s_haveCompletedSlot = false;
   s_lastSlotCompletedUs = 0;
   s_statusHardwareUid = 0;
+  s_nextControlMs = 0;
+  bodaqs_control_observer_init(&s_diagnostics.control);
 
   if (!s_profile.supported) {
     s_diagnostics.state = State::Unsupported;
@@ -505,6 +559,7 @@ bool probeNow() {
   s_diagnostics.firmwareVersion = identity.firmwareVersion;
   s_diagnostics.capabilities = identity.capabilities;
   s_diagnostics.hardwareUid = identity.hardwareUid;
+  s_diagnostics.controlSupported = (identity.capabilities & BODAQS_CONTROL_CAPABILITY) != 0;
   s_diagnostics.statusSupported = statusSupported;
   s_diagnostics.inventorySupported = inventorySupported;
   s_diagnostics.compatible =
@@ -516,6 +571,7 @@ bool probeNow() {
       s_diagnostics.statusSupported) {
     (void)refreshStatus_();
   }
+  if (s_diagnostics.state == State::Present) (void)refreshControlInfo_();
   bool inventoryCommitted = false;
   if (s_diagnostics.state == State::Present &&
       s_diagnostics.inventorySupported) {
@@ -553,6 +609,10 @@ void loop() {
   if (s_probeRequested || irqBecameAsserted || due_(now, s_nextProbeMs)) {
     (void)probeNow();
   }
+  if (s_diagnostics.state == State::Present && due_(now, s_nextControlMs)) {
+    s_nextControlMs = now + 100;
+    serviceControl_();
+  }
 }
 
 const Diagnostics& diagnostics() { return s_diagnostics; }
@@ -581,6 +641,19 @@ const char* shortStatus() {
     case State::TransportFault:
     default: return "M:!";
   }
+}
+
+const char* controlShortStatus() {
+  if (!s_diagnostics.controlSupported) return "C:--";
+  if (!s_diagnostics.controlInfoValid) return "C:!";
+  bool available = false;
+  for (const auto& node : s_diagnostics.control.nodes) {
+    if (!node.available) continue;
+    available = true;
+    if (node.reason) return "C:!";
+    if (!node.valid) return "C:...";
+  }
+  return available ? "C:ok" : "C:--";
 }
 
 bool present() { return s_diagnostics.state == State::Present; }

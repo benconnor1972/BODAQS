@@ -93,6 +93,31 @@ BodaqsMasterSlotResult bodaqs_master_service_process_slot(
         return BODAQS_MASTER_SLOT_MALFORMED;
     }
 
+    if ((service->control.master_boot_id != 0U) && (request.sequence != 0U) &&
+        (request.flags == 0U) && ((unsigned)request.type >= BODAQS_CONTROL_INFO_REQUEST) && ((unsigned)request.type <= BODAQS_CONTROL_POLL_REQUEST)) {
+        BodaqsMasterFrame response;
+        BodaqsControlWrapped wrapped, reply;
+        uint8_t type;
+        memset(&response, 0, sizeof(response));
+        response.sequence = request.sequence;
+        if (((unsigned)request.type == BODAQS_CONTROL_INFO_REQUEST) && (request.payload_length == 0U)) {
+            response.type = (BodaqsMasterMessageType)BODAQS_CONTROL_INFO_RESPONSE;
+            response.payload_length = 32;
+            bodaqs_control_info(service->control.master_boot_id, response.payload);
+        } else if (((unsigned)request.type != BODAQS_CONTROL_INFO_REQUEST) &&
+            bodaqs_control_decode_wrapped(request.payload, request.payload_length, &wrapped) &&
+            bodaqs_control_exchange_request(&service->control, (unsigned)request.type == BODAQS_CONTROL_POLL_REQUEST, &wrapped, &reply, &type)) {
+            response.type = (BodaqsMasterMessageType)type;
+            response.payload_length = 64;
+            (void)bodaqs_control_encode_wrapped(&reply, response.payload);
+        } else {
+            ++service->malformed_slots;
+            return BODAQS_MASTER_SLOT_MALFORMED;
+        }
+        (void)bodaqs_master_encode_slot(&response, next_transmit, BODAQS_MASTER_SLOT_BYTES);
+        return BODAQS_MASTER_SLOT_PROCESSED;
+    }
+
     if ((request.type == BODAQS_MASTER_MESSAGE_PROBE_REQUEST) &&
         (request.payload_length == 0U) && (request.sequence != 0U)) {
         ++service->probes_received;
@@ -118,4 +143,3 @@ BodaqsMasterSlotResult bodaqs_master_service_process_slot(
     }
     return BODAQS_MASTER_SLOT_PROCESSED;
 }
-

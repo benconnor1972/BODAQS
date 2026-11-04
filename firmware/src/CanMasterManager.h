@@ -4,6 +4,7 @@
 
 #include "BoardProfile.h"
 #include "CanMasterProtocol.h"
+#include "CanControlProtocol.h"
 #include "ConfigManager.h"
 
 namespace CanMasterManager {
@@ -55,6 +56,9 @@ struct Diagnostics {
   uint16_t canRxQueueHighWater = 0;
   uint16_t spiTxQueueDepth = 0;
   uint16_t spiTxQueueHighWater = 0;
+  bool controlSupported = false;
+  bool controlInfoValid = false;
+  BodaqsControlObserver control = {};
   bool inventorySupported = false;
   bool inventoryValid = false;
   uint32_t inventoryAttempts = 0;
@@ -83,6 +87,7 @@ void requestProbe();
 const Diagnostics& diagnostics();
 const char* stateKey(State state);
 const char* shortStatus();
+const char* controlShortStatus();
 bool present();
 bool requiredAndUnavailable();
 

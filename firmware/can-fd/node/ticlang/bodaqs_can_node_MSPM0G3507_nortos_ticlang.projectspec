@@ -33,6 +33,7 @@
             -L${COM_TI_MSPM0_SDK_INSTALL_DIR}/source
             -L${PROJECT_ROOT}
             -L${PROJECT_BUILD_DIR}/syscfg
+            -Wl,--stack_size=2048
             -Wl,--rom_model
             -Wl,--warn_sections
             -L${CG_TOOL_ROOT}/lib
@@ -48,6 +49,11 @@
         <property name="buildProfile" value="release"/>
         <property name="isHybrid" value="true"/>
         <file path="../src/main.c" action="copy" />
+        <file path="../../common/protocol/bodaqs_control.c" action="copy" />
+        <file path="../../common/protocol/bodaqs_control.h" action="copy" />
+        <file path="../../common/protocol/bodaqs_control_exchange.c" action="copy" />
+        <file path="../../common/protocol/bodaqs_control_exchange.h" action="copy" />
+
         <file path="../../common/transport/bodaqs_record_queue.h" action="copy" />
         <file path="../../common/network/bodaqs_can_network.c" action="copy" />
         <file path="../../common/network/bodaqs_can_network.h" action="copy" />

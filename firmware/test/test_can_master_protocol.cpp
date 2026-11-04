@@ -2,6 +2,7 @@
 #include <cstring>
 
 #include "CanMasterProtocol.h"
+#include "CanMasterDiscovery.h"
 
 int runCanMasterProtocolTests() {
     int passed = 0;
@@ -13,6 +14,15 @@ int runCanMasterProtocolTests() {
             ++failed;
         }
     };
+
+    check(CanMasterDiscovery::providerTypeCapabilities(0x3f) ==
+              (SENSOR_CAP_IMU | SENSOR_CAP_ANALOG | SENSOR_CAP_I2C),
+          "fitted remote endpoints expose only their types");
+    check(CanMasterDiscovery::endpointTypeCapabilities(0) == SENSOR_CAP_IMU,
+          "remote IMU presence does not imply a streaming backend");
+    check((CanMasterDiscovery::providerTypeCapabilities(0x3f) &
+              (SENSOR_CAP_NATIVE_STREAM | SENSOR_CAP_SYNC_CAPTURE)) == 0,
+          "remote discovery does not advertise acquisition or SYNC support");
 
     CanMasterProtocol::Frame request;
     request.type = CanMasterProtocol::MessageType::ProbeRequest;
