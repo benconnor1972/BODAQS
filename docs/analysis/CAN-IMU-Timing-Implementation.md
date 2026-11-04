@@ -10,8 +10,8 @@ reception ordinals. Companion prefix creation ticks never anchor sample time.
 Source positions unwrap within each explicit source segment. Models are selected
 by that position, retain their canonical rational phase, and require native
 association, input-range validity and matching provider/boot/segment identities.
-Declared applicability must be at most 500 source steps and 150,000 us;
-the inclusive endpoint must satisfy both limits. Revisions do not reset clocks.
+Declared applicability must be at most 500 records (source deltas 0..499)
+and 150,000 us; duration includes its exact endpoint independently. Revisions do not reset clocks.
 Conflicting definitions at an applicable origin produce `model_conflict`.
 Ambiguous associations across repeated complete source cycles remain unknown.
 Only explicit model clock epochs distinguish resets; raw backwards ticks do not
@@ -28,7 +28,9 @@ Shared master SYNC and causal bridge copies are keyed by original master UID,
 boot, clock epoch, kind and SYNC sequence/token. Identical copies contribute once;
 inconsistent copies increment `shared_conflict_count` and cannot establish a
 mapping. Raw copies remain in their per-node frames. Method 1 bridges use raw
-L0/L1 and M; node SYNC provides the node/master relation. Both observation ages
+L0/L1 and M; node SYNC with proven sequence-association capture flag bit 0
+provides the node/master relation. Raw periodic captures with flags zero remain
+unknown, since perfect cadence cannot exclude a whole-period marker delay. Both observation ages
 are limited to 150 ms. Known model uncertainty alone cannot bound either
 cross-clock relation, and nominal oscillator rate is not a measured bound.
 
@@ -67,10 +69,8 @@ reserved bytes and raw unknown numeric fields.
 
 Validation on 5 November 2026:
 
-- Full analysis suite: 584 passed, 1 skipped (before two additional artifact and
-  unknown-bound cases were added); only existing dependency warnings.
-- Final focused BDQ/CAN/attitude regression run: 58 passed. After source-position
-  lookup indexing was tightened, the nine new parser/adapter/export cases passed.
+- Final complete analysis suite: 588 passed, 1 skipped; only existing dependency warnings.
+- Eleven focused CAN parser/adapter/export cases pass, including unknown raw SYNC association and capture-input ordinal wrap.
 - `git diff --check` clean for analysis changes.
 
 Physical association, capture/drift bounds, throughput and the 10 us relative

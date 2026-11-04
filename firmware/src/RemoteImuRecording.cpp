@@ -74,7 +74,7 @@ bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint
     if(r[2]>64) {fault=true;return true;}
     const uint64_t order=(uint64_t(BdqV2Format::getU32(p+8))<<32)|BdqV2Format::getU32(r+8);
     const auto accepted=stream.accept(BdqV2Format::getU16(r),r+12,r[2],
-      BdqV2Format::getU32(r+4),order,static_cast<uint32_t>(esp_timer_get_time()));
+      BdqV2Format::getU32(r+4),order,static_cast<uint32_t>(esp_timer_get_time()),r[3]);
     if(accepted==RemoteImuStream::Blocked) return false;
     if(accepted==RemoteImuStream::Invalid) {fault=true;return true;}
   }

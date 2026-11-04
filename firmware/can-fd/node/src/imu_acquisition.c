@@ -130,11 +130,11 @@ static bool snapshot(uint32_t seq, uint32_t tick, uint32_t ts) {
         ++a.loss_evidence; ++a.evidence; a.evidence_gap=true;
         return true;
     }
-    a.sync_present=bodaqs_node_sync_latest(&sync_sequence,&sync_tick);
+    const bool sync_associated=bodaqs_node_sync_latest(&sync_sequence,&sync_tick);
     envelope(p, 0x23, 56);
     bodaqs_control_put_u32(b, a.boot);
     b[5] = a.epoch;
-    put16(b + 6, (uint16_t)(0x37 | (a.sync_present?8:0) | (a.evidence_gap?64:0)));
+    put16(b + 6, (uint16_t)(0x37 | (sync_associated?8:0) | (a.evidence_gap?64:0)));
     bodaqs_control_put_u32(b + 8, ++a.evidence);
     bodaqs_control_put_u32(b + 12, seq);
     bodaqs_control_put_u32(b + 16, a.sensor_epoch);
@@ -147,7 +147,7 @@ static bool snapshot(uint32_t seq, uint32_t tick, uint32_t ts) {
     b[51] = (uint8_t)(0xdf | (a.sync_present ? 0x20 : 0));
     if (a.sync_present) {
         bodaqs_control_put_u32(b + 36, sync_sequence);
-        bodaqs_control_put_u32(b + 40, sync_tick);
+        bodaqs_control_put_u32(b + 40, a.sync.tick);
     }
     bodaqs_control_put_u32(b + 52, a.slot);
     a.evidence_gap=false;
@@ -565,15 +565,23 @@ void bodaqs_node_acquisition_service(uint32_t now) {
         return;
     }
     if(a.phase==RECORDING || a.phase==STARTING) {
-        uint32_t sequence,tick;
-        if(bodaqs_node_sync_latest(&sequence,&tick) && sequence!=a.sent_sync) {
+        BodaqsNodeCapture raw_sync;
+        uint32_t sync_lost=bodaqs_node_capture_sync_loss_take();
+        if(sync_lost) {
+            if(UINT32_MAX-a.loss_evidence<sync_lost) {fail(31);return;}
+            a.loss_evidence+=sync_lost;a.evidence_gap=true;
+        }
+        if(bodaqs_node_capture_sync_observation(&raw_sync)) {
             uint8_t p[64],*b=p+8;
-            envelope(p,0x21,16);put16(p+4,(uint16_t)sequence);
-            bodaqs_control_put_u32(b,sequence);bodaqs_control_put_u32(b+4,tick);
-            bodaqs_control_put_u32(b+8,a.boot);put16(b+12,1);
-            /* Periodic synchronization loss degrades alignment only. */
-            if(tx_depth<24 && queue_frame((uint16_t)(0x90+a.address),p,24)) a.sent_sync=sequence;
-            else {a.evidence_gap=true;a.sent_sync=sequence;}
+            a.sync=raw_sync;a.sync_present=true;
+            envelope(p,0x21,16);
+            bodaqs_control_put_u32(b+4,raw_sync.tick);bodaqs_control_put_u32(b+8,a.boot);
+            /* Sequence/association unknown. flags=0 preserves that distinction;
+             * the independently retained master edge does not supply a pairing. */
+            if(!(tx_depth<24 && queue_frame((uint16_t)(0x90+a.address),p,24))) {
+                if(a.loss_evidence==UINT32_MAX) {fail(31);return;}
+                ++a.loss_evidence;a.evidence_gap=true;
+            }
         }
     }
     if (bodaqs_node_capture_fault()) {

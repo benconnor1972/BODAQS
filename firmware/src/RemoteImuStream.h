@@ -22,7 +22,7 @@ public:
   bool configure(const RemoteImuBinding&,uint16_t sampleId,uint16_t evidenceId);
   void release(); // only after both producer and storage owner stop
   Acceptance accept(uint16_t identifier,const uint8_t*,size_t length,
-                    uint32_t masterTick,uint64_t masterOrder,uint32_t loggerTick);
+                    uint32_t masterTick,uint64_t masterOrder,uint32_t loggerTick,uint8_t receptionFlags=0);
   Acceptance acceptSharedSync(uint32_t sequence,uint32_t edgeTick,uint32_t masterEpoch,uint32_t loggerTick);
   Acceptance acceptBridge(uint32_t token,uint32_t masterTick,uint32_t masterEpoch,uint64_t lower,uint64_t upper,uint32_t loggerTick);
   Acceptance acceptMissingBridge(uint32_t token,uint32_t loggerTick);
@@ -62,7 +62,7 @@ private:
   uint8_t modelCount_=0,epoch_=0;
   bool haveSequence_=false,haveBoundary_=false;
   std::atomic<bool> failed_{false};
-  Acceptance evidence(uint8_t type,const uint8_t* body,uint32_t,uint64_t,uint32_t,bool local=false);
+  Acceptance evidence(uint8_t type,const uint8_t* body,uint32_t,uint64_t,uint32_t,bool local=false,uint8_t receptionFlags=0);
   Acceptance pushShared(uint8_t out[224]);
   Acceptance samples(const uint8_t*,size_t,uint32_t);
   struct Loss {uint32_t source=0,evidence=0,first=0,last=0;};

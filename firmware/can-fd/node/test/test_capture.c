@@ -67,8 +67,16 @@ int main(void) {
     raw=1;count=0;bodaqs_node_capture_irq();
     raw=8;count=34564;cc[3]=34564;bodaqs_node_capture_irq();
     bodaqs_node_sync_marker(42,1000000);
-    assert(bodaqs_node_sync_latest(&sequence,&tick) && sequence==42 && tick==100100);
+    assert(!bodaqs_node_sync_latest(&sequence,&tick));
+    // These captures could belong to markers 42/43 while delayed markers 41/42
+    // still have perfect cadence. No delivery bound or causal seed is known.
+    assert(bodaqs_node_capture_sync_observation(&c) && c.tick==100 && c.ordinal==1);
+    assert(bodaqs_node_capture_sync_observation(&c) && c.tick==100100 && c.ordinal==2);
     bodaqs_node_sync_marker(40,800000);
     assert(!bodaqs_node_sync_latest(&sequence,&tick));
+    bodaqs_node_capture_init();
+    for(unsigned i=0;i<10;++i) {raw=8;count=i;cc[3]=i;bodaqs_node_capture_irq();}
+    assert(bodaqs_node_capture_sync_loss_take()==3 && bodaqs_node_capture_sync_loss_take()==0);
+    assert(!bodaqs_node_capture_fault() && bodaqs_node_capture_clock_trusted());
     return 0;
 }

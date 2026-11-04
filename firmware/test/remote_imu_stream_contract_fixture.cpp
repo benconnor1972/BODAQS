@@ -37,6 +37,12 @@ int main() {
   assert(std::strstr(provenance,"\"gyro_udps_per_count\":70000"));
   assert(std::strstr(provenance,"stopped_configuration_at_admission"));
   assert(!std::strstr(provenance,"\"verification_phase\":3"));
+  uint8_t capture[24]={1,0x21,1,0,5,0,16,0,5,0,0,0,0x20,0x4e,0,0,7,0,0,0,1,0,0,0};
+  assert(stream.accept(0x91,capture,24,30000,0x100000007ULL,200)==RemoteImuStream::Accepted);
+  assert(evidence.popRecord(evidence.context,record,sizeof record));
+  assert(record[12]==3 && record[14]==1 && BdqV2Format::getU32(record+68)==20000);
+  assert(BdqV2Format::getU32(record+40)==1 && record[184]==0x21 && record[186]==24);
+  assert(BdqV2Format::getU32(record+188)==1 && record[140]==1);
   assert(stream.acceptSharedSync(5,123456,9,201)==RemoteImuStream::Accepted);
   assert(evidence.popRecord(evidence.context,record,sizeof record));
   assert(record[12]==4 && BdqV2Format::getU32(record+40)==9);
@@ -53,6 +59,21 @@ int main() {
   assert(record[12]==5 && BdqV2Format::getU32(record+144)==12 && record[140]==2);
   assert(BdqV2Format::getU32(record+16)==((1u<<15)|(1u<<22)));
   assert(BdqV2Format::getU32(record+40)==0 && BdqV2Format::getU64(record+120)==0);
+  // A reception-clock fault degrades that observation; node sample timing survives.
+  assert(stream.accept(0x91,capture,24,99999,0x100000008ULL,204,1)==RemoteImuStream::Accepted);
+  assert(evidence.popRecord(evidence.context,record,sizeof record));
+  assert(!(BdqV2Format::getU32(record+16)&(1u<<9)) && (BdqV2Format::getU32(record+16)&(1u<<10)));
+  assert(BdqV2Format::getU32(record+76)==0 && BdqV2Format::getU32(record+180)==1);
+  RemoteImuStream fullCatalog;
+  RemoteImuBinding fullBinding=binding;
+  fullBinding.uid=fullBinding.masterUid=fullBinding.masterBoot=fullBinding.session=fullBinding.recording=fullBinding.context=UINT64_MAX;
+  fullBinding.orientationValid=true;
+  fullBinding.mountingQuaternion[0]=0.316227766016838;
+  fullBinding.mountingQuaternion[1]=0.447213595499958;
+  fullBinding.mountingQuaternion[2]=0.547722557505166;
+  fullBinding.mountingQuaternion[3]=0.632455532033676;
+  assert(fullCatalog.configure(fullBinding,2,3));
+  assert(std::strstr(fullCatalog.descriptor(false).acquisitionDetailsJson,"saved_mount_quaternion"));
   // A conflicting definition cannot silently replace an already used origin.
   model[32]^=1;
   assert(stream.accept(0x91,model,64,54,6,104)==RemoteImuStream::Invalid);

@@ -64,13 +64,14 @@ def test_rational_model_retains_phase_and_unknown_logger_bounds(tmp_path):
 
 
 def test_model_limits_use_acquisition_position_and_keep_delayed_revisions(tmp_path):
-    frame = decode(tmp_path, [sample(0, 1000), sample(500, 6000), sample(501, 6010)],
+    frame = decode(tmp_path, [sample(0, 1000), sample(499, 5990), sample(500, 6000), sample(501, 6010)],
                    [event(**{'96': 10, '100': 1}), event(**{'44': 2, '88': 501, '92': 6010, '96': 10, '100': 1})])['remote_imu']
-    assert frame['timing_model_id'].tolist() == [1, 1, 2]
-    frame = decode(tmp_path, [sample(499, 150700), sample(500, 151000)],
-                   [event(**{'96': 300, '100': 1})])['remote_imu']
-    assert frame['modeled_node_tick'].tolist() == [150700, 151000]
-    frame = decode(tmp_path, [sample(500, 151500)], [event(**{'96': 301, '100': 1})])['remote_imu']
+    assert frame['timing_model_id'].iloc[[0, 1, 3]].tolist() == [1, 1, 2]
+    assert frame['timing_model_id'].isna().iloc[2]  # Exactly 500 records, deltas 0..499.
+    frame = decode(tmp_path, [sample(499, 151000)],
+                   [event(**{'96': 150000, '100': 499})])['remote_imu']
+    assert frame['modeled_node_tick'].tolist() == [151000]  # 150000 us is inclusive.
+    frame = decode(tmp_path, [sample(499, 151001)], [event(**{'96': 150001, '100': 499})])['remote_imu']
     assert frame['modeled_node_tick'].isna().all()
 
 
@@ -92,7 +93,7 @@ def test_conflicting_canonical_model_is_reported(tmp_path):
 def mapped_events():
     model = bytearray(event(**{'16': 1060887, '104': 2}))
     struct.pack_into('<H', model, 206, 7)
-    sync = event(3, **{'16': 139, '40': 4, '64': 9, '68': 900})
+    sync = event(3, **{'16': 139, '40': 4, '64': 9, '68': 900, '140': 1})
     master = event(4, **{'16': 264, '40': 4, '64': 9, '72': 1900})
     bridge = event(5, **{'16': 4243464, '40': 4, '120': 10000, '128': 10020,
                          '136': 2000, '140': 1, '144': 7})
@@ -173,3 +174,21 @@ def test_absent_uncertainty_and_unqualified_capture_keep_bounds_unknown(tmp_path
     assert frame['logger_lower_us'].isna().all()
     assert frame['modeled_node_tick'].tolist() == [1000]
 
+
+
+
+def test_model_input_capture_ordinal_wrap_does_not_reset_native_clock(tmp_path):
+    frame = decode(tmp_path, [sample(0, 1000), sample(1, 1003)],
+                   [event(**{'172': 4294967280, '176': 16})])['remote_imu']
+    assert frame['modeled_node_tick'].tolist() == [1000, 1003]
+    assert frame['clock_epoch'].tolist() == [3, 3]
+
+
+def test_periodic_raw_sync_capture_cannot_prove_a_marker_pair(tmp_path):
+    events = list(mapped_events())
+    raw = bytearray(events[1])
+    struct.pack_into('<H', raw, 140, 0)  # raw capture; absolute sequence unproven
+    events[1] = bytes(raw)
+    frame = decode(tmp_path, [sample(0, 1000)], events, BOUNDS)['remote_imu']
+    assert frame['logger_lower_us'].isna().all()
+    assert frame['timing_status'].tolist() == ['native_association_unknown_bound']
