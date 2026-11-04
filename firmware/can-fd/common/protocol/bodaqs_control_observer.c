@@ -173,6 +173,7 @@ bool bodaqs_control_observer_accept(BodaqsControlObserver *observer,
                                     const BodaqsControlWrapped *reply,
                                     uint32_t now)
 {
+    bodaqs_control_observer_tick(observer, now);
     const BodaqsControlRecord *record = &reply->record,
                               *request = &observer->current.record;
     BodaqsControlObservation *node;
