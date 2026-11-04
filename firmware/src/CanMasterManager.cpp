@@ -234,16 +234,17 @@ void refreshInventoryIfStateChanged_(CanMasterManager::State previous,
 }
 
 bool transferSlot_(
-    const SPISettings& settings, const uint8_t* tx, uint8_t* rx) {
+    const SPISettings& settings, const uint8_t* tx, uint8_t* rx,
+    size_t length = CanMasterProtocol::kSlotBytes, uint32_t guardUs = kInterSlotGuardUs) {
   if (s_haveCompletedSlot) {
     const uint32_t elapsedUs = micros() - s_lastSlotCompletedUs;
-    if (elapsedUs < kInterSlotGuardUs) {
-      delayMicroseconds(kInterSlotGuardUs - elapsedUs);
+    if (elapsedUs < guardUs) {
+      delayMicroseconds(guardUs - elapsedUs);
     }
   }
   if (!SharedSpiBus::transfer(
           s_profile.cs_pin, settings, tx, rx,
-          CanMasterProtocol::kSlotBytes, kSpiLockTimeoutMs)) {
+          length, kSpiLockTimeoutMs)) {
     return false;
   }
   s_lastSlotCompletedUs = micros();
@@ -254,11 +255,15 @@ bool transferSlot_(
 bool transferFrame_(
     const CanMasterProtocol::Frame& request,
     CanMasterProtocol::Frame& response) {
+  if ((s_diagnostics.measurementUnavailable || s_diagnostics.measurement.phase != 0) &&
+      static_cast<unsigned>(request.type) != 8 && static_cast<unsigned>(request.type) != 9 &&
+      static_cast<unsigned>(request.type) != 10) return false;
   uint8_t tx[CanMasterProtocol::kSlotBytes];
   uint8_t rx[CanMasterProtocol::kSlotBytes];
   if (!CanMasterProtocol::encodeSlot(request, tx, sizeof(tx))) return false;
   const SPISettings settings(
-      s_profile.spi_hz ? s_profile.spi_hz : 1000000UL,
+      (static_cast<unsigned>(request.type)>=8 && static_cast<unsigned>(request.type)<=10)
+          ? 4000000UL : (s_profile.spi_hz ? s_profile.spi_hz : 1000000UL),
       MSBFIRST,
       spiDataMode_(s_profile.spi_mode));
   if (!transferSlot_(settings, tx, rx)) {
@@ -647,6 +652,129 @@ bool refreshInventory_() {
 
 namespace CanMasterManager {
 
+bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
+                             BodaqsMeasurementSlot& response) {
+  if (!s_started || !s_profile.supported || s_profile.cs_pin < 0 ||
+      s_profile.spi_bus_index != 0 || s_diagnostics.mode == CanMasterMode::Off) return false;
+  uint8_t tx[64], rx[64];
+  if (!bodaqs_measurement_encode(&request, tx, sizeof tx)) return false;
+  const SPISettings settings(BODAQS_MEASUREMENT_HZ, MSBFIRST, spiDataMode_(s_profile.spi_mode));
+  return transferSlot_(settings,tx,rx,64,25) && bodaqs_measurement_decode(rx,64,&response);
+}
+
+static bool modeObservation_(const BodaqsMeasurementSlot& response, uint32_t token,
+                             uint64_t queryContext, const BodaqsMeasurementMode* expected) {
+  if (response.kind!=6 || response.node!=255 || response.index || response.total ||
+      response.object!=token || response.context!=queryContext ||
+      response.body[34] || response.body[35] || (bodaqs_measurement_get(response.body+36,4)&~15ULL)) return false;
+  BodaqsMeasurementMode observed = s_diagnostics.measurement;
+  observed.boot=bodaqs_measurement_get(response.body,8);
+  observed.session=bodaqs_measurement_get(response.body+8,8);
+  observed.recording=bodaqs_measurement_get(response.body+16,8);
+  observed.context=bodaqs_measurement_get(response.body+24,8);
+  observed.phase=response.body[32]; observed.reason=response.body[33];
+  observed.flags=static_cast<uint16_t>(bodaqs_measurement_get(response.body+36,4));
+  if (observed.phase>4 || (expected && !bodaqs_measurement_binding(&observed,expected))) return false;
+  if ((observed.phase==2) != ((observed.flags&1U)!=0)) return false;
+  if (s_diagnostics.measurementConfirmed &&
+      (!bodaqs_measurement_binding(&observed,&s_diagnostics.measurement) || observed.phase!=2)) {
+    s_diagnostics.measurementConfirmed=false;
+    s_diagnostics.measurementUnavailable=true;
+  }
+  if (observed.phase==0) { observed.physical=84; observed.hz=4000000; observed.gap=1000; }
+  s_diagnostics.measurementStatusValid=true;
+  s_diagnostics.measurement=observed;
+  return true;
+}
+
+bool inspectMeasurementMode() {
+  if (!s_nextSequence || s_nextSequence==UINT32_MAX) return false;
+  const uint32_t token=nextSequence_();
+  if (s_diagnostics.measurementUnavailable || s_diagnostics.measurement.phase!=0) {
+    BodaqsMeasurementSlot query = {}, response = {};
+    query.kind=6; query.node=255; query.object=token; query.context=s_diagnostics.measurement.context;
+    (void)exchangeMeasurementSlot(query,response); // Preloaded data is never fresh evidence.
+    for(uint8_t attempt=0;attempt<3;++attempt) {
+      if(exchangeMeasurementSlot(query,response) && modeObservation_(response,token,query.context,nullptr)) return true;
+    }
+    return false;
+  }
+  if (LoggingManager::isRunning()) return false; // No legacy probing during local recording.
+  CanMasterProtocol::Frame request, response;
+  request.type=static_cast<CanMasterProtocol::MessageType>(10); request.sequence=token; request.payloadLength=16;
+  const uint64_t nonce=freshSession_(0);
+  if(!nonce) return false;
+  bodaqs_measurement_put(request.payload,nonce,8);
+  bodaqs_measurement_put(request.payload+8,s_diagnostics.control.master_boot_id,8);
+  BodaqsMeasurementMode observed = {};
+  if(!transferFrame_(request,response) || static_cast<unsigned>(response.type)!=0x8a ||
+     !bodaqs_measurement_mode_decode(response.payload,response.payloadLength,&observed) ||
+     observed.caller!=nonce || observed.reason || observed.phase>4 ||
+     (s_diagnostics.control.master_boot_id && observed.boot!=s_diagnostics.control.master_boot_id)) return false;
+  s_diagnostics.measurementStatusValid=true;
+  s_diagnostics.measurement=observed;
+  if(observed.phase!=0) s_diagnostics.measurementUnavailable=true;
+  return true;
+}
+
+static bool transitionMode_(BodaqsMeasurementMode requested, bool exitMode) {
+  const uint32_t started=millis();
+  if(!s_nextSequence || s_nextSequence==UINT32_MAX) return false;
+  const uint32_t sequence=nextSequence_();
+  CanMasterProtocol::Frame stage, staged;
+  stage.type=static_cast<CanMasterProtocol::MessageType>(exitMode?9:8);
+  stage.sequence=sequence; stage.payloadLength=64; requested.phase=exitMode?3:0;
+  requested.reason=0; requested.flags=0;
+  bodaqs_measurement_mode_encode(&requested,stage.payload);
+  s_diagnostics.measurementConfirmed=false;
+  s_diagnostics.measurementUnavailable=true;
+  s_diagnostics.measurementStatusValid=false;
+  s_diagnostics.measurement=requested;
+  BodaqsMeasurementMode observed = {};
+  if(!transferFrame_(stage,staged) || static_cast<unsigned>(staged.type)!=(exitMode?0x89U:0x88U) ||
+     !bodaqs_measurement_mode_decode(staged.payload,staged.payloadLength,&observed) ||
+     observed.reason || !bodaqs_measurement_binding(&observed,&requested) ||
+     !bodaqs_measurement_limits(&observed) || observed.caller!=requested.caller ||
+     observed.phase!=(exitMode?3:1)) return false;
+  BodaqsMeasurementSlot confirm = {}, response = {};
+  confirm.kind=exitMode?9:8; confirm.node=255; confirm.context=requested.context; confirm.object=sequence;
+  bodaqs_measurement_confirm_body(&requested,confirm.body);
+  // The first MISO value predates this request; require a later correlated reply.
+  (void)exchangeMeasurementSlot(confirm,response);
+  while(static_cast<uint32_t>(millis()-started)<1000) {
+    if(exchangeMeasurementSlot(confirm,response) &&
+       modeObservation_(response,sequence,requested.context,&requested) &&
+       s_diagnostics.measurement.phase==(exitMode?0:2) && !s_diagnostics.measurement.reason) {
+      s_diagnostics.measurementConfirmed=!exitMode;
+      s_diagnostics.measurementUnavailable=false;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool enterMeasurementMode(uint64_t recording, uint64_t context) {
+  if(!recording || !context || !present() || !s_diagnostics.controlInfoValid ||
+     !s_diagnostics.authority.session || s_diagnostics.measurementUnavailable ||
+     s_diagnostics.measurement.phase!=0 ||
+     !(s_diagnostics.capabilities&BODAQS_MEASUREMENT_CAPABILITY)) return false;
+  BodaqsMeasurementMode requested = {};
+  requested.boot=s_diagnostics.control.master_boot_id; requested.session=s_diagnostics.authority.session;
+  requested.caller=requested.session; requested.recording=recording; requested.context=context;
+  requested.version=1; requested.maximum=1024; requested.physical=64; requested.hz=8000000; requested.gap=25;
+  return transitionMode_(requested,false);
+}
+
+bool exitMeasurementMode() {
+  if(!s_diagnostics.measurementConfirmed) return false;
+  return transitionMode_(s_diagnostics.measurement,true);
+}
+
+bool measurementReady() {
+  return s_diagnostics.measurementConfirmed && !s_diagnostics.measurementUnavailable &&
+      s_diagnostics.measurement.phase==2 && !s_diagnostics.measurement.reason;
+}
+
 void enableControlAuthority(uint64_t session) {
   if (LoggingManager::configurationLocked() || s_recordingFence) return;
   if (session && session==s_diagnostics.authority.session) return;
@@ -907,6 +1035,7 @@ void requestProbe() {
 }
 
 void loop() {
+  if (s_diagnostics.measurementUnavailable || s_diagnostics.measurement.phase!=0) return;
   if (!s_started || !s_profile.supported ||
       s_diagnostics.mode == CanMasterMode::Off ||
       s_profile.spi_bus_index != 0 || s_profile.cs_pin < 0) return;

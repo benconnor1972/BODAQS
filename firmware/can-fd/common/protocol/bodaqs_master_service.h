@@ -3,6 +3,7 @@
 
 #include "bodaqs_master_protocol.h"
 #include "bodaqs_control_exchange.h"
+#include "bodaqs_measurement.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -10,6 +11,7 @@ extern "C" {
 
 typedef struct {
     BodaqsControlExchange control;
+    BodaqsMeasurementState measurement;
     BodaqsMasterIdentity identity;
     BodaqsMasterStatus status;
     BodaqsMasterDiscoveryRecord
@@ -44,6 +46,13 @@ void bodaqs_master_service_set_status(BodaqsMasterService *service,
 void bodaqs_master_service_set_inventory(BodaqsMasterService *service,
     uint32_t generation, const BodaqsMasterDiscoveryRecord *records,
     uint8_t record_count);
+
+/* Actual CS-bounded length: short or oversized transfers never change mode. */
+BodaqsMasterSlotResult bodaqs_master_service_process_transfer(
+    BodaqsMasterService *service, const uint8_t *received, size_t length,
+    uint32_t now_ms, uint8_t next_transmit[BODAQS_MASTER_SLOT_BYTES]);
+void bodaqs_master_service_measurement_fence(BodaqsMasterService *service,
+    bool stopped_authorization_invalid, bool data_retired);
 
 BodaqsMasterSlotResult bodaqs_master_service_process_slot(
     BodaqsMasterService *service,

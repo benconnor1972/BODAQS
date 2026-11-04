@@ -96,3 +96,5 @@ clean:
 	-$(V) $(RM) $(GENERATED_FILES) > $(DEVNULL) 2>&1
 
 main.obj master_identity.obj bodaqs_master_service.obj bodaqs_control.obj bodaqs_control_exchange.obj: ../../common/protocol/bodaqs_control.h ../../common/protocol/bodaqs_control_exchange.h
+
+main.obj bodaqs_master_service.obj master_identity.obj: ../../common/protocol/bodaqs_measurement.h

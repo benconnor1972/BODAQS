@@ -39,6 +39,7 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_control_recovery_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_remote_mute_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_control_recording_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_measurement_runtime.py --compiler "$(CXX)"
 	@echo "All tests passed."
 
 $(TEST_BIN): $(PROD_SRCS) $(STUB_SRCS) $(TEST_SRCS)

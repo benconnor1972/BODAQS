@@ -110,7 +110,9 @@ static uint8_t gReceiveIndex;
 /* DMA stays unarmed until this completed slot has been serviced. */
 static uint8_t gSpiReceiveStorage[1][BODAQS_MASTER_SLOT_BYTES];
 static BodaqsRecordQueue gSpiReceiveQueue;
-static volatile bool gSpiOverflow;
+static volatile bool gSpiRetiring;
+static volatile bool gSpiTransmitReady;
+static volatile uint16_t gSpiReceiveLength;
 static volatile uint32_t gUptimeMs;
 static volatile bool gDiscoveryDue;
 static uint16_t gDiscoveryTransaction;
@@ -331,16 +333,7 @@ static void send_discovery_request(void)
     ++gMasterRuntimeInfo.discovery_requests_sent;
 }
 
-static bool wait_for_spi_chip_select_inactive(void)
-{
-    uint32_t timeout = CPUCLK_FREQ / 100U;
 
-    while ((DL_GPIO_readPins(GPIO_SPI_A8_CS_PORT,
-                GPIO_SPI_A8_CS_PIN) == 0U) && (timeout != 0U)) {
-        --timeout;
-    }
-    return timeout != 0U;
-}
 
 static void normalize_retained_clocks(void)
 {
@@ -389,24 +382,6 @@ static void arm_spi_slot(void)
     DL_DMA_enableChannel(DMA, DMA_SPI_TX_CHAN_ID);
 }
 
-static void recover_spi_transport(void)
-{
-    DL_DMA_disableChannel(DMA, DMA_SPI_RX_CHAN_ID);
-    DL_DMA_disableChannel(DMA, DMA_SPI_TX_CHAN_ID);
-    DL_SPI_disable(SPI_A8_INST);
-    DL_SPI_reset(SPI_A8_INST);
-    DL_SPI_enablePower(SPI_A8_INST);
-    delay_cycles(POWER_STARTUP_DELAY);
-    SYSCFG_DL_SPI_A8_init();
-    SYSCFG_DL_DMA_init();
-
-    memset(gTransmitSlots, 0, sizeof(gTransmitSlots));
-    memset(gReceiveSlots, 0, sizeof(gReceiveSlots));
-    gTransmitIndex = 0U;
-    gReceiveIndex = 0U;
-    ++gMasterRuntimeInfo.spi_recoveries;
-    arm_spi_slot();
-}
 
 static void update_runtime_info(void)
 {
@@ -561,6 +536,7 @@ static void update_service_status(void)
 }
 
 static void service_spi_receive(void);
+static void retire_spi_boundary(void);
 
 int main(void)
 {
@@ -587,7 +563,6 @@ int main(void)
     gHealthDue = true;
     bodaqs_record_queue_init(&gSpiReceiveQueue, gSpiReceiveStorage,
         BODAQS_MASTER_SLOT_BYTES, 1U);
-    gSpiOverflow = false;
     gDiscoveryTransaction = 0U;
     gDiscoveryNonce = (uint32_t) identity.hardware_uid ^
         (uint32_t) (identity.hardware_uid >> 32);
@@ -610,11 +585,19 @@ int main(void)
     DL_SYSTICK_init(CPUCLK_FREQ / 10U);
     DL_SYSTICK_enableInterrupt();
     DL_SYSTICK_enable();
+    /* CS input is already enabled by the SPI peripheral pin configuration.
+     * GPIO edge observation is independent of the selected peripheral function. */
+    DL_GPIO_setLowerPinsPolarity(GPIO_SPI_A8_CS_PORT, DL_GPIO_PIN_8_EDGE_RISE);
+    DL_GPIO_clearInterruptStatus(GPIO_SPI_A8_CS_PORT, GPIO_SPI_A8_CS_PIN);
+    DL_GPIO_enableInterrupt(GPIO_SPI_A8_CS_PORT, GPIO_SPI_A8_CS_PIN);
+    NVIC_SetPriority(GPIOA_INT_IRQn, 0U);
+    NVIC_EnableIRQ(GPIOA_INT_IRQn);
     NVIC_EnableIRQ(SPI_A8_INST_INT_IRQN);
     NVIC_EnableIRQ(MCAN0_INST_INT_IRQN);
 
     while (1) {
         bodaqs_control_exchange_tick(&gService.control, gUptimeMs);
+        retire_spi_boundary();
         service_spi_receive();
         gMasterRuntimeInfo.spi_rx_capacity = gSpiReceiveQueue.capacity;
         gMasterRuntimeInfo.spi_rx_high_water = gSpiReceiveQueue.high_water;
@@ -684,63 +667,97 @@ void MCAN0_INST_IRQHandler(void)
     }
 }
 
+/* Retire from the CS boundary and remaining RX DMA count, not DMA completion.
+ * Keeping the 84-byte capacity permits observational legacy MODE_INFO while
+ * the active protocol uses 64 bytes. SPI reset empties prefetched TX FIFO bytes
+ * so a short transaction cannot shift the next response. */
+static void retire_spi_boundary(void)
+{
+    uint32_t primask = __get_PRIMASK();
+    uint16_t remaining;
+    size_t length;
+    uint8_t excess;
+    __disable_irq();
+    if (gSpiRetiring) { __set_PRIMASK(primask); return; }
+    gSpiRetiring = true;
+    __set_PRIMASK(primask);
+    remaining = DL_DMA_getTransferSize(DMA, DMA_SPI_RX_CHAN_ID);
+    if (remaining == BODAQS_MASTER_SLOT_BYTES ||
+        DL_GPIO_readPins(GPIO_SPI_A8_CS_PORT, GPIO_SPI_A8_CS_PIN) == 0U ||
+        DL_SPI_isBusy(SPI_A8_INST)) { gSpiRetiring=false; return; }
+    DL_DMA_disableChannel(DMA, DMA_SPI_RX_CHAN_ID);
+    DL_DMA_disableChannel(DMA, DMA_SPI_TX_CHAN_ID);
+    remaining = DL_DMA_getTransferSize(DMA, DMA_SPI_RX_CHAN_ID);
+    length = BODAQS_MASTER_SLOT_BYTES - remaining;
+    length += DL_SPI_drainRXFIFO8(SPI_A8_INST,
+        &gReceiveSlots[gReceiveIndex][length], (uint32_t)remaining);
+    if (DL_SPI_drainRXFIFO8(SPI_A8_INST, &excess, 1U)) length = 85U;
+    if (gSpiReceiveQueue.depth == 0U) {
+        gSpiReceiveLength = (uint16_t)length;
+        (void)bodaqs_record_queue_push(&gSpiReceiveQueue,gReceiveSlots[gReceiveIndex]);
+    } else {
+        ++gSpiReceiveQueue.dropped;
+    }
+    /* Publish only a fully prepared response at a physical boundary. Parsing,
+     * control dispatch and all ownership changes remain in the main loop. */
+    if (gSpiTransmitReady) {
+        gTransmitIndex ^= 1U;
+        gSpiTransmitReady = false;
+    }
+    DL_SPI_disable(SPI_A8_INST);
+    DL_SPI_reset(SPI_A8_INST);
+    DL_SPI_enablePower(SPI_A8_INST);
+    delay_cycles(POWER_STARTUP_DELAY);
+    SYSCFG_DL_SPI_A8_init();
+    (void)DL_SPI_getPendingInterrupt(SPI_A8_INST);
+    gReceiveIndex ^= 1U;
+    arm_spi_slot();
+    gSpiRetiring = false;
+}
+
 static void service_spi_receive(void)
 {
-    uint8_t received[BODAQS_MASTER_SLOT_BYTES];
-    if (gSpiOverflow) {
-        gSpiOverflow = false;
-        (void) take_record(&gSpiReceiveQueue, received);
-        recover_spi_transport();
-        return;
+    uint8_t received[84];
+    uint16_t length;
+    uint8_t next_index;
+    uint32_t primask;
+    if (gSpiTransmitReady) return;
+    primask=__get_PRIMASK();
+    __disable_irq();
+    length=gSpiReceiveLength;
+    if (!bodaqs_record_queue_pop(&gSpiReceiveQueue,received)) {
+        __set_PRIMASK(primask); return;
     }
-    if (!take_record(&gSpiReceiveQueue, received)) {
-        return;
-    }
-    uint8_t next_transmit_index = gTransmitIndex ^ 1U;
-    BodaqsMasterSlotResult result;
-
-    /*
-     * DMA completion can precede the controller releasing chip select.
-     * Do not rearm either DMA channel inside the previous slot boundary.
-     */
-    if (!wait_for_spi_chip_select_inactive()) {
-        ++gMasterRuntimeInfo.cs_release_timeouts;
-        recover_spi_transport();
-        update_runtime_info();
-        return;
-    }
-
+    __set_PRIMASK(primask);
+    next_index=gTransmitIndex^1U;
     update_service_status();
-    result = bodaqs_master_service_process_slot(&gService,
-        received,
-        gTransmitSlots[next_transmit_index]);
+    if (bodaqs_master_service_process_transfer(&gService,received,length,
+        gUptimeMs,gTransmitSlots[next_index])==BODAQS_MASTER_SLOT_PROCESSED) {
+        __DMB();
+        gSpiTransmitReady=true;
+    } else {
+        ++gMasterRuntimeInfo.spi_recoveries;
+    }
     if (BODAQS_ENABLE_BUCK && BODAQS_ENABLE_FRONT_BRANCH &&
         !gLoggerCommunicationEstablished &&
-        ((gService.probes_received != 0U) ||
-            (gService.status_requests_received != 0U))) {
-        gLoggerCommunicationEstablished = true;
-        DL_GPIO_setPins(
-            GPIO_BOARD_PORT, GPIO_BOARD_FRONT_ENABLE_PIN);
+        ((gService.probes_received != 0U) || (gService.status_requests_received != 0U))) {
+        gLoggerCommunicationEstablished=true;
+        DL_GPIO_setPins(GPIO_BOARD_PORT,GPIO_BOARD_FRONT_ENABLE_PIN);
     }
-    if (result == BODAQS_MASTER_SLOT_MALFORMED) {
-        recover_spi_transport();
-    } else {
-        gTransmitIndex = next_transmit_index;
-        gReceiveIndex ^= 1U;
-        arm_spi_slot();
+}
+
+void GPIOA_IRQHandler(void)
+{
+    if (DL_GPIO_getEnabledInterruptStatus(GPIO_SPI_A8_CS_PORT, GPIO_SPI_A8_CS_PIN)) {
+        DL_GPIO_clearInterruptStatus(GPIO_SPI_A8_CS_PORT, GPIO_SPI_A8_CS_PIN);
+        retire_spi_boundary();
     }
-    update_runtime_info();
 }
 
 void SPI_A8_INST_IRQHandler(void)
 {
-    if (DL_SPI_getPendingInterrupt(SPI_A8_INST) ==
-        DL_SPI_IIDX_DMA_DONE_RX) {
-        if (!bodaqs_record_queue_push(&gSpiReceiveQueue,
-                gReceiveSlots[gReceiveIndex])) {
-            gSpiOverflow = true;
-        }
-    }
+    /* DMA completion is an observation; CS still owns retirement. */
+    (void) DL_SPI_getPendingInterrupt(SPI_A8_INST);
 }
 
 void SysTick_Handler(void)

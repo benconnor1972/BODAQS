@@ -90,8 +90,8 @@ DecodeResult decodeSlot(const uint8_t* input, size_t length, Frame& output) {
     return DecodeResult::BadCrc;
   }
 
-  if ((input[5] >= 5 && input[5] <= 7) ||
-      (input[5] >= 0x85 && input[5] <= 0x87)) {
+  if ((input[5] >= 5 && input[5] <= 10) ||
+      (input[5] >= 0x85 && input[5] <= 0x8a)) {
     if (input[6] || input[7] || input[14] || input[15]) {
       return DecodeResult::InvalidArgument;
     }

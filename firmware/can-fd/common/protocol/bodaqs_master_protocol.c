@@ -121,8 +121,8 @@ BodaqsMasterDecodeResult bodaqs_master_decode_slot(const uint8_t *input,
 
     /* New typed records have strict reserved fields. Bootstrap compatibility
      * remains unchanged for older deployed logger/master pairs. */
-    if (((input[5] >= 5U) && (input[5] <= 7U)) ||
-        ((input[5] >= 0x85U) && (input[5] <= 0x87U))) {
+    if (((input[5] >= 5U) && (input[5] <= 10U)) ||
+        ((input[5] >= 0x85U) && (input[5] <= 0x8aU))) {
         size_t index;
         if (input[6] || input[7] || input[14] || input[15]) {
             return BODAQS_MASTER_DECODE_INVALID_ARGUMENT;

@@ -1,4 +1,5 @@
 #include "master_identity.h"
+#include "bodaqs_measurement.h"
 #include "bodaqs_control.h"
 
 #include <ti/driverlib/driverlib.h>
@@ -14,7 +15,7 @@ BodaqsMasterIdentity master_identity_read(void)
         (uint32_t) DL_FactoryRegion_getUserIDMinorRev();
 
     identity.firmware_version = BODAQS_MASTER_FIRMWARE_VERSION;
-    identity.capabilities = BODAQS_MASTER_CAPABILITY_STATUS |
+    identity.capabilities = BODAQS_MEASUREMENT_CAPABILITY | BODAQS_MASTER_CAPABILITY_STATUS |
         BODAQS_MASTER_CAPABILITY_DISCOVERY | BODAQS_CONTROL_CAPABILITY;
     identity.hardware_uid = ((uint64_t) device_description << 32) |
         DL_FactoryRegion_getTraceID();

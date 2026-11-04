@@ -80,10 +80,14 @@ bool transfer(
 
   s_spi->beginTransaction(settings);
   digitalWrite(static_cast<uint8_t>(csPin), LOW);
+#if defined(ESP32)
+  s_spi->transferBytes(tx, rx, length);
+#else
   for (size_t index = 0; index < length; ++index) {
     const uint8_t received = s_spi->transfer(tx ? tx[index] : 0);
     if (rx) rx[index] = received;
   }
+#endif
   digitalWrite(static_cast<uint8_t>(csPin), HIGH);
   s_spi->endTransaction();
   ++s_diagnostics.transactions;
