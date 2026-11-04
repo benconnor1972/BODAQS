@@ -10,6 +10,10 @@ public:
   ~SensorConfigEdit();
   SensorConfigEdit(const SensorConfigEdit&) = delete;
   SensorConfigEdit& operator=(const SensorConfigEdit&) = delete;
+  static bool isLegacyRemoteImu(const SensorSpec& spec);
+  // Explicit selection only; caller owns this edit and commits through commit().
+  static bool migrateLegacyRemoteImu(SensorSpec& spec, const char* type,
+      const char* profile, char* error, size_t capacity);
   bool ready() const { return state_ != nullptr; }
   Result commit(const LoggerConfig& config, char* error, size_t capacity);
 private:
