@@ -15,6 +15,8 @@ namespace LoggingManager {
     SdCardRemoved,
     StartFailure,
     Unspecified,
+    StorageFailure,
+    StorageUnresponsive,
   };
 
   struct StopContext {
@@ -64,6 +66,8 @@ namespace LoggingManager {
   StopContext stopContext();
   bool isRunning();
   void loop();
+  void completeStorageStart();
+  void finishStorageStop();
   void setSampleRateHz(uint16_t hz);
   RuntimeStats runtimeStats();
 
