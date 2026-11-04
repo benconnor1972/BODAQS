@@ -147,6 +147,8 @@ def main() -> int:
     }
     # These are observations, not inferred versions from installation folder names.
     versions = [["git", "--version"], [sys.executable, "--version"],
+                [sys.executable, "-c", "import importlib.metadata as m; "
+                 "print('\\n'.join(sorted(str(d.metadata['Name'])+'=='+d.version for d in m.distributions())))"],
                 [args.cxx, "--version"], [args.cc, "--version"], [args.make, "--version"],
                 [args.pio, "--version"],
                 [str(args.ti_compiler / "bin/tiarmclang.exe"), "--version"],
