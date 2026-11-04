@@ -115,4 +115,17 @@ int main() {
     for (unsigned i = 0; i < 20; ++i) assert(samples(i * 5, 1));
     const auto exhausted = poll(1, 0, 0, 21);
     assert(exhausted.kind == 7 && exhausted.body[1] == 9);
+    // A restarted logger may reuse a numeric context only under a new bound
+    // session after fencing. Old retained fragments and ACK caches then retire.
+    reset();anchor(0);
+    const auto oldPinned=master.receptions[0].object;
+    master.acquisition_fenced=1;
+    master.measurement.mode.session=2;
+    assert(poll(2,0,0,1).kind==0);
+    BodaqsMeasurementSlot staleAck={},staleReply={};
+    bodaqs_fragment_ack(&oldPinned,1,&staleAck);
+    assert(bodaqs_measurement_encode(&staleAck,wire,64));
+    assert(bodaqs_master_service_process_transfer(&master,wire,64,2,response)==0);
+    assert(bodaqs_measurement_decode(response,64,&staleReply));
+    assert(staleReply.kind==7 && staleReply.body[1]==5);
 }

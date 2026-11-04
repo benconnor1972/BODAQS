@@ -14,6 +14,7 @@
 #include "SensorAssignment.h"
 #include "Lsm6dso32xConfig.h"
 #include "SharedSpiBus.h"
+#include "../can-fd/common/protocol/bodaqs_control_snapshot.h"
 
 #define CANMASTER_LOGI(...) LOGI_TAG("CANMASTER", __VA_ARGS__)
 #define CANMASTER_LOGW(...) LOGW_TAG("CANMASTER", __VA_ARGS__)
@@ -258,7 +259,10 @@ bool transferFrame_(
     CanMasterProtocol::Frame& response) {
   if ((s_diagnostics.measurementUnavailable || s_diagnostics.measurement.phase != 0) &&
       static_cast<unsigned>(request.type) != 8 && static_cast<unsigned>(request.type) != 9 &&
-      static_cast<unsigned>(request.type) != 10) return false;
+      static_cast<unsigned>(request.type) != 10 &&
+      !( !LoggingManager::isRunning() &&
+         (static_cast<unsigned>(request.type)==4 || static_cast<unsigned>(request.type)==6 ||
+          static_cast<unsigned>(request.type)==7))) return false;
   uint8_t tx[CanMasterProtocol::kSlotBytes];
   uint8_t rx[CanMasterProtocol::kSlotBytes];
   if (!CanMasterProtocol::encodeSlot(request, tx, sizeof(tx))) return false;
@@ -655,6 +659,7 @@ bool refreshInventory_() {
 namespace CanMasterManager {
 
 static std::atomic<bool (*)()> s_measurementOwner{nullptr};
+static bool s_restartCleanupNeeded=false;
 static bool measurementAccess_() { auto owner=s_measurementOwner.load();return !owner || owner(); }
 bool claimMeasurementControl(bool (*owner)()) {
   if (!owner || s_measurementOwner || !s_recordingFence || !s_handoffReady ||
@@ -716,9 +721,32 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
                                 MeasurementInbox*& completed) {
   completed=nullptr;
   if (!measurementAccess_()) return -8;
+  if(transport.failed) return -14;
   if(!measurementReady() || cls<1 || cls>5 || (node>3 && node!=255)) return -4;
   if(transport.context && transport.context!=s_diagnostics.measurement.context) return -4;
   transport.context=s_diagnostics.measurement.context;
+  if(transport.recovering) {
+    if(static_cast<uint32_t>(millis()-transport.recoveryStarted)>=300) {
+      transport.failed=true;return -14;
+    }
+    BodaqsMeasurementSlot query={},status={};
+    query.kind=6;query.node=255;query.object=transport.recoveryToken;query.context=transport.context;
+    if(!exchangeMeasurementSlot(query,status)) return 0;
+    // A preloaded data/ACK response is not fresh evidence. It stays pinned at
+    // the master until replayed after this independently correlated inspection.
+    if(status.kind!=6 || status.object!=query.object || status.context!=query.context ||
+       status.node!=255 || status.index || status.total) return 0;
+    auto& bound=transport.recoveryBinding;
+    if(bodaqs_measurement_get(status.body,8)!=bound.boot ||
+       bodaqs_measurement_get(status.body+8,8)!=bound.session ||
+       bodaqs_measurement_get(status.body+16,8)!=bound.recording ||
+       bodaqs_measurement_get(status.body+24,8)!=bound.context ||
+       status.body[32]!=2 || status.body[33] || status.body[34] || status.body[35] ||
+       !(status.body[36]&1u) || (bodaqs_measurement_get(status.body+36,4)&~15ULL)) {
+      transport.failed=true;return -14;
+    }
+    transport.recovering=false;return 0;
+  }
   BodaqsMeasurementSlot request={},response={};MeasurementInbox* acked=nullptr;
   MeasurementOutbox* outgoing=nullptr;
   for(int lane=1;lane>=0;--lane) for(uint8_t i=0;i<4;++i) {
@@ -763,9 +791,19 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
       transport.nextHeadPollMs[budgetNode]=millis()+20;
     }
   }
-  if(!exchangeMeasurementSlot(request,response)) return 0;
+  if(!exchangeMeasurementSlot(request,response)) {
+    transport.recovering=true;transport.recoveryStarted=millis();
+    transport.recoveryBinding=s_diagnostics.measurement;
+    transport.recoveryToken=nextSequence_();
+    if(!transport.recoveryToken) {transport.failed=true;return -14;}
+    return 0;
+  }
+  if(response.context!=s_diagnostics.measurement.context) {
+    transport.recovering=true;transport.recoveryStarted=millis();
+    transport.recoveryBinding=s_diagnostics.measurement;transport.recoveryToken=nextSequence_();
+    return 0;
+  }
   if(acked) acked->ackPending=false;
-  if(response.context!=s_diagnostics.measurement.context) return 0;
   if(response.kind==5 && response.node<4 && (response.body[0]==3 || response.body[0]==4)) {
     auto& sent=transport.controls[response.body[0]-3][response.node];
     if(bodaqs_fragment_ack_matches(&sent.state,&response)) {
@@ -809,7 +847,10 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
   } else if(result==2) {
     ++s_diagnostics.measurementDuplicates;
     if(inbox->admitted) {inbox->ackPending=true;inbox->pendingAck=ack;}
-  } else if(result<0) ++s_diagnostics.measurementTransferErrors;
+  } else if(result<0) {
+    ++s_diagnostics.measurementTransferErrors;
+    if(result!=-6) {transport.failed=true;return -14;}
+  }
   s_diagnostics.measurementAssemblyBytes=inbox->state.complete?0:inbox->state.total;
   s_diagnostics.measurementLastClass=responseClass;s_diagnostics.measurementLastNode=response.node;
   s_diagnostics.measurementLastObject=response.object;
@@ -852,11 +893,13 @@ int pollMeasurementObject(uint8_t cls,uint8_t node,MeasurementInbox& inbox) {
 }
 uint32_t nextMeasurementObjectId(uint8_t cls,uint8_t node) {
   if (!measurementAccess_()) return 0;
-  static uint64_t context=0, boot=0;
+  static uint64_t context=0, boot=0, session=0;
   static uint32_t ids[2][4]={};
   if(!measurementReady() || cls<3 || cls>4 || node>3) return 0;
-  if(context!=s_diagnostics.measurement.context || boot!=s_diagnostics.measurement.boot) {
+  if(context!=s_diagnostics.measurement.context || boot!=s_diagnostics.measurement.boot ||
+     session!=s_diagnostics.measurement.session) {
     context=s_diagnostics.measurement.context;boot=s_diagnostics.measurement.boot;
+    session=s_diagnostics.measurement.session;
     memset(ids,0,sizeof(ids));
   }
   auto& id=ids[cls-3][node];
@@ -1137,6 +1180,7 @@ void begin(const board::BoardProfile& profile, const LoggerConfig& cfg) {
   s_board = &profile;
   s_profile = profile.can_fd_master;
   s_diagnostics = Diagnostics{};
+  s_restartCleanupNeeded=false;
   s_diagnostics.mode = cfg.canMasterMode;
   s_diagnostics.profileSupported = s_profile.supported;
   s_diagnostics.irqAvailable = s_profile.irq_pin >= 0;
@@ -1210,6 +1254,169 @@ void applyConfig(const LoggerConfig& cfg) {
   refreshInventoryIfStateChanged_(previous);
 }
 
+namespace {
+// Idle-only restart recovery. This client deliberately does not share the
+// configuration/apply scheduler: its only mutations are bind, fence, release.
+struct RestartCleanup {
+  BodaqsMeasurementMode abandoned={};
+  uint64_t session=0,record=0,snapshot=0,challenge=0;
+  uint32_t boot=0,read=0x80000001u,started=0,next=0,mutation=2;
+  uint8_t node=0,phase=0,page=0;
+  uint8_t state[128]={};
+  bool pending=false,bound=false;
+  BodaqsControlWrapped request={};
+} cleanup;
+// 0 pending, 1 complete, -1 untrusted/rejected. Every retained result is matched
+// against the complete request identity; a delayed receipt cannot advance phase.
+int cleanupExchange_(BodaqsControlRecord q,BodaqsControlRecord& reply) {
+  const uint32_t now=millis();
+  if(!cleanup.pending) {
+    cleanup.request={};cleanup.request.master_boot_id=cleanup.abandoned.boot;
+    cleanup.request.node_address=cleanup.node;cleanup.request.record=q;
+    cleanup.started=now;cleanup.pending=true;
+  }
+  if(uint32_t(now-cleanup.started)>=3500) {
+    // Preserve the exact uncertain mutation, particularly a possibly completed
+    // BIND. A fresh challenge here would lose its idempotent result identity.
+    cleanup.started=now;return -2;
+  }
+  auto sent=cleanup.request;
+  CanMasterProtocol::Frame request,response;
+  request.type=static_cast<CanMasterProtocol::MessageType>(6);
+  request.sequence=nextSequence_();request.payloadLength=64;
+  // Repeating the exact typed request is idempotent, including uncertain BIND.
+  if(!bodaqs_control_encode_wrapped(&sent,request.payload) || !transferFrame_(request,response)) {
+    return 0;
+  }
+  BodaqsControlWrapped observed={};
+  if(!bodaqs_control_decode_wrapped(response.payload,response.payloadLength,&observed) ||
+     observed.master_boot_id!=sent.master_boot_id || observed.node_address!=sent.node_address ||
+     observed.record.node_boot_id!=sent.record.node_boot_id || observed.record.session!=sent.record.session ||
+     observed.record.operation!=sent.record.operation || observed.record.endpoint!=sent.record.endpoint ||
+     observed.record.page!=sent.record.page ||
+     ((sent.record.opcode!=1 && sent.record.opcode!=0x28) && observed.record.transfer!=sent.record.transfer) ||
+     (observed.record.opcode!=sent.record.opcode && observed.record.opcode!=127)) return 0;
+  if(static_cast<unsigned>(response.type)==0x86) {
+    if(observed.record.data_length==24 && (observed.record.data[0]==4 || observed.record.data[0]==5)) {
+      cleanup.pending=false;return -1;
+    }
+    // The exchange caches the completed result; repeated requests retrieve it.
+    return 0;
+  }
+  if(static_cast<unsigned>(response.type)!=0x87) return 0;
+  reply=observed.record;cleanup.pending=false;
+  return reply.opcode==127?-1:1;
+}
+void serviceRestartCleanup_() {
+  if(LoggingManager::isRunning() || !measurementAccess_()) return;
+  if(int32_t(millis()-cleanup.next)<0) return;
+  if(!cleanup.phase) {
+    cleanup={};cleanup.abandoned=s_diagnostics.measurement;
+    cleanup.session=freshSession_(cleanup.abandoned.session);
+    cleanup.read=esp_random();
+    if(!cleanup.session || !cleanup.abandoned.boot || !cleanup.read || cleanup.read==UINT32_MAX) return;
+    cleanup.phase=1;
+  }
+  if(cleanup.node==4) {
+    // Physical master DMA retirement is independent of node results. Inspection
+    // must prove it before an explicit old-context close can complete.
+    if(!inspectMeasurementMode() || !bodaqs_measurement_binding(&cleanup.abandoned,&s_diagnostics.measurement) ||
+       !(s_diagnostics.measurement.flags&2u) || (s_diagnostics.measurement.flags&4u)) return;
+    auto close=cleanup.abandoned;close.caller=close.session;
+    if(!s_diagnostics.measurement.phase || transitionMode_(close,true)) {
+      cleanup={};s_probeRequested=true;
+      s_restartCleanupNeeded=false;
+      s_diagnostics.measurementUnavailable=false;
+    }
+    return;
+  }
+  if(cleanup.phase==1) {
+    CanMasterProtocol::Frame request,response;CanMasterProtocol::DiscoveryRecord inventory;
+    if(!CanMasterProtocol::encodeDiscoveryRequest(cleanup.node,0,nextSequence_(),request) ||
+       !transferFrame_(request,response) || !CanMasterProtocol::decodeDiscoveryResponse(response,inventory) ||
+       inventory.nodeAddress!=cleanup.node) return;
+    if(!(inventory.flags&1u)) {++cleanup.node;return;}
+    if((inventory.flags&6u) || !inventory.bootId || !inventory.hardwareUid) return;
+    if(cleanup.boot!=inventory.bootId) cleanup.bound=false;
+    cleanup.boot=inventory.bootId;cleanup.phase=2;cleanup.page=0;cleanup.snapshot=0;
+  }
+  BodaqsControlRecord q={},r={};q.endpoint=255;q.node_boot_id=cleanup.boot;
+  q.operation=cleanup.read;q.session=0;
+  switch(cleanup.phase) {
+    case 2:q.opcode=0x28;q.data_length=8;break;
+    case 3:q.opcode=7;q.transfer=cleanup.snapshot;q.page=cleanup.page;break;
+    case 4:q.opcode=8;q.transfer=cleanup.snapshot;break;
+    case 5:q.opcode=1;q.data_length=8;bodaqs_control_put_u64(q.data,cleanup.session);break;
+    case 6:q.opcode=2;q.session=cleanup.session;q.operation=1;q.transfer=cleanup.challenge;break;
+    case 7:case 8:
+      q.opcode=cleanup.phase==7?0x2A:0x29;q.session=cleanup.session;q.operation=cleanup.mutation;
+      q.data_length=24;bodaqs_control_put_u64(q.data,cleanup.record);break;
+    case 9:
+      q.opcode=0x14;q.session=cleanup.session;q.data_length=4;bodaqs_control_put_u32(q.data,cleanup.mutation);break;
+    default:return;
+  }
+  const int completed=cleanupExchange_(q,r);
+  if(!completed) return;
+  if(completed==-2) {cleanup.next=millis()+1000;return;}
+  if(cleanup.phase!=2 && cleanup.phase!=3) ++cleanup.read;
+  if(completed<0) {cleanup.next=millis()+1000;cleanup.phase=1;return;}
+  switch(cleanup.phase) {
+    case 2:
+      if(r.data_length!=24 || r.data[0]!=5 || !r.transfer) {cleanup.phase=1;return;}
+      cleanup.snapshot=r.transfer;cleanup.phase=3;break;
+    case 3:
+      if(r.data_length!=(cleanup.page==5?8:24)) {cleanup.phase=1;return;}
+      memcpy(cleanup.state+cleanup.page*24,r.data,r.data_length);
+      if(++cleanup.page==6) cleanup.phase=4;
+      break;
+    case 4: {
+      const uint32_t flags=bodaqs_control_get_u32(cleanup.state+28);
+      if(!bodaqs_control_descriptor_valid(cleanup.state,128,5,255) ||
+         bodaqs_control_get_u32(cleanup.state+24)!=cleanup.boot || (flags&1u) || !(flags&64u)) {
+        cleanup.phase=1;cleanup.next=millis()+1000;return;
+      }
+      cleanup.record=bodaqs_control_get_u64(cleanup.state+8);
+      if(cleanup.record && cleanup.abandoned.recording && cleanup.record!=cleanup.abandoned.recording) {
+        cleanup.phase=1;cleanup.next=millis()+1000;return;
+      }
+      if(!cleanup.record) cleanup.record=cleanup.abandoned.recording;
+      if(!cleanup.record) {++cleanup.node;cleanup.phase=1;return;}
+      cleanup.phase=cleanup.bound?7:5;break;
+    }
+    case 5:
+      if(r.data_length!=4 || !r.transfer) {cleanup.phase=1;return;}
+      cleanup.challenge=r.transfer;cleanup.phase=6;break;
+    case 6:
+      if(r.data_length!=24 || r.data[0]!=0) {cleanup.phase=1;return;}
+      cleanup.bound=true;cleanup.mutation=2;cleanup.phase=7;break;
+    case 7:case 8:
+      if(r.data_length!=24) {cleanup.phase=1;return;}
+      if(r.data[0]==2) {cleanup.phase=9;return;}
+      if(r.data[0]!=3) {cleanup.phase=1;return;}
+      if(cleanup.phase==7) {++cleanup.mutation;cleanup.phase=8;}
+      else {++cleanup.node;cleanup.phase=1;cleanup.bound=false;}
+      break;
+    case 9:
+      if(r.data_length!=24 || r.data[0]!=3) {cleanup.next=millis()+100;return;}
+      if(cleanup.mutation==2) {++cleanup.mutation;cleanup.phase=8;}
+      else {++cleanup.node;cleanup.phase=1;cleanup.bound=false;}
+      break;
+  }
+}
+}
+
+bool cleanupUnavailableMeasurement() {
+  if(!measurementAccess_() || LoggingManager::isRunning()) return false;
+  if(!s_restartCleanupNeeded) {
+    // A fresh status may reveal a confirmed master reboot. It is observational
+    // only, and the cleanup client then uses current identities throughout.
+    if(!inspectMeasurementMode()) return false;
+    s_restartCleanupNeeded=true;cleanup={};
+  }
+  serviceRestartCleanup_();
+  return !s_restartCleanupNeeded && !s_diagnostics.measurement.phase;
+}
+
 bool probeNow() {
   if (!measurementAccess_()) return false;
   if (!s_started || !s_profile.supported ||
@@ -1236,6 +1443,16 @@ bool probeNow() {
   ++s_diagnostics.probeAttempts;
   s_diagnostics.lastProbeMs = millis();
   s_probeRequested = false;
+
+  // MODE_INFO with expected boot zero is the only restart bootstrap discovery.
+  // An active master rejects legacy identity probes; its old owner must first
+  // be inspected and explicitly fenced, never resumed by this logger instance.
+  if(!LoggingManager::configurationLocked() && inspectMeasurementMode() &&
+     s_diagnostics.measurement.phase!=0) {
+    s_diagnostics.state=State::Present;
+    s_restartCleanupNeeded=true;
+    return false;
+  }
 
   CanMasterProtocol::Frame request;
   request.type = CanMasterProtocol::MessageType::ProbeRequest;
@@ -1306,7 +1523,11 @@ void requestProbe() {
 
 void loop() {
   if (s_measurementOwner) return;
-  if (s_diagnostics.measurementUnavailable || s_diagnostics.measurement.phase!=0) return;
+  if(s_restartCleanupNeeded) {serviceRestartCleanup_();return;}
+  if (s_diagnostics.measurementUnavailable || s_diagnostics.measurement.phase!=0) {
+    if(s_restartCleanupNeeded) serviceRestartCleanup_();
+    return;
+  }
   if (!s_started || !s_profile.supported ||
       s_diagnostics.mode == CanMasterMode::Off ||
       s_profile.spi_bus_index != 0 || s_profile.cs_pin < 0) return;
@@ -1344,6 +1565,13 @@ void loop() {
   if (s_diagnostics.state == State::Present && due_(now, s_nextControlMs)) {
     s_nextControlMs = now + 100;
     serviceControl_();
+    // A master reboot may have returned to legacy mode while nodes retain an
+    // abandoned recording. A rejected bind is only a trigger for inspection;
+    // the cleanup client still proves stopped/invalid state before takeover.
+    for(const auto& peer:s_diagnostics.authority.nodes)
+      if(peer.available && peer.reason==8 && !peer.bound && !s_recordingFence) {
+        s_restartCleanupNeeded=true;cleanup={};break;
+      }
   }
 }
 

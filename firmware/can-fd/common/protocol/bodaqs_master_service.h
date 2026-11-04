@@ -47,6 +47,7 @@ typedef struct {
     uint8_t master_evidence_bytes[1024];
     uint32_t master_evidence_next_id;
     uint64_t reception_ordinal, transfer_context;
+    uint64_t transfer_session, transfer_recording, transfer_boot;
     uint32_t retained_frames, backpressure_frames, objects_acked, transfer_errors;
     uint32_t retired_tail_frames;
     BodaqsFragmentState acknowledged[5][4];
@@ -57,6 +58,9 @@ typedef struct {
     uint8_t ordinary_tokens, authorization_tokens[4];
     uint32_t lifecycle_budget_ms, acquisition_operation[4];
     uint8_t lifecycle_tokens, lifecycle_next_node;
+    uint8_t acquisition_started;
+    uint32_t diagnostic_operation[4];
+    uint64_t diagnostic_session[4];
     /* Conservative membership survives lost COMMIT/STOP replies. A node fence
      * and physical SPI retirement are separate proofs. */
     uint64_t acquisition_record[4];

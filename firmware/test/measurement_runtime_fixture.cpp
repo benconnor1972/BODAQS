@@ -49,6 +49,8 @@ bool setRemoteEndpointObservation(const SensorEndpointObservation&) { return tru
 }
 static uint8_t preloaded[84];
 static bool loseMeasurementReplies=false;
+static bool allowMalformedMeasurement=false;
+static uint32_t dropBindReplyUntil=0;
 namespace SharedSpiBus {
 bool begin(const board::SPIProfile&) { return spiAvailable; }
 bool transfer(int8_t,const SPISettings& settings,const uint8_t*tx,uint8_t*rx,size_t length,uint32_t) {
@@ -58,7 +60,9 @@ bool transfer(int8_t,const SPISettings& settings,const uint8_t*tx,uint8_t*rx,siz
  if(length==64) assert(settings.hz==8000000);
  memcpy(rx,preloaded,length);
  uint8_t next[84];
- assert(bodaqs_master_service_process_transfer(&master,tx,length,clockMs,next)==BODAQS_MASTER_SLOT_PROCESSED);
+ const auto slotResult=bodaqs_master_service_process_transfer(&master,tx,length,clockMs,next);
+ assert(slotResult==BODAQS_MASTER_SLOT_PROCESSED ||
+   (allowMalformedMeasurement && length==64 && slotResult==BODAQS_MASTER_SLOT_MALFORMED));
  memcpy(preloaded,next,84);
  uint8_t address,payload[64]; uint16_t transaction;
  if(bodaqs_master_service_control_transmit(&master,clockMs,&address,&transaction,payload)) {
@@ -68,6 +72,13 @@ bool transfer(int8_t,const SPISettings& settings,const uint8_t*tx,uint8_t*rx,siz
   assert(bodaqs_master_service_control_receive(&master,address,transaction,&reply));
  }
  if(length==64 && loseMeasurementReplies) memset(rx,0,length);
+ if(length==84 && int32_t(clockMs-dropBindReplyUntil)<0) {
+  BodaqsMasterFrame legacy={};BodaqsControlWrapped reply={};
+  if(bodaqs_master_decode_slot(rx,length,&legacy)==BODAQS_MASTER_DECODE_OK &&
+     static_cast<unsigned>(legacy.type)==0x87 &&
+     bodaqs_control_decode_wrapped(legacy.payload,legacy.payload_length,&reply) && reply.record.opcode==2)
+   memset(rx,0,length);
+ }
  return true;
 }
 }
@@ -166,6 +177,15 @@ int main() {
  const auto slots=master.slots_received;
  advance(1000);
  assert(master.slots_received==slots); // active mode suppresses legacy background polling
+ // A lost link must establish a fresh, fully bound status before returning
+ // data. A short same-boot outage preserves the immutable caller bank.
+ loseMeasurementReplies=true;
+ CanMasterManager::MeasurementInbox* resumed=nullptr;
+ assert(CanMasterManager::serviceMeasurementTransport(transport,1,0,resumed)==0);
+ clockMs+=40;loseMeasurementReplies=false;
+ for(unsigned i=0;i<6;++i)
+  assert(CanMasterManager::serviceMeasurementTransport(transport,1,0,resumed)>=0);
+ assert(!transport.recovering && !transport.failed);
  assert(CanMasterManager::exitMeasurementMode());
  assert(!CanMasterManager::measurementReady() && master.measurement.mode.phase==0);
  assert(CanMasterManager::inspectMeasurementMode());
@@ -185,5 +205,25 @@ int main() {
  master.measurement.mode.context=333;
  assert(CanMasterManager::inspectMeasurementMode());
  assert(!CanMasterManager::measurementReady());
+ reset();assert(CanMasterManager::enterMeasurementMode(555,666));
+ static CanMasterManager::MeasurementTransport deadlineBank;
+ loseMeasurementReplies=true;
+ assert(CanMasterManager::serviceMeasurementTransport(deadlineBank,1,0,resumed)==0);
+ const uint32_t outage=clockMs;
+ clockMs=outage+299;
+ assert(CanMasterManager::serviceMeasurementTransport(deadlineBank,1,0,resumed)==0);
+ clockMs=outage+300;loseMeasurementReplies=false;
+ assert(CanMasterManager::serviceMeasurementTransport(deadlineBank,1,0,resumed)==-14);
+ assert(CanMasterManager::serviceMeasurementTransport(deadlineBank,1,0,resumed)==-14);
+ reset();assert(CanMasterManager::enterMeasurementMode(777,888));
+ static CanMasterManager::MeasurementTransport rebootBank;
+ loseMeasurementReplies=true;
+ assert(CanMasterManager::serviceMeasurementTransport(rebootBank,1,0,resumed)==0);
+ loseMeasurementReplies=false;
+ bodaqs_control_exchange_init(&master.control,100); // actual confirmed boot change
+ bool excluded=false;
+ for(unsigned i=0;i<5;++i)
+  excluded|=CanMasterManager::serviceMeasurementTransport(rebootBank,1,0,resumed)==-14;
+ assert(excluded);
  puts("production logger/master pipelined mode, exit, read-only status and lost-reply tests passed");
 }

@@ -176,7 +176,10 @@ void bodaqs_master_service_measurement_fence(BodaqsMasterService *service,
 
 
 static void transfer_context(BodaqsMasterService *s) {
-    if(s->transfer_context==s->measurement.mode.context) return;
+    if(s->transfer_context==s->measurement.mode.context &&
+       s->transfer_session==s->measurement.mode.session &&
+       s->transfer_recording==s->measurement.mode.recording &&
+       s->transfer_boot==s->control.master_boot_id) return;
     memset(s->receptions,0,sizeof(s->receptions));
     memset(s->ingress,0,sizeof(s->ingress));
     memset(s->lanes,0,sizeof(s->lanes));
@@ -184,9 +187,14 @@ static void transfer_context(BodaqsMasterService *s) {
     memset(&s->master_evidence,0,sizeof(s->master_evidence));
     s->master_evidence_next_id=0;
     s->transfer_context=s->measurement.mode.context;
+    s->transfer_session=s->measurement.mode.session;
+    s->transfer_recording=s->measurement.mode.recording;
+    s->transfer_boot=s->control.master_boot_id;
     bodaqs_control_exchange_init(&s->authorization,s->control.master_boot_id);
     s->authorization.excluded_addresses=s->control.excluded_addresses;
     memset(s->anchor_boot,0,sizeof(s->anchor_boot));
+    s->acquisition_started=0;
+    memset(s->diagnostic_operation,0,sizeof(s->diagnostic_operation));
     memset(s->authorization_tokens,2,sizeof(s->authorization_tokens));
 }
 static bool next_object(uint32_t *id) {
@@ -314,17 +322,24 @@ bool bodaqs_master_service_control_transmit(BodaqsMasterService *s,uint32_t now,
     refill_budget(now,&s->lifecycle_budget_ms,&s->lifecycle_tokens,50,4);
     for(priority=0;priority<4;++priority) {
         uint8_t op,*tokens;
-        bool lifecycle;
+        bool lifecycle,optional;
         node=(s->lifecycle_next_node+priority)%4;
         BodaqsControlExchangeSlot *slot=&s->control.slots[node];
         if(slot->state!=1 || (slot->attempts && (uint32_t)(now-slot->attempt_ms)<1000U)) continue;
         if(slot->attempts==3) {slot->state=3;continue;}
         op=slot->request.opcode;
+        optional=(op==0x28 && (s->acquisition_started&(1U<<node))) ||
+            ((op==7 || op==8) && slot->request.operation==s->diagnostic_operation[node] &&
+             slot->request.session==s->diagnostic_session[node]);
+        if(optional && op==0x28) {
+            s->diagnostic_operation[node]=slot->request.operation;
+            s->diagnostic_session[node]=slot->request.session;
+        }
         lifecycle=(op>=0x20 && op<=0x2A) ||
             ((op==7 || op==8) && slot->request.endpoint==255) ||
             (op==0x14 && s->acquisition_operation[node] &&
              bodaqs_control_get_u32(slot->request.data)==s->acquisition_operation[node]);
-        tokens=lifecycle?&s->lifecycle_tokens:&s->ordinary_tokens;
+        tokens=lifecycle && !optional?&s->lifecycle_tokens:&s->ordinary_tokens;
         if(!*tokens) continue;
         --*tokens;++slot->attempts;slot->attempt_ms=now;
         s->lifecycle_next_node=(uint8_t)((node+1)%4);
@@ -340,7 +355,10 @@ static void acquisition_result(BodaqsMasterService *s,uint8_t node,
         (request->opcode==BODAQS_CONTROL_GET_OPERATION &&
          bodaqs_control_get_u32(request->data)==s->acquisition_fence_operation[node] &&
          s->acquisition_fence_operation[node]!=0);
-    if(reply->node_boot_id!=s->acquisition_boot[node]) return;
+    /* Cleanup may fence an old retained recording on a freshly observed node
+     * boot. The current node itself must explicitly complete its hardware fence. */
+    if(reply->node_boot_id!=s->acquisition_boot[node] &&
+       !(fence && reply->node_boot_id==s->discovery[node].boot_id)) return;
     if(request->opcode==BODAQS_CONTROL_COMMIT_PREPARE && reply->opcode==127) {
         s->acquisition_record[node]=0;
         bodaqs_master_service_measurement_fence(s,true,false);
@@ -443,6 +461,8 @@ static bool measurement_transfer(BodaqsMasterService *s,const BodaqsMeasurementS
                 lane->next_id,r->node,cls,1,64);
         } else {
             lane->awaiting_result=true;
+            if(request.record.opcode==0x24) s->acquisition_started|=(uint8_t)(1U<<r->node);
+            if(request.record.opcode==0x25) s->acquisition_started&=(uint8_t)~(1U<<r->node);
             if((request.record.opcode>=0x20 && request.record.opcode<=0x25) ||
                request.record.opcode==0x29 || request.record.opcode==0x2A)
                 s->acquisition_operation[r->node]=request.record.operation;
@@ -592,6 +612,7 @@ BodaqsMasterSlotResult bodaqs_master_service_process_transfer(
         if(op==0x2A) {
             unsigned node=admin.node_address;
             uint64_t record=bodaqs_control_get_u64(admin.record.data);
+            if(record!=service->measurement.mode.recording) goto malformed;
             if(!service->acquisition_record[node]) {
                 service->acquisition_record[node]=record;
                 service->acquisition_boot[node]=admin.record.node_boot_id;
@@ -600,6 +621,7 @@ BodaqsMasterSlotResult bodaqs_master_service_process_transfer(
                 service->acquisition_fence_operation[node]=admin.record.operation;
         }
     } else if(service->measurement.mode.phase!=0 && (unsigned)request.type!=2 &&
+        (unsigned)request.type!=4 && /* retained inventory only; no CAN scan */
         (unsigned)request.type!=5 && (unsigned)request.type!=7) goto malformed;
     return bodaqs_master_service_process_slot(service,received,next_transmit);
 malformed:

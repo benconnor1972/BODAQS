@@ -96,6 +96,9 @@ struct Diagnostics {
 bool enterMeasurementMode(uint64_t recording, uint64_t context);
 bool exitMeasurementMode();
 bool inspectMeasurementMode();
+// After admission closes and local sampling stops, make bounded progress on
+// observational restart cleanup. True only after explicit context retirement.
+bool cleanupUnavailableMeasurement();
 bool measurementReady();
 // Transfer mutable mode/transport/allocator ownership after configuration drain.
 // The callback identifies the task currently executing the lifecycle service.
@@ -129,6 +132,11 @@ struct MeasurementTransport {
   uint8_t nextControlNode[2] = {};
   uint32_t nextHeadPollMs[5] = {};
   uint8_t terminalNodes = 0;
+  // Link recovery never resets this bank: accepted IDs, partial objects and
+  // outstanding ACKs remain owned until an explicit recording fence.
+  bool recovering = false, failed = false;
+  uint32_t recoveryStarted = 0, recoveryToken = 0;
+  BodaqsMeasurementMode recoveryBinding = {};
 };
 // Queue immutable control; repeated identical queueing is idempotent. STOP can
 // replace a queued renewal. Service routes all concurrent MISO into the bank.
