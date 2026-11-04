@@ -988,6 +988,14 @@ def load_bdq_session(
                 stream_metadata = session_secondary.get(stream_name)
                 if isinstance(alignment, Mapping) and isinstance(stream_metadata, dict):
                     stream_metadata["clock_alignment"] = copy.deepcopy(dict(alignment))
+                    acquisition = stream_metadata.get("acquisition", {})
+                    if isinstance(acquisition, Mapping) and acquisition.get("payload_schema") == "bodaqs.can_imu6.v1":
+                        complete = "time_s" in frame and bool(np.isfinite(
+                            pd.to_numeric(frame["time_s"], errors="coerce")).all())
+                        stream_metadata["logger_alignment_complete"] = complete
+                        stream_metadata["time_columns"]["canonical"] = "time_s" if complete else "native_time_s"
+                        stream_metadata["time_columns"]["canonical_clock"] = (
+                            "logger_monotonic" if complete else stream_metadata.get("clock_id"))
                 if isinstance(interval_trim, Mapping) and isinstance(stream_metadata, dict):
                     stream_metadata["primary_interval_trim"] = copy.deepcopy(
                         dict(interval_trim)

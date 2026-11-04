@@ -53,8 +53,11 @@ def main():
             assert row["source_segment_id"] == 1
             assert row["status_flags"] & 24 == 24  # Estimated and unknown/degraded alignment.
         evidence = list(iter_bdq_stream_records(bdq, "can0_timing"))
-        assert [row["kind"] for row in evidence] == [6, 6, 2, 1, 6]
-        assert [row["boundary_event_kind"] for row in evidence] == [2, 7, 0, 0, 8]
+        assert [row["kind"] for row in evidence] == [6, 6, 2, 1, 3, 6]
+        assert [row["boundary_event_kind"] for row in evidence] == [2, 7, 0, 0, 0, 8]
+        assert evidence[4]['kind'] == 3 and evidence[4]['node_sync_tick'] > 0
+        assert evidence[4]['sync_sequence'] == 0 and evidence[4]['bridge_method'] == 0
+        assert evidence[4]['original_message_type'] == 33 and evidence[4]['original_message_length'] == 24
         assert evidence[-1]["related_sequence"] == 64
         assert evidence[-1]["boundary_validity_flags"] & 512
         chunks = list(info.stream_data_chunks)

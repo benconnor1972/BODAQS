@@ -352,6 +352,8 @@ void service() {
     }
     cls=(serviceCursor%4)==1?2:1;
   } else if(!urgent) cursor=(cursor+1)%8;
+  transport.timingEnabled=dataConsumer && dataMask;
+  if(!urgent && transport.timingEnabled && (serviceCursor%20)==0) {cls=5;n=255;}
   const int result=CanMasterManager::serviceMeasurementTransport(transport,cls,n,inbox);
   if(result==1 && inbox && (inbox->state.cls==3 || inbox->state.cls==4)) {
     BodaqsControlWrapped reply={};
@@ -364,6 +366,19 @@ void service() {
     if(data.state.complete && !data.admitted &&
        dataConsumer(dataClass,node,data.state.object,data.bytes,data.state.total))
       CanMasterManager::releaseMeasurementObject(data);
+  }
+  if(dataConsumer) {
+    auto& shared=transport.inboxes[4][0];
+    if(shared.state.complete && !shared.admitted &&
+       dataConsumer(5,255,shared.state.object,shared.bytes,shared.state.total))
+      CanMasterManager::releaseMeasurementObject(shared);
+    if(transport.bridgeReady) {
+      uint8_t b[32]={};
+      bodaqs_measurement_put(b,transport.bridgeToken,4);bodaqs_measurement_put(b+4,transport.bridgeTick,4);
+      bodaqs_measurement_put(b+8,transport.bridgeEpoch,4);b[12]=transport.bridgeExpired?2:1;
+      bodaqs_measurement_put(b+16,transport.bridgeLower,8);bodaqs_measurement_put(b+24,transport.bridgeUpper,8);
+      if(dataConsumer(6,255,transport.bridgeToken,b,sizeof b)) transport.bridgeReady=false;
+    }
   }
   for(uint8_t node=0;node<4;++node) {
     if(peers[node].intent.action!=Action::Fence) continue;

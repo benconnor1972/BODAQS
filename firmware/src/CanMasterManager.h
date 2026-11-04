@@ -126,6 +126,9 @@ struct MeasurementTransport {
   MeasurementInbox inboxes[5][4];
   MeasurementOutbox controls[2][4];
   uint64_t context = 0;
+  uint64_t bridgeLower = 0, bridgeUpper = 0;
+  uint32_t bridgeToken = 0, bridgeNext = 0, bridgeStarted = 0, bridgeRetry = 0, bridgeTick = 0, bridgeEpoch = 0;
+  bool bridgePending = false, bridgeReady = false, bridgeExpired = false, timingEnabled = false;
   uint8_t nextControlNode[2] = {};
   uint32_t nextHeadPollMs[5] = {};
   uint8_t terminalNodes = 0;

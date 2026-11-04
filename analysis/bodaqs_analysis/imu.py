@@ -523,7 +523,9 @@ def _native_full_vector_stream(
     if not isinstance(source, pd.DataFrame) or not isinstance(source_metadata, Mapping):
         raise ValueError(f"IMU sensor {sensor_id!r} has no decoded native source stream")
 
-    required = ["time_s", "sequence", "status_flags"] + [
+    acquisition = source_metadata.get("acquisition", {})
+    explicit_can = isinstance(acquisition, Mapping) and acquisition.get("payload_schema") == "bodaqs.can_imu6.v1"
+    required = (["sequence", "status_flags"] if explicit_can else ["time_s", "sequence", "status_flags"]) + [
         str(layout[vector][axis]) for vector in ("accel", "gyro") for axis in "xyz"
     ]
     missing = [column for column in required if column not in source.columns]
@@ -532,6 +534,8 @@ def _native_full_vector_stream(
 
     config = _find_imu_config(session, sensor_id)
     config_values, metadata_warnings = _config_values(config)
+    if explicit_can:
+        metadata_warnings = []
     if strict and metadata_warnings:
         raise ValueError(f"IMU sensor {sensor_id!r} metadata is incomplete: {', '.join(metadata_warnings)}")
 
@@ -555,16 +559,25 @@ def _native_full_vector_stream(
         raise ValueError(f"IMU sensor {sensor_id!r} has no rows containing a fresh gyro sample")
 
     selected = source.loc[selection].reset_index(drop=True)
-    time_s = pd.to_numeric(selected["time_s"], errors="coerce").to_numpy(dtype=float)
-    if not np.isfinite(time_s).all() or np.any(np.diff(time_s) < 0):
+    logger_time_s = (pd.to_numeric(selected["time_s"], errors="coerce").to_numpy(dtype=float)
+                     if "time_s" in selected else np.full(len(selected), np.nan))
+    time_s = logger_time_s.copy()
+    if explicit_can and not np.isfinite(time_s).all():
+        time_s = pd.to_numeric(selected["native_time_s"], errors="coerce").to_numpy(dtype=float)
+    if not explicit_can and (not np.isfinite(time_s).all() or np.any(np.diff(time_s) < 0)):
         raise ValueError(f"IMU sensor {sensor_id!r} native logger-aligned time is invalid")
     sequence_u32 = pd.to_numeric(selected["sequence"], errors="raise").to_numpy(dtype=np.int64)
     sequence_unwrapped, sequence_delta = _unwrap_modulo(sequence_u32, 1 << 32)
+    if explicit_can:
+        sequence_unwrapped = selected["source_sequence_unwrapped"].to_numpy(dtype=np.int64)
+        sequence_delta = np.r_[1, np.diff(sequence_unwrapped)]
+        segments = selected["continuity_segment"].to_numpy()
+        sequence_delta[1:][segments[1:] != segments[:-1]] = 1
     flags = pd.to_numeric(selected["status_flags"], errors="raise").to_numpy(dtype=np.uint16)
 
     stream = pd.DataFrame({
         "time_s": time_s,
-        "logger_time_s": time_s,
+        "logger_time_s": logger_time_s,
         "sequence_u32": sequence_u32.astype(np.uint32),
         "sequence_unwrapped": sequence_unwrapped,
         "status_flags": flags,
@@ -572,6 +585,11 @@ def _native_full_vector_stream(
     for column in ("native_tick", "native_tick_unwrapped", "native_time_s", "clock_epoch"):
         if column in selected.columns:
             stream[column] = pd.to_numeric(selected[column], errors="coerce").to_numpy()
+    if explicit_can:
+        for column in ("source_segment_id", "source_sequence_unwrapped", "modeled_node_tick",
+                       "sensor_clock_epoch", "timing_model_id", "logger_lower_us", "logger_upper_us", "timing_status"):
+            if column in selected:
+                stream[column] = selected[column].to_numpy()
     if "continuity_segment" in selected.columns:
         stream["continuity_segment"] = (
             pd.to_numeric(selected["continuity_segment"], errors="coerce").fillna(-1).to_numpy(dtype=np.int64)
@@ -596,16 +614,38 @@ def _native_full_vector_stream(
 
     accel_range_g = config_values.get("accel_range_g")
     gyro_range_dps = config_values.get("gyro_range_dps")
-    if accel_range_g is not None and accel_range_g > 0:
+    if not explicit_can and accel_range_g is not None and accel_range_g > 0:
         scale = float(accel_range_g) / 32768.0 * STANDARD_GRAVITY_M_S2
         for axis in "xyz":
             stream[f"accel_{axis}_m_s2"] = stream[f"accel_{axis}_raw_count"].astype(float) * scale
-    if gyro_range_dps is not None and gyro_range_dps > 0:
+    if not explicit_can and gyro_range_dps is not None and gyro_range_dps > 0:
         scale = float(gyro_range_dps) / 32768.0 * math.pi / 180.0
         for axis in "xyz":
             stream[f"gyro_{axis}_rad_s"] = stream[f"gyro_{axis}_raw_count"].astype(float) * scale
 
-    mount_matrix = config_values.get("mount_matrix")
+    if explicit_can:
+        scaling = acquisition.get("raw_axis_scaling", {})
+        sensitivities = acquisition.get("nominal_sensitivities", {})
+        if isinstance(scaling, Mapping) and scaling.get("valid") is True:
+            for vector, key, unit, conversion in (
+                ("accel", "accel_ug_per_count", "m_s2", STANDARD_GRAVITY_M_S2),
+                ("gyro", "gyro_udps_per_count", "rad_s", math.pi / 180.0),
+            ):
+                scale = _finite_float(scaling.get(key))
+                scale = scale / 1000000 if scale is not None else None
+                prefix = "accel_g" if vector == "accel" else "gyro_dps"
+                if isinstance(sensitivities, Mapping):
+                    numerator = _finite_float(sensitivities.get(prefix + "_numerator"))
+                    denominator = _finite_float(sensitivities.get(prefix + "_denominator"))
+                    if numerator is not None and denominator is not None and denominator > 0:
+                        scale = numerator / denominator
+                if scale is not None and scale > 0:
+                    for axis in "xyz":
+                        stream[f"{vector}_{axis}_{unit}"] = stream[f"{vector}_{axis}_raw_count"].astype(float) * scale * conversion
+        else:
+            metadata_warnings.append("native_scaling_unknown")
+    mount_matrix = (_mount_matrix(acquisition.get("mount_transform"))
+                    if explicit_can else config_values.get("mount_matrix"))
     if isinstance(mount_matrix, np.ndarray):
         for vector, unit in (("accel", "m_s2"), ("gyro", "rad_s")):
             columns = [f"{vector}_{axis}_{unit}" for axis in "xyz"]
@@ -743,6 +783,16 @@ def _native_full_vector_stream(
         },
         "qc_ref": f"meta.imu_qc.{sensor_id}",
     }
+    if explicit_can:
+        metadata["time_columns"]["canonical_clock"] = (
+            "logger_monotonic" if np.isfinite(logger_time_s).all() else "native_node_epoch")
+        metadata["acquisition"] = copy.deepcopy(acquisition)
+        metadata["mount_transform"] = copy.deepcopy(acquisition.get("mount_transform"))
+        metadata["timebase_source"] = report["timebase_source"] = "bdq_v2_explicit_clock_evidence"
+        metadata["logger_alignment_complete"] = bool(np.isfinite(logger_time_s).all())
+        if not metadata["logger_alignment_complete"]:
+            metadata["logger_relative_sample_rate_hz"] = None
+            report["warnings"].append("logger_alignment_unknown")
     return stream, report, metadata
 
 
@@ -1189,7 +1239,8 @@ def _register_imu_stream(
         name = _stream_name(sensor, existing_names)
     existing_names.add(name)
     stream_dfs[name] = stream
-    has_discontinuity = report["continuous_segments"]["count"] > 1
+    has_discontinuity = (report["continuous_segments"]["count"] > 1
+                         or stream_meta.get("logger_alignment_complete") is False)
     effective_rate = report.get("effective_odr_hz")
     if not has_discontinuity and effective_rate is not None:
         register_stream_metadata(
@@ -1208,7 +1259,9 @@ def _register_imu_stream(
             stream_name=name,
             kind="intermittent",
             time_col="time_s",
-            notes="Logger-aligned full-vector IMU stream with explicit native sequence/timing discontinuities",
+            notes=("Full-vector IMU stream with unknown logger alignment; canonical time is native to each clock epoch"
+                   if stream_meta.get("logger_alignment_complete") is False
+                   else "Logger-aligned full-vector IMU stream with explicit native sequence/timing discontinuities"),
         )
     stream_meta["stream_name"] = name
     stream_meta["timebase_kind"] = "intermittent" if has_discontinuity else "uniform"

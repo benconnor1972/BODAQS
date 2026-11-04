@@ -38,6 +38,22 @@ bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint
     return true;
   }
   struct Retire {~Retire(){dataGate.fetch_and(1,std::memory_order_release);}} retire;
+  if(address==255 && cls==6) {
+    if(total!=32) {fault=true;return true;}
+    if(p[12]==2) return stream.acceptMissingBridge(BdqV2Format::getU32(p),
+      static_cast<uint32_t>(esp_timer_get_time()))!=RemoteImuStream::Blocked;
+    auto accepted=stream.acceptBridge(BdqV2Format::getU32(p),BdqV2Format::getU32(p+4),
+      BdqV2Format::getU32(p+8),BdqV2Format::getU64(p+16),BdqV2Format::getU64(p+24),
+      static_cast<uint32_t>(esp_timer_get_time()));
+    return accepted!=RemoteImuStream::Blocked;
+  }
+  if(address==255 && cls==5) {
+    if(total<12 || p[0]!=1 || p[1] || p[3] || p[6] || p[7]) {fault=true;return true;}
+    const uint16_t count=BdqV2Format::getU16(p+4);
+    if(p[2]!=1 || total!=12+16*count || count!=1 || p[8]!=1 || p[9] || p[10] || p[11]) {fault=true;return true;}
+    return stream.acceptSharedSync(BdqV2Format::getU32(p+12),BdqV2Format::getU32(p+16),
+      BdqV2Format::getU32(p+20),static_cast<uint32_t>(esp_timer_get_time()))!=RemoteImuStream::Blocked;
+  }
   if(address!=node || cls<1 || cls>2 || total<20 || p[0]!=1 || p[1] || p[2]!=cls || p[3]!=node ||
      BdqV2Format::getU32(p+4)!=CanMasterManager::diagnostics().authority.nodes[node].boot ||
      BdqV2Format::getU16(p+14)) {fault=true;return true;}
@@ -52,7 +68,7 @@ bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint
     if(r[2]>64) {fault=true;return true;}
     const uint64_t order=(uint64_t(BdqV2Format::getU32(p+8))<<32)|BdqV2Format::getU32(r+8);
     const auto accepted=stream.accept(BdqV2Format::getU16(r),r+12,r[2],
-      BdqV2Format::getU32(r+4),order,static_cast<uint32_t>(esp_timer_get_time()));
+      BdqV2Format::getU32(r+4),order,static_cast<uint32_t>(esp_timer_get_time()),r[3]);
     if(accepted==RemoteImuStream::Blocked) return false;
     if(accepted==RemoteImuStream::Invalid) {fault=true;return true;}
   }
@@ -82,7 +98,7 @@ bool configure(const LoggerConfig& cfg) {
   const auto assignment=sensorAssignment(chosen,board::gBoard);node=assignment.provider.index;
   if(assignment.kind!=SensorAssignment::Kind::NodeImu || node>3 || !CanMasterManager::configurationReconciled(node)) {fault=true;return true;}
   const auto& d=CanMasterManager::diagnostics();const auto& endpoint=d.control.nodes[node].endpoints[0];
-  RemoteImuBinding b;b.node=node;b.boot=endpoint.effective_boot;b.uid=endpoint.effective_uid;b.masterBoot=d.control.master_boot_id;
+  RemoteImuBinding b;b.node=node;b.boot=endpoint.effective_boot;b.uid=endpoint.effective_uid;b.masterBoot=d.control.master_boot_id;b.masterUid=d.hardwareUid;
   b.session=d.authority.session;
   if(allocatedSession!=b.session) {allocatedSession=b.session;nextRecording=1;}
   if(!nextRecording || nextRecording==UINT64_MAX) {fault=true;return true;}

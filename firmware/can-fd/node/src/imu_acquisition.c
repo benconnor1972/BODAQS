@@ -5,7 +5,7 @@
 #include <string.h>
 /* One main-loop owner: runtime writes never overlap profile apply or DMA.
  * Unknown alignment/uncertainty is explicitly retained on the wire. */
-enum { IDLE, CONFIG, VERIFY, SETTLE, DISCARD, READY, STARTING, RECORDING, STOPPING, FAILED };
+enum { IDLE, CONFIG, VERIFY, SETTLE, DISCARD, READY, STARTING, RECORDING, STOPPING, FAILED, RECOVER };
 static struct {
     BodaqsImuDisabled *stopped;
     BodaqsNodeCanSend send;
@@ -23,6 +23,12 @@ static struct {
     BodaqsNodeCapture capture, sync;
     bool sync_present, seed_started;
     uint8_t seed_attempts;
+    uint8_t recovery_step, recovery_count, recovery_stage;
+    uint32_t recovery_ms, attempts[3], resync_timestamp;
+    uint32_t loss_count, loss_evidence, loss_first, loss_last, loss_ms, model_tick, model_anchor_tick, model_numerator, sent_sync;
+    uint16_t model_denominator;
+    uint32_t recovery_capture;
+    bool gap, recovered, evidence_gap;
 } a;
 /* FIFO drains decode up to 32 slots in one turn. Keep CAN backpressure out of
  * that deadline: immutable frames retain evidence/data order until hardware
@@ -112,10 +118,17 @@ static void fail(uint8_t reason) {
 }
 static bool snapshot(uint32_t seq, uint32_t tick, uint32_t ts) {
     uint8_t p[64], *b = p + 8;
+    uint32_t sync_sequence=0,sync_tick=0;
+    if(seq && tx_depth>=24) {
+        if(a.loss_evidence==UINT32_MAX || a.evidence==UINT32_MAX) return false;
+        ++a.loss_evidence; ++a.evidence; a.evidence_gap=true;
+        return true;
+    }
+    const bool sync_associated=bodaqs_node_sync_latest(&sync_sequence,&sync_tick);
     envelope(p, 0x23, 56);
     bodaqs_control_put_u32(b, a.boot);
     b[5] = a.epoch;
-    put16(b + 6, 0x37);
+    put16(b + 6, (uint16_t)(0x37 | (sync_associated?8:0) | (a.evidence_gap?64:0)));
     bodaqs_control_put_u32(b + 8, ++a.evidence);
     bodaqs_control_put_u32(b + 12, seq);
     bodaqs_control_put_u32(b + 16, a.sensor_epoch);
@@ -126,9 +139,12 @@ static bool snapshot(uint32_t seq, uint32_t tick, uint32_t ts) {
     bodaqs_control_put_u32(b + 44, a.model_id);
     memcpy(b + 48, a.tags, 3);
     b[51] = (uint8_t)(0xdf | (a.sync_present ? 0x20 : 0));
-    if (a.sync_present)
+    if (a.sync_present) {
+        bodaqs_control_put_u32(b + 36, sync_sequence);
         bodaqs_control_put_u32(b + 40, a.sync.tick);
+    }
     bodaqs_control_put_u32(b + 52, a.slot);
+    a.evidence_gap=false;
     return emit(0x23, p, 64);
 }
 static bool model(uint32_t seq, uint32_t tick, uint32_t now) {
@@ -138,10 +154,12 @@ static bool model(uint32_t seq, uint32_t tick, uint32_t now) {
     ++a.model_id;
     a.model_seq = seq;
     a.model_ms = now;
+    a.model_tick = a.model_anchor_tick = tick;
+    a.model_numerator=a.numerator; a.model_denominator=a.denominator;
     envelope(p, 0x24, 56);
     bodaqs_control_put_u32(b, a.boot);
     b[5] = a.epoch;
-    put16(b + 6, 1); /* native association; finite uncertainty unknown */
+    put16(b + 6, (uint16_t)(5 | (a.recovered ? 24 : 0))); /* finite uncertainty unknown */
     bodaqs_control_put_u32(b + 8, a.model_id);
     bodaqs_control_put_u32(b + 12, 1);
     bodaqs_control_put_u32(b + 16, a.sensor_epoch);
@@ -152,6 +170,8 @@ static bool model(uint32_t seq, uint32_t tick, uint32_t now) {
     b[34] = 1;
     bodaqs_control_put_u32(b + 36, 500);
     bodaqs_control_put_u32(b + 44, 150000);
+    bodaqs_control_put_u32(b + 48, a.last_capture - 32);
+    bodaqs_control_put_u32(b + 52, a.last_capture);
     if (!emit(0x24, p, 64))
         return false;
     envelope(p, 0x22, 20);
@@ -167,7 +187,7 @@ static bool model(uint32_t seq, uint32_t tick, uint32_t now) {
 static bool flush(bool final) {
     if (!a.count)
         return true;
-    a.packet[3] = (uint8_t)(a.count | 0x40 | (a.sequence == a.count ? 8 : 0) | (final ? 0x80 : 0));
+    a.packet[3] = (uint8_t)(a.count | 0x40 | (a.sequence == a.count ? 8 : 0) | (a.gap ? 16 : 0) | (final ? 0x80 : 0));
     size_t n = 4 + 12 * a.count;
     if (n <= 16)
         n = 16;
@@ -177,11 +197,81 @@ static bool flush(bool final) {
         n = 48;
     else
         n = 64;
-    if (!queue_frame((uint16_t)(0x100 + (a.address << 3)), a.packet, n))
-        return false;
+    /* Keep eight slots unavailable to data so an already full CAN lane cannot
+     * destroy essential recovery definitions. Sequence is assigned upstream. */
+    if (tx_depth >= 24) {
+        if (UINT32_MAX - a.loss_count < a.count)
+            return false;
+        if (!a.loss_count) a.loss_first = a.sequence - a.count;
+        a.loss_last = a.sequence - 1;
+        a.loss_count += a.count;
+        a.gap = true;
+    } else {
+        if (!queue_frame((uint16_t)(0x100 + (a.address << 3)), a.packet, n))
+            return false;
+        a.gap = false;
+    }
     memset(a.packet, 0, 64);
     a.count = 0;
     return true;
+}
+static bool loss_report(uint32_t now, bool anchor) {
+    uint8_t p[64], *b=p+8;
+    if ((!a.loss_count && !a.loss_evidence) || (uint32_t)(now-a.loss_ms)<100) return true;
+    if (tx_depth>(anchor?30:31)) return false;
+    envelope(p,0x25,56);
+    bodaqs_control_put_u32(b,a.boot); b[5]=a.epoch; b[6]=3; b[7]=4;
+    bodaqs_control_put_u32(b+8,++a.evidence);
+    bodaqs_control_put_u32(b+12,a.sensor_epoch); bodaqs_control_put_u32(b+16,1);
+    if(a.loss_count) {bodaqs_control_put_u32(b+24,a.loss_first); bodaqs_control_put_u32(b+28,a.loss_last);}
+    bodaqs_control_put_u32(b+32,a.loss_count); bodaqs_control_put_u32(b+40,a.loss_evidence);
+    put16(b+46,(uint16_t)(0x20 | (a.loss_count?6:0) | (a.loss_evidence?8:0)));
+    if (!emit(0x25,p,64)) return false;
+    if(anchor) {
+        envelope(p,0x22,20); b[1]=1; b[2]=a.epoch; b[3]=0x40;
+        bodaqs_control_put_u32(b+4,a.model_seq); bodaqs_control_put_u32(b+8,a.model_anchor_tick);
+        bodaqs_control_put_u32(b+12,a.model_numerator); put16(b+16,a.model_denominator);
+        if (!emit(0x22,p,32)) return false;
+    }
+    a.loss_ms=now; a.loss_count=a.loss_evidence=0;
+    return true;
+}
+static bool recovery_boundary(uint8_t kind,uint32_t now) {
+    uint8_t p[64],*b=p+8;
+    envelope(p,0x25,56); bodaqs_control_put_u32(b,a.boot);
+    b[5]=a.epoch; b[6]=kind; b[7]=a.recovery_stage;
+    bodaqs_control_put_u32(b+8,++a.evidence);
+    bodaqs_control_put_u32(b+12,a.sensor_epoch); bodaqs_control_put_u32(b+16,1);
+    if (a.sequence) bodaqs_control_put_u32(b+20,a.sequence-1);
+    put16(b+44,27); put16(b+46,(uint16_t)(0x60 | (a.sequence?1:0)));
+    if(kind==4 && a.recovery_capture) {
+        bodaqs_control_put_u32(b+36,a.recovery_capture);
+        put16(b+46,(uint16_t)(0x70 | (a.sequence?1:0)));
+    }
+    bodaqs_control_put_u32(b+48,(now-a.recovery_ms)*1000);
+    bodaqs_control_put_u32(b+52,clock_tick());
+    return emit(0x25,p,64);
+}
+static void recover(uint8_t stage,uint32_t now) {
+    if (a.phase!=RECORDING && a.phase!=RECOVER) {fail(27);return;}
+    /* A retry counts as another attempt; the original deadline never moves. */
+    unsigned active=0;
+    for(unsigned i=0;i<a.recovery_count;++i)
+        if((uint32_t)(now-a.attempts[i])<1000) a.attempts[active++]=a.attempts[i];
+    a.recovery_count=(uint8_t)active;
+    if(active==3 || (a.phase==RECOVER && (uint32_t)(now-a.recovery_ms)>=100)) {fail(32);return;}
+    if(tx_depth>23 || a.epoch==255 || a.evidence>UINT32_MAX-8 || a.model_id==UINT32_MAX) {fail(31);return;}
+    a.attempts[a.recovery_count++]=now;
+    if(a.phase!=RECOVER) {
+        a.recovery_ms=now; a.recovery_stage=stage;
+        a.recovery_capture=bodaqs_node_capture_loss_take();
+        if(!flush(false) || !recovery_boundary(1,now) || !recovery_boundary(4,now)) {fail(31);return;}
+    }
+    a.phase=RECOVER; a.recovery_step=0; a.step=0;
+    a.mask=a.count=a.drain_phase=0; a.pending_count=0;
+    a.have_previous=false; a.slot=0;
+    bodaqs_node_imu_cancel(0);
+    bodaqs_node_capture_discard();
 }
 /* Called only with complete FIFO data, preserving partial triples over bursts.
  */
@@ -217,6 +307,8 @@ static bool word(const uint8_t *w, uint32_t now) {
             a.capture.ordinal != a.last_capture + 1)
             return false;
     }
+    if (a.phase == RECOVER && !a.have_previous && (uint32_t)(ts-a.resync_timestamp)>4000)
+        return false;
     a.last_counter = counter;
     a.last_tick = tick;
     a.last_sensor = ts;
@@ -228,6 +320,20 @@ static bool word(const uint8_t *w, uint32_t now) {
     if (a.slot >= 33) {
         a.numerator = tick - a.ticks[(a.slot - 33) % 33];
         a.denominator = 32;
+    }
+    if (a.phase == RECOVER && a.recovery_step == 4 && a.slot >= 33) {
+        /* Retain prior-epoch exact software loss through the normal coalescing
+         * interval. The recovery's matching anchor replaces the extra loss
+         * anchor, keeping this whole attempt within eight essential frames. */
+        if((a.loss_count || a.loss_evidence) && (uint32_t)(now-a.loss_ms)<100) return true;
+        if(!loss_report(now,false)) return false;
+        ++a.epoch;
+        a.sequence=0;
+        a.recovered=true;
+        a.gap=false;
+        if (!recovery_boundary(2,now) || !recovery_boundary(5,now) ||
+            !model(0,tick,now) || !snapshot(0,tick,ts)) return false;
+        a.phase=RECORDING;
     }
     if (a.phase == DISCARD && (int32_t)(tick - a.settle_tick) >= 0) {
         ++a.gyro;
@@ -254,8 +360,8 @@ static bool word(const uint8_t *w, uint32_t now) {
     if (a.phase == RECORDING) {
         if (a.sequence == UINT32_MAX)
             return false;
-        if ((uint32_t)(now - a.model_ms) >= 100 || a.sequence - a.model_seq >= 500) {
-            if (!flush(false) || !model(a.sequence, tick, now) || !snapshot(a.sequence, tick, ts))
+        if ((uint32_t)(tick - a.model_tick) >= 100000 || a.sequence - a.model_seq >= 500) {
+            if (!flush(false) || !loss_report(now,true) || !model(a.sequence, tick, now) || !snapshot(a.sequence, tick, ts))
                 return false;
         }
         if (!a.count) {
@@ -284,10 +390,39 @@ void bodaqs_node_acquisition_init(uint32_t boot, uint8_t address, BodaqsImuDisab
 }
 void bodaqs_node_acquisition_service(uint32_t now) {
     const uint8_t *data;
-    int rc;
+    int rc=0;
     service_transmit();
     if (a.phase == IDLE || a.phase == FAILED)
         return;
+    if (a.phase == RECOVER) {
+        if ((uint32_t)(now-a.recovery_ms)>=100) {(void)recovery_boundary(6,now);fail(32);return;}
+        /* Bypass FIFO and discard all ambiguous words/captures, observe a fresh
+         * running timestamp, then fence FIFO enable against concurrent DRDY.
+         * This does not issue TIMESTAMP2 reset or change either clock epoch. */
+        if (a.recovery_step < 4) {
+            if (a.recovery_step==1) {
+                rc=bodaqs_node_imu_read(0x40,4,&data,now);
+                if(rc==1) {
+                    a.resync_timestamp=bodaqs_control_get_u32(data);
+                    /* Natural modular wrap is small forward progress. An
+                     * unexplained jump/reset cannot inherit the old clock. */
+                    if((uint32_t)(a.resync_timestamp-a.last_sensor)>
+                       (uint32_t)(clock_tick()-a.last_tick)/20U+1000U) {fail(35);return;}
+                    ++a.recovery_step;
+                }
+            } else if (a.recovery_step==3) {
+                if(!bodaqs_node_capture_seed_end()) {recover(a.recovery_stage,now);return;}
+                ++a.recovery_step;
+            } else {
+                if(a.recovery_step==2 && !a.step) {bodaqs_node_capture_discard();a.step=1;}
+                a.value=a.recovery_step==0?0:0x46;
+                rc=bodaqs_node_imu_register(0,true,10,&a.value,now);
+                if(rc==1) {++a.recovery_step;a.step=0;}
+            }
+            if(rc<0) fail(14);
+            return;
+        }
+    }
     if (a.phase == CONFIG || (a.phase == STOPPING && a.index < sizeof(addresses))) {
         bool stopping = a.phase == STOPPING;
         /* Exact-part timestamp reset command (TIMESTAMP2=AA), followed by an
@@ -398,6 +533,10 @@ void bodaqs_node_acquisition_service(uint32_t now) {
         return;
     }
     if (a.phase == STOPPING) {
+        if(a.loss_count || a.loss_evidence) {
+            if((uint32_t)(now-a.loss_ms)<100) return;
+            if(!loss_report(now,true)) {fail(31);return;}
+        }
         rc = bodaqs_imu_disabled_tick(a.stopped, now);
         if (rc < 0)
             fail(a.stopped->reason);
@@ -409,9 +548,28 @@ void bodaqs_node_acquisition_service(uint32_t now) {
         }
         return;
     }
-    (void)(bodaqs_node_capture_sync_take(&a.sync) && (a.sync_present = true));
+    if(a.phase==RECORDING || a.phase==STARTING) {
+        BodaqsNodeCapture raw_sync;
+        uint32_t sync_lost=bodaqs_node_capture_sync_loss_take();
+        if(sync_lost) {
+            if(UINT32_MAX-a.loss_evidence<sync_lost) {fail(31);return;}
+            a.loss_evidence+=sync_lost;a.evidence_gap=true;
+        }
+        if(bodaqs_node_capture_sync_observation(&raw_sync)) {
+            uint8_t p[64],*b=p+8;
+            a.sync=raw_sync;a.sync_present=true;
+            envelope(p,0x21,16);
+            bodaqs_control_put_u32(b+4,raw_sync.tick);bodaqs_control_put_u32(b+8,a.boot);
+            /* Sequence/association unknown. flags=0 preserves that distinction;
+             * the independently retained master edge does not supply a pairing. */
+            if(!(tx_depth<24 && queue_frame((uint16_t)(0x90+a.address),p,24))) {
+                if(a.loss_evidence==UINT32_MAX) {fail(31);return;}
+                ++a.loss_evidence;a.evidence_gap=true;
+            }
+        }
+    }
     if (bodaqs_node_capture_fault()) {
-        fail(27);
+        if(!bodaqs_node_capture_clock_trusted()) fail(35); else recover(11,now);
         return;
     }
     if (a.phase == SETTLE && (uint32_t)(now - a.prepared) >= 70) {
@@ -434,7 +592,7 @@ void bodaqs_node_acquisition_service(uint32_t now) {
             return;
         a.last_poll = now;
         if (data[1] & 0x48) {
-            fail(27);
+            recover(1,now);
             return;
         }
         a.words = (uint16_t)(data[0] | ((data[1] & 3) << 8));
@@ -444,7 +602,7 @@ void bodaqs_node_acquisition_service(uint32_t now) {
         if (after)
             for (unsigned i = 0; i < a.pending_count; ++i)
                 if (!word(a.pending_words + 7 * i, now)) {
-                    fail(a.reason ? a.reason : 27);
+                    if(a.reason) fail(a.reason); else recover(2,now);
                     return;
                 }
         if (!a.words) {
@@ -487,6 +645,7 @@ void bodaqs_node_acquisition_backend(void *context, uint8_t command, uint32_t ge
         a.reason = 0;
         a.pending_event = 0;
         a.failure_after_first = false;
+        a.recovery_count=0; a.recovered=a.gap=a.evidence_gap=false; a.loss_count=a.loss_evidence=0;
         bodaqs_node_capture_discard();
     } else if (command == BODAQS_ACQ_START) {
         a.start_tick = clock_tick();

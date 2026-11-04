@@ -23,12 +23,27 @@ static bool fifo_drained;
 static FILE *wire;
 static uint32_t next_tx_tick, tx_blocked_until;
 static bool seen_boundary, seen_model, seen_anchor, seen_snapshot;
+static unsigned recovery_events, raw_sync_events;
+static uint32_t reported_loss, previous_end;
+static unsigned detected_loss;
+static bool gap_seen, silence_after_overrun;
 static bool tx_idle(void) { return sim_tick >= next_tx_tick; }
 static bool sent(uint16_t id, const uint8_t *p, size_t n) {
     if (sim_tick < next_tx_tick || sim_tick < tx_blocked_until)
         return false;
     next_tx_tick = sim_tick + 400;
     if (id == 0x90) {
+        if(p[1]==0x21) {
+            assert(n==24 && bodaqs_control_get_u32(p+8)==0 && p[20]==0 && p[21]==0);
+            assert(bodaqs_control_get_u32(p+12)>0 && bodaqs_control_get_u32(p+16)==17);
+            ++raw_sync_events;
+        }
+        if(p[1]==0x25 && p[14]==3 && p[15]==4) reported_loss+=bodaqs_control_get_u32(p+40);
+        if (p[1] == 0x25 && p[14] == 5) {
+            assert(p[13] > 1 && !(p[54] & 0x1c)); /* unknown loss counts */
+            assert(bodaqs_control_get_u32(p + 20) == 1); /* sensor clock retained */
+            ++recovery_events;
+        }
         if (p[1] == 0x25 && p[14] == 2)
             seen_boundary = true;
         if (p[1] == 0x24)
@@ -53,8 +68,11 @@ static bool sent(uint16_t id, const uint8_t *p, size_t n) {
         assert(p[40] == 32 && p[41] == 0);
     }
     if (id == 0x100) {
-        assert(p[2] == 1);
+        assert(p[2] == 1 || recovery_events);
         samples += p[3] & 7;
+        uint32_t first=bodaqs_control_get_u32(p)&65535;
+        if(!recovery_events) {detected_loss+=first-previous_end;previous_end=first+(p[3]&7);}
+        if(p[3]&16) gap_seen=true;
         memcpy(saved_sample, p, 64);
     }
     return true;
@@ -66,10 +84,12 @@ static void complete(void) {
     if (tx[0] == 0xba) {
         rx[1] = (uint8_t)(used / 7);
         rx[2] = (uint8_t)((used / 7) >> 8);
-        if (fault_mode == 4 && fifo_drained)
+        if ((fault_mode == 4 || fault_mode == 6) && fifo_drained) {
             rx[2] |= 0x40;
+            if (fault_mode == 6) fault_mode = 7;
+        }
     } else if (tx[0] == 0xc0) {
-        memset(rx + 1, 0, 4);
+        bodaqs_control_put_u32(rx + 1, fault_mode >= 6 ? 0xfffffff0U + sim_tick / 25 : 0);
     } else {
         assert(tx[0] == 0xf8 && bytes <= used);
         memcpy(rx + 1, fifo, bytes);
@@ -81,7 +101,7 @@ static void complete(void) {
     irq = true;
 }
 static void advance(uint32_t target) {
-    while (next_slot <= target && regs[10] == 0x46) {
+    while (next_slot <= target && regs[10] == 0x46 && !(silence_after_overrun && fault_mode==7)) {
         uint32_t t = next_slot;
         uint8_t c = (uint8_t)((slots++ & 3) << 1);
         if ((t >> 16) != (sim_tick >> 16))
@@ -248,6 +268,7 @@ int main(int argc, char **argv) {
     bodaqs_node_acquisition_backend(0, BODAQS_ACQ_START, 2, 1, sim_tick / 1000, &e);
     for (uint32_t us = sim_tick + 100; us < start + 20000; us += 100) {
         advance(us);
+        if(us==start+5000) {raw=8;cc[3]=count;bodaqs_node_capture_irq();}
         bodaqs_node_imu_spi_irq();
         memset(&e, 0, sizeof(e));
         bodaqs_node_acquisition_backend(0, BODAQS_ACQ_POLL, 2, 1, us / 1000, &e);
@@ -259,7 +280,32 @@ int main(int argc, char **argv) {
             assert(first_tick > start && bodaqs_control_get_u32(e.boundary) == 0);
         }
     }
+    assert(raw_sync_events==1);
     assert(first && samples >= 5 && saved_sample[4] == 0 && saved_sample[5] == 0x80 && frames > 4);
+    if (selected_fault >= 6) {
+        unsigned before_recovery = samples;
+        fault_mode = selected_fault>=9?0:6;
+        silence_after_overrun=selected_fault==7;
+        if(selected_fault==9) tx_blocked_until=sim_tick+60000;
+        fifo_drained = false;
+        bool recovery_failed=false;
+        unsigned failure_reason=0;
+        uint32_t next_fault=sim_tick+1000;
+        for (uint32_t us = sim_tick + 100; us < start + (selected_fault==10?90000000:250000); us += 100) {
+            if(selected_fault==10 && us>=next_fault) {fault_mode=6;fifo_drained=false;next_fault+=350000;}
+            advance(us);
+            bodaqs_node_imu_spi_irq();
+            memset(&e, 0, sizeof(e));
+            bodaqs_node_acquisition_backend(0, BODAQS_ACQ_POLL, 2, 1, us / 1000, &e);
+            if(e.kind==BODAQS_ACQ_FAILED) {recovery_failed=true;failure_reason=e.reason;break;}
+            if(selected_fault==8 && recovery_events && fault_mode==7) {fault_mode=6;fifo_drained=false;}
+        }
+        if(selected_fault==6) assert(!recovery_failed && recovery_events == 1 && samples > before_recovery);
+        if(selected_fault==7 || selected_fault==8) assert(recovery_failed && failure_reason==32);
+        if(selected_fault==9) assert(!recovery_failed && detected_loss>0 && reported_loss==detected_loss && gap_seen);
+        if(selected_fault==10) assert(recovery_failed && failure_reason==31 && recovery_events==254);
+        return 0;
+    }
     memset(&e, 0, sizeof(e));
     bodaqs_node_acquisition_backend(0, BODAQS_ACQ_STOP, 3, 1, sim_tick / 1000, &e);
     bool stopped_ok = false;
