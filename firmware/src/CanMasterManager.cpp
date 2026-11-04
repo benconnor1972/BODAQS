@@ -672,7 +672,7 @@ bool configurationReconciled(uint8_t address) {
   const auto& endpoint = node.endpoints[0];
   const auto& authority = s_diagnostics.authority.nodes[address];
   const uint8_t* d = endpoint.effective;
-  return !s_renewSession && !s_configurationDirty[address] && authority.bound && node.available && node.valid && endpoint.current && endpoint.effective_valid &&
+  return !s_renewSession && s_diagnostics.control.next_read_id && !s_configurationDirty[address] && authority.bound && node.available && node.valid && endpoint.current && endpoint.effective_valid &&
       authority.boot == node.node_boot_id &&
       static_cast<int32_t>(node.observed_ms - authority.confirmed_ms) >= 0 &&
       node.active_session == s_diagnostics.authority.session && d[4] == (enabled ? 2 : 1) &&
@@ -914,7 +914,8 @@ const char* shortStatus() {
 
 const char* controlShortStatus() {
   if (!s_diagnostics.controlSupported) return "C:--";
-  if (!s_diagnostics.controlInfoValid || !s_diagnostics.authority.session || s_renewSession) return "C:!";
+  if (!s_diagnostics.controlInfoValid || !s_diagnostics.control.next_read_id ||
+      !s_diagnostics.authority.session || s_renewSession) return "C:!";
   bool available = false;
   if (s_diagnostics.apply.phase) {
     const auto& outcome = s_diagnostics.apply.nodes[s_diagnostics.apply.current.node_address];

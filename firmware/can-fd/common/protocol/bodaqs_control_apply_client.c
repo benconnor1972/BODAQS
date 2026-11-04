@@ -68,7 +68,10 @@ bool bodaqs_control_apply_client_next(BodaqsControlApplyClient *s, BodaqsControl
     {
         s->phase = 0;
         s->pending = false;
-        o->valid = false;
+        o->valid = true;
+        o->kind = 6;
+        o->reason = 19;
+        o->observed_ms = now;
         return false;
     }
     /* Knowledge expires at the original deadline even while the SPI owner

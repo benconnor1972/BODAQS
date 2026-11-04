@@ -11,11 +11,17 @@
 #undef main
 static uint32_t clockMs=100, randomWord=100;
 static bool zeroEntropy=false;
+static uint64_t repeatedSession=0;
+static bool randomHigh=true;
 static bool spiAvailable=true, recording=false, muted=false, dropCommit=false, dropInspection=false, corruptReplies=false;
 static unsigned commitAttempts=0, sensorAttempts=0;
 uint32_t millis() { return clockMs; }
 uint32_t micros() { return clockMs*1000; }
-uint32_t esp_random() { return zeroEntropy ? 0 : ++randomWord; }
+uint32_t esp_random() {
+ if(zeroEntropy) return 0;
+ if(repeatedSession) { const auto value=randomHigh ? uint32_t(repeatedSession>>32) : uint32_t(repeatedSession); randomHigh=!randomHigh;return value; }
+ return ++randomWord;
+}
 void delayMicroseconds(uint32_t) {}
 void pinMode(uint8_t,int) {}
 void digitalWrite(uint8_t,int) {}
@@ -202,8 +208,12 @@ int main(int argc,char**) {
  secondSilent=false;
  for(unsigned t=0;t<60000 && !CanMasterManager::configurationReconciled(1);t+=100) advance(100);
  assert(CanMasterManager::configurationReconciled(1));
- // Entropy failure on a confirmed new master excludes control with stable diagnostics.
- zeroEntropy=true;bodaqs_control_exchange_init(&master.control,102);
+ // Repeated prior entropy cannot masquerade as a fresh scope.
+ repeatedSession=CanMasterManager::diagnostics().authority.session;
+ bodaqs_control_exchange_init(&master.control,102);assert(CanMasterManager::probeNow());
+ assert(!CanMasterManager::diagnostics().authority.session);
+ // Zero entropy also fails closed on the next confirmed master interval.
+ repeatedSession=0;zeroEntropy=true;bodaqs_control_exchange_init(&master.control,103);
  assert(CanMasterManager::probeNow());advance(10000);
  assert(!CanMasterManager::diagnostics().authority.session);
  assert(!CanMasterManager::configurationReconciled(0));

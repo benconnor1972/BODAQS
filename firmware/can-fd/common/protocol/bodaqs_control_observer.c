@@ -73,7 +73,6 @@ void bodaqs_control_observer_node(BodaqsControlObserver *observer,
         node->endpoint_mask != endpoints)
     {
         invalidate_current(node);
-        for (unsigned e=0; e<6; ++e) node->endpoints[e].current = false;
         if ((observer->pending && observer->current.node_address == address) ||
             (observer->snapshot_phase && observer->snapshot_address == address))
         {

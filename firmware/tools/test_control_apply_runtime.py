@@ -38,6 +38,7 @@ namespace CanMasterManager {
 }
 // JSON
 int main() {
+ s_diagnostics.control.next_read_id=1;
  assert(desiredDisabled_(0)); // fitted but unassigned
  ParamStore params; assert(params.set("provider","can:0") && params.set("endpoint","imu"));
  specs[0].type=SensorType::BMI270ImuI2C; specs[0].params.bind(&params); count=1;
