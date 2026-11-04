@@ -90,6 +90,11 @@ public:
         auto it = mockRequestArgs.find(name.c_str());
         return (it != mockRequestArgs.end()) ? String(it->second.c_str()) : String();
     }
+    String arg(int i) const {
+        if (i < 0 || (size_t)i >= mockRequestArgs.size()) return String();
+        auto it = mockRequestArgs.begin(); std::advance(it, i);
+        return String(it->second.c_str());
+    }
     String argName(int i) const {
         if (i < 0 || (size_t)i >= mockRequestArgs.size()) return String();
         auto it = mockRequestArgs.begin();

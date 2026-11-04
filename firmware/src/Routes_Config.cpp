@@ -7,6 +7,7 @@
 
 #include "HtmlUtil.h"
 #include "ConfigManager.h"
+#include "SensorConfigEdit.h"
 #include "SensorManager.h"
 #include "SensorAssignment.h"
 #include "AnalogInputManager.h"
@@ -164,24 +165,21 @@ static bool rejectConfigEditLocked_(WebServer& srv) {
   return true;
 }
 
-static bool rebuildSavedSensorConfiguration_(String& error) {
-  char detail[160] = {0};
-  const LoggerConfig& cfg = ConfigManager::get();
-  if (!SensorManager::rebuildFromConfig(cfg, detail, sizeof(detail))) {
-    error = detail[0] ? String(detail) : F("Could not apply the sensor configuration");
-    return false;
+static bool commitSensorEdit_(WebServer& srv, SensorConfigEdit& edit, const LoggerConfig& cfg) {
+  char detail[160] = {};
+  const auto result = edit.commit(cfg, detail, sizeof(detail));
+  if (result == SensorConfigEdit::Result::Applied) return true;
+  const int status = result == SensorConfigEdit::Result::Invalid ? 400
+      : result == SensorConfigEdit::Result::Locked ? 423 : 500;
+  String message = result == SensorConfigEdit::Result::SavedNotApplied
+      ? String(F("Saved, but runtime rebuild failed: ")) + detail : String(detail);
+  if (HtmlUtil::isHtmxRequest(srv)) {
+    HttpFileSender::sendText(srv, 200, F("text/html"),
+        String(F("<div class='alert-err'>")) + HtmlUtil::htmlEscape(message) + F("</div>"), F("no-store"));
+  } else {
+    srv.send(status, F("text/plain"), message);
   }
-  const uint16_t effectiveRate =
-      AnalogInputManager::configureFromConfig(cfg, cfg.sampleRateHz);
-  StorageManager_setSampleRate(effectiveRate);
-  LoggingManager::refreshConfigurationStatus();
-  return true;
-}
-
-static void restoreConfigurationAfterSaveFailure_() {
-  if (!ConfigManager::reload()) {
-    WEB_LOGW("could not reload persisted configuration after save failure\n");
-  }
+  return false;
 }
 
 static void applyLogSettingsLive_(const LoggerConfig& cfg) {
@@ -1447,6 +1445,8 @@ void registerConfigRoutes(WebServer& srv) {
 
     if (rejectConfigEditLocked_(srv)) return;
 
+    SensorConfigEdit edit;
+    if (!edit.ready()) { srv.send(503, F("text/plain"), F("Sensor editor unavailable")); return; }
     LoggerConfig tmp = ConfigManager::get();
 
     if (srv.hasArg("delete_sensor_idx")) {
@@ -1455,28 +1455,8 @@ void registerConfigRoutes(WebServer& srv) {
         srv.send(400, F("text/plain"), F("Invalid sensor index"));
         return;
       }
-      if (!ConfigManager::deleteSensorByIndex((uint8_t)idx) ||
-          !ConfigManager::save(ConfigManager::get())) {
-        restoreConfigurationAfterSaveFailure_();
-        if (isHtmxRequest(srv)) {
-          HttpFileSender::sendText(srv, 200, F("text/html"),
-            F("<div class='alert-err'>Failed to delete sensor</div>"), F("no-store"));
-        } else {
-          srv.send(500, F("text/plain"), F("Failed to delete sensor"));
-        }
-        return;
-      }
-      String applyError;
-      if (!rebuildSavedSensorConfiguration_(applyError)) {
-        if (isHtmxRequest(srv)) {
-          HttpFileSender::sendText(srv, 200, F("text/html"),
-            String(F("<div class='alert-err'>Saved, but could not apply without a restart: ")) +
-              HtmlUtil::htmlEscape(applyError) + F("</div>"), F("no-store"));
-        } else {
-          srv.send(500, F("text/plain"), String(F("Saved, but not applied: ")) + applyError);
-        }
-        return;
-      }
+      if (!ConfigManager::deleteSensorByIndex((uint8_t)idx)) return;
+      if (!commitSensorEdit_(srv, edit, ConfigManager::get())) return;
       if (isHtmxRequest(srv)) {
         srv.sendHeader(F("HX-Redirect"), F("/config/sensors?ok=1"));
         HttpFileSender::sendText(srv, 200, F("text/html"), F(""), F("no-store"));
@@ -1490,31 +1470,16 @@ void registerConfigRoutes(WebServer& srv) {
     if (srv.hasArg("add_sensor")) {
       SensorType newType = SensorType::AnalogPot;
       if (srv.hasArg("add_sensor_type")) {
-        (void)parseSensorTypeKey_(srv.arg("add_sensor_type"), newType);
+        if (!parseSensorTypeKey_(srv.arg("add_sensor_type"), newType)) {
+          srv.send(400, F("text/plain"), F("Invalid sensor type")); return;
+        }
       }
       const String uniqueName = uniqueSensorName_(newType, srv.hasArg("add_sensor_name") ? srv.arg("add_sensor_name") : String());
-      if (!ConfigManager::appendSensor(newType, uniqueName.c_str()) ||
-          !ConfigManager::save(ConfigManager::get())) {
-        restoreConfigurationAfterSaveFailure_();
-        if (isHtmxRequest(srv)) {
-          HttpFileSender::sendText(srv, 200, F("text/html"),
-            F("<div class='alert-err'>Failed to add sensor</div>"), F("no-store"));
-        } else {
-          srv.send(500, F("text/plain"), F("Failed to add sensor"));
-        }
+      if (!ConfigManager::appendSensor(newType, uniqueName.c_str())) {
+        srv.send(400, F("text/plain"), F("Could not add sensor"));
         return;
       }
-      String applyError;
-      if (!rebuildSavedSensorConfiguration_(applyError)) {
-        if (isHtmxRequest(srv)) {
-          HttpFileSender::sendText(srv, 200, F("text/html"),
-            String(F("<div class='alert-err'>Saved, but could not apply without a restart: ")) +
-              HtmlUtil::htmlEscape(applyError) + F("</div>"), F("no-store"));
-        } else {
-          srv.send(500, F("text/plain"), String(F("Saved, but not applied: ")) + applyError);
-        }
-        return;
-      }
+      if (!commitSensorEdit_(srv, edit, ConfigManager::get())) return;
       const int newIdx = (int)ConfigManager::sensorCount() - 1;
       if (isHtmxRequest(srv)) {
         String redirect = F("/config/sensors?ok=1#sensor-");
@@ -1538,6 +1503,7 @@ void registerConfigRoutes(WebServer& srv) {
     const LoggerConfig& current = ConfigManager::get();  // read-only view for enumeration
     const uint8_t count = current.sensorCount();
     int orientationChangedIdx = -1;
+    bool invalidInput = false;
 
     for (uint8_t idx = 0; idx < count; ++idx) {
       SensorSpec sp;
@@ -1555,7 +1521,8 @@ void registerConfigRoutes(WebServer& srv) {
       };
       auto getBoolLast = [&](const char* key, bool& out)->bool{
         String v; if (!getArgLast(key, v)) return false; v.trim(); v.toLowerCase();
-        out = (v=="true"||v=="1"||v=="on"); return true;
+        if (!ConfigManager::parseBool(v, out)) invalidInput = true;
+        return true;
       };
 
       bool typeChanged = false;
@@ -1567,7 +1534,9 @@ void registerConfigRoutes(WebServer& srv) {
         if (getArgLast("type", v)) {
           v.trim();
           if (v.length()) {
-            (void)parseSensorTypeKey_(v, sp.type);
+            if (!parseSensorTypeKey_(v, sp.type)) {
+              srv.send(400, F("text/plain"), F("Invalid sensor type")); return;
+            }
           }
         }
         typeChanged = (sp.type != oldType);
@@ -1586,7 +1555,12 @@ void registerConfigRoutes(WebServer& srv) {
             }
           }
 
+          String provider, endpoint;
+          const bool haveProvider = sp.params.get("provider", provider);
+          const bool haveEndpoint = sp.params.get("endpoint", endpoint);
           sp.params.clear();
+          if (haveProvider) sp.params.set("provider", provider);
+          if (haveEndpoint) sp.params.set("endpoint", endpoint);
 
           if (newDefs) {
             const size_t seedCount = (newDefCount < ParamStore::MAX) ? newDefCount : ParamStore::MAX;
@@ -1624,7 +1598,6 @@ void registerConfigRoutes(WebServer& srv) {
             valid = v == String("can:") + node || v == String("can") + node;
           }
           if (!valid || !sp.params.set("provider", v)) {
-            restoreConfigurationAfterSaveFailure_();
             srv.send(400, F("text/plain"), F("Invalid sensor provider"));
             return;
           }
@@ -1633,18 +1606,17 @@ void registerConfigRoutes(WebServer& srv) {
           v.trim();
           v.toLowerCase();
           if (!sp.params.set("endpoint", v)) {
-            restoreConfigurationAfterSaveFailure_();
             srv.send(400, F("text/plain"), F("Could not store sensor endpoint"));
             return;
           }
         }
         if (getArgLast("i2c_bus", v)) {
           v.trim();
-          sp.params.setInt("i2c_bus", v.toInt());
+          sp.params.set("i2c_bus", v);
         }
         if (getArgLast("i2c_addr", v)) {
           v.trim();
-          sp.params.setInt("i2c_addr", v.toInt());
+          sp.params.set("i2c_addr", v);
         }
         if (getArgLast("ain", v)) {
           v.trim();
@@ -1660,7 +1632,6 @@ void registerConfigRoutes(WebServer& srv) {
           }
 
           if (!ok) {
-            restoreConfigurationAfterSaveFailure_();
             // Redirect back with error details
             srv.sendHeader("Location",
               "/config?err=invalid_ain&sensor=" + String((int)idx) + "&ain=" + String((int)ain));
@@ -1668,7 +1639,7 @@ void registerConfigRoutes(WebServer& srv) {
             return;
           }
 
-          sp.params.setInt("ain", ain);
+          sp.params.set("ain", v);
         }
       }
 
@@ -1680,6 +1651,7 @@ void registerConfigRoutes(WebServer& srv) {
         long newOm = oldOm; bool omChanged = false;
 
         if (getArgLast("output_mode", v)) {
+          if (!v.equalsIgnoreCase("RAW") && !v.equalsIgnoreCase("LINEAR") && v != "0" && v != "1") invalidInput = true;
           const OutputMode parsed = parseLoggerOutputMode_(v, loggerSupportedOutputMode_(oldOm));
           newOm = (long)parsed;
           if (newOm != oldOm) omChanged = true;
@@ -1696,8 +1668,8 @@ void registerConfigRoutes(WebServer& srv) {
         }
 
         { bool inc = false; if (getBoolLast("include_raw", inc)) sp.params.setBool("include_raw", inc); }
-        if (getArgLast("sensor_full_travel_mm", v)) { double f = v.toFloat(); sp.params.setFloat("sensor_full_travel_mm", (float)f); }
-        if (getArgLast("installed_range", v)) { double f = v.toFloat(); sp.params.setFloat("installed_range", (float)f); }
+        if (getArgLast("sensor_full_travel_mm", v)) { sp.params.set("sensor_full_travel_mm", v); }
+        if (getArgLast("installed_range", v)) { sp.params.set("installed_range", v); }
         if (getArgLast("end", v)) { v.trim(); sp.params.set("end", v); }
         if (getArgLast("primary_domain", v)) { v.trim(); sp.params.set("primary_domain", v); }
         if (getArgLast("primary_quantity", v)) { v.trim(); sp.params.set("primary_quantity", v); }
@@ -1710,17 +1682,17 @@ void registerConfigRoutes(WebServer& srv) {
       // Calibration
       {
         String v;
-        if (getArgLast("sensor_zero_count", v)) { long vi = v.toInt(); sp.params.setInt("sensor_zero_count", vi); }
-        if (getArgLast("sensor_full_count", v)) { long vi = v.toInt(); sp.params.setInt("sensor_full_count", vi); }
-        if (getArgLast("installed_zero_count", v)) { long vi = v.toInt(); sp.params.setInt("installed_zero_count", vi); }
-        if (getArgLast("zero_count", v)) { long vi = v.toInt(); sp.params.setInt("zero_count", vi); }
+        if (getArgLast("sensor_zero_count", v)) { sp.params.set("sensor_zero_count", v); }
+        if (getArgLast("sensor_full_count", v)) { sp.params.set("sensor_full_count", v); }
+        if (getArgLast("installed_zero_count", v)) { sp.params.set("installed_zero_count", v); }
+        if (getArgLast("zero_count", v)) { sp.params.set("zero_count", v); }
       }
 
       // Wrapping
       {
         String v;
-        if (getArgLast("counts_per_turn", v))       { long vi = v.toInt(); sp.params.setInt("counts_per_turn", vi); }
-        if (getArgLast("wrap_threshold_counts", v)) { long vi = v.toInt(); sp.params.setInt("wrap_threshold_counts", vi); }
+        if (getArgLast("counts_per_turn", v))       { sp.params.set("counts_per_turn", v); }
+        if (getArgLast("wrap_threshold_counts", v)) { sp.params.set("wrap_threshold_counts", v); }
         { bool assume = false; if (getBoolLast("assume_turn0_at_start", assume)) sp.params.setBool("assume_turn0_at_start", assume); }
       }
 
@@ -1730,7 +1702,6 @@ void registerConfigRoutes(WebServer& srv) {
         const bool hasPlane = getArgLast("orient_plane", planeText);
         const bool hasSign = getArgLast("orient_normal_sign", signText);
         if (hasPlane != hasSign) {
-          restoreConfigurationAfterSaveFailure_();
           srv.send(400, F("text/plain"), F("Incomplete IMU installation orientation"));
           return;
         }
@@ -1738,7 +1709,6 @@ void registerConfigRoutes(WebServer& srv) {
           ImuInstallationPlane plane;
           if (!ImuOrientation::parsePlane(planeText.c_str(), plane) ||
               (signText != "1" && signText != "-1")) {
-            restoreConfigurationAfterSaveFailure_();
             srv.send(400, F("text/plain"), F("Invalid IMU installation orientation"));
             return;
           }
@@ -1756,7 +1726,6 @@ void registerConfigRoutes(WebServer& srv) {
           if ((changed && !sp.params.setBool("orient_valid", false)) ||
               !sp.params.set("orient_plane", planeText) ||
               !sp.params.setInt("orient_normal_sign", selectedSign)) {
-            restoreConfigurationAfterSaveFailure_();
             srv.send(500, F("text/plain"), F("Could not store IMU installation orientation"));
             return;
           }
@@ -1809,12 +1778,12 @@ void registerConfigRoutes(WebServer& srv) {
 
         bool ok = true;
         switch (def->type) {
-          case ParamType::Bool:  ok = sp.params.setBool (pkey.c_str(), (val=="true"||val=="on"||val=="1")); break;
-          case ParamType::Int:   ok = sp.params.setInt  (pkey.c_str(), val.toInt());                         break;
-          case ParamType::Float: ok = sp.params.setFloat(pkey.c_str(), (float)val.toFloat());               break;
+          case ParamType::Bool:  ok = sp.params.set(pkey.c_str(), val); break;
+          case ParamType::Int:   ok = sp.params.set     (pkey.c_str(), val);                         break;
+          case ParamType::Float: ok = sp.params.set     (pkey.c_str(), val);               break;
           default:               ok = sp.params.set     (pkey.c_str(), val);                                break;
         }
-        if (!ok) WEB_LOGW("set param failed: s%u.%s\n", (unsigned)idx, pkey.c_str());
+        if (!ok) { srv.send(400, F("text/plain"), F("Could not store sensor parameter")); return; }
       }
 
       // Commit all param changes into tmp so ConfigManager::save(tmp) persists them
@@ -1825,27 +1794,8 @@ void registerConfigRoutes(WebServer& srv) {
 
     }
 
-    if (!ConfigManager::save(tmp)) {
-      restoreConfigurationAfterSaveFailure_();
-      if (isHtmxRequest(srv)) {
-        HttpFileSender::sendText(srv, 200, F("text/html"),
-          F("<div class='alert-err'>Failed to save config</div>"), F("no-store"));
-      } else {
-        srv.send(500, F("text/plain"), F("Failed to save config"));
-      }
-      return;
-    }
-    String applyError;
-    if (!rebuildSavedSensorConfiguration_(applyError)) {
-      if (isHtmxRequest(srv)) {
-        HttpFileSender::sendText(srv, 200, F("text/html"),
-          String(F("<div class='alert-err'>Saved, but could not apply without a restart: ")) +
-            HtmlUtil::htmlEscape(applyError) + F("</div>"), F("no-store"));
-      } else {
-        srv.send(500, F("text/plain"), String(F("Saved, but not applied: ")) + applyError);
-      }
-      return;
-    }
+    if (invalidInput) { srv.send(400, F("text/plain"), F("Invalid sensor value")); return; }
+    if (!commitSensorEdit_(srv, edit, tmp)) return;
     if (isHtmxRequest(srv)) {
       if (applyTypeIdx >= 0 || orientationChangedIdx >= 0) {
         // "Apply Type" was clicked — redirect to rebuild the editor with the new sensor-type fields
