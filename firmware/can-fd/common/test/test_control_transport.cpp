@@ -1,6 +1,8 @@
 #include "CanMasterProtocol.h"
 #include "bodaqs_control_observer.h"
 #include "bodaqs_master_service.h"
+#include "bodaqs_control_authority.h"
+#include "bodaqs_control_authority_client.h"
 #include <cassert>
 #include <cstring>
 
@@ -207,9 +209,55 @@ void snapshotsCrossBothLinksWithinLifetime(bool corrupt)
     }
     assert(false && "snapshot pages must complete at 100ms SPI cadence for four nodes");
 }
+uint64_t authorityEntropy(void*) { return 0x123456789abcdef0ULL; }
+void authoritySurvivesLostCanBindAndReleaseReplies()
+{
+    BodaqsMasterService master;
+    bodaqs_master_service_init(&master,nullptr);
+    bodaqs_control_exchange_init(&master.control,99);
+    BodaqsControlAuthority authority;
+    bodaqs_control_authority_init(&authority);
+    BodaqsControlAuthorityClient logger;
+    bodaqs_control_authority_client_init(&logger,0x1020304050607080ULL);
+    bodaqs_control_authority_client_node(&logger,0,55,true);
+    BodaqsControlNode node={};node.boot_id=55;node.endpoint_mask=1;node.endpoint_epoch[0]=1;
+    bool lostBind=false,lostRelease=false,releaseRequested=false;
+    for(uint32_t now=0;now<10000;now+=100) {
+        if(logger.nodes[0].bound && !releaseRequested) {
+            assert(node.active_session==logger.session && node.flags==1);
+            assert(bodaqs_control_authority_client_release(&logger,0));releaseRequested=true;
+        }
+        BodaqsControlWrapped q,r;uint8_t type;
+        if(!bodaqs_control_authority_client_next(&logger,99,&q,&type)) {
+            assert(releaseRequested && !logger.nodes[0].bound && !node.active_session);
+            assert(lostBind && lostRelease && node.endpoint_epoch[0]==3);
+            // Discovery of another node boot immediately removes local authority.
+            bodaqs_control_authority_client_node(&logger,0,56,true);
+            assert(!logger.nodes[0].bound);
+            return;
+        }
+        auto result=spi(master,type,&q);
+        assert(bodaqs_control_decode_wrapped(result.payload,result.payloadLength,&r));
+        assert(bodaqs_control_authority_client_accept(&logger,(uint8_t)result.type,&r,now));
+        bodaqs_control_exchange_tick(&master.control,now);
+        uint8_t address,wire[64];uint16_t transaction;
+        if(bodaqs_control_exchange_transmit(&master.control,now,&address,&transaction,wire)) {
+            BodaqsControlRecord nq,nr;uint16_t nt;
+            assert(bodaqs_control_decode_can(wire,64,false,&nt,&nq));
+            assert(bodaqs_control_authority_process(&authority,&node,&nq,now,authorityEntropy,nullptr,&nr));
+            if(nq.opcode==2 && !lostBind) {lostBind=true;continue;}
+            if(nq.opcode==3 && !lostRelease) {lostRelease=true;continue;}
+            assert(bodaqs_control_encode_can(&nr,true,nt,wire));
+            assert(bodaqs_control_decode_can(wire,64,true,&nt,&nr));
+            assert(bodaqs_control_exchange_receive(&master.control,address,nt,&nr));
+        }
+    }
+    assert(false && "lost authority replies must converge under bounded master retries");
+}
 } // namespace
 int main()
 {
+    authoritySurvivesLostCanBindAndReleaseReplies();
     snapshotsCrossBothLinksWithinLifetime(false);
     snapshotsCrossBothLinksWithinLifetime(true);
     loggerReadsNodeStateThroughBothRealTransports();
