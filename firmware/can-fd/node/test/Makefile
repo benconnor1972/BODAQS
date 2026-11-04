@@ -11,6 +11,12 @@ test: test_capture.exe test_spi.exe test_acquisition.exe
 	./test_acquisition.exe 3
 	./test_acquisition.exe 4
 	./test_acquisition.exe 5
+	./test_acquisition.exe 6
+	./test_acquisition.exe 7
+	./test_acquisition.exe 8
+	./test_acquisition.exe 9
+	./test_acquisition.exe 10
+	./test_acquisition.exe 11
 test_capture.exe: test_capture.c ../src/imu_capture.c
 	$(CC) $(CFLAGS) $^ -o $@
 test_spi.exe: test_spi.c ../src/imu_spi.c

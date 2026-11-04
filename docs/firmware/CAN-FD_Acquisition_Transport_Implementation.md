@@ -19,10 +19,10 @@ are part of this implementation.
 | #167 bounded fragmented transfer | Merged and verified | `a00e81b`, merged at `655bbcd`; [fragment evidence](CAN-FD_Fragment_Transport_Implementation.md) |
 | #168 leased recording lifecycle | Merged and verified | `4411809`, merged at `6255dc2`; [lifecycle evidence](CAN-FD_Acquisition_Lifecycle_Implementation.md) |
 | #169 one-node native BDQ recording | Merged and verified | `20ce5a9`, merged at `fbca8ba`; [native recording evidence](CAN-FD_Native_IMU_Recording_Implementation.md) |
-| #170 synchronization and analysis timing | Implementing | Depends on verified #169 |
+| #170 synchronization and analysis timing | Merged and verified | `a1d4cba`, merged at `8d5dbc4`; [synchronization evidence](CAN-FD_Synchronization_Implementation.md) |
 | #171 bounded loss and continuity recovery | Implementing | Depends on verified #169 |
-| #172 link/restart containment and cleanup | Ready | Depends on verified #169 |
-| #173 four-node resource admission | Pending | Depends on #170 |
+| #172 link/restart containment and cleanup | Implementing | Depends on verified #169 |
+| #173 four-node resource admission | Implementing | Depends on verified #170 |
 | #174 integrated software acceptance | Pending | Depends on #171, #172 and #173 |
 
 At `9c20ead`, the combined common CAN/control suite (nine binaries), full logger
@@ -50,6 +50,12 @@ reader. The child full analysis suite passes 577 tests with one skip; merged
 focused analysis passes 58 tests. Identical source trees preserve the passing
 node/master/A8 build evidence. Broader timing, loss/restart recovery and four-node
 resource admission remain the following software slices.
+
+At `8d5dbc4`, the full logger host suite, thirteen common binaries and node
+adapter scenarios 1-10 pass; focused timing/BDQ analysis passes 69 tests. The
+child full analysis run passes 588 with one skip, and identical merged source
+preserves passing node/master/A8 builds. Raw synchronization captures remain
+available when absolute association and finite alignment bounds are unknown.
 
 ## Deferred physical qualification
 

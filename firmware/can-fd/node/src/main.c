@@ -366,6 +366,15 @@ static void process_can_message(
         ++gNodeRuntimeInfo.malformed_frames;
         return;
     }
+    if(can_standard_identifier(message)==BODAQS_CAN_ID_SYNC_MARKER) {
+        const uint8_t *p=message->data;
+        if(bodaqs_can_dlc_to_length((uint8_t)message->dlc)==16 && p[0]==1 && p[1]==0x20 &&
+           p[2]==1 && !p[3] && p[6]==8 && !p[7] &&
+           (uint16_t)(p[4]|((uint16_t)p[5]<<8))==(uint16_t)bodaqs_control_get_u32(p+8))
+            bodaqs_node_sync_marker(bodaqs_control_get_u32(p+8),bodaqs_control_get_u32(p+12));
+        else ++gNodeRuntimeInfo.malformed_frames;
+        return;
+    }
     if (can_standard_identifier(message) == BODAQS_CAN_ID_TARGET_REQUEST_BASE + gNodeRuntimeInfo.node_address) {
         BodaqsControlRecord control, reply;
         uint16_t transaction;

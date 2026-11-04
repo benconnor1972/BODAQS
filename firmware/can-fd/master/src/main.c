@@ -1,3 +1,4 @@
+#include "master_timing.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -83,11 +84,22 @@ typedef struct {
 typedef struct {
     DL_MCAN_RxBufElement message;
     uint32_t received_ms, received_tick;
+    uint8_t received_flags;
     uint64_t ordinal;
 } CanReceiveRecord;
 static uint64_t gCanReceiveOrdinal;
 static CanReceiveRecord gCanReceiveStorage[CAN_RX_CAPACITY];
 static BodaqsRecordQueue gCanReceiveQueue;
+/* ISR-only accumulation; main copies/clears under a short IRQ fence. No
+ * selected reception or service-owned definition is edited in the ISR. */
+typedef struct {
+    uint32_t source,evidence,tick;
+    uint64_t ordinal;
+    uint16_t first,last;
+    uint8_t epoch;
+    bool essential;
+} RejectedCan;
+static RejectedCan gRejectedCan[4];
 static volatile bool gHealthDue;
 
 /* Queue metadata and record copies are serialized; decoding never masks IRQs. */
@@ -184,7 +196,7 @@ static void note_can_decode_result(BodaqsCanDecodeResult result)
 }
 
 static void process_can_message(
-    const DL_MCAN_RxBufElement *message, uint32_t received_ms, uint32_t received_tick, uint64_t ordinal)
+    const DL_MCAN_RxBufElement *message, uint32_t received_ms, uint32_t received_tick, uint64_t ordinal, uint8_t received_flags)
 {
     uint16_t identifier;
     size_t length;
@@ -251,13 +263,13 @@ static void process_can_message(
     if(identifier>=BODAQS_CAN_ID_STREAM_BASE && identifier<BODAQS_CAN_ID_STREAM_BASE+32) {
         node_address=(uint8_t)((identifier-BODAQS_CAN_ID_STREAM_BASE)/8);
         (void)bodaqs_master_service_receive_can_ordered(&gService,node_address,1,identifier,
-            message->data,(uint8_t)length,0,received_tick,ordinal,gUptimeMs);
+            message->data,(uint8_t)length,received_flags,received_tick,ordinal,gUptimeMs);
         return;
     }
     if(bodaqs_can_identifier_node(identifier,BODAQS_CAN_ID_TIMING_BASE,&node_address) ||
        bodaqs_can_identifier_node(identifier,BODAQS_CAN_ID_EVENT_BASE,&node_address)) {
         (void)bodaqs_master_service_receive_can_ordered(&gService,node_address,2,identifier,
-            message->data,(uint8_t)length,0,received_tick,ordinal,gUptimeMs);
+            message->data,(uint8_t)length,received_flags,received_tick,ordinal,gUptimeMs);
         return;
     }
     ++gMasterRuntimeInfo.can_unknown_frames;
@@ -279,9 +291,10 @@ static void capture_can_receive_fifo(void)
         DL_MCAN_readMsgRam(MCAN0_INST, DL_MCAN_MEM_TYPE_FIFO, 0U,
             fifo_status.num, &record.message);
         record.received_ms = gUptimeMs;
-        /* Quantized capture source until #170 binds the native master clock.
-         * Carry this exact ingress observation through deferred processing. */
-        record.received_tick = record.received_ms * 1000U;
+        uint32_t clock_epoch;
+        record.received_tick = bodaqs_master_timing_clock(NULL,&clock_epoch);
+        record.received_flags=clock_epoch?0:1;
+        if(!clock_epoch) record.received_tick=0;
         /* ISR capture order includes frames later rejected or dropped by queues. */
         if(gCanReceiveOrdinal==UINT64_MAX) {
             ++gMasterRuntimeInfo.can_malformed_frames;
@@ -290,7 +303,33 @@ static void capture_can_receive_fifo(void)
         DL_MCAN_writeRxFIFOAck(
             MCAN0_INST, fifo_status.num, fifo_status.getIdx);
         ++gMasterRuntimeInfo.can_rx_frames;
-        (void) bodaqs_record_queue_push(&gCanReceiveQueue, &record);
+        if(!bodaqs_record_queue_push(&gCanReceiveQueue, &record) && !record.message.xtd &&
+           !record.message.rtr && record.message.fdf) {
+            uint16_t id=(uint16_t)record.message.id;
+            bool sample=id>=0x100 && id<=0x118 && !(id&7);
+            bool evidence=id>=0x90 && id<=0x93;
+            uint8_t node=sample?(uint8_t)((id-0x100)/8):(uint8_t)(id-0x90);
+            if(sample || evidence) {
+                RejectedCan *r=&gRejectedCan[node];
+                uint8_t *p=record.message.data;
+                size_t length=bodaqs_can_dlc_to_length((uint8_t)record.message.dlc);
+                uint8_t epoch=sample&&length>=4?p[2]:!sample&&length>=14?p[13]:0;
+                if((r->source || r->evidence) && r->epoch!=epoch) r->essential=true;
+                r->epoch=epoch;r->tick=record.received_tick;r->ordinal=record.ordinal;
+                if(sample) {
+                    uint32_t n=p[3]&7;
+                    if(!n || n>5 || length<4+12*n || UINT32_MAX-r->source<n) r->essential=true;
+                    else {
+                        if(!r->source) r->first=(uint16_t)bodaqs_measurement_get(p,2);
+                        r->last=(uint16_t)(bodaqs_measurement_get(p,2)+n-1);
+                        r->source+=n;
+                    }
+                } else {
+                    if(r->evidence==UINT32_MAX) r->essential=true; else ++r->evidence;
+                    if(length!=64 || p[1]!=0x23) r->essential=true;
+                }
+            }
+        }
         DL_MCAN_getRxFIFOStatus(MCAN0_INST, &fifo_status);
     }
 }
@@ -299,8 +338,17 @@ static void capture_can_receive_fifo(void)
 static void service_can_receive(void)
 {
     CanReceiveRecord record;
+    unsigned node;
+    for(node=0;node<4;++node) {
+        RejectedCan lost;
+        uint32_t primask=__get_PRIMASK();
+        __disable_irq();lost=gRejectedCan[node];memset(&gRejectedCan[node],0,sizeof lost);__set_PRIMASK(primask);
+        if(lost.source || lost.evidence || lost.essential)
+            bodaqs_master_service_loss_counts(&gService,(uint8_t)node,5,lost.epoch,
+                lost.first,lost.last,lost.source,lost.evidence,lost.essential,lost.tick,lost.ordinal);
+    }
     if (take_record(&gCanReceiveQueue, &record)) {
-        process_can_message(&record.message, record.received_ms, record.received_tick, record.ordinal);
+        process_can_message(&record.message, record.received_ms, record.received_tick, record.ordinal, record.received_flags);
     }
 }
 
@@ -574,6 +622,30 @@ static void update_service_status(void)
         BODAQS_MASTER_DISCOVERY_NODE_COUNT);
 }
 
+static void service_sync(void) {
+    static uint32_t sequence, edge, evidence_sequence, evidence_edge;
+    static bool marker_pending, evidence_pending;
+    uint8_t p[64]={0};
+    if(!marker_pending && bodaqs_master_timing_take(&sequence,&edge)) {
+        marker_pending=true;
+        if(!evidence_pending && gService.measurement.mode.phase==2) {
+            evidence_sequence=sequence;evidence_edge=edge;evidence_pending=true;
+        }
+    }
+    if(marker_pending) {
+        p[0]=1;p[1]=0x20;p[2]=1;p[4]=(uint8_t)sequence;p[5]=(uint8_t)(sequence>>8);p[6]=8;
+        bodaqs_control_put_u32(p+8,sequence);bodaqs_control_put_u32(p+12,edge);
+        if(send_can_frame(0x20,p,16)) marker_pending=false;
+    }
+    if(evidence_pending) {
+        memset(p,0,sizeof p);p[0]=1;p[2]=1;p[4]=1;p[8]=1;
+        bodaqs_control_put_u32(p+12,evidence_sequence);bodaqs_control_put_u32(p+16,evidence_edge);
+        bodaqs_control_put_u32(p+20,1);
+        if(gService.measurement.mode.phase!=2 || bodaqs_master_service_publish_evidence(&gService,p,24))
+            evidence_pending=false;
+    }
+}
+
 static void service_spi_receive(void);
 static void retire_spi_boundary(void);
 
@@ -592,6 +664,8 @@ int main(void)
 
     identity = master_identity_read();
     bodaqs_master_service_init(&gService, &identity);
+    bodaqs_master_timing_init();
+    gService.native_clock=bodaqs_master_timing_clock;
     bodaqs_control_exchange_init(&gService.control, master_control_boot_id_read());
     bodaqs_node_inventory_init(&gNodeInventory);
     gTransmitIndex = 0U;
@@ -635,6 +709,8 @@ int main(void)
     NVIC_EnableIRQ(MCAN0_INST_INT_IRQN);
 
     while (1) {
+        bodaqs_master_timing_supervise(gUptimeMs);
+        service_sync();
         bodaqs_control_exchange_tick(&gService.control, gUptimeMs);
         retire_spi_boundary();
         service_spi_receive();
@@ -690,6 +766,9 @@ void MCAN0_INST_IRQHandler(void)
             DL_MCAN_INTR_SRC_MCAN_LINE_1);
         if ((interrupt_status & DL_MCAN_INTERRUPT_RF0L) != 0U) {
             ++gMasterRuntimeInfo.can_rx_hardware_losses;
+            /* Hardware does not identify how many messages or which source
+             * was overwritten. Preserve unknown counts and fail closed. */
+            for(unsigned node=0;node<4;++node) gRejectedCan[node].essential=true;
         }
         if ((interrupt_status & gCanErrorInterruptMask) != 0U) {
             ++gMasterRuntimeInfo.can_error_events;
@@ -834,3 +913,5 @@ void SysTick_Handler(void)
     if ((gUptimeMs % 100U)==0U) gHealthDue = true;
 }
 
+
+void TIMA0_IRQHandler(void) { bodaqs_master_timing_irq(); }

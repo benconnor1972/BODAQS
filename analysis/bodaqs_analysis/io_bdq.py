@@ -1305,6 +1305,10 @@ def _trim_imu_streams_to_primary_interval(
             continue
         time_s = pd.to_numeric(frame["time_s"], errors="coerce")
         keep = np.isfinite(time_s) & (time_s >= start_s) & (time_s <= end_s)
+        if _payload_schema(descriptor) == "bodaqs.can_imu6.v1":
+            # Unknown alignment cannot prove that a valid sample is outside
+            # the recording's primary interval.
+            keep |= ~np.isfinite(time_s)
         original_count = len(frame.index)
         attrs = dict(frame.attrs)
         trimmed = frame.loc[keep].reset_index(drop=True)
@@ -1407,8 +1411,13 @@ def bdq_to_stream_dataframes(
                     observations[stream_id],
                     logger_origin_us,
                 )
+        from .can_timing import map_can_timing
+        map_can_timing(frames, descriptors_by_id, logger_origin_us)
         if trim_imu_to_primary_interval:
             _trim_imu_streams_to_primary_interval(frames, descriptors_by_id)
+    else:
+        from .can_timing import map_can_timing
+        map_can_timing(frames, descriptors_by_id)
     return frames
 
 

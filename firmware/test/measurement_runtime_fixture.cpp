@@ -113,6 +113,8 @@ static void reset() {
  config.canMasterMode=CanMasterMode::Auto;
  CanMasterManager::begin(profile,config);
 }
+static unsigned bridgeObservations;
+static uint32_t bridgeClock(void*,uint32_t* epoch) {++bridgeObservations;*epoch=7;return 987654;}
 int main() {
  reset();
  assert(CanMasterManager::inspectMeasurementMode());
@@ -174,6 +176,29 @@ int main() {
   CanMasterManager::MeasurementInbox* completed=nullptr;
   assert(CanMasterManager::serviceMeasurementTransport(transport,4,0,completed)>=0);
  }
+ // Fresh bridge request owns one immutable L0 and M across pipelined retries.
+ master.native_clock=bridgeClock;transport.timingEnabled=true;
+ loseMeasurementReplies=true;
+ CanMasterManager::MeasurementInbox* bridgeInbox=nullptr;
+ for(unsigned i=0;i<5;++i) CanMasterManager::serviceMeasurementTransport(transport,5,255,bridgeInbox);
+ const uint64_t originalLower=transport.bridgeLower;
+ const uint32_t originalToken=transport.bridgeToken;
+ assert(transport.bridgePending && !transport.bridgeReady && bridgeObservations==1);
+ clockMs+=50;
+ loseMeasurementReplies=false;
+ for(unsigned i=0;i<5 && !transport.bridgeReady;++i)
+   CanMasterManager::serviceMeasurementTransport(transport,5,255,bridgeInbox);
+ assert(transport.bridgeReady && transport.bridgeToken==originalToken);
+ assert(transport.bridgeLower==originalLower && transport.bridgeUpper>=originalLower+50000);
+ assert(transport.bridgeTick==987654 && transport.bridgeEpoch==7 && bridgeObservations==1);
+ transport.bridgeReady=false;transport.bridgeNext=clockMs;
+ loseMeasurementReplies=true;
+ CanMasterManager::serviceMeasurementTransport(transport,5,255,bridgeInbox);
+ const uint32_t expiringToken=transport.bridgeToken;
+ clockMs+=300;
+ CanMasterManager::serviceMeasurementTransport(transport,5,255,bridgeInbox);
+ assert(!transport.bridgePending && transport.bridgeReady && transport.bridgeExpired && transport.bridgeToken==expiringToken);
+ loseMeasurementReplies=false;transport.timingEnabled=false;
  const auto slots=master.slots_received;
  advance(1000);
  assert(master.slots_received==slots); // active mode suppresses legacy background polling

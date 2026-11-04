@@ -70,6 +70,11 @@ int main(int argc,char** argv) {
   snapshot[44]=2;snapshot[48]=0x84;snapshot[49]=3;snapshot[52]=1;
   snapshot[56]=1;snapshot[57]=2;snapshot[58]=3;snapshot[59]=0xff;snapshot[60]=1;
   assert(stream.accept(0x90,snapshot,64,54,0x100000005ULL,104)==RemoteImuStream::Accepted);
+  uint8_t capture[24]={1,0x21,1,0,2,0,16,0,2,0,0,0,0x84,3,0,0,7,0,0,0,1,0,0,0};
+  assert(stream.accept(0x90,capture,24,55,0x100000006ULL,105)==RemoteImuStream::Accepted);
+  assert(stream.acceptSharedSync(2,50000,1,106)==RemoteImuStream::Accepted);
+  assert(stream.acceptBridge(42,50100,1,0x100000010ULL,0x100000042ULL,107)==RemoteImuStream::Accepted);
+  assert(stream.acceptMissingBridge(43,108)==RemoteImuStream::Accepted);
   BdqV2StreamQueue<16,4,2> primary(1,uint64_t{1}<<32);
   const uint8_t primaryRecord[16]={0,0,0,0,90,0,0,0,0,0,0,0,20,0,0,0};
   assert(primary.enqueueRecord(primaryRecord,sizeof primaryRecord));
