@@ -58,6 +58,9 @@ diagnostics do not identify a source epoch, native tick or CAN receive ordinal;
 those companion fields remain absent/zero. Compact reception schema 1, the
 16-byte shared SYNC event format, CAN messages, 28-byte samples and 224-byte
 companions are unchanged.
+The actual retained CAN bytes and reception flags are preserved. The next
+sample's source-sequence gap supplies its discontinuity flag; the separate
+management observation identifies the known master queue loss.
 
 The logger sample queue similarly drops the newest whole packet when its full
 batch will not fit, advances observed source sequence, retains exact counters,

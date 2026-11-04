@@ -322,9 +322,6 @@ bool bodaqs_master_service_receive_can_ordered(BodaqsMasterService *s,uint8_t no
     bodaqs_measurement_put(r,identifier,2); r[2]=length; r[3]=flags;
     bodaqs_measurement_put(r+4,tick,4); bodaqs_measurement_put(r+8,ordinal,4);
     memcpy(r+12,payload,length); ++q->count; ++s->retained_frames;
-    if(cls==1 && (s->loss[node].gap || s->isr_loss[node].gap)) {
-        r[15]|=16;s->loss[node].gap=s->isr_loss[node].gap=false;
-    }
     if(q->count>q->high_water) q->high_water=q->count;
     if(anchor) {s->anchor_boot[node]=s->discovery[node].boot_id;s->anchor_epoch[node]=payload[10];}
     if(anchor || cls==1) s->anchor_sequence[node]=sequence;
