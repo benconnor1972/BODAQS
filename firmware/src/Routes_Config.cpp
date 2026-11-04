@@ -137,8 +137,8 @@ static void noteHttpActivity_() {
 }
 
 static bool configEditLocked_(String* reason = nullptr) {
-  if (!WebServerManager::canStart()) {
-    if (reason) *reason = F("logging is active");
+  if (LoggingManager::configurationLocked() || !WebServerManager::canStart()) {
+    if (reason) *reason = F("recording starts, runs, or stops; stop recording, then retry. Nothing was changed");
     return true;
   }
   if (UploadModeManager::isActive()) {

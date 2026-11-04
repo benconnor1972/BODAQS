@@ -81,6 +81,11 @@ struct Diagnostics {
 };
 
 void scheduleConfigurationReconciliation();
+// Freeze mutations before recording; the original deadline is never extended.
+void beginRecordingHandoff();
+bool recordingHandoffReady();
+bool recordingHandoffActive();
+void endRecordingHandoff();
 void enableControlAuthority(uint64_t session);
 // Idle-only release changes authority and preserves hardware configuration.
 bool releaseControlAuthority(uint8_t address);

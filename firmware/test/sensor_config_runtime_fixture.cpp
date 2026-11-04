@@ -22,7 +22,7 @@ const char* Log_levelName(LogLevel) { return "info"; }
 LoggerConfig g_cfg;
 namespace board { const BoardProfile* gBoard = nullptr; }
 String disk;
-bool saveOk = true, recording = false, upload = false;
+bool saveOk = true, recording = false, starting = false, upload = false;
 int rebuilds = 0;
 bool StorageManager_loadTextFile(const char*, String& out) { out = disk; return true; }
 bool StorageManager_saveTextFile(const char*, const String& text) { if (!saveOk) return false; disk = text; return true; }
@@ -46,7 +46,7 @@ const Diagnostics& diagnostics() { return controlDiagnostics; }
 bool configurationReconciled(uint8_t) { return false; }
 void scheduleConfigurationReconciliation() {}
 }
-namespace LoggingManager { bool isRunning() { return recording; } void refreshConfigurationStatus() {} }
+namespace LoggingManager { bool isRunning() { return recording; } bool configurationLocked() { return recording || starting; } void refreshConfigurationStatus() {} }
 namespace UploadModeManager { bool isActive() { return upload; } }
 struct Sensor {
   bool mute = true;
@@ -56,6 +56,7 @@ struct Sensor {
 } live;
 namespace SensorManager {
 uint8_t count() { return 1; }
+bool getMuted(uint8_t, bool& out) { out=live.muted(); return true; }
 Sensor* get(uint8_t index) { return index == 0 ? &live : nullptr; }
 bool rebuildOk = true;
 bool rebuildFromConfig(const LoggerConfig& cfg, char*, size_t) { ++rebuilds; live.mute = cfg.sensors[0].mutedDefault; return rebuildOk; }
@@ -77,7 +78,8 @@ bool readJsonBody_(WebServer& srv, JsonDocument& doc) { return !deserializeJson(
 #define WEB_LOGW(...) do {} while(0)
 enum class OutputMode { RAW, LINEAR };
 namespace HtmlUtil {
-bool isHtmxRequest(WebServer&) { return false; }
+bool htmx = false;
+bool isHtmxRequest(WebServer&) { return htmx; }
 String htmlEscape(const String& text) { return text; }
 }
 using namespace HtmlUtil;
@@ -288,6 +290,18 @@ int main() {
   handleSensorDelete_(srv);
   assert(mockLastStatus == 423 && ConfigManager::sensorCount() == 1);
   recording = false;
+  starting = true;
+  handleSensorPut_(srv); assert(mockLastStatus==423 && disk==previous);
+  handleSensorPost_(srv); assert(mockLastStatus==423 && ConfigManager::sensorCount()==1);
+  handleSensorDelete_(srv); assert(mockLastStatus==423 && ConfigManager::sensorCount()==1);
+  { SensorConfigEdit locked; assert(!locked.ready()); }
+  web::post(srv); assert(mockLastStatus==423 && disk==previous);
+  HtmlUtil::htmx=true; web::post(srv);
+  assert(mockLastStatus==200 && mockLastBody.indexOf("Nothing was changed")>=0 && disk==previous);
+  HtmlUtil::htmx=false; starting=false;
+  ConfigManager::getSensorSpec(0,current);
+  assert(current.params.getInt("pin",pin) && pin==3 && String(current.name)=="front");
+  assert(rebuilds==previousRebuilds);
   mockReset();
   mockSetArg("s0.pin", "5");
   web::post(srv);

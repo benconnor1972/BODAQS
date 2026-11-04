@@ -1354,7 +1354,11 @@ namespace {
     const uint8_t sel = s_sensorSel;
     bool m = false;
     if (!SensorManager::getMuted(sel, m)) return;
-    SensorManager::setMuted(sel, !m);
+    if (!SensorManager::setMuted(sel, !m)) {
+      UI::toastModal(LoggingManager::configurationLocked()
+          ? "Recording locked\nStop, then retry" : "Mute unavailable", 2000, 1);
+      return;
+    }
 
     MLOG("[MENU] toggle sensor %u -> %s\n", (unsigned)sel, (!m ? "Muted" : "Unmuted"));
 

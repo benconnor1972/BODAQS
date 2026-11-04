@@ -41,6 +41,26 @@ bool s_haveCompletedSlot = false;
 uint32_t s_lastSlotCompletedUs = 0;
 uint64_t s_statusHardwareUid = 0;
 uint32_t s_nextControlMs = 0;
+bool s_recordingFence = false;
+bool s_handoffReady = false;
+uint32_t s_handoffStartedMs = 0;
+// Client knowledge expires after 5 s. One 100 ms service cadence plus 400 ms
+// scheduling allowance bounds the logger handoff; this is not a wire cancel.
+constexpr uint32_t kRecordingHandoffMs = 5500;
+
+void abandonApplyForRecording_() {
+  auto& apply = s_diagnostics.apply;
+  if (!apply.phase) return;
+  auto& outcome = apply.nodes[apply.current.node_address];
+  outcome.kind = 6; outcome.reason = 19; outcome.valid = true; outcome.observed_ms = millis();
+  // A lost BEGIN/COMMIT response must never cause a different request to reuse
+  // the old immutable mutation identity after recording stops.
+  auto& peer = s_diagnostics.authority.nodes[apply.current.node_address];
+  if (peer.next_mutation && peer.next_mutation <= outcome.operation)
+    peer.next_mutation = outcome.operation == UINT32_MAX ? 0 : outcome.operation + 1;
+  apply.phase = 0; apply.pending = false; apply.resume_phase = 0;
+}
+
 
 // Saved ownership plus live mute selects explicit disable. An active unresolved
 // remote BMI owner is retained as unresolved; it cannot become a new profile.
@@ -77,7 +97,7 @@ bool desiredEnabled_(uint8_t address) {
 }
 
 void scheduleDisabled_() {
-  if (LoggingManager::isRunning()) return;
+  if (LoggingManager::configurationLocked() || s_recordingFence) return;
   for (uint8_t address = 0; address < 4; ++address) {
     const bool disabled = desiredDisabled_(address);
     const bool enabled = desiredEnabled_(address);
@@ -347,15 +367,17 @@ void serviceControl_() {
   const bool observerOwnsExchange = s_diagnostics.control.pending || s_diagnostics.control.snapshot_phase;
   if (!observerOwnsExchange && !s_diagnostics.authority.pending) scheduleDisabled_();
   const bool applyRequest = !observerOwnsExchange && !s_diagnostics.authority.pending &&
-      (!LoggingManager::isRunning() || s_diagnostics.apply.pending) &&
+      ((!LoggingManager::configurationLocked() && !s_recordingFence) || s_diagnostics.apply.pending ||
+       (s_recordingFence && !s_handoffReady && s_diagnostics.apply.commit_sent && s_diagnostics.apply.phase == 5)) &&
       bodaqs_control_apply_client_next(&s_diagnostics.apply, &s_diagnostics.authority,
           millis(), &wrapped, &type);
   const bool authorityOwnsExchange = !observerOwnsExchange &&
       !applyRequest && !s_diagnostics.apply.phase &&
-      (s_diagnostics.authority.pending || (!LoggingManager::isRunning() && inspected));
+      (s_diagnostics.authority.pending || (!LoggingManager::configurationLocked() && !s_recordingFence && inspected));
   const bool authorityRequest = authorityOwnsExchange &&
       bodaqs_control_authority_client_next(&s_diagnostics.authority,
           s_diagnostics.control.master_boot_id, &wrapped, &type);
+  if (!authorityRequest && !applyRequest && s_recordingFence && !s_diagnostics.control.pending) return;
   if (!authorityRequest && !applyRequest && !bodaqs_control_observer_next(&s_diagnostics.control, &wrapped, &type)) return;
   CanMasterProtocol::Frame request, response;
   request.type = static_cast<CanMasterProtocol::MessageType>(type);
@@ -562,7 +584,7 @@ void enableControlAuthority(uint64_t session) {
 
 bool releaseControlAuthority(uint8_t address) {
   if (s_diagnostics.apply.phase) return false;
-  return !LoggingManager::isRunning() &&
+  return !LoggingManager::configurationLocked() && !s_recordingFence &&
       bodaqs_control_authority_client_release(&s_diagnostics.authority, address);
 }
 
@@ -587,7 +609,59 @@ bool configurationReconciled(uint8_t address) {
       (!s_diagnostics.apply.phase || s_diagnostics.apply.current.node_address != address);
 }
 
-void scheduleConfigurationReconciliation() { for(auto& dirty:s_configurationDirty) dirty=true; }
+void scheduleConfigurationReconciliation() {
+  if (LoggingManager::configurationLocked() || s_recordingFence) return;
+  for(auto& dirty:s_configurationDirty) dirty=true;
+}
+
+bool recordingHandoffActive() { return s_recordingFence; }
+
+void beginRecordingHandoff() {
+  if (s_recordingFence) return;
+  s_recordingFence = true;
+  s_handoffReady = false;
+  s_handoffStartedMs = millis();
+}
+
+bool recordingHandoffReady() {
+  if (!s_recordingFence) return false;
+  if (s_handoffReady) return true;
+  auto& apply = s_diagnostics.apply;
+  // Never continue a staged BEGIN/PAGE toward COMMIT. A submitted exchange is
+  // polled by the sole normal owner, then its continuation is quarantined.
+  if (apply.phase && !apply.pending && !apply.commit_sent) abandonApplyForRecording_();
+  // An accepted COMMIT may finish; only its operation query can continue.
+  if (apply.commit_sent) apply.resume_phase = 0;
+  const bool expired = (uint32_t)(millis() - s_handoffStartedMs) >= kRecordingHandoffMs;
+  const bool owned = apply.phase || s_diagnostics.authority.pending || s_diagnostics.control.pending;
+  if (!expired && owned) return false;
+  if (expired) {
+    abandonApplyForRecording_();
+    if (s_diagnostics.authority.pending) {
+      auto& peer = s_diagnostics.authority.nodes[s_diagnostics.authority.current.node_address];
+      peer.bound = false; peer.phase = 0;
+      const uint32_t operation = s_diagnostics.authority.current.record.operation;
+      if (peer.next_mutation && peer.next_mutation <= operation)
+        peer.next_mutation = operation == UINT32_MAX ? 0 : operation + 1;
+    }
+    s_diagnostics.authority.pending = false;
+    s_diagnostics.control.pending = false;
+    for (auto& node : s_diagnostics.control.nodes) {
+      node.valid = false;
+      for (auto& endpoint : node.endpoints) endpoint.current = false;
+    }
+    CANMASTER_LOGW("recording handoff deadline; remote outcome uncertain, local-only recording\n");
+  }
+  s_diagnostics.control.snapshot_phase = 0;
+  s_handoffReady = true;
+  return true;
+}
+
+void endRecordingHandoff() {
+  s_recordingFence = false;
+  s_handoffReady = false;
+  s_probeRequested = true;
+}
 
 void begin(const board::BoardProfile& profile, const LoggerConfig& cfg) {
   s_board = &profile;
@@ -597,6 +671,8 @@ void begin(const board::BoardProfile& profile, const LoggerConfig& cfg) {
   s_diagnostics.profileSupported = s_profile.supported;
   s_diagnostics.irqAvailable = s_profile.irq_pin >= 0;
   s_started = true;
+  s_recordingFence = false;
+  s_handoffReady = false;
   s_probeRequested = false;
   s_wasLogging = LoggingManager::isRunning();
   s_lastIrqAsserted = false;
@@ -755,12 +831,22 @@ void loop() {
   if (!s_started || !s_profile.supported ||
       s_diagnostics.mode == CanMasterMode::Off ||
       s_profile.spi_bus_index != 0 || s_profile.cs_pin < 0) return;
+  if (s_recordingFence) {
+    (void)recordingHandoffReady();
+    const uint32_t now = millis();
+    if (!s_handoffReady && due_(now, s_nextControlMs)) {
+      s_nextControlMs = now + 100;
+      serviceControl_();
+      (void)recordingHandoffReady();
+    }
+    return;
+  }
   const bool logging = LoggingManager::isRunning();
   if (s_wasLogging && !logging) s_probeRequested = true;
   s_wasLogging = logging;
   if (logging) {
     const uint32_t now = millis();
-    if ((s_diagnostics.authority.pending || s_diagnostics.control.pending) && due_(now, s_nextControlMs)) {
+    if ((s_diagnostics.authority.pending || s_diagnostics.control.pending || s_diagnostics.apply.pending) && due_(now, s_nextControlMs)) {
       s_nextControlMs = now + 100;
       serviceControl_();
     }
