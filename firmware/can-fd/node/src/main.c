@@ -166,7 +166,8 @@ static uint32_t read_boot_id(uint64_t hardware_uid)
 /* One readiness check/capture per turn; runtime entropy never blocks CAN. */
 static void service_challenge_entropy(void)
 {
-    if (gChallengeEntropyWords < 2U && DL_TRNG_isCaptureReady(TRNG)) {
+    if (gChallengeEntropyWords < 2U && !DL_TRNG_isHealthTestFail(TRNG) &&
+        !DL_TRNG_isCommandFail(TRNG) && DL_TRNG_isCaptureReady(TRNG)) {
         uint32_t value = DL_TRNG_getCapture(TRNG);
         DL_TRNG_clearInterruptStatus(TRNG, DL_TRNG_INTERRUPT_CAPTURE_RDY_EVENT);
         gChallengeEntropy |= (uint64_t)value << (32U * gChallengeEntropyWords++);
