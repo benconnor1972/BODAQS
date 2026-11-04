@@ -80,6 +80,12 @@ bool bodaqs_control_authority_process(BodaqsControlAuthority *s, BodaqsControlNo
         }
         else
         {
+            if (s->challenge && q->operation == s->challenge_request.operation &&
+                q->session == s->challenge_request.session)
+            {
+                result(q, r, 12, 18);
+                return true;
+            }
             uint64_t value = s->next_challenge;
             if (!s->challenge)
                 value = random ? random(ctx) : 0;
@@ -164,7 +170,7 @@ bool bodaqs_control_authority_process(BodaqsControlAuthority *s, BodaqsControlNo
             reason = 20;
             field = 17;
         }
-        else if (q->session == v->active_session)
+        else if (q->session == v->active_session || (s->release_valid && q->session == s->release_request.session))
         {
             reason = 12;
             field = 6;

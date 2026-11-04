@@ -82,7 +82,6 @@ bool bodaqs_control_authority_client_accept(BodaqsControlAuthorityClient *s, uin
     const BodaqsControlRecord *r = &reply->record;
     BodaqsControlRecord *q = &s->current.record;
     BodaqsControlAuthorityPeer *p;
-    (void)now;
     if (!s->pending || reply->node_address != s->current.node_address ||
         reply->master_boot_id != s->current.master_boot_id || r->operation != q->operation ||
         r->node_boot_id != q->node_boot_id || r->endpoint != q->endpoint || r->session != q->session ||
@@ -129,6 +128,7 @@ bool bodaqs_control_authority_client_accept(BodaqsControlAuthorityClient *s, uin
     {
         p->bound = q->opcode == BODAQS_CONTROL_BIND_SESSION;
         p->next_mutation = q->operation + 1;
+        p->confirmed_ms = now;
         p->phase = p->bound ? 2 : 3;
         p->releasing = false;
     }

@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <SPI.h>
+#include <esp_system.h>
 #include <string.h>
 
 #include "CanMasterProtocol.h"
@@ -300,6 +301,16 @@ void serviceControl_() {
           static_cast<uint8_t>(response.type), &reply, millis());
   if (!accepted) {
     ++s_diagnostics.invalidResponses;
+  } else if (!authorityRequest && reply.record.opcode == BODAQS_CONTROL_GET_NODE_STATE &&
+             reply.record.endpoint == BODAQS_CONTROL_NODE_WIDE &&
+             response.type == CanMasterProtocol::MessageType::ControlPollResponse) {
+    auto& authority = s_diagnostics.authority.nodes[reply.node_address];
+    const auto& observation = s_diagnostics.control.nodes[reply.node_address];
+    if (authority.bound && observation.active_session != s_diagnostics.authority.session) {
+      authority.bound = false;
+      authority.phase = 3;
+      authority.reason = 5;
+    }
   }
   if (reply.master_boot_id != wrapped.master_boot_id) {
     s_diagnostics.controlInfoValid = false;
@@ -470,6 +481,11 @@ void enableControlAuthority(uint64_t session) {
   }
 }
 
+bool releaseControlAuthority(uint8_t address) {
+  return !LoggingManager::isRunning() &&
+      bodaqs_control_authority_client_release(&s_diagnostics.authority, address);
+}
+
 void begin(const board::BoardProfile& profile, const LoggerConfig& cfg) {
   s_board = &profile;
   s_profile = profile.can_fd_master;
@@ -486,6 +502,11 @@ void begin(const board::BoardProfile& profile, const LoggerConfig& cfg) {
   s_statusHardwareUid = 0;
   s_nextControlMs = 0;
   bodaqs_control_observer_init(&s_diagnostics.control);
+  uint64_t session = 0;
+  for (uint8_t attempt = 0; attempt < 4 && !session; ++attempt) {
+    session = (static_cast<uint64_t>(esp_random()) << 32) | esp_random();
+  }
+  enableControlAuthority(session);
 
   if (!s_profile.supported) {
     s_diagnostics.state = State::Unsupported;

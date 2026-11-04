@@ -9,6 +9,7 @@ extern "C"
     {
         uint32_t boot;
         uint32_t next_mutation;
+        uint32_t confirmed_ms;
         uint8_t phase, reason;
         bool available, bound, releasing;
     } BodaqsControlAuthorityPeer;

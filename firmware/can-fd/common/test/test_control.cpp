@@ -78,6 +78,7 @@ void wireExchangeAndBootRecovery()
            response.record.data[1] == 26 && response.record.data[2] == 1);
     BodaqsControlNode node = {};
     node.boot_id = r.node_boot_id;
+    node.active_session = r.session;
     node.endpoint_mask = 1;
     node.endpoint_epoch[0] = 1;
     BodaqsControlRecord reply;
