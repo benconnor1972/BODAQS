@@ -16,12 +16,15 @@ GENERATED_FILES := device.opt device.cmd.genlibs device_linker.cmd \
 
 NAME := bodaqs_can_node
 SOURCES := ../src/main.c \
+    ../src/imu_spi.c \
+    ../../common/protocol/bodaqs_control_apply.c \
+    ../../common/protocol/bodaqs_imu_disabled.c \
     ../../common/protocol/bodaqs_control.c \
     ../../common/protocol/bodaqs_control_authority.c \
     ../../common/protocol/bodaqs_control_snapshot.c \
     ../../common/protocol/bodaqs_control_exchange.c \
     ../../common/network/bodaqs_can_network.c
-OBJECTS := bodaqs_control_authority.obj bodaqs_control_snapshot.obj bodaqs_control.obj bodaqs_control_exchange.obj main.obj bodaqs_can_network.obj \
+OBJECTS := imu_spi.obj bodaqs_control_apply.obj bodaqs_imu_disabled.obj bodaqs_control_authority.obj bodaqs_control_snapshot.obj bodaqs_control.obj bodaqs_control_exchange.obj main.obj bodaqs_can_network.obj \
     $(patsubst %.c,%.obj,$(notdir $(SYSCFG_C_FILES)))
 
 V := @
@@ -93,3 +96,5 @@ main.obj bodaqs_control.obj bodaqs_control_exchange.obj: ../../common/protocol/b
 
 main.obj bodaqs_control_authority.obj: ../../common/protocol/bodaqs_control_authority.h
 main.obj bodaqs_control_snapshot.obj: ../../common/protocol/bodaqs_control_snapshot.h
+
+main.obj bodaqs_control_apply.obj: ../../common/protocol/bodaqs_control_apply.h ../../common/protocol/bodaqs_imu_disabled.h
