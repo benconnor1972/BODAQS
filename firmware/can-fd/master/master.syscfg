@@ -1,0 +1,166 @@
+/**
+ * Production BODAQS CAN-FD master, MSPM0G3518SPMR (LQFP-64 PM).
+ */
+//@cliArgs --device "MSPM0G351X" --package "LQFP-64(PM)" --part "Default"
+//@v2CliArgs --device "MSPM0G3518" --package "LQFP-64(PM)"
+// @cliArgs --rtos nortos
+
+const GPIO = scripting.addModule("/ti/driverlib/GPIO", {}, false);
+const GPIO1 = GPIO.addInstance();
+const SPI = scripting.addModule("/ti/driverlib/SPI", {}, false);
+const SPI1 = SPI.addInstance();
+const MCAN = scripting.addModule("/ti/driverlib/MCAN", {}, false);
+const MCAN1 = MCAN.addInstance();
+const SYSCTL = scripting.addModule("/ti/driverlib/SYSCTL");
+
+GPIO1.$name = "GPIO_BOARD";
+GPIO1.port = "PORTA";
+GPIO1.associatedPins.create(6);
+GPIO1.associatedPins[0].$name = "BUCK_ENABLE";
+GPIO1.associatedPins[0].initialValue = "CLEARED";
+GPIO1.associatedPins[0].pin.$assign = "PA18";
+GPIO1.associatedPins[1].$name = "FRONT_ENABLE";
+GPIO1.associatedPins[1].initialValue = "CLEARED";
+GPIO1.associatedPins[1].pin.$assign = "PA7";
+GPIO1.associatedPins[2].$name = "REAR_ENABLE";
+GPIO1.associatedPins[2].initialValue = "CLEARED";
+GPIO1.associatedPins[2].pin.$assign = "PA12";
+GPIO1.associatedPins[3].$name = "STATUS_LED";
+GPIO1.associatedPins[3].initialValue = "SET";
+GPIO1.associatedPins[3].pin.$assign = "PA14";
+GPIO1.associatedPins[4].$name = "FRONT_FAULT";
+GPIO1.associatedPins[4].direction = "INPUT";
+GPIO1.associatedPins[4].pin.$assign = "PA21";
+GPIO1.associatedPins[5].$name = "REAR_FAULT";
+GPIO1.associatedPins[5].direction = "INPUT";
+GPIO1.associatedPins[5].pin.$assign = "PA22";
+
+SPI1.$name = "SPI_A8";
+SPI1.mode = "PERIPHERAL";
+SPI1.rxFifoThreshold = "DL_SPI_RX_FIFO_LEVEL_ONE_FRAME";
+SPI1.txFifoThreshold = "DL_SPI_TX_FIFO_LEVEL_ONE_FRAME";
+SPI1.enabledInterrupts = ["DMA_DONE_RX"];
+SPI1.enabledDMAEvent2Triggers = "DL_SPI_DMA_INTERRUPT_TX";
+SPI1.enabledDMAEvent1Triggers = "DL_SPI_DMA_INTERRUPT_RX";
+SPI1.peripheral.$assign = "SPI0";
+SPI1.peripheral.sclkPin.$assign = "PA11";
+SPI1.peripheral.mosiPin.$assign = "PA9";
+SPI1.peripheral.misoPin.$assign = "PA10";
+SPI1.peripheral.cs0Pin.$assign = "PA8";
+SPI1.DMA_CHANNEL_EVENT2.$name = "DMA_SPI_TX";
+SPI1.DMA_CHANNEL_EVENT2.addressMode = "b2f";
+SPI1.DMA_CHANNEL_EVENT2.srcLength = "BYTE";
+SPI1.DMA_CHANNEL_EVENT2.dstLength = "BYTE";
+SPI1.DMA_CHANNEL_EVENT2.peripheral.$assign = "DMA_CH0";
+SPI1.DMA_CHANNEL_EVENT1.$name = "DMA_SPI_RX";
+SPI1.DMA_CHANNEL_EVENT1.addressMode = "f2b";
+SPI1.DMA_CHANNEL_EVENT1.srcLength = "BYTE";
+SPI1.DMA_CHANNEL_EVENT1.dstLength = "BYTE";
+SPI1.DMA_CHANNEL_EVENT1.peripheral.$assign = "DMA_CH1";
+
+MCAN1.$name = "MCAN0";
+MCAN1.emulationEnable = true;
+MCAN1.tdcEnable = true;
+MCAN1.additionalCoreConfig = true;
+MCAN1.rrfe = true;
+MCAN1.rrfs = true;
+MCAN1.anfe = "0";
+MCAN1.anfs = "0";
+MCAN1.desiredNomRate = 500;
+MCAN1.desiredDataRate = 2;
+MCAN1.spPercent = 80;
+MCAN1.flssa = 0;
+MCAN1.lss = 0;
+MCAN1.flesa = 0;
+MCAN1.lse = 0;
+MCAN1.txStartAddr = 0;
+MCAN1.txBufNum = 0;
+MCAN1.txFIFOSize = 4;
+MCAN1.txBufElemSize = "DL_MCAN_ELEM_SIZE_64BYTES";
+MCAN1.txEventFIFOStartAddr = 288;
+MCAN1.txEventFIFOSize = 4;
+MCAN1.txEventFIFOWaterMark = 0;
+MCAN1.rxFIFO0startAddr = 304;
+MCAN1.rxFIFO0size = 8;
+MCAN1.rxFIFO0waterMark = 0;
+MCAN1.rxFIFO0ElemSize = "DL_MCAN_ELEM_SIZE_64BYTES";
+MCAN1.rxFIFO1startAddr = 880;
+MCAN1.rxFIFO1size = 0;
+MCAN1.rxFIFO1waterMark = 0;
+MCAN1.rxFIFO1ElemSize = "DL_MCAN_ELEM_SIZE_64BYTES";
+MCAN1.rxBufStartAddr = 880;
+MCAN1.rxBufElemSize = "DL_MCAN_ELEM_SIZE_64BYTES";
+MCAN1.enableInterrupt = true;
+MCAN1.interruptFlags = [
+    "DL_MCAN_INTERRUPT_ARA",
+    "DL_MCAN_INTERRUPT_BEU",
+    "DL_MCAN_INTERRUPT_BO",
+    "DL_MCAN_INTERRUPT_ELO",
+    "DL_MCAN_INTERRUPT_EP",
+    "DL_MCAN_INTERRUPT_EW",
+    "DL_MCAN_INTERRUPT_MRAF",
+    "DL_MCAN_INTERRUPT_PEA",
+    "DL_MCAN_INTERRUPT_PED",
+    "DL_MCAN_INTERRUPT_RF0F",
+    "DL_MCAN_INTERRUPT_RF0L",
+    "DL_MCAN_INTERRUPT_RF0N",
+    "DL_MCAN_INTERRUPT_RF0W",
+    "DL_MCAN_INTERRUPT_TC",
+    "DL_MCAN_INTERRUPT_WDI",
+];
+MCAN1.interruptLine = ["DL_MCAN_INTR_LINE_NUM_1"];
+MCAN1.interruptLine1Flag = MCAN1.interruptFlags;
+MCAN1.m0interrupts = ["DL_MCAN_MSP_INTERRUPT_LINE1"];
+MCAN1.overrideRetention = true;
+MCAN1.peripheral.$assign = "CANFD0";
+MCAN1.peripheral.txPin.$assign = "PA26";
+MCAN1.peripheral.rxPin.$assign = "PA27";
+
+const mux4 = system.clockTree["EXHFMUX"];
+mux4.inputSelect = "EXHFMUX_XTAL";
+const pllClock2xDivider = system.clockTree["PLL_CLK2X_DIV"];
+pllClock2xDivider.divideValue = 2;
+const pllClock1Divider = system.clockTree["PLL_CLK1_DIV"];
+pllClock1Divider.divideValue = 2;
+const pllFeedbackMultiplier = system.clockTree["PLL_QDIV"];
+pllFeedbackMultiplier.multiplyValue = 5;
+const ulpClockDivider = system.clockTree["UDIV"];
+ulpClockDivider.divideValue = 2;
+const mux8 = system.clockTree["HSCLKMUX"];
+mux8.inputSelect = "HSCLKMUX_SYSPLL2X";
+const mux12 = system.clockTree["SYSPLLMUX"];
+mux12.inputSelect = "zSYSPLLMUX_HFCLK";
+const canClockMux = system.clockTree["CANCLKMUX"];
+canClockMux.inputSelect = "CANCLKMUX_PLLCLK1_OUT";
+const hfx = system.clockTree["HFXT"];
+hfx.enable = true;
+hfx.HFCLKMonitor = true;
+hfx.HFXTStartup = 255;
+hfx.inputFreq = 16;
+hfx.peripheral.$assign = "SYSCTL";
+hfx.peripheral.hfxInPin.$assign = "PA5";
+hfx.peripheral.hfxOutPin.$assign = "PA6";
+
+const Board = scripting.addModule("/ti/driverlib/Board", {}, false);
+Board.peripheral.$assign = "DEBUGSS";
+Board.peripheral.swclkPin.$assign = "PA20";
+Board.peripheral.swdioPin.$assign = "PA19";
+
+SYSCTL.validateClkStatus = true;
+SYSCTL.forceDefaultClkConfig = true;
+SYSCTL.clockTreeEn = true;
+SYSCTL.HFCLK_Freq = 16000000;
+SYSCTL.useHFCLK_Manual = true;
+SYSCTL.HFCLKSource = "HFXT";
+SYSCTL.SYSPLLSource = "HFCLK";
+SYSCTL.SYSPLL_Pdiv = 1;
+SYSCTL.SYSPLL_Qdiv = 5;
+SYSCTL.SYSPLL_CLK2XEn = true;
+SYSCTL.SYSPLL_CLK2XDiv = 1;
+SYSCTL.SYSPLL_CLK1En = true;
+SYSCTL.SYSPLL_CLK1Div = 0;
+SYSCTL.HSCLKSource = "SYSPLLCLK2X";
+
+const ProjectConfig = scripting.addModule("/ti/project_config/ProjectConfig", {}, false);
+ProjectConfig.migrationCondition = true;
+

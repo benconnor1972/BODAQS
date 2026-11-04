@@ -16,9 +16,9 @@ namespace {
   static bool findKV(const ParamStore* st, const char* key, const char*& outVal) {
     if (!st || !key || !*key) return false;
     for (uint8_t i = 0; i < st->count; ++i) {
-      const char* k = st->keys[i];
+      const char* k = st->keyAt(i);
       if (k && strcasecmp(k, key) == 0) {
-        outVal = st->vals[i];
+        outVal = st->valueAt(i);
         return true;
       }
     }
@@ -36,6 +36,94 @@ namespace {
     return false;
   }
 } // namespace
+
+void ParamStore::clear() {
+  count = 0;
+  used = 0;
+  text[0] = '\0';
+}
+
+const char* ParamStore::keyAt(uint8_t index) const {
+  return index < count && slots[index].keyOffset < used
+      ? text + slots[index].keyOffset : nullptr;
+}
+
+const char* ParamStore::valueAt(uint8_t index) const {
+  return index < count && slots[index].valueOffset < used
+      ? text + slots[index].valueOffset : nullptr;
+}
+
+const char* ParamStore::get(const char* key) const {
+  if (!key || !*key) return nullptr;
+  for (uint8_t i = 0; i < count; ++i) {
+    const char* candidate = keyAt(i);
+    if (candidate && strcasecmp(candidate, key) == 0) return valueAt(i);
+  }
+  return nullptr;
+}
+
+bool ParamStore::append_(const char* key, const char* value) {
+  if (!key || !*key || !value || count >= MAX) return false;
+
+  const size_t keyLength = strnlen(key, MAX_KEY_CHARS);
+  const size_t valueLength = strnlen(value, MAX_VALUE_CHARS);
+  const size_t required = keyLength + 1 + valueLength + 1;
+  if (required > size_t(TEXT_CAPACITY - used)) return false;
+
+  Slot& slot = slots[count];
+  slot.keyOffset = used;
+  memcpy(text + used, key, keyLength);
+  used += (uint16_t)keyLength;
+  text[used++] = '\0';
+
+  slot.valueOffset = used;
+  memcpy(text + used, value, valueLength);
+  used += (uint16_t)valueLength;
+  text[used++] = '\0';
+  ++count;
+  return true;
+}
+
+bool ParamStore::set(const char* key, const char* value) {
+  if (!key || !*key || !value) return false;
+
+  int replacementIndex = -1;
+  for (uint8_t i = 0; i < count; ++i) {
+    const char* candidate = keyAt(i);
+    if (candidate && strcasecmp(candidate, key) == 0) {
+      replacementIndex = i;
+      break;
+    }
+  }
+
+  ParamStore rebuilt;
+  for (uint8_t i = 0; i < count; ++i) {
+    const char* existingKey = keyAt(i);
+    const char* existingValue = valueAt(i);
+    if (!rebuilt.append_(existingKey, i == replacementIndex ? value : existingValue)) {
+      return false;
+    }
+  }
+  if (replacementIndex < 0 && !rebuilt.append_(key, value)) return false;
+  *this = rebuilt;
+  return true;
+}
+
+bool ParamStore::remove(const char* key) {
+  if (!key || !*key) return false;
+  bool removed = false;
+  ParamStore rebuilt;
+  for (uint8_t i = 0; i < count; ++i) {
+    const char* existingKey = keyAt(i);
+    if (!removed && existingKey && strcasecmp(existingKey, key) == 0) {
+      removed = true;
+      continue;
+    }
+    if (!rebuilt.append_(existingKey, valueAt(i))) return false;
+  }
+  if (removed) *this = rebuilt;
+  return removed;
+}
 
 uint16_t ParamPack::size() const {
   const ParamStore* st = asStore(impl_);
@@ -102,29 +190,7 @@ bool ParamPack::set(const char* key, const String& value) {
   ParamStore* st = const_cast<ParamStore*>(reinterpret_cast<const ParamStore*>(impl_));
   if (!st || !key || !*key) return false;
 
-  // update if exists
-  for (uint8_t i = 0; i < st->count; ++i) {
-    if (strcasecmp(st->keys[i], key) == 0) {
-      // write value with truncation + NUL
-      strncpy(st->vals[i], value.c_str(), sizeof(st->vals[i]) - 1);
-      st->vals[i][sizeof(st->vals[i]) - 1] = '\0';
-      return true;
-    }
-  }
-
-  // append if space
-  if (st->count < ParamStore::MAX) {
-    // key
-    strncpy(st->keys[st->count], key, sizeof(st->keys[st->count]) - 1);
-    st->keys[st->count][sizeof(st->keys[st->count]) - 1] = '\0';
-    // value
-    strncpy(st->vals[st->count], value.c_str(), sizeof(st->vals[st->count]) - 1);
-    st->vals[st->count][sizeof(st->vals[st->count]) - 1] = '\0';
-
-    ++st->count;
-    return true;
-  }
-  return false; // no space
+  return st->set(key, value.c_str());
 }
 
 bool ParamPack::setInt(const char* key, long v) {

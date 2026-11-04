@@ -25,6 +25,7 @@ static constexpr uint32_t kTaskWebBackoffMs = 250;
 static constexpr uint32_t kTaskMutedSleepMs = 1000;
 static constexpr uint16_t kTaskWebDrainBytes = 256;
 static constexpr uint32_t kTaskStartSettleMs = 250;
+static constexpr uint32_t kTaskStopWaitMs = 3000;
 static constexpr uint32_t kGpsTaskStackBytes = 10240;
 static constexpr BaseType_t kGpsTaskCore = 1;
 
@@ -287,6 +288,36 @@ void DANF10NGpsSensor::begin() {
     return;
   }
   (void)startTask_();
+}
+
+bool DANF10NGpsSensor::shutdown() {
+  stopTask_();
+#if defined(ESP32)
+  const uint32_t startedMs = millis();
+  while (m_task && (uint32_t)(millis() - startedMs) < kTaskStopWaitMs) {
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  if (m_task) {
+    GPS_LOGW("sensor '%s': GPS task did not stop within %lu ms\n",
+             name(), (unsigned long)kTaskStopWaitMs);
+    return false;
+  }
+#endif
+
+  delete m_gnss;
+  m_gnss = nullptr;
+  m_initialized = false;
+  if (m_serial) {
+    m_serial->end();
+    m_serial = nullptr;
+  }
+#if defined(ESP32)
+  if (m_mutex) {
+    vSemaphoreDelete(m_mutex);
+    m_mutex = nullptr;
+  }
+#endif
+  return true;
 }
 
 void DANF10NGpsSensor::setMuted(bool m) {

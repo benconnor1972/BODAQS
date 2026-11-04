@@ -303,6 +303,9 @@ between streams.
 The existing `sensors`, `device_configs`, `imu_configs`, mounting,
 calibration and transform metadata should be retained. Every sensor-backed
 stream descriptor must refer to a sensor identity present in those objects.
+If configured sensors are excluded from a best-effort session, the metadata
+should also retain the logger's structured `qc.warnings` snapshot so absence
+and configuration faults remain visible after the session leaves the logger.
 
 ## 7. Stream catalog chunk
 
@@ -720,6 +723,13 @@ For BDQ v2:
 - the stream named `primary` becomes the primary dataframe when present; and
 - every other raw stream is exposed directly through `stream_dfs` and
   `secondary_streams` using its `stream_key` and semantic metadata.
+
+Raw stream decoding retains records outside the primary interval. Normal
+BODAQS session loading trims aligned IMU data to the inclusive interval from
+the first through the last primary sample and records the before/after counts
+in that stream's `primary_interval_trim` metadata. This makes the imported
+session boundary unambiguous without deleting pre-roll or final-drain evidence
+from the BDQ file.
 
 There is no general lossless BDQ v2-to-v1 conversion because v1 has only one
 implicit timebase. A CSV export must either export one native stream per file

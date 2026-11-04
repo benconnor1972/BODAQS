@@ -1,0 +1,26 @@
+# 01: Apply idle sensor edits consistently across configuration entry points
+
+## What to build
+
+Make a valid idle-time sensor edit take effect without restarting the logger,
+whether submitted through the web form, JSON API or an applicable menu action.
+Use one validation, persistence and runtime-rebuild path before adding remote
+application. This is preparation for the confirmed node-control contract, not
+a change to local sensor acquisition semantics.
+
+## Acceptance criteria
+
+- [ ] Valid idle edits through each supported entry point persist and rebuild the runtime without requiring restart; API results accurately describe the outcome.
+- [ ] Invalid input and persistence failures preserve previous saved configuration; recording-time mutations are rejected before changing saved/runtime state.
+- [ ] Provider and endpoint assignments round-trip through sensor JSON, including generic fields outside driver-specific parameter definitions.
+- [ ] Existing local sensor configuration, calibration, ownership and runtime mute behavior remain compatible.
+- [ ] Integration checks cover successful edits, invalid input, save failure and recording guards; the affected logger build passes.
+
+## Blocked by
+
+None (can start immediately).
+
+## Publication preview
+
+Repository: benconnor1972/BODAQS. Intended labels: enhancement, ready-for-agent,
+when available. No source parent issue was supplied. Preview only; not published.

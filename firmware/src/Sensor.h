@@ -233,6 +233,10 @@ public:
 
   // ----- Lifecycle -----
   virtual void begin() = 0;
+  // Release tasks, scheduler registrations, buses, and other resources before
+  // the live sensor set is rebuilt. The default is sufficient for sensors
+  // which own no asynchronous resources.
+  virtual bool shutdown() { return true; }
   virtual bool describeI2CStartup(I2CStartupStatus&) const { return false; }
   virtual bool retryI2CStartup(bool) { return false; }
   virtual void loop() {}

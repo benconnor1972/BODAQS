@@ -1,6 +1,7 @@
 #include "LogMetadataWriter.h"
 
 #include "BoardProfile.h"
+#include "CanMasterManager.h"
 #include "SensorManager.h"
 #include "BMI270Profile.h"
 #include <new>
@@ -72,6 +73,16 @@ public:
 private:
   Print& target_;
 };
+
+const char* issueImpactKey_(SensorIssueImpact impact) {
+  switch (impact) {
+    case SensorIssueImpact::ExcludeSensor: return "sensor_excluded";
+    case SensorIssueImpact::ExcludeProvider: return "provider_excluded";
+    case SensorIssueImpact::BlockSession: return "session_blocked";
+    case SensorIssueImpact::None:
+    default: return "none";
+  }
+}
 
 void appendIndent_(MetadataOutput& out, uint8_t depth) {
   while (depth--) out += F("  ");
@@ -160,6 +171,48 @@ void appendKeyInt_(MetadataOutput& out, uint8_t depth, const char* key, int32_t 
   out += String(value);
   if (comma) out += ',';
   out += '\n';
+}
+
+void appendCanMaster_(MetadataOutput& out, uint8_t depth, bool comma = true) {
+  const auto& diagnostics = CanMasterManager::diagnostics();
+  appendKey_(out, depth, "can_fd_master");
+  out += F("{\n");
+  appendKeyString_(out, depth + 1, "mode",
+                   ConfigManager::canMasterModeKey(diagnostics.mode));
+  appendKeyString_(out, depth + 1, "state",
+                   CanMasterManager::stateKey(diagnostics.state));
+  appendKeyBool_(out, depth + 1, "profile_supported",
+                 diagnostics.profileSupported);
+  appendKeyBool_(out, depth + 1, "present", CanMasterManager::present());
+  appendKeyBool_(out, depth + 1, "compatible", diagnostics.compatible);
+  appendKeyBool_(out, depth + 1, "irq_available", diagnostics.irqAvailable);
+  appendKeyUInt_(out, depth + 1, "protocol_version",
+                 diagnostics.protocolVersion);
+  appendKeyUInt_(out, depth + 1, "firmware_version",
+                 diagnostics.firmwareVersion);
+  appendKeyUInt_(out, depth + 1, "capabilities", diagnostics.capabilities);
+  appendKeyUInt64_(out, depth + 1, "hardware_uid", diagnostics.hardwareUid);
+  appendKey_(out, depth + 1, "status");
+  out += F("{\n");
+  appendKeyBool_(out, depth + 2, "supported", diagnostics.statusSupported);
+  appendKeyBool_(out, depth + 2, "valid", diagnostics.statusValid);
+  appendKeyUInt_(out, depth + 2, "flags", diagnostics.statusFlags);
+  appendKeyUInt_(out, depth + 2, "uptime_ms", diagnostics.masterUptimeMs);
+  appendKeyUInt_(out, depth + 2, "reset_cause", diagnostics.masterResetCause);
+  appendKeyUInt_(out, depth + 2, "slots_received",
+                 diagnostics.masterSlotsReceived);
+  appendKeyUInt_(out, depth + 2, "malformed_slots",
+                 diagnostics.masterMalformedSlots);
+  appendKeyUInt_(out, depth + 2, "spi_recoveries",
+                 diagnostics.masterSpiRecoveries);
+  appendKeyUInt_(out, depth + 2, "can_rx_frames", diagnostics.canRxFrames);
+  appendKeyUInt_(out, depth + 2, "can_tx_frames", diagnostics.canTxFrames);
+  appendKeyUInt_(out, depth + 2, "can_error_events",
+                 diagnostics.canErrorEvents, false);
+  appendIndent_(out, depth + 1);
+  out += F("}\n");
+  appendIndent_(out, depth);
+  out += comma ? F("},\n") : F("}\n");
 }
 
 void appendKeyFloat_(MetadataOutput& out, uint8_t depth, const char* key, float value, bool comma = true) {
@@ -748,6 +801,32 @@ void appendRuntimeFailure_(MetadataOutput& out,
   appendKeyUInt_(out, depth + 1, "received_bytes", failure.receivedBytes, false);
   appendIndent_(out, depth);
   out += comma ? F("},\n") : F("}\n");
+}
+
+void appendSessionWarnings_(MetadataOutput& out, uint8_t depth) {
+  const SensorDiagnosticList& diagnostics = SensorManager::sessionDiagnostics();
+  appendKey_(out, depth, "warnings");
+  if (diagnostics.count() == 0) {
+    out += F("[],\n");
+    return;
+  }
+
+  out += F("[\n");
+  for (uint8_t i = 0; i < diagnostics.count(); ++i) {
+    const SensorDiagnosticIssue* issue = diagnostics.at(i);
+    if (!issue) continue;
+    appendIndent_(out, depth + 1);
+    out += F("{\n");
+    appendKeyString_(out, depth + 2, "code", sensorIssueCodeKey(issue->code));
+    appendKeyString_(out, depth + 2, "impact", issueImpactKey_(issue->impact));
+    appendKeyUInt_(out, depth + 2, "sensor_index", issue->sensorIndex);
+    appendKeyUInt_(out, depth + 2, "related_sensor_index",
+                   issue->relatedSensorIndex, false);
+    appendIndent_(out, depth + 1);
+    out += (i + 1 < diagnostics.count()) ? F("},\n") : F("}\n");
+  }
+  appendIndent_(out, depth);
+  out += F("],\n");
 }
 
 void appendSensorRuntimeDiagnostics_(MetadataOutput& out, uint8_t depth, bool comma = true) {
@@ -1496,10 +1575,11 @@ static bool writeMetadata_(const LogMetadataContext& ctx, MetadataOutput& out) {
   appendIndent_(out, 1);
   out += F("},\n");
 
+  appendCanMaster_(out, 1);
+
   appendKey_(out, 1, "qc");
   out += F("{\n");
-  appendIndent_(out, 2);
-  out += F("\"warnings\": [],\n");
+  appendSessionWarnings_(out, 2);
   appendRunStats_(out, 2, ctx);
   appendSensorRuntimeDiagnostics_(out, 2);
   appendImuRuntimeDiagnostics_(out, 2, false);

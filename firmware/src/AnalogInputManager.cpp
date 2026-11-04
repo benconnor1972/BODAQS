@@ -1,4 +1,5 @@
 #include "AnalogInputManager.h"
+#include "SharedSpiBus.h"
 #include "AdcReadyWait.h"
 
 #include <Arduino.h>
@@ -13,7 +14,6 @@
 
 #if defined(ESP32)
 #include "freertos/FreeRTOS.h"
-#include "freertos/semphr.h"
 #include "freertos/task.h"
 #endif
 
@@ -96,7 +96,6 @@ void ARDUINO_ISR_ATTR adsReadyIsr_(void* arg) {
 
 const board::BoardProfile* s_board = nullptr;
 AdsDevice s_ads[board::BOARD_MAX_EXTERNAL_ADCS];
-SPIClass* s_spi = &SPI;
 bool s_spiReady = false;
 bool s_inSample = false;
 volatile bool s_asyncLoggingActive = false;
@@ -105,7 +104,6 @@ uint16_t s_effectiveHz = 100;
 ExternalAdcTimingStats s_timingStats;
 
 #if defined(ESP32)
-SemaphoreHandle_t s_spiMutex = nullptr;
 portMUX_TYPE s_cacheMux = portMUX_INITIALIZER_UNLOCKED;
 #endif
 
@@ -122,22 +120,6 @@ bool sensorUsesAnalogInput_(SensorType t) {
     default:
       return false;
   }
-}
-
-bool lockSpi_() {
-#if defined(ESP32)
-  if (!s_spiMutex) s_spiMutex = xSemaphoreCreateMutex();
-  if (!s_spiMutex) return true;
-  return xSemaphoreTake(s_spiMutex, pdMS_TO_TICKS(50)) == pdTRUE;
-#else
-  return true;
-#endif
-}
-
-void unlockSpi_() {
-#if defined(ESP32)
-  if (s_spiMutex) xSemaphoreGive(s_spiMutex);
-#endif
 }
 
 SPISettings spiSettings_(const AdsDevice& dev) {
@@ -246,24 +228,14 @@ uint32_t targetDataRateSps_(uint16_t loggerHz, uint8_t activeChannels) {
   return ceilDivU32_(requiredSps * 1000UL, kExternalAdcUtilizationPermille);
 }
 
-void adsTransfer_(AdsDevice& dev, const uint8_t* tx, uint8_t* rx, size_t len) {
-  if (!s_spi || !tx || len == 0) return;
-  s_spi->beginTransaction(spiSettings_(dev));
-  digitalWrite((uint8_t)dev.cfg.cs_pin, LOW);
-  for (size_t i = 0; i < len; ++i) {
-    const uint8_t r = s_spi->transfer(tx[i]);
-    if (rx) rx[i] = r;
-  }
-  digitalWrite((uint8_t)dev.cfg.cs_pin, HIGH);
-  s_spi->endTransaction();
+bool adsTransfer_(AdsDevice& dev, const uint8_t* tx, uint8_t* rx, size_t len) {
+  return SharedSpiBus::transfer(
+      dev.cfg.cs_pin, spiSettings_(dev), tx, rx, len);
 }
 
 bool adsCommand_(AdsDevice& dev, uint8_t cmd) {
   if (!dev.present || dev.cfg.cs_pin < 0 || !s_spiReady) return false;
-  if (!lockSpi_()) return false;
-  adsTransfer_(dev, &cmd, nullptr, 1);
-  unlockSpi_();
-  return true;
+  return adsTransfer_(dev, &cmd, nullptr, 1);
 }
 
 bool adsWriteRegisters_(AdsDevice& dev, uint8_t startReg, const uint8_t* regs, size_t len) {
@@ -273,10 +245,7 @@ bool adsWriteRegisters_(AdsDevice& dev, uint8_t startReg, const uint8_t* regs, s
   tx[0] = (uint8_t)(ADS1220_CMD_WREG | ((startReg & 0x03U) << 2) | ((len - 1U) & 0x03U));
   for (size_t i = 0; i < len; ++i) tx[i + 1] = regs[i];
 
-  if (!lockSpi_()) return false;
-  adsTransfer_(dev, tx, nullptr, len + 1);
-  unlockSpi_();
-  return true;
+  return adsTransfer_(dev, tx, nullptr, len + 1);
 }
 
 bool adsReadData_(AdsDevice& dev, int32_t& raw24) {
@@ -285,9 +254,7 @@ bool adsReadData_(AdsDevice& dev, int32_t& raw24) {
   uint8_t tx[4] = { ADS1220_CMD_RDATA, 0x00, 0x00, 0x00 };
   uint8_t rx[4] = {0};
 
-  if (!lockSpi_()) return false;
-  adsTransfer_(dev, tx, rx, sizeof(tx));
-  unlockSpi_();
+  if (!adsTransfer_(dev, tx, rx, sizeof(tx))) return false;
 
   int32_t v = ((int32_t)rx[1] << 16) | ((int32_t)rx[2] << 8) | rx[3];
   if (v & 0x00800000L) v |= 0xFF000000L;
@@ -682,10 +649,6 @@ void begin(const board::BoardProfile& board) {
   }
   resetTimingStats_();
 
-#if defined(ESP32)
-  if (!s_spiMutex) s_spiMutex = xSemaphoreCreateMutex();
-#endif
-
   if (!board.spi.present || board.external_adc_count == 0) {
     AIN_LOGI("External ADCs: none\n");
     return;
@@ -696,8 +659,11 @@ void begin(const board::BoardProfile& board) {
     return;
   }
 
-  s_spi->begin(board.spi.sck, board.spi.miso, board.spi.mosi);
-  s_spiReady = true;
+  s_spiReady = SharedSpiBus::begin(board.spi);
+  if (!s_spiReady) {
+    AIN_LOGW("Shared SPI initialization failed; external ADCs disabled\n");
+    return;
+  }
   AIN_LOGI("SPI ready: sck=%d miso=%d mosi=%d\n",
            (int)board.spi.sck,
            (int)board.spi.miso,

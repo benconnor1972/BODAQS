@@ -30,6 +30,12 @@ enum class OledLoggingPolicy : uint8_t {
   PreferActive = 2
 };
 
+enum class CanMasterMode : uint8_t {
+  Off = 0,
+  Auto = 1,
+  Required = 2,
+};
+
 struct SensorSpec; 
 
 // ----------------- Button + binding config -----------------
@@ -52,6 +58,7 @@ struct LoggerConfig {
   LogFormat logFormat       = LogFormat::BodaqsStandard;
   bool     omitMetadata     = false;
   bool     startupLogToSd   = false; // capture on next boot, before acquisition
+  CanMasterMode canMasterMode = CanMasterMode::Auto;
   char     tz[64]           = "UTC";
   char     ntpServers[128]  = "";
   char     timeCheckUrl[96] = "";
@@ -142,6 +149,7 @@ class ConfigManager {
 
     // load/save/print the whole config file (includes sensor blocks)
     static bool load(LoggerConfig& cfg);
+    static bool reload();
     static bool save(const LoggerConfig& cfg);
     static void print(const LoggerConfig& cfg);
     static const LoggerConfig& get();
@@ -188,6 +196,9 @@ class ConfigManager {
     static bool parseOledLoggingPolicy(
         const char* text,
         OledLoggingPolicy& out);
+    static const char* canMasterModeKey(CanMasterMode mode);
+    static const char* canMasterModeLabel(CanMasterMode mode);
+    static bool parseCanMasterMode(const char* text, CanMasterMode& out);
 
     // line parser (public so tests or tooling can reuse)
     static bool parseLine(char* line, LoggerConfig& cfg);

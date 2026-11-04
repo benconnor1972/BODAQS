@@ -1,16 +1,28 @@
 #pragma once
 #include "BoardProfile.h"
 #include "SensorTypes.h"
+#include "SensorTopology.h"
 
 // Normalized physical assignment; logical AIN aliases resolve to GPIO or ADC.
 struct SensorAssignment {
-  enum class Kind : uint8_t { None, I2C, Gpio, ExternalAdc, Uart };
+  enum class Kind : uint8_t {
+    None,
+    I2C,
+    Gpio,
+    ExternalAdc,
+    Uart,
+    NodeImu,
+    NodeAnalog,
+    NodeI2C,
+  };
+  SensorProviderId provider;
   Kind kind = Kind::None;
   int16_t bus = -1;
   int16_t input = -1;
   int16_t negativeInput = -1;
   bool operator==(const SensorAssignment& other) const {
-    return kind == other.kind && bus == other.bus && input == other.input &&
+    return provider == other.provider && kind == other.kind &&
+           bus == other.bus && input == other.input &&
            negativeInput == other.negativeInput;
   }
 };

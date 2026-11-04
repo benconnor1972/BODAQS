@@ -1,0 +1,44 @@
+/**
+ * BODAQS CAN-FD master diagnostic using the MSPM0G3518 internal SYSOSC.
+ */
+//@cliArgs --device "MSPM0G351X" --package "LQFP-64(PM)" --part "Default"
+//@v2CliArgs --device "MSPM0G3518" --package "LQFP-64(PM)"
+// @cliArgs --rtos nortos
+
+const GPIO = scripting.addModule("/ti/driverlib/GPIO", {}, false);
+const GPIO1 = GPIO.addInstance();
+const SYSCTL = scripting.addModule("/ti/driverlib/SYSCTL");
+
+GPIO1.$name = "GPIO_BOARD";
+GPIO1.port = "PORTA";
+GPIO1.associatedPins.create(6);
+GPIO1.associatedPins[0].$name = "BUCK_ENABLE";
+GPIO1.associatedPins[0].initialValue = "CLEARED";
+GPIO1.associatedPins[0].pin.$assign = "PA18";
+GPIO1.associatedPins[1].$name = "FRONT_ENABLE";
+GPIO1.associatedPins[1].initialValue = "CLEARED";
+GPIO1.associatedPins[1].pin.$assign = "PA7";
+GPIO1.associatedPins[2].$name = "REAR_ENABLE";
+GPIO1.associatedPins[2].initialValue = "CLEARED";
+GPIO1.associatedPins[2].pin.$assign = "PA12";
+GPIO1.associatedPins[3].$name = "STATUS_LED";
+GPIO1.associatedPins[3].initialValue = "SET";
+GPIO1.associatedPins[3].pin.$assign = "PA14";
+GPIO1.associatedPins[4].$name = "FRONT_FAULT";
+GPIO1.associatedPins[4].direction = "INPUT";
+GPIO1.associatedPins[4].pin.$assign = "PA21";
+GPIO1.associatedPins[5].$name = "REAR_FAULT";
+GPIO1.associatedPins[5].direction = "INPUT";
+GPIO1.associatedPins[5].pin.$assign = "PA22";
+
+const Board = scripting.addModule("/ti/driverlib/Board", {}, false);
+Board.peripheral.$assign = "DEBUGSS";
+Board.peripheral.swclkPin.$assign = "PA20";
+Board.peripheral.swdioPin.$assign = "PA19";
+
+SYSCTL.forceDefaultClkConfig = true;
+SYSCTL.clockTreeEn = true;
+
+const ProjectConfig = scripting.addModule("/ti/project_config/ProjectConfig", {}, false);
+ProjectConfig.migrationCondition = true;
+

@@ -35,6 +35,14 @@ namespace {
   bool                s_liveMutedDefault[MAX_SENSORS] = {};
   bool                s_loggingStarted[MAX_SENSORS] = {};
   bool                s_loggingStopped[MAX_SENSORS] = {};
+  bool                s_sessionParticipating[MAX_SENSORS] = {};
+  bool                s_sessionPlanActive = false;
+  SensorDiagnosticList s_sessionDiagnostics;
+  SensorInventory     s_inventory;
+  SensorInventory     s_remoteDiscovery;
+  uint32_t            s_discoverySequence = 0;
+  SensorManager::DiscoveryReason s_lastDiscoveryReason =
+      SensorManager::DiscoveryReason::Startup;
   const LoggerConfig* s_cfg               = nullptr;
   AnalogPotSensor*    s_primaryPot        = nullptr;
   SensorTimingStats   s_timingStats;
@@ -42,6 +50,35 @@ namespace {
   int firstFree() {
     for (int i = 0; i < (int)MAX_SENSORS; ++i) if (!s_list[i]) return i;
     return -1;
+  }
+
+  bool registerAt_(uint8_t index, Sensor* sensor) {
+    if (!sensor || index >= MAX_SENSORS || s_list[index]) return false;
+    for (auto* existing : s_list) if (existing == sensor) return false;
+    s_list[index] = sensor;
+    return true;
+  }
+
+  bool participates_(uint8_t index) {
+    if (index >= MAX_SENSORS || !s_list[index] || s_list[index]->muted()) return false;
+    return !s_sessionPlanActive || s_sessionParticipating[index];
+  }
+
+  void addSessionIssue_(SensorIssueCode code,
+                        SensorIssueSeverity severity,
+                        SensorIssueImpact impact,
+                        uint8_t sensorIndex,
+                        int32_t evidenceA = 0,
+                        int32_t evidenceB = 0) {
+    SensorDiagnosticIssue issue;
+    issue.code = code;
+    issue.severity = severity;
+    issue.impact = impact;
+    issue.scope = SensorIssueScope::Sensor;
+    issue.sensorIndex = sensorIndex;
+    issue.evidenceA = evidenceA;
+    issue.evidenceB = evidenceB;
+    s_sessionDiagnostics.add(issue);
   }
 
   int liveIndex_(const SensorSpec& spec) {
@@ -119,8 +156,9 @@ namespace {
 
   static uint16_t countColumns(bool excludeBdqV2NativeStreams = false) {
     uint16_t total = 0;
-    for (auto* s : s_list) {
-      if (!s || s->muted()) continue;
+    for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
+      Sensor* s = s_list[i];
+      if (!participates_(i)) continue;
       if (excludeBdqV2NativeStreams && s->usesBdqV2NativeStream()) continue;
       total += s->columnCount();
     }
@@ -153,6 +191,43 @@ namespace {
 
     long pin = -1;
     return sp.params.getInt("pin", pin) && pin >= 0;
+  }
+
+  uint32_t capabilitiesForType_(SensorType type) {
+    switch (type) {
+      case SensorType::BMI270ImuI2C:
+        return SENSOR_CAP_IMU | SENSOR_CAP_NATIVE_STREAM | SENSOR_CAP_SYNC_CAPTURE;
+      case SensorType::AnalogPot:
+      case SensorType::AS5600StringPotAnalog:
+        return SENSOR_CAP_ANALOG;
+      case SensorType::AS5600StringPotI2C:
+      case SensorType::AS5600AngleI2C:
+      case SensorType::AS5048BAngleI2C:
+        return SENSOR_CAP_I2C | SENSOR_CAP_NATIVE_STREAM;
+      case SensorType::DANF10NGps:
+      case SensorType::Unknown:
+      default:
+        return SENSOR_CAP_NONE;
+    }
+  }
+
+  bool assignmentMatchesType_(SensorType type, const SensorAssignment& assignment) {
+    if (assignment.provider.kind != SensorProviderKind::CanNode) return true;
+    switch (type) {
+      case SensorType::BMI270ImuI2C:
+        return assignment.kind == SensorAssignment::Kind::NodeImu;
+      case SensorType::AnalogPot:
+      case SensorType::AS5600StringPotAnalog:
+        return assignment.kind == SensorAssignment::Kind::NodeAnalog;
+      case SensorType::AS5600StringPotI2C:
+      case SensorType::AS5600AngleI2C:
+      case SensorType::AS5048BAngleI2C:
+        return assignment.kind == SensorAssignment::Kind::NodeI2C;
+      case SensorType::DANF10NGps:
+      case SensorType::Unknown:
+      default:
+        return false;
+    }
   }
 }
 
@@ -199,7 +274,10 @@ void begin(const LoggerConfig* cfg) {
     s_list[i] = nullptr;
     s_loggingStarted[i] = false;
     s_loggingStopped[i] = false;
+    s_sessionParticipating[i] = false;
   }
+  s_sessionPlanActive = false;
+  s_sessionDiagnostics.clear();
   s_primaryPot = nullptr;
 }
 
@@ -223,6 +301,13 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
     SensorSpec sp;
     if (!cfg.getSensorSpec(i, sp)) { ///need tp make this non-global
       SENS_LOGW("spec %u read failed\n", i);
+      continue;
+    }
+
+    const SensorAssignment configuredAssignment = sensorAssignment(sp, board::gBoard);
+    if (configuredAssignment.provider.kind == SensorProviderKind::CanNode) {
+      SENS_LOGI("sensor '%s' awaits CAN node %u provider\n",
+                sp.name, (unsigned)configuredAssignment.provider.index);
       continue;
     }
 
@@ -339,7 +424,12 @@ void buildSensorsFromConfig(const LoggerConfig& cfg) {
     }
 
     // Register with SensorManager (takes ownership, per your contract)
-    SensorManager::registerSensor(s);
+    if (!registerAt_(i, s)) {
+      SENS_LOGE("could not register '%s' in configuration slot %u\n",
+                sp.name, (unsigned)i);
+      delete s;
+      continue;
+    }
     SensorManager::noteLiveConfiguration(s, sp);
 
     // ---- Calibration mask: supported (per type) ∧ allowed (per instance CSV) ----
@@ -373,6 +463,51 @@ void finalizeBegin() {
   for (auto* s : s_list) if (s) s->begin();
 }
 
+bool shutdownSensors(char* error, size_t errorCapacity) {
+  if (error && errorCapacity) error[0] = '\0';
+  I2CBusScheduler::stop();
+
+  bool stopped = true;
+  for (auto* sensor : s_list) {
+    if (sensor && !sensor->shutdown()) stopped = false;
+  }
+  if (!stopped) {
+    // A resource-owning sensor declined teardown. Restore every object we may
+    // already have quiesced so the pre-existing live set remains usable.
+    for (auto* sensor : s_list) if (sensor) sensor->begin();
+    if (error && errorCapacity) {
+      snprintf(error, errorCapacity,
+               "A sensor task did not stop; the running sensor set was retained");
+    }
+    return false;
+  }
+
+  for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
+    delete s_list[i];
+    s_list[i] = nullptr;
+    s_liveAssignment[i] = SensorAssignment{};
+    s_liveType[i] = SensorType::Unknown;
+    s_liveMutedDefault[i] = false;
+    s_loggingStarted[i] = false;
+    s_loggingStopped[i] = false;
+    s_sessionParticipating[i] = false;
+  }
+  s_sessionPlanActive = false;
+  s_sessionDiagnostics.clear();
+  s_primaryPot = nullptr;
+  resetTimingStats_();
+  return true;
+}
+
+bool rebuildFromConfig(const LoggerConfig& cfg, char* error, size_t errorCapacity) {
+  if (!shutdownSensors(error, errorCapacity)) return false;
+  s_cfg = &cfg;
+  buildSensorsFromConfig(cfg);
+  finalizeBegin();
+  discoverHardware(DiscoveryReason::ConfigurationChanged);
+  return true;
+}
+
 void applyConfig(const LoggerConfig& cfg) {
   s_cfg = &cfg;
   for (auto* s : s_list) if (s) s->applyConfig(cfg);
@@ -392,88 +527,300 @@ void noteLiveConfiguration(Sensor* sensor, const SensorSpec& spec) {
   }
 }
 
+void discoverHardware(DiscoveryReason reason) {
+  s_inventory.clear();
+  s_lastDiscoveryReason = reason;
+  ++s_discoverySequence;
+
+  SensorProviderObservation localProvider;
+  localProvider.id = SensorProviderId{};
+  localProvider.present = true;
+  localProvider.healthy = true;
+  localProvider.capabilities = SENSOR_CAP_IMU | SENSOR_CAP_ANALOG |
+      SENSOR_CAP_I2C | SENSOR_CAP_NATIVE_STREAM;
+  s_inventory.observeProvider(localProvider);
+
+  if (s_cfg) {
+    for (uint8_t i = 0; i < s_cfg->sensorCount() && i < MAX_SENSORS; ++i) {
+      SensorSpec spec;
+      if (!s_cfg->getSensorSpec(i, spec)) continue;
+      const SensorAssignment assignment = sensorAssignment(spec, board::gBoard);
+      if (assignment.kind == SensorAssignment::Kind::None) continue;
+
+      if (assignment.provider.kind == SensorProviderKind::CanNode) {
+        SensorProviderObservation provider;
+        provider.id = assignment.provider;
+        s_inventory.observeProvider(provider);
+      }
+
+      SensorEndpointObservation endpoint;
+      endpoint.endpoint = assignment;
+      endpoint.capabilities = capabilitiesForType_(spec.type);
+      if (assignment.provider.kind == SensorProviderKind::Local && s_list[i]) {
+        endpoint.present = true;
+        I2CStartupStatus startup;
+        endpoint.healthy = s_list[i]->describeI2CStartup(startup)
+            ? startup.ready : true;
+      }
+      s_inventory.observeEndpoint(endpoint);
+    }
+  }
+
+  // The master/CAN transport can stage observations through the public
+  // setters. They override the configured-but-absent defaults above without
+  // coupling the logger architecture to a protocol implementation.
+  for (uint8_t i = 0; i < s_remoteDiscovery.providerCount(); ++i) {
+    const SensorProviderObservation* provider = s_remoteDiscovery.providerAt(i);
+    if (provider) s_inventory.observeProvider(*provider);
+  }
+  for (uint8_t i = 0; i < s_remoteDiscovery.endpointCount(); ++i) {
+    const SensorEndpointObservation* endpoint = s_remoteDiscovery.endpointAt(i);
+    if (endpoint) s_inventory.observeEndpoint(*endpoint);
+  }
+}
+
+const SensorInventory& inventory() { return s_inventory; }
+uint32_t discoverySequence() { return s_discoverySequence; }
+DiscoveryReason lastDiscoveryReason() { return s_lastDiscoveryReason; }
+
+void clearRemoteDiscoveryObservations() { s_remoteDiscovery.clear(); }
+
+bool setRemoteProviderObservation(const SensorProviderObservation& observation) {
+  if (observation.id.kind != SensorProviderKind::CanNode) return false;
+  return s_remoteDiscovery.observeProvider(observation);
+}
+
+bool setRemoteEndpointObservation(const SensorEndpointObservation& observation) {
+  if (observation.endpoint.provider.kind != SensorProviderKind::CanNode) return false;
+  return s_remoteDiscovery.observeEndpoint(observation);
+}
+
 LoggingConfigIssue configurationIssue(const LoggerConfig& cfg, char* error, size_t cap) {
   if (error && cap) error[0] = '\0';
-  auto issue = [&](LoggingConfigIssue kind, const char* format, const char* a, const char* b = "") {
-    if (error && cap) snprintf(error, cap, format, a, b);
-    return kind;
+  const auto& diagnostics = configurationDiagnostics(cfg);
+  for (uint8_t i = 0; i < diagnostics.count(); ++i) {
+    const auto* item = diagnostics.at(i);
+    if (!item) continue;
+
+    SensorSpec sensor;
+    SensorSpec related;
+    const bool haveSensor = cfg.getSensorSpec(item->sensorIndex, sensor);
+    const bool haveRelated = cfg.getSensorSpec(item->relatedSensorIndex, related);
+    const char* sensorName = haveSensor ? sensor.name : "sensor";
+    const char* relatedName = haveRelated ? related.name : "sensor";
+
+    switch (item->code) {
+      case SensorIssueCode::ReservedEndpoint:
+        if (error && cap) snprintf(error, cap, "%s shares an I2C address with board hardware", sensorName);
+        return LoggingConfigIssue::Conflict;
+      case SensorIssueCode::DuplicateSensorName:
+        if (error && cap) snprintf(error, cap, "Duplicate sensor name '%s'", sensorName);
+        return LoggingConfigIssue::Conflict;
+      case SensorIssueCode::EndpointConflict:
+        if (error && cap) {
+          if (item->endpoint.kind == SensorAssignment::Kind::I2C) {
+            snprintf(error, cap, "%s and %s share I2C bus %d address 0x%02X",
+                     relatedName, sensorName, item->endpoint.bus, item->endpoint.input);
+          } else {
+            snprintf(error, cap, "%s and %s share an input assignment", relatedName, sensorName);
+          }
+        }
+        return LoggingConfigIssue::Conflict;
+      case SensorIssueCode::DuplicateSensorIdentity:
+        if (error && cap) snprintf(error, cap, "Duplicate sensor identity for '%s'", sensorName);
+        return LoggingConfigIssue::Conflict;
+      case SensorIssueCode::UnknownSensorType:
+        if (error && cap) snprintf(error, cap, "%s has an unknown sensor type", sensorName);
+        return LoggingConfigIssue::InvalidConfig;
+      case SensorIssueCode::InvalidEndpoint:
+        if (error && cap) snprintf(error, cap, "%s has no valid input assignment", sensorName);
+        return LoggingConfigIssue::InvalidConfig;
+      case SensorIssueCode::ProviderAbsent:
+        if (error && cap) snprintf(error, cap, "%s provider is not present", sensorName);
+        return LoggingConfigIssue::InvalidConfig;
+      case SensorIssueCode::SensorAbsent:
+        if (error && cap) snprintf(error, cap, "%s is not present", sensorName);
+        return LoggingConfigIssue::InvalidConfig;
+      case SensorIssueCode::InitializationFailed:
+        if (error && cap) snprintf(error, cap, "%s did not initialize", sensorName);
+        return LoggingConfigIssue::InvalidConfig;
+      case SensorIssueCode::CapabilityMismatch:
+        if (error && cap) snprintf(error, cap, "%s cannot meet its requested configuration", sensorName);
+        return LoggingConfigIssue::InvalidConfig;
+      case SensorIssueCode::RuntimeConfigurationDiffers:
+        if (error && cap) snprintf(error, cap, "%s differs from the running sensor; apply configuration", sensorName);
+        return LoggingConfigIssue::RestartRequired;
+      default:
+        break;
+    }
+  }
+  return LoggingConfigIssue::None;
+}
+
+const SensorDiagnosticList& configurationDiagnostics(const LoggerConfig& cfg) {
+  static SensorDiagnosticList diagnostics;
+  diagnostics.clear();
+
+  auto add = [&](SensorIssueCode code,
+                 SensorIssueSeverity severity,
+                 SensorIssueImpact impact,
+                 uint8_t sensorIndex,
+                 uint8_t relatedSensorIndex,
+                 const SensorAssignment& endpoint) {
+    SensorDiagnosticIssue issue;
+    issue.code = code;
+    issue.severity = severity;
+    issue.scope = endpoint.kind == SensorAssignment::Kind::None
+        ? SensorIssueScope::Sensor : SensorIssueScope::Endpoint;
+    issue.impact = impact;
+    issue.sensorIndex = sensorIndex;
+    issue.relatedSensorIndex = relatedSensorIndex;
+    issue.endpoint = endpoint;
+    diagnostics.add(issue);
   };
-  // Conflicts take priority: rebooting cannot repair duplicate assignments.
+
   for (uint8_t i = 0; i < cfg.sensorCount(); ++i) {
     SensorSpec current;
     if (!cfg.getSensorSpec(i, current)) continue;
     const auto assignment = sensorAssignment(current, board::gBoard);
-    const bool active = configuredActive_(current);
-    if (active) {
-      if (const char* owner = assignmentOwner(assignment, board::gBoard)) {
-        return issue(LoggingConfigIssue::Conflict, "%s shares an I2C address with the %s", current.name, owner);
-      }
+
+    if (const char* owner = assignmentOwner(assignment, board::gBoard)) {
+      (void)owner;
+      add(SensorIssueCode::ReservedEndpoint, SensorIssueSeverity::Error,
+          SensorIssueImpact::ExcludeSensor, i, 0xFF, assignment);
     }
+
     String currentId;
     current.params.get("imu_id", currentId);
     if (!currentId.length()) currentId = String(current.name) + "_001";
+
     for (uint8_t j = 0; j < i; ++j) {
       SensorSpec previous;
       if (!cfg.getSensorSpec(j, previous)) continue;
-      if (current.name[0] && strcasecmp(current.name, previous.name) == 0)
-        return issue(LoggingConfigIssue::Conflict, "Duplicate sensor name '%s'", current.name);
-      if (!active || !configuredActive_(previous)) continue;
+      if (current.name[0] && strcasecmp(current.name, previous.name) == 0) {
+        add(SensorIssueCode::DuplicateSensorName, SensorIssueSeverity::Error,
+            SensorIssueImpact::ExcludeSensor, i, j, SensorAssignment{});
+      }
       if (assignmentsConflict(assignment, sensorAssignment(previous, board::gBoard))) {
-        if (error && cap) {
-          if (assignment.kind == SensorAssignment::Kind::I2C)
-            snprintf(error, cap, "%s and %s share I2C bus %d address 0x%02X", previous.name, current.name, assignment.bus, assignment.input);
-          else snprintf(error, cap, "%s and %s share an input assignment", previous.name, current.name);
-        }
-        return LoggingConfigIssue::Conflict;
+        add(SensorIssueCode::EndpointConflict, SensorIssueSeverity::Error,
+            SensorIssueImpact::ExcludeSensor, i, j, assignment);
       }
       if (current.type == SensorType::BMI270ImuI2C && previous.type == current.type) {
         String previousId;
         previous.params.get("imu_id", previousId);
         if (!previousId.length()) previousId = String(previous.name) + "_001";
-        if (currentId.equalsIgnoreCase(previousId))
-          return issue(LoggingConfigIssue::Conflict, "Duplicate imu_id '%s'", currentId.c_str());
+        if (currentId.equalsIgnoreCase(previousId)) {
+          add(SensorIssueCode::DuplicateSensorIdentity, SensorIssueSeverity::Error,
+              SensorIssueImpact::ExcludeSensor, i, j, SensorAssignment{});
+        }
       }
     }
   }
+
   for (uint8_t i = 0; i < cfg.sensorCount(); ++i) {
     SensorSpec current;
     if (!cfg.getSensorSpec(i, current)) continue;
-    if (!SensorRegistry::lookup(current.type))
-      return issue(LoggingConfigIssue::InvalidConfig, "%s has an unknown sensor type", current.name);
-    if (!configuredActive_(current)) continue;
     const auto assignment = sensorAssignment(current, board::gBoard);
-    if (assignment.kind == SensorAssignment::Kind::None)
-      return issue(LoggingConfigIssue::InvalidConfig, "%s has no valid input assignment", current.name);
-    if (current.type == SensorType::BMI270ImuI2C && !BMI270ImuSensor::validateSpec(current, error, cap))
-      return LoggingConfigIssue::InvalidConfig;
+    if (!SensorRegistry::lookup(current.type)) {
+      add(SensorIssueCode::UnknownSensorType, SensorIssueSeverity::Error,
+          SensorIssueImpact::ExcludeSensor, i, 0xFF, assignment);
+      continue;
+    }
+    if (assignment.kind == SensorAssignment::Kind::None) {
+      add(SensorIssueCode::InvalidEndpoint, SensorIssueSeverity::Error,
+          SensorIssueImpact::ExcludeSensor, i, 0xFF, assignment);
+      continue;
+    }
+    if (!assignmentMatchesType_(current.type, assignment)) {
+      add(SensorIssueCode::CapabilityMismatch, SensorIssueSeverity::Error,
+          SensorIssueImpact::ExcludeSensor, i, 0xFF, assignment);
+      continue;
+    }
+    if (current.type == SensorType::BMI270ImuI2C) {
+      char validation[128] = {0};
+      if (!BMI270ImuSensor::validateSpec(current, validation, sizeof(validation))) {
+        add(SensorIssueCode::CapabilityMismatch, SensorIssueSeverity::Error,
+            SensorIssueImpact::ExcludeSensor, i, 0xFF, assignment);
+      }
+    }
+
+    if (s_discoverySequence != 0) {
+      const SensorProviderObservation* provider =
+          s_inventory.provider(assignment.provider);
+      if (assignment.provider.kind == SensorProviderKind::CanNode &&
+          (!provider || !provider->present)) {
+        add(SensorIssueCode::ProviderAbsent, SensorIssueSeverity::Error,
+            SensorIssueImpact::ExcludeSensor, i, 0xFF, assignment);
+      } else {
+        const SensorEndpointObservation* endpoint = s_inventory.endpoint(assignment);
+        if (!endpoint || !endpoint->present) {
+          add(SensorIssueCode::SensorAbsent, SensorIssueSeverity::Error,
+              SensorIssueImpact::ExcludeSensor, i, 0xFF, assignment);
+        } else if (!endpoint->healthy) {
+          add(SensorIssueCode::InitializationFailed, SensorIssueSeverity::Error,
+              SensorIssueImpact::ExcludeSensor, i, 0xFF, assignment);
+        }
+      }
+    }
   }
+
   for (uint8_t i = 0; i < cfg.sensorCount(); ++i) {
     SensorSpec current;
     if (!cfg.getSensorSpec(i, current) || !configuredActive_(current)) continue;
+    const SensorAssignment assignment = sensorAssignment(current, board::gBoard);
+    if (assignment.provider.kind == SensorProviderKind::CanNode) {
+      // Discovery can establish that the physical endpoint exists before the
+      // remote acquisition/data-plane driver is implemented. Keep it out of
+      // the live session without misreporting the hardware as absent.
+      if (!diagnostics.excludesSensor(i)) {
+        add(SensorIssueCode::RuntimeConfigurationDiffers,
+            SensorIssueSeverity::Warning,
+            SensorIssueImpact::ExcludeSensor, i, 0xFF, assignment);
+      }
+      continue;
+    }
     const int live = liveIndex_(current);
+    char validation[128] = {0};
     if (live < 0 || s_list[live]->muted() ||
-        !(s_liveAssignment[live] == sensorAssignment(current, board::gBoard)))
-      return issue(LoggingConfigIssue::RestartRequired, "%s differs from the running sensor; restart required", current.name);
-    if (s_list[live]->loggingRestartRequired(current, error, cap)) return LoggingConfigIssue::RestartRequired;
+        !(s_liveAssignment[live] == sensorAssignment(current, board::gBoard)) ||
+        s_list[live]->loggingRestartRequired(current, validation, sizeof(validation))) {
+      add(SensorIssueCode::RuntimeConfigurationDiffers, SensorIssueSeverity::Warning,
+          SensorIssueImpact::ExcludeSensor, i, 0xFF,
+          assignment);
+    }
   }
-  // Removed/type-changed/muted entries can leave a previously active object.
+
   for (int i = 0; i < MAX_SENSORS; ++i) {
     if (!s_list[i] || s_list[i]->muted()) continue;
     bool retained = false;
     for (uint8_t j = 0; j < cfg.sensorCount(); ++j) {
       SensorSpec current;
-      if (cfg.getSensorSpec(j, current) && liveIndex_(current) == i && configuredActive_(current)) { retained = true; break; }
+      if (cfg.getSensorSpec(j, current) && liveIndex_(current) == i &&
+          configuredActive_(current)) {
+        retained = true;
+        break;
+      }
     }
-    if (!retained) return issue(LoggingConfigIssue::RestartRequired, "%s is still active; restart required", s_list[i]->name());
+    if (!retained) {
+      SensorDiagnosticIssue issue;
+      issue.code = SensorIssueCode::RuntimeConfigurationDiffers;
+      issue.severity = SensorIssueSeverity::Warning;
+      issue.impact = SensorIssueImpact::ExcludeSensor;
+      issue.sensorIndex = (uint8_t)i;
+      diagnostics.add(issue);
+    }
   }
-  return LoggingConfigIssue::None;
+
+  return diagnostics;
 }
 
 bool requiresBdqV2(const LoggerConfig& cfg) {
+  const SensorDiagnosticList& diagnostics = configurationDiagnostics(cfg);
   uint8_t count = 0;
   for (uint8_t i = 0; i < cfg.sensorCount(); ++i) {
     SensorSpec spec;
-    if (!cfg.getSensorSpec(i, spec) || spec.type != SensorType::BMI270ImuI2C || !configuredActive_(spec)) continue;
+    if (!cfg.getSensorSpec(i, spec) || spec.type != SensorType::BMI270ImuI2C ||
+        !configuredActive_(spec) || diagnostics.excludesSensor(i)) continue;
     if (++count > 1) return true;
     String name = "orientation_200";
     spec.params.get("profile", name);
@@ -489,28 +836,70 @@ bool validateLoggingStart(
     char* error,
     size_t errorCapacity) {
   if (error && errorCapacity) error[0] = '\0';
-  if (configurationIssue(cfg, error, errorCapacity) != LoggingConfigIssue::None) return false;
-  if (requiresBdqV2(cfg) && cfg.logFormat != LogFormat::BodaqsMultiStreamBinary) {
-    if (error && errorCapacity) snprintf(error, errorCapacity, "IMU configuration requires BDQ v2 logging");
+  s_sessionDiagnostics = configurationDiagnostics(cfg);
+  s_sessionPlanActive = true;
+  for (uint8_t i = 0; i < MAX_SENSORS; ++i) s_sessionParticipating[i] = false;
+
+  if (s_sessionDiagnostics.blocksSession()) {
+    if (error && errorCapacity) snprintf(error, errorCapacity, "sensor configuration blocks logging");
+    s_sessionPlanActive = false;
     return false;
   }
 
-  for (auto* sensor : s_list) {
-    if (!sensor || sensor->muted()) continue;
-    if (!sensor->prepareLoggingStart(cfg, effectiveRateHz, error, errorCapacity)) return false;
-    if (!sensor->validateLoggingStart(cfg, effectiveRateHz, error, errorCapacity)) return false;
+  for (uint8_t i = 0; i < cfg.sensorCount() && i < MAX_SENSORS; ++i) {
+    SensorSpec spec;
+    if (!cfg.getSensorSpec(i, spec) || spec.mutedDefault ||
+        s_sessionDiagnostics.excludesSensor(i)) continue;
+    if (!s_list[i]) {
+      addSessionIssue_(SensorIssueCode::SensorAbsent, SensorIssueSeverity::Error,
+                       SensorIssueImpact::ExcludeSensor, i);
+      continue;
+    }
+    s_sessionParticipating[i] = !s_list[i]->muted();
+  }
+
+  if (requiresBdqV2(cfg) && cfg.logFormat != LogFormat::BodaqsMultiStreamBinary) {
+    if (error && errorCapacity) snprintf(error, errorCapacity, "IMU configuration requires BDQ v2 logging");
+    s_sessionPlanActive = false;
+    return false;
+  }
+
+  for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
+    Sensor* sensor = s_list[i];
+    if (!participates_(i)) continue;
+    char sensorError[128] = {0};
+    if (!sensor->prepareLoggingStart(cfg, effectiveRateHz,
+                                     sensorError, sizeof(sensorError)) ||
+        !sensor->validateLoggingStart(cfg, effectiveRateHz,
+                                      sensorError, sizeof(sensorError))) {
+      SENS_LOGW("excluding sensor '%s' from session: %s\n", sensor->name(),
+                sensorError[0] ? sensorError : "start validation failed");
+      s_sessionParticipating[i] = false;
+      addSessionIssue_(SensorIssueCode::CapabilityMismatch,
+                       SensorIssueSeverity::Error,
+                       SensorIssueImpact::ExcludeSensor, i);
+    }
   }
   const bool excludeNativeStreams =
       cfg.logFormat == LogFormat::BodaqsMultiStreamBinary;
-  const uint16_t columnCount = dynamicColumnCount(excludeNativeStreams);
+  uint16_t columnCount = dynamicColumnCount(excludeNativeStreams);
   if (columnCount > LoggerLimits::kMaxDynamicColumns) {
-    if (error && errorCapacity) {
-      snprintf(error, errorCapacity,
-               "configured sensor columns %u exceed maximum %u",
-               (unsigned)columnCount,
-               (unsigned)LoggerLimits::kMaxDynamicColumns);
+    for (int i = MAX_SENSORS - 1;
+         i >= 0 && columnCount > LoggerLimits::kMaxDynamicColumns; --i) {
+      if (!participates_((uint8_t)i)) continue;
+      Sensor* sensor = s_list[i];
+      const uint8_t columns =
+          (excludeNativeStreams && sensor->usesBdqV2NativeStream())
+              ? 0 : sensor->columnCount();
+      s_sessionParticipating[i] = false;
+      columnCount = columns > columnCount ? 0 : columnCount - columns;
+      addSessionIssue_(SensorIssueCode::CapabilityMismatch,
+                       SensorIssueSeverity::Error,
+                       SensorIssueImpact::ExcludeSensor, (uint8_t)i,
+                       columns, LoggerLimits::kMaxDynamicColumns);
+      SENS_LOGW("excluding sensor '%s': primary column limit %u\n",
+                sensor->name(), (unsigned)LoggerLimits::kMaxDynamicColumns);
     }
-    return false;
   }
   return true;
 }
@@ -529,17 +918,26 @@ bool onLoggingStart(char* error, size_t errorCapacity) {
   }
   for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
     Sensor* s = s_list[i];
-    if (!s || s->muted()) continue;
+    if (!participates_(i)) continue;
     // Remember the attempted start so a partially started sensor is stopped
     // on failure. Muted sensors must not probe or acquire at log start.
     s_loggingStarted[i] = true;
     if (!s->startLoggingSession(error, errorCapacity)) {
-      onLoggingStop();
-      return false;
+      SENS_LOGW("excluding sensor '%s': session start failed\n", s->name());
+      s_sessionParticipating[i] = false;
+      addSessionIssue_(SensorIssueCode::InitializationFailed,
+                       SensorIssueSeverity::Error,
+                       SensorIssueImpact::ExcludeSensor, i);
+      s->onLoggingStop();
+      s_loggingStopped[i] = true;
+      if (error && errorCapacity) error[0] = '\0';
     }
   }
-  I2CBusScheduler::start();
   return true;
+}
+
+void startLoggingAcquisition() {
+  I2CBusScheduler::start();
 }
 
 void onLoggingStop() {
@@ -557,12 +955,31 @@ void onLoggingFinalized() {
     s_loggingStarted[i] = false;
     s_loggingStopped[i] = false;
   }
+  s_sessionPlanActive = false;
+  for (uint8_t i = 0; i < MAX_SENSORS; ++i) s_sessionParticipating[i] = false;
+  discoverHardware(DiscoveryReason::PostLog);
+}
+
+const SensorDiagnosticList& sessionDiagnostics() { return s_sessionDiagnostics; }
+
+uint8_t sessionExcludedCount() {
+  bool excluded[MAX_SENSORS] = {};
+  for (uint8_t i = 0; i < s_sessionDiagnostics.count(); ++i) {
+    const SensorDiagnosticIssue* issue = s_sessionDiagnostics.at(i);
+    if (!issue || issue->impact != SensorIssueImpact::ExcludeSensor) continue;
+    if (issue->sensorIndex < MAX_SENSORS) excluded[issue->sensorIndex] = true;
+    if (issue->relatedSensorIndex < MAX_SENSORS) excluded[issue->relatedSensorIndex] = true;
+  }
+  uint8_t count = 0;
+  for (bool value : excluded) if (value) ++count;
+  return count;
 }
 
 size_t pendingLoggingRows() {
   size_t pending = 0;
-  for (auto* sensor : s_list) {
-    if (!sensor || sensor->muted()) continue;
+  for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
+    Sensor* sensor = s_list[i];
+    if (!participates_(i)) continue;
     const size_t sensorPending = sensor->pendingLoggingRows();
     if (sensorPending > pending) pending = sensorPending;
   }
@@ -628,14 +1045,8 @@ bool gpsStatus(SensorGpsStatus& out) {
 }
 
 uint8_t activeCount() {
-  uint8_t n = ConfigManager::sensorCount();
   uint8_t active = 0;
-  for (uint8_t i = 0; i < n; ++i) {
-    bool muted = false;
-    if (getMuted(i, muted) && !muted) {
-      ++active;
-    }
-  }
+  for (uint8_t i = 0; i < MAX_SENSORS; ++i) if (participates_(i)) ++active;
   return active;
 }
 
@@ -645,8 +1056,9 @@ uint16_t dynamicColumnCount(bool excludeBdqV2NativeStreams) {
 
 uint16_t synchronousMaxSampleRateHz() {
   uint16_t cap = 0;
-  for (auto* s : s_list) {
-    if (!s || s->muted()) continue;
+  for (uint8_t sensorIndex = 0; sensorIndex < MAX_SENSORS; ++sensorIndex) {
+    Sensor* s = s_list[sensorIndex];
+    if (!participates_(sensorIndex)) continue;
     if (s->sampleMode() != SensorSampleMode::Synchronous) continue;
 
     const uint16_t sensorCap = s->maxSampleRateHz();
@@ -667,8 +1079,9 @@ String buildHeaderString(bool humanTs) {
 
   appendCsv(out, humanTs ? "timestamp" : "timestamp_ms");
 
-  for (auto* s : s_list) {
-    if (!s || s->muted()) continue;
+  for (uint8_t sensorIndex = 0; sensorIndex < MAX_SENSORS; ++sensorIndex) {
+    Sensor* s = s_list[sensorIndex];
+    if (!participates_(sensorIndex)) continue;
     const uint8_t cols = s->columnCount();
     for (uint8_t i = 0; i < cols; ++i) {
       char nameBuf[96] = {0};
@@ -701,7 +1114,7 @@ void sampleValues(
     //
     for (uint8_t sensorIndex = 0; sensorIndex < MAX_SENSORS; ++sensorIndex) {
         auto* s = s_list[sensorIndex];
-        if (!s || s->muted()) continue;
+        if (!participates_(sensorIndex)) continue;
         if (excludeBdqV2NativeStreams && s->usesBdqV2NativeStream()) continue;
 
         const uint8_t need = s->columnCount();
@@ -748,8 +1161,9 @@ uint16_t readSuspensionPreview(PreviewMode mode, PreviewValue* out, uint16_t max
 
   AnalogInputManager::beginSample();
 
-  for (auto* s : s_list) {
-    if (!s || s->muted()) continue;
+  for (uint8_t sensorIndex = 0; sensorIndex < MAX_SENSORS; ++sensorIndex) {
+    Sensor* s = s_list[sensorIndex];
+    if (!participates_(sensorIndex)) continue;
 
     SensorColumnDescriptor desc;
     if (!s->describeColumn(0, desc)) continue;
@@ -795,8 +1209,9 @@ uint16_t describeSensorColumns(
   uint16_t total = 0;
   uint16_t written = 0;
 
-  for (auto* s : s_list) {
-    if (!s || s->muted()) continue;
+  for (uint8_t sensorSlot = 0; sensorSlot < MAX_SENSORS; ++sensorSlot) {
+    Sensor* s = s_list[sensorSlot];
+    if (!participates_(sensorSlot)) continue;
     if (excludeBdqV2NativeStreams && s->usesBdqV2NativeStream()) continue;
 
     const uint8_t cols = s->columnCount();
@@ -821,8 +1236,9 @@ bool describeSensorColumnAt(
     bool excludeBdqV2NativeStreams) {
   uint16_t logicalIndex = 0;
 
-  for (auto* s : s_list) {
-    if (!s || s->muted()) continue;
+  for (uint8_t sensorSlot = 0; sensorSlot < MAX_SENSORS; ++sensorSlot) {
+    Sensor* s = s_list[sensorSlot];
+    if (!participates_(sensorSlot)) continue;
     if (excludeBdqV2NativeStreams && s->usesBdqV2NativeStream()) continue;
 
     const uint8_t cols = s->columnCount();
@@ -845,8 +1261,9 @@ uint16_t describeSensors(SensorMetadataDescriptor* out, uint16_t maxOut) {
   uint16_t total = 0;
   uint16_t written = 0;
 
-  for (auto* s : s_list) {
-    if (!s || s->muted()) continue;
+  for (uint8_t sensorSlot = 0; sensorSlot < MAX_SENSORS; ++sensorSlot) {
+    Sensor* s = s_list[sensorSlot];
+    if (!participates_(sensorSlot)) continue;
 
     SensorMetadataDescriptor desc;
     if (!s->describeSensorMetadata(desc)) continue;
@@ -864,8 +1281,9 @@ uint16_t describeSensors(SensorMetadataDescriptor* out, uint16_t maxOut) {
 bool describeSensorAt(uint16_t sensorIndex, SensorMetadataDescriptor& out) {
   uint16_t logicalIndex = 0;
 
-  for (auto* s : s_list) {
-    if (!s || s->muted()) continue;
+  for (uint8_t sensorSlot = 0; sensorSlot < MAX_SENSORS; ++sensorSlot) {
+    Sensor* s = s_list[sensorSlot];
+    if (!participates_(sensorSlot)) continue;
 
     SensorMetadataDescriptor desc;
     if (!s->describeSensorMetadata(desc)) continue;
@@ -894,8 +1312,9 @@ uint16_t describeBdqV2Streams(
   uint16_t written = 0;
   uint32_t nextStreamId = firstStreamId;
 
-  for (auto* sensor : s_list) {
-    if (!sensor || sensor->muted() || nextStreamId > UINT16_MAX) continue;
+  for (uint8_t sensorSlot = 0; sensorSlot < MAX_SENSORS; ++sensorSlot) {
+    Sensor* sensor = s_list[sensorSlot];
+    if (!participates_(sensorSlot) || nextStreamId > UINT16_MAX) continue;
     BdqV2StreamDescriptor descriptor;
     if (!sensor->describeBdqV2Stream(
             static_cast<uint16_t>(nextStreamId), descriptor)) {
@@ -912,8 +1331,9 @@ uint16_t describeSensorColumnRawFlags(bool* out, uint16_t maxOut) {
   uint16_t total = 0;
   uint16_t written = 0;
 
-  for (auto* s : s_list) {
-    if (!s || s->muted()) continue;
+  for (uint8_t sensorSlot = 0; sensorSlot < MAX_SENSORS; ++sensorSlot) {
+    Sensor* s = s_list[sensorSlot];
+    if (!participates_(sensorSlot)) continue;
 
     const uint8_t cols = s->columnCount();
     for (uint8_t i = 0; i < cols; ++i) {

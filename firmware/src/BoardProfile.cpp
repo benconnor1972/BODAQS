@@ -361,6 +361,17 @@ static const BoardProfile A8_PROFILE = {
   },
   .external_adc_count = 2,
 
+  .can_fd_master = {
+    .supported = true,
+    .spi_bus_index = 0,
+    .cs_pin = 40,
+    .irq_pin = -1,
+    .irq_active_low = true,
+    .irq_use_internal_pullup = true,
+    .spi_hz = 4000000,
+    .spi_mode = 0,
+  },
+
   .indicators = {
     .has_led = true,
     .led_pin = 41,

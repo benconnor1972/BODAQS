@@ -29,6 +29,7 @@
 #include "FirmwareInfo.h"
 #include "esp_system.h"
 #include "AnalogInputManager.h"
+#include "CanMasterManager.h"
 #include "IndicatorManager.h"
 #include "PowerManager.h"
 #include "BoardProfile.h"
@@ -337,6 +338,8 @@ void setup() {
   BOOT_LOGI("SETUP: D finalize begin\n");
 
   SensorManager::finalizeBegin();
+  CanMasterManager::begin(*gBoard, g_cfg);
+  SensorManager::discoverHardware(SensorManager::DiscoveryReason::Startup);
     BOOT_LOGI("SETUP: D done\n");
 
   //PROBE("[SENS] debugDump");
@@ -463,6 +466,7 @@ void loop() {
   StorageManager_loop();       
   WebServerManager::loop();
   LoggingManager::loop();
+  CanMasterManager::loop();
   UI::loop();
   MenuSystem::loop();
   PowerManager::loop();

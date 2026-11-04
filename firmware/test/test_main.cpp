@@ -41,9 +41,11 @@ int runBdqV2WriterTests();
 // Defined in test_rates.cpp
 int runRateTests();
 int runBoardProfileTests();
+int runCanMasterProtocolTests();
 int runAdcReadyWaitTests();
 int runStringPotWrapTests();
 int runI2CTransferPriorityTests();
+int runSensorArchitectureTests();
 
 static int tests_passed = 0;
 static int tests_failed = 0;
@@ -325,12 +327,16 @@ int main() {
     printf("\nRunning board profile tests...\n\n");
     tests_failed += runBoardProfileTests();
 
+    printf("\nRunning CAN master protocol tests...\n\n");
+    tests_failed += runCanMasterProtocolTests();
+
     printf("\nRunning ADC ready wait tests...\n\n");
     tests_failed += runAdcReadyWaitTests();
     tests_failed += runStringPotWrapTests();
 
     printf("\nRunning I2C transfer priority tests...\n\n");
     tests_failed += runI2CTransferPriorityTests();
+    tests_failed += runSensorArchitectureTests();
     tests_failed += runI2CStartupTests();
 
     printf("\n%d passed, %d failed\n", tests_passed, tests_failed);

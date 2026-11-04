@@ -8,56 +8,39 @@
 
 struct ParamStore {
   // Retain existing entries plus retired experiment keys and editor markers.
+  // Text is packed into one arena instead of reserving maximum-length key and
+  // value arrays for every slot. Offsets make ordinary copies self-contained,
+  // which is important for staged configuration transactions.
   static const uint8_t MAX = 36;
-  char     keys[MAX][24];
-  char     vals[MAX][32];
+  static const uint8_t MAX_KEY_CHARS = 23;
+  static const uint8_t MAX_VALUE_CHARS = 31;
+  static const uint16_t TEXT_CAPACITY = 1280;
+
+  struct Slot {
+    uint16_t keyOffset = 0;
+    uint16_t valueOffset = 0;
+  };
+
+  Slot     slots[MAX];
+  char     text[TEXT_CAPACITY] = {0};
+  uint16_t used = 0;
   uint8_t  count = 0;
 
-  void     clear()      { count = 0; }
+  void     clear();
   uint8_t  size() const { return count; }
+  uint16_t textBytes() const { return used; }
+  const char* keyAt(uint8_t index) const;
+  const char* valueAt(uint8_t index) const;
+  const char* get(const char* key) const;
+  bool set(const char* key, const char* value);
+  bool remove(const char* key);
 
-  // Convenience helpers so ConfigManager can fill it
-  void set(const char* key, const char* val) {
-    if (!key || !*key || !val) return;
-    for (uint8_t i = 0; i < count; ++i) {
-      if (strcasecmp(keys[i], key) == 0) {
-        strncpy(vals[i], val, sizeof(vals[i]) - 1);
-        vals[i][sizeof(vals[i]) - 1] = '\0';
-        return;
-      }
-    }
-    if (count < MAX) {
-      strncpy(keys[count], key, sizeof(keys[count]) - 1);
-      keys[count][sizeof(keys[count]) - 1] = '\0';
-      strncpy(vals[count], val, sizeof(vals[count]) - 1);
-      vals[count][sizeof(vals[count]) - 1] = '\0';
-      ++count;
-    }
-  }
-
-  const char* get(const char* key) const {
-    if (!key) return nullptr;
-    for (uint8_t i = 0; i < count; ++i)
-      if (strcasecmp(keys[i], key) == 0) return vals[i];
-    return nullptr;
-  }
-
-  bool remove(const char* key) {
-    if (!key || !*key) return false;
-    for (uint8_t i = 0; i < count; ++i) {
-      if (strcasecmp(keys[i], key) != 0) continue;
-      for (uint8_t j = i + 1; j < count; ++j) {
-        memcpy(keys[j - 1], keys[j], sizeof(keys[j - 1]));
-        memcpy(vals[j - 1], vals[j], sizeof(vals[j - 1]));
-      }
-      --count;
-      keys[count][0] = '\0';
-      vals[count][0] = '\0';
-      return true;
-    }
-    return false;
-  }
+private:
+  bool append_(const char* key, const char* value);
 };
+
+static_assert(sizeof(ParamStore) <= 1440,
+              "ParamStore must remain compact enough for 32 configured sensors");
 
 // Small schema for per-sensor parameters
 enum class ParamType : uint8_t { Bool, Int, Float, String, Enum };

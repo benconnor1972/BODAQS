@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "BoardProfile.h"
+#include "CanMasterManager.h"
 #include "FirmwareInfo.h"
 #include "SensorManager.h"
 #include "DebugLog.h"
@@ -302,6 +303,44 @@ void appendKeyUInt_(JsonOutput& out, uint8_t depth, const char* key, uint64_t va
   out += comma ? F(",\n") : F("\n");
 }
 
+void appendIndent_(JsonOutput& out, uint8_t depth);
+
+const char* issueImpactKey_(SensorIssueImpact impact) {
+  switch (impact) {
+    case SensorIssueImpact::ExcludeSensor: return "sensor_excluded";
+    case SensorIssueImpact::ExcludeProvider: return "provider_excluded";
+    case SensorIssueImpact::BlockSession: return "session_blocked";
+    case SensorIssueImpact::None:
+    default: return "none";
+  }
+}
+
+void appendSessionWarnings_(JsonOutput& out, uint8_t depth) {
+  const SensorDiagnosticList& diagnostics = SensorManager::sessionDiagnostics();
+  appendKey_(out, depth, "warnings");
+  if (diagnostics.count() == 0) {
+    out += F("[]\n");
+    return;
+  }
+
+  out += F("[\n");
+  for (uint8_t index = 0; index < diagnostics.count(); ++index) {
+    const SensorDiagnosticIssue* issue = diagnostics.at(index);
+    if (!issue) continue;
+    appendIndent_(out, depth + 1);
+    out += F("{\n");
+    appendKeyString_(out, depth + 2, "code", sensorIssueCodeKey(issue->code));
+    appendKeyString_(out, depth + 2, "impact", issueImpactKey_(issue->impact));
+    appendKeyUInt_(out, depth + 2, "sensor_index", issue->sensorIndex);
+    appendKeyUInt_(out, depth + 2, "related_sensor_index",
+                   issue->relatedSensorIndex, false);
+    appendIndent_(out, depth + 1);
+    out += (index + 1 < diagnostics.count()) ? F("},\n") : F("}\n");
+  }
+  appendIndent_(out, depth);
+  out += F("]\n");
+}
+
 void appendKeyInt_(JsonOutput& out, uint8_t depth, const char* key, int32_t value, bool comma = true) {
   appendKey_(out, depth, key);
   char buf[16];
@@ -330,6 +369,48 @@ void appendKeyBool_(JsonOutput& out, uint8_t depth, const char* key, bool value,
   appendKey_(out, depth, key);
   out += value ? F("true") : F("false");
   out += comma ? F(",\n") : F("\n");
+}
+
+void appendCanMaster_(JsonOutput& out, uint8_t depth, bool comma = true) {
+  const auto& diagnostics = CanMasterManager::diagnostics();
+  appendKey_(out, depth, "can_fd_master");
+  out += F("{\n");
+  appendKeyString_(out, depth + 1, "mode",
+                   ConfigManager::canMasterModeKey(diagnostics.mode));
+  appendKeyString_(out, depth + 1, "state",
+                   CanMasterManager::stateKey(diagnostics.state));
+  appendKeyBool_(out, depth + 1, "profile_supported",
+                 diagnostics.profileSupported);
+  appendKeyBool_(out, depth + 1, "present", CanMasterManager::present());
+  appendKeyBool_(out, depth + 1, "compatible", diagnostics.compatible);
+  appendKeyBool_(out, depth + 1, "irq_available", diagnostics.irqAvailable);
+  appendKeyUInt_(out, depth + 1, "protocol_version",
+                 diagnostics.protocolVersion);
+  appendKeyUInt_(out, depth + 1, "firmware_version",
+                 diagnostics.firmwareVersion);
+  appendKeyUInt_(out, depth + 1, "capabilities", diagnostics.capabilities);
+  appendKeyUInt_(out, depth + 1, "hardware_uid", diagnostics.hardwareUid);
+  appendKey_(out, depth + 1, "status");
+  out += F("{\n");
+  appendKeyBool_(out, depth + 2, "supported", diagnostics.statusSupported);
+  appendKeyBool_(out, depth + 2, "valid", diagnostics.statusValid);
+  appendKeyUInt_(out, depth + 2, "flags", diagnostics.statusFlags);
+  appendKeyUInt_(out, depth + 2, "uptime_ms", diagnostics.masterUptimeMs);
+  appendKeyUInt_(out, depth + 2, "reset_cause", diagnostics.masterResetCause);
+  appendKeyUInt_(out, depth + 2, "slots_received",
+                 diagnostics.masterSlotsReceived);
+  appendKeyUInt_(out, depth + 2, "malformed_slots",
+                 diagnostics.masterMalformedSlots);
+  appendKeyUInt_(out, depth + 2, "spi_recoveries",
+                 diagnostics.masterSpiRecoveries);
+  appendKeyUInt_(out, depth + 2, "can_rx_frames", diagnostics.canRxFrames);
+  appendKeyUInt_(out, depth + 2, "can_tx_frames", diagnostics.canTxFrames);
+  appendKeyUInt_(out, depth + 2, "can_error_events",
+                 diagnostics.canErrorEvents, false);
+  appendIndent_(out, depth + 1);
+  out += F("}\n");
+  appendIndent_(out, depth);
+  out += comma ? F("},\n") : F("}\n");
 }
 
 const TimingSummary& emptyTimingSummary_() {
@@ -1545,6 +1626,7 @@ bool serializeMetadataJson_(
   appendSensors_(out);
   appendDeviceConfigs_(out);
   appendImuConfigs_(out);
+  appendCanMaster_(out, 1);
   if (multiStream) {
     appendKeyString_(out, 1, "native_stream_contract", "bodaqs.native_stream.v1");
     appendKeyUInt_(out, 1, "stream_count", streamCount);
@@ -1566,6 +1648,10 @@ bool serializeMetadataJson_(
     appendKeyString_(out, 2, "source", wallClockAvailable ? "rtc" : "unavailable", false);
     out += F("  },\n");
   }
+  appendKey_(out, 1, "qc");
+  out += F("{\n");
+  appendSessionWarnings_(out, 2);
+  out += F("  },\n");
   appendKeyString_(out, 1, "log_format", cfg ? ConfigManager::logFormatKey(cfg->logFormat) : "bodaqs_compact_binary", false);
   out += F("}\n");
   return out.ok();

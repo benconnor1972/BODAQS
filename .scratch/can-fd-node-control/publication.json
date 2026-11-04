@@ -1,0 +1,139 @@
+{
+  "repository": "benconnor1972/BODAQS",
+  "native_dependencies": true,
+  "labels": [
+    "enhancement"
+  ],
+  "omitted_labels": [
+    "ready-for-agent"
+  ],
+  "issues": {
+    "1": {
+      "number": 153,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/153",
+      "title": "Apply idle sensor edits consistently across configuration entry points",
+      "preview": 1,
+      "blockers": [],
+      "linked_blockers": [],
+      "id": 6193958188
+    },
+    "2": {
+      "number": 154,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/154",
+      "title": "Preserve responsive discovery while deferring transport processing",
+      "preview": 2,
+      "blockers": [],
+      "linked_blockers": [],
+      "id": 6193959179
+    },
+    "3": {
+      "number": 155,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/155",
+      "title": "Inspect node control state through the logger",
+      "preview": 3,
+      "blockers": [
+        2
+      ],
+      "linked_blockers": [
+        2
+      ],
+      "id": 6193959935
+    },
+    "4": {
+      "number": 156,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/156",
+      "title": "Inspect coherent endpoint capabilities and effective state",
+      "preview": 4,
+      "blockers": [
+        3
+      ],
+      "linked_blockers": [
+        3
+      ],
+      "id": 6193960892
+    },
+    "5": {
+      "number": 157,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/157",
+      "title": "Establish and release reset-safe node control authority",
+      "preview": 5,
+      "blockers": [
+        3
+      ],
+      "linked_blockers": [
+        3
+      ],
+      "id": 6193962043
+    },
+    "6": {
+      "number": 158,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/158",
+      "title": "Reconcile an IMU endpoint to verified disabled state",
+      "preview": 6,
+      "blockers": [
+        4,
+        5
+      ],
+      "linked_blockers": [
+        4,
+        5
+      ],
+      "id": 6193962962
+    },
+    "7": {
+      "number": 159,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/159",
+      "title": "Save and verify the initial remote LSM6DSO32X profile",
+      "preview": 7,
+      "blockers": [
+        1,
+        6
+      ],
+      "linked_blockers": [
+        1,
+        6
+      ],
+      "id": 6193964131
+    },
+    "8": {
+      "number": 160,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/160",
+      "title": "Offer explicit migration of legacy remote BMI270 placeholders",
+      "preview": 8,
+      "blockers": [
+        7
+      ],
+      "linked_blockers": [
+        7
+      ],
+      "id": 6193965372
+    },
+    "9": {
+      "number": 161,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/161",
+      "title": "Recover idle configuration after disconnects and node or master restarts",
+      "preview": 9,
+      "blockers": [
+        7
+      ],
+      "linked_blockers": [
+        7
+      ],
+      "id": 6193966375
+    },
+    "10": {
+      "number": 162,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/162",
+      "title": "Reconcile remote mute safely and enforce recording-time restrictions",
+      "preview": 10,
+      "blockers": [
+        7
+      ],
+      "linked_blockers": [
+        7
+      ],
+      "id": 6193967517
+    }
+  },
+  "verified": true
+}

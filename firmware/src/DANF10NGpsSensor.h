@@ -75,6 +75,7 @@ public:
   explicit DANF10NGpsSensor(const Params& p);
 
   void begin() override;
+  bool shutdown() override;
   void onLoggingStart() override;
   void onLoggingStop() override;
 

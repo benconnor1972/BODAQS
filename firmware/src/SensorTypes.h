@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include "SensorParams.h"   // for ParamPack
 
-constexpr uint8_t MAX_SENSORS = 16;   // must be visible to ConfigManager.h
+constexpr uint8_t MAX_SENSORS = 32;   // configured logical sensors, local + remote
 
 // Extend as you add new sensors (keep 0 = Unknown).
 enum class SensorType : uint8_t {

@@ -370,12 +370,8 @@ bool LoggingManager::start() {
 
   refreshConfigurationStatus();
   if (s_configurationIssue != LoggingConfigIssue::None) {
-    s_startFailureHint = s_configurationIssue == LoggingConfigIssue::RestartRequired
-        ? StartFailureHint::RestartNow
-        : (s_configurationIssue == LoggingConfigIssue::Conflict ? StartFailureHint::ConfigConflict : StartFailureHint::None);
-    LOGGING_LOGW("start refused: %s\n", s_configurationDetail);
-    if (s_configurationIssue == LoggingConfigIssue::InvalidConfig) UI::toast("Sensor config\nPlease review", 1800, 1);
-    return false;
+    LOGGING_LOGW("sensor configuration issue; continuing with eligible sensors: %s\n",
+                 s_configurationDetail);
   }
   if (SensorManager::requiresBdqV2(*s_cfg) && s_cfg->logFormat != LogFormat::BodaqsMultiStreamBinary) {
     if (!ConfigManager::setLogFormat(LogFormat::BodaqsMultiStreamBinary)) {
@@ -412,6 +408,15 @@ bool LoggingManager::start() {
     LOGGING_LOGW("start refused: %s\n", sensorError[0] ? sensorError : "sensor validation failed");
     return false;
   }
+  const uint8_t excludedSensors = SensorManager::sessionExcludedCount();
+  if (excludedSensors) {
+    char notice[32];
+    snprintf(notice, sizeof(notice), "%u sensor%s skipped",
+             (unsigned)excludedSensors, excludedSensors == 1 ? "" : "s");
+    UI::toast(notice, 1800, 1);
+    LOGGING_LOGW("best-effort session excludes %u configured sensor(s)\n",
+                 (unsigned)excludedSensors);
+  }
   StorageManager_setSampleRate(effectiveRateHz);
   s_intervalUs = StorageManager_getSampleIntervalUs();
 
@@ -446,10 +451,24 @@ bool LoggingManager::start() {
   resetLateStats_();
 #endif
 
+  const uint32_t sensorStartT0 = millis();
+  if (!SensorManager::onLoggingStart(sensorError, sizeof(sensorError))) {
+    SensorManager::onLoggingStop();
+    SensorManager::onLoggingFinalized();
+    WiFiManager::resumeAfterLogging();
+    UI::toast("Sensor start", 1800, 1);
+    UI::status("Sensor error");
+    LOGGING_LOGW("start refused: %s\n", sensorError[0] ? sensorError : "sensor start failed");
+    return false;
+  }
+  const uint32_t sensorStartMs = millis() - sensorStartT0;
+
   // Open/create log file
   TRACE("Entering storagemanager_startlog");
   const uint32_t storageT0 = millis();
   if (!StorageManager_startLog()) {
+    SensorManager::onLoggingStop();
+    SensorManager::onLoggingFinalized();
     WiFiManager::resumeAfterLogging();
     UI::toast("SD open fail", 1500, 1);
     UI::status("SD error");
@@ -459,25 +478,12 @@ bool LoggingManager::start() {
   const uint32_t storageMs = millis() - storageT0;
   TRACE("storagemanager_startlog complete");
 
-  const uint32_t sensorStartT0 = millis();
   // Paint the durable recording frame while the OLED is still allowed to
   // transfer. Auto/freeze policies may suppress every later refresh.
   DisplayManager::prepareLoggingScreen(
       effectiveRateHz, SensorManager::activeCount());
   AnalogInputManager::onLoggingStart();
-  if (!SensorManager::onLoggingStart(sensorError, sizeof(sensorError))) {
-    captureStopContext_(StopReason::StartFailure, "sensor_start_failed");
-    AnalogInputManager::onLoggingStop();
-    SensorManager::onLoggingStop();
-    StorageManager_stopLog();
-    SensorManager::onLoggingFinalized();
-    WiFiManager::resumeAfterLogging();
-    UI::toast("Sensor start", 1800, 1);
-    UI::status("Sensor error");
-    LOGGING_LOGW("start refused: %s\n", sensorError[0] ? sensorError : "sensor start failed");
-    return false;
-  }
-  const uint32_t sensorStartMs = millis() - sensorStartT0;
+  SensorManager::startLoggingAcquisition();
   s_running = true;
 
 #if defined(ESP32)

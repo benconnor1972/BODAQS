@@ -1,5 +1,7 @@
 #include "Arduino.h"
 #include "SensorAssignment.h"
+#include "SensorDiagnostics.h"
+#include "SensorInventory.h"
 #include "LoggingStartStatus.h"
 #include "HomeRestartGesture.h"
 #include "HtmlUtil.h"
@@ -61,6 +63,7 @@ bool fail_(char* error, size_t cap, const char* format, ...) {
 std::vector<std::string> events;
 bool saveOk = true, upload = false, powerOk = true, storageOk = true, openOk = true;
 bool validateOk = true, sensorsStartOk = true;
+uint8_t excludedSensors = 0;
 int prepares = 0;
 LogFormat preparedFormat, fileFormat;
 
@@ -69,14 +72,18 @@ namespace SensorManager {
   SensorAssignment s_liveAssignment[MAX_SENSORS];
   SensorType s_liveType[MAX_SENSORS] = {};
   bool s_liveMutedDefault[MAX_SENSORS] = {};
+  SensorInventory s_inventory;
+  uint32_t s_discoverySequence = 0;
   // PRODUCTION_PREFLIGHT
   uint16_t synchronousMaxSampleRateHz() { return 0; }
   bool validateLoggingStart(const LoggerConfig& cfg, uint16_t, char*, size_t) {
     ++prepares; events.push_back("prepare"); preparedFormat = cfg.logFormat; return validateOk;
   }
   bool onLoggingStart(char*, size_t) { events.push_back("sensors"); return sensorsStartOk; }
+  void startLoggingAcquisition() { events.push_back("acquire"); }
   void onLoggingStop() { events.push_back("sensor_stop"); }
   void onLoggingFinalized() { events.push_back("finalize"); }
+  uint8_t sessionExcludedCount() { return excludedSensors; }
   uint8_t activeCount() { return 2; }
 }
 
@@ -151,6 +158,7 @@ int restartCount = 0, boundActions = 0;
 namespace MenuSystem { bool isActive() { return menuActive; } }
 namespace DeviceRestart { void restart() { ++restartCount; } }
 namespace LoggingManager { bool isRunning() { return s_running; } }
+namespace CanMasterManager { bool requiredAndUnavailable() { return false; } }
 // PRODUCTION_NOTICE
 namespace ButtonActions {
   void invoke(int, ButtonEvent) {
@@ -168,12 +176,20 @@ uint8_t s_bindingCount = 2;
 // PRODUCTION_BUTTON
 
 int checks = 0;
-void check(bool ok) { ++checks; if (!ok) { fprintf(stderr, "Failed check %d\n", checks); abort(); } }
+void checkAt(bool ok, int line) {
+  ++checks;
+  if (!ok) {
+    fprintf(stderr, "Failed check %d at fixture line %d\n", checks, line);
+    abort();
+  }
+}
+#define check(condition) checkAt((condition), __LINE__)
 Sensor live[MAX_SENSORS];
 void reset() {
   g_cfg = LoggerConfig{}; savedConfig = LoggerConfig{}; profile = board::BoardProfile{};
   events.clear(); s_running = false; s_configurationIssue = LoggingConfigIssue::None; s_configurationDetail[0] = 0;
   saveOk = powerOk = storageOk = openOk = validateOk = sensorsStartOk = true; upload = false; prepares = 0;
+  excludedSensors = 0;
   for (int i = 0; i < MAX_SENSORS; ++i) { SensorManager::s_list[i] = nullptr; live[i] = Sensor{}; }
   profile.analog.count = 3;
   profile.analog.inputs[0].source = board::AnalogSourceType::InternalGpio;
@@ -207,15 +223,18 @@ int main() {
   check(issue() == I::None); check(SensorManager::requiresBdqV2(g_cfg));
   check(LoggingManager::start()); check(s_running); check(savedConfig.logFormat == LogFormat::BodaqsMultiStreamBinary);
   check(preparedFormat == LogFormat::BodaqsMultiStreamBinary); check(fileFormat == preparedFormat);
-  check(index("save") < index("prepare")); check(index("prepare") < index("file")); check(index("file") < index("sensors")); check(has("paint"));
+  check(index("save") < index("prepare")); check(index("prepare") < index("sensors"));
+  check(index("sensors") < index("file")); check(index("file") < index("acquire")); check(has("paint"));
   reset(); add(T::BMI270ImuI2C,"a",1,104); add(T::BMI270ImuI2C,"b",1,104,false);
-  check(issue() == I::Conflict); check(!LoggingManager::start()); check(s_startFailureHint == LoggingManager::StartFailureHint::ConfigConflict);
-  check(!has("save") && !has("file") && prepares == 0);
-  g_cfg.sensors[1].mutedDefault = true; check(issue() == I::None); check(!SensorManager::requiresBdqV2(g_cfg));
+  check(issue() == I::Conflict); check(LoggingManager::start());
+  check(s_startFailureHint == LoggingManager::StartFailureHint::None);
+  check(!has("save") && has("file") && prepares == 1);
+  g_cfg.sensors[1].mutedDefault = true; check(issue() == I::Conflict); check(!SensorManager::requiresBdqV2(g_cfg));
   reset(); add(T::BMI270ImuI2C,"a",1,104); add(T::BMI270ImuI2C,"b",1,105);
-  live[1].stale = true; check(issue() == I::RestartRequired); check(!LoggingManager::start());
-  check(s_startFailureHint == LoggingManager::StartFailureHint::RestartNow); check(!has("save") && !has("file"));
+  live[1].stale = true; check(issue() == I::RestartRequired); check(LoggingManager::start());
+  check(s_startFailureHint == LoggingManager::StartFailureHint::None); check(!has("save") && has("file"));
   live[1].stale = false; check(issue() == I::None);
+  reset(); add(T::BMI270ImuI2C,"a",1,104); add(T::BMI270ImuI2C,"b",1,105);
   saveOk = false; check(!LoggingManager::start()); check(g_cfg.logFormat == LogFormat::BodaqsStandard); check(!has("file") && prepares == 0);
   reset(); add(T::BMI270ImuI2C,"a",1,104);
   check(!SensorManager::requiresBdqV2(g_cfg)); check(LoggingManager::start()); check(!has("save")); check(fileFormat == LogFormat::BodaqsStandard);
@@ -226,7 +245,7 @@ int main() {
   set(1,"i2c_bus","0"); check(issue() == I::RestartRequired);
   SensorSpec spec; g_cfg.getSensorSpec(1,spec); SensorManager::noteLiveConfiguration(&live[1],spec); check(issue() == I::None);
   profile.fuel.type = board::FuelGaugeType::MAX17048; profile.fuel.bus_index = 0; check(issue() == I::Conflict);
-  profile.fuel.type = board::FuelGaugeType::None; set(1,"i2c_bus","1"); live[1].mute = true; check(issue() == I::None);
+  profile.fuel.type = board::FuelGaugeType::None; set(1,"i2c_bus","1"); live[1].mute = true; check(issue() == I::Conflict);
   live[1].mute = false; check(issue() == I::Conflict);
   reset(); add(T::AnalogPot,"pot",0,0); add(T::AS5600StringPotAnalog,"angle",0,-1); set(1,"pin","10"); check(issue() == I::Conflict);
   reset(); add(T::AnalogPot,"pot",0,1); add(T::AnalogPot,"pot2",0,2); check(issue() == I::None);
@@ -255,8 +274,9 @@ int main() {
   upload = false; powerOk = false; check(!LoggingManager::start() && !has("save"));
   powerOk = true; storageOk = false; check(!LoggingManager::start() && !has("save"));
   storageOk = true; openOk = false; check(!LoggingManager::start()); check(has("wifi_resume") && !s_running);
+  check(has("sensor_stop") && has("finalize"));
   reset(); add(T::BMI270ImuI2C,"a",1,104); sensorsStartOk = false;
-  check(!LoggingManager::start()); check(has("close") && has("finalize") && has("sensor_stop") && !s_running);
+  check(!LoggingManager::start()); check(!has("file") && has("finalize") && has("sensor_stop") && !s_running);
   reset(); add(T::BMI270ImuI2C,"a",1,104);
   profile.buttons.count = 1; strcpy(profile.buttons.btn[0].id,"nav_enter");
   revealRestartOnPress = true;
@@ -300,6 +320,7 @@ int main() {
   check(conflictHtml.indexOf("&lt;script&gt;") >= 0 && conflictHtml.indexOf("<script>") < 0);
   live[0].stale = false; live[1].mute = true;
   const String clearedHtml = configurationNotice_(true);
-  check(clearedHtml.indexOf("logging-config-notice") >= 0 && clearedHtml.indexOf("alert-warn") < 0);
+  check(clearedHtml.indexOf("logging-config-notice") >= 0 &&
+        clearedHtml.indexOf("Config conflict") >= 0); // muting does not release an endpoint
   printf("Logging start runtime: %d checks passed\n", checks);
 }

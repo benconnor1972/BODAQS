@@ -138,6 +138,14 @@ namespace board {
       LOGI("  cs%u pin=%d\n", (unsigned)i, (int)bp.spi.cs_pins[i]);
     }
 
+    LOGI_TAG("Board", "CAN-FD master: supported=%u spi=%u cs=%d irq=%d hz=%lu mode=%u\n",
+             (unsigned)bp.can_fd_master.supported,
+             (unsigned)bp.can_fd_master.spi_bus_index,
+             (int)bp.can_fd_master.cs_pin,
+             (int)bp.can_fd_master.irq_pin,
+             (unsigned long)bp.can_fd_master.spi_hz,
+             (unsigned)bp.can_fd_master.spi_mode);
+
     LOGI_TAG("Board", "RTC: %s addr=0x%02X bus=%u int=%d\n",
              rtcTypeName_(bp.rtc.type),
              (unsigned)bp.rtc.i2c_addr,

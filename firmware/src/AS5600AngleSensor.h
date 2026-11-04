@@ -39,6 +39,7 @@ public:
   explicit AS5600AngleSensor(const Params& p);
 
   void begin() override;
+  bool shutdown() override;
   bool describeI2CStartup(I2CStartupStatus& out) const override;
   bool retryI2CStartup(bool allowBusRecovery) override;
   void loop() override {}

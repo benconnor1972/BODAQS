@@ -324,6 +324,14 @@ void AS5048BAngleSensor::begin() {
   }
 }
 
+bool AS5048BAngleSensor::shutdown() {
+  I2CBusScheduler::unregisterClient(this);
+  m_asyncLoggingActive = false;
+  m_deferredRecoveryPending = false;
+  m_wire = nullptr;
+  return true;
+}
+
 bool AS5048BAngleSensor::reconfigureFromSpec(const SensorSpec& spec) {
   if (spec.type != SensorType::AS5048BAngleI2C) return false;
 

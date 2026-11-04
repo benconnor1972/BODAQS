@@ -402,6 +402,15 @@ void AS5600AngleSensor::begin() {
   beginImpl_(true);
 }
 
+bool AS5600AngleSensor::shutdown() {
+  I2CBusScheduler::unregisterClient(this);
+  m_asyncLoggingActive = false;
+  m_bdqV2LoggingActive = false;
+  m_deferredRecoveryPending = false;
+  m_wire = nullptr;
+  return true;
+}
+
 bool AS5600AngleSensor::describeI2CStartup(I2CStartupStatus& out) const {
   out = I2CStartupStatus{};
   out.kind = I2CStartupKind::AS5600;

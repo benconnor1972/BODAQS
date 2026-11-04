@@ -150,6 +150,19 @@ struct ExternalAdcProfile {
   uint8_t effective_bits = 12;
 };
 
+struct CanFdMasterProfile {
+  // Describes fixed logger-side wiring for the optional CAN-FD daughterboard.
+  // Physical presence is determined at runtime by the protocol probe.
+  bool supported = false;
+  uint8_t spi_bus_index = 0;
+  int8_t cs_pin = -1;
+  int8_t irq_pin = -1;
+  bool irq_active_low = true;
+  bool irq_use_internal_pullup = true;
+  uint32_t spi_hz = 4000000;
+  uint8_t spi_mode = 0;
+};
+
 struct AnalogInputHW {
   AnalogSourceType source = AnalogSourceType::None;
 
@@ -225,6 +238,7 @@ struct BoardProfile {
   SPIProfile spi;
   ExternalAdcProfile external_adcs[BOARD_MAX_EXTERNAL_ADCS];
   uint8_t external_adc_count = 0;
+  CanFdMasterProfile can_fd_master;
 
   IndicatorsProfile indicators;
   CurrentLimitSwitchProfile current_limit;

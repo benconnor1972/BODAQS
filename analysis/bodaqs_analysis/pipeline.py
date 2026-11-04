@@ -597,6 +597,26 @@ def _apply_log_metadata(
             if isinstance(warning, str) and warning.strip():
                 _append_qc_warning(session, warning)
 
+    logger_qc = log_metadata.get("qc")
+    if isinstance(logger_qc, Mapping):
+        logger_warnings = logger_qc.get("warnings")
+        if isinstance(logger_warnings, list):
+            qc["logger_warnings"] = copy.deepcopy(logger_warnings)
+            for warning in logger_warnings:
+                if not isinstance(warning, Mapping):
+                    continue
+                code = _optional_nonempty_str(warning.get("code"))
+                if code is None:
+                    continue
+                sensor_index = warning.get("sensor_index")
+                impact = _optional_nonempty_str(warning.get("impact"))
+                detail = f"logger_sensor_warning:{code}"
+                if sensor_index is not None:
+                    detail += f":sensor_index={sensor_index}"
+                if impact is not None:
+                    detail += f":impact={impact}"
+                _append_qc_warning(session, detail)
+
     contract = log_metadata.get("contract")
     if isinstance(contract, dict):
         name = contract.get("name")
@@ -924,7 +944,9 @@ def load_bdq_session(
     info = read_bdq(p)
     native_frames: Dict[str, pd.DataFrame] = {}
     if info.header.format_major == 2:
-        native_frames = bdq_to_stream_dataframes(p)
+        native_frames = bdq_to_stream_dataframes(
+            p, trim_imu_to_primary_interval=True
+        )
         df_raw = bdq_primary_dataframe_from_streams(info, native_frames)
     else:
         df_raw = bdq_to_dataframe(p)
@@ -962,9 +984,14 @@ def load_bdq_session(
             session_secondary = session["meta"]["secondary_streams"]
             for stream_name, frame in native_frames.items():
                 alignment = frame.attrs.get("bdq_clock_alignment")
+                interval_trim = frame.attrs.get("bdq_primary_interval_trim")
                 stream_metadata = session_secondary.get(stream_name)
                 if isinstance(alignment, Mapping) and isinstance(stream_metadata, dict):
                     stream_metadata["clock_alignment"] = copy.deepcopy(dict(alignment))
+                if isinstance(interval_trim, Mapping) and isinstance(stream_metadata, dict):
+                    stream_metadata["primary_interval_trim"] = copy.deepcopy(
+                        dict(interval_trim)
+                    )
         session.setdefault("meta", {})["bdq_events"] = [dict(event) for event in info.events]
         timing_observations: Dict[str, Any] = {}
         catalog_streams = info.stream_catalog.get("streams")

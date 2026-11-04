@@ -1,0 +1,25 @@
+# 03: Inspect node control state through the logger
+
+## What to build
+
+Deliver the first new control round trip: the logger reads the master's control
+identity, requests a node's control state over CAN, and exposes the result in
+API/Health diagnostics. This narrow path establishes the common transport,
+explicit errors and bounded recovery without mutating node configuration.
+
+## Acceptance criteria
+
+- [ ] Control information exposes fresh master boot identity and implemented support while preserving old bootstrap compatibility.
+- [ ] Typed submit, receipt, polling and node-state exchange follow the confirmed record layouts; unsupported commands and malformed records follow their specified distinct handling.
+- [ ] The master permits at most three one-second application-request attempts, then reports state 5/reason 26 uncertainty and frees the exchange slot; duplicate SPI submissions do not extend the budget.
+- [ ] State reaches logger diagnostics with correctly scoped boot identity and decimal-string new 64-bit JSON values; a master reboot invalidates stale control observations.
+- [ ] Independent wire/state tests cover encoding, reserved fields, errors, lost/late replies and a subsequent successful exchange; affected target builds pass.
+
+## Blocked by
+
+- Preview 02: Preserve responsive discovery while deferring transport processing.
+
+## Publication preview
+
+Repository: benconnor1972/BODAQS. Intended labels: enhancement, ready-for-agent,
+when available. No source parent issue was supplied. Preview only; not published.

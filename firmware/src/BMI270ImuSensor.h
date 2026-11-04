@@ -41,6 +41,7 @@ public:
   explicit BMI270ImuSensor(const Params& params);
 
   void begin() override;
+  bool shutdown() override;
   bool describeI2CStartup(I2CStartupStatus& out) const override;
   bool retryI2CStartup(bool allowBusRecovery) override;
   bool muted() const override { return muted_; }

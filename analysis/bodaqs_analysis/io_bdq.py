@@ -1223,8 +1223,69 @@ def _align_observed_stream(
     return out
 
 
-def bdq_to_stream_dataframes(input_path: str | Path) -> dict[str, pd.DataFrame]:
-    """Decode every BDQ v2 stream onto its native clock without merging grids."""
+def _is_imu_stream_descriptor(descriptor: Mapping[str, Any]) -> bool:
+    for channel in _schema_channels(dict(descriptor)):
+        quantity = str(channel.get("quantity") or "").strip().lower()
+        vector_group = str(channel.get("vector_group") or "").strip().lower()
+        if quantity in {
+            "linear_acceleration",
+            "linear_acceleration_raw",
+            "angular_velocity",
+            "angular_velocity_raw",
+        } or vector_group in {"accel", "accel_raw", "gyro", "gyro_raw"}:
+            return True
+    return False
+
+
+def _trim_imu_streams_to_primary_interval(
+    frames: dict[str, pd.DataFrame],
+    descriptors_by_id: Mapping[int, Mapping[str, Any]],
+) -> None:
+    primary = frames.get("primary")
+    if not isinstance(primary, pd.DataFrame) or primary.empty or "time_s" not in primary:
+        return
+    primary_time = pd.to_numeric(primary["time_s"], errors="coerce")
+    finite_primary = primary_time[np.isfinite(primary_time)]
+    if finite_primary.empty:
+        return
+    start_s = float(finite_primary.iloc[0])
+    end_s = float(finite_primary.iloc[-1])
+    if end_s < start_s:
+        start_s, end_s = end_s, start_s
+
+    for descriptor in descriptors_by_id.values():
+        stream_key = str(descriptor.get("stream_key") or "")
+        if stream_key == "primary" or not _is_imu_stream_descriptor(descriptor):
+            continue
+        frame = frames.get(stream_key)
+        if not isinstance(frame, pd.DataFrame) or frame.empty or "time_s" not in frame:
+            continue
+        time_s = pd.to_numeric(frame["time_s"], errors="coerce")
+        keep = np.isfinite(time_s) & (time_s >= start_s) & (time_s <= end_s)
+        original_count = len(frame.index)
+        attrs = dict(frame.attrs)
+        trimmed = frame.loc[keep].reset_index(drop=True)
+        trimmed.attrs.update(attrs)
+        trimmed.attrs["bdq_primary_interval_trim"] = {
+            "primary_start_s": start_s,
+            "primary_end_s": end_s,
+            "records_before": original_count,
+            "records_after": len(trimmed.index),
+            "records_trimmed": original_count - len(trimmed.index),
+        }
+        frames[stream_key] = trimmed
+
+
+def bdq_to_stream_dataframes(
+    input_path: str | Path,
+    *,
+    trim_imu_to_primary_interval: bool = False,
+) -> dict[str, pd.DataFrame]:
+    """Decode every BDQ v2 stream without merging its native sample grid.
+
+    Set ``trim_imu_to_primary_interval`` for normal session semantics. Leaving
+    it false preserves every raw record in the BDQ for forensic inspection.
+    """
     path = Path(input_path)
     data = path.read_bytes()
     info = _read_bdq_bytes(path, data)
@@ -1283,6 +1344,8 @@ def bdq_to_stream_dataframes(input_path: str | Path) -> dict[str, pd.DataFrame]:
                     observations[stream_id],
                     logger_origin_us,
                 )
+        if trim_imu_to_primary_interval:
+            _trim_imu_streams_to_primary_interval(frames, descriptors_by_id)
     return frames
 
 
@@ -1658,6 +1721,13 @@ def _bdq_v2_to_log_metadata(info: BdqReadResult) -> dict[str, Any]:
     if info.detected_errors:
         run_stats["bdq_parser_errors"] = list(info.detected_errors)
 
+    qc: dict[str, Any] = {"run_stats": run_stats}
+    embedded_qc = metadata.get("qc")
+    if isinstance(embedded_qc, Mapping):
+        warnings = embedded_qc.get("warnings")
+        if isinstance(warnings, list):
+            qc["warnings"] = copy.deepcopy(warnings)
+
     log_metadata: dict[str, Any] = {
         "contract": {
             "name": "bdq.v2",
@@ -1683,7 +1753,7 @@ def _bdq_v2_to_log_metadata(info: BdqReadResult) -> dict[str, Any]:
             "device_id": _text_or_none(metadata.get("device_id")),
             "hardware_version": _text_or_none(metadata.get("hardware_version")),
         },
-        "qc": {"run_stats": run_stats},
+        "qc": qc,
         "bdq": {
             "metadata": dict(metadata),
             "stream_catalog": copy.deepcopy(info.stream_catalog),

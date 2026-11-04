@@ -23,8 +23,11 @@ def main():
     fixture = (root / "test/logging_start_runtime_fixture.cpp").read_text(encoding="utf-8")
     fixture = fixture.replace("// PRODUCTION_PREFLIGHT", "\n".join(
         definition(manager, sig) for sig in (
-            "  int liveIndex_(", "  bool configuredActive_(", "void noteLiveConfiguration(",
-            "LoggingConfigIssue configurationIssue(", "bool requiresBdqV2(")))
+            "  int liveIndex_(", "  bool configuredActive_(", "  bool assignmentMatchesType_(",
+            "void noteLiveConfiguration(",
+            "const SensorDiagnosticList& configurationDiagnostics(",
+            "LoggingConfigIssue configurationIssue(",
+            "bool requiresBdqV2(")))
     fixture = fixture.replace("// PRODUCTION_START", "\n".join(
         definition(logging, sig) for sig in (
             "void LoggingManager::refreshConfigurationStatus(",
@@ -46,7 +49,9 @@ def main():
         subprocess.run([args.compiler, "-std=gnu++2a", "-Wall", "-Wextra", "-Wno-unused-variable",
                         "-I", str(root / "test/stubs"), "-I", str(root / "src"),
                         str(cpp), str(root / "src/SensorAssignment.cpp"),
-                        str(root / "src/SensorParams.cpp"), "-o", str(exe)], check=True)
+                        str(root / "src/SensorParams.cpp"),
+                        str(root / "src/SensorDiagnostics.cpp"),
+                        str(root / "src/SensorInventory.cpp"), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
 
 

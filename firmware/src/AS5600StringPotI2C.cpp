@@ -302,6 +302,14 @@ void AS5600StringPotI2C::begin() {
   beginImpl_(true);
 }
 
+bool AS5600StringPotI2C::shutdown() {
+  I2CBusScheduler::unregisterClient(this);
+  m_asyncLoggingActive = false;
+  m_deferredRecoveryPending = false;
+  m_wire = nullptr;
+  return true;
+}
+
 bool AS5600StringPotI2C::describeI2CStartup(I2CStartupStatus& out) const {
   out = I2CStartupStatus{};
   out.kind = I2CStartupKind::AS5600;

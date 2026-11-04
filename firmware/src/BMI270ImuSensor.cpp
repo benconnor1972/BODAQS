@@ -358,6 +358,17 @@ bool BMI270ImuSensor::retryI2CStartup(bool allowBusRecovery) {
   return ensureInitialized_(nullptr, 0, allowBusRecovery);
 }
 
+bool BMI270ImuSensor::shutdown() {
+  if (acquisition_.sessionActive()) {
+    (void)acquisition_.stopSession();
+  }
+  acquisition_.shutdown();
+  initialized_ = false;
+  sessionAvailable_ = false;
+  captureClockObservations_ = false;
+  return true;
+}
+
 bool BMI270ImuSensor::reconfigureFromSpec(const SensorSpec& spec) {
   if (spec.type != SensorType::BMI270ImuI2C || acquisition_.sessionActive() ||
       !validateSpec(spec, nullptr, 0)) {

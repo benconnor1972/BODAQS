@@ -19,6 +19,7 @@
 #include "FirmwareInfo.h"
 #include "StorageManager.h"
 #include "AnalogInputManager.h"
+#include "CanMasterManager.h"
 #include "DebugLog.h"
 #include <WiFi.h>
 #include "RTCManager.h"
@@ -917,7 +918,7 @@ namespace {
   static void drawHealth_() {
     if ((long)(s_deferUiUntilMs - millis()) > 0) return;
     UI::clear(UI::TARGET_OLED);
-    UI::oledText(0, 0, "Health");
+    UI::oledText(0, 0, "Health  Enter=scan");
 
     const String sd =
         !StorageManager_cardDetected() ? "absent" :
@@ -946,12 +947,19 @@ namespace {
     if (RTCManager_externalRtcPorf()) rtc += " PORF";
     UI::oledText(0, 42, truncateForOled_(rtc, 21));
 
-    const uint16_t req = ConfigManager::get().sampleRateHz;
-    const uint16_t eff = AnalogInputManager::effectiveSampleRateHz();
-    String rate = String("Rate: ") + req;
-    if (eff && eff != req) rate += String("->") + eff;
-    rate += "Hz";
-    UI::oledText(0, 54, truncateForOled_(rate, 21));
+    const SensorInventory& inventory = SensorManager::inventory();
+    uint8_t present = 0;
+    for (uint8_t i = 0; i < inventory.endpointCount(); ++i) {
+      const SensorEndpointObservation* endpoint = inventory.endpointAt(i);
+      if (endpoint && endpoint->present && endpoint->healthy) ++present;
+    }
+    const uint8_t issues =
+        SensorManager::configurationDiagnostics(ConfigManager::get()).count();
+    String sensors = String("Sensors: ") + present + "/" +
+        ConfigManager::get().sensorCount();
+    if (issues) sensors += String(" !") + issues;
+    sensors += String(" ") + CanMasterManager::shortStatus();
+    UI::oledText(0, 54, truncateForOled_(sensors, 21));
     DisplayManager::present();
   }
 
@@ -1967,7 +1975,14 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
         drawSettings_();
         return;
       }
-      if (d == Dir::Enter || d == Dir::Right || d == Dir::Up || d == Dir::Down) {
+      if (d == Dir::Enter && ev == BUTTON_PRESSED) {
+        (void)CanMasterManager::probeNow();
+        SensorManager::discoverHardware(SensorManager::DiscoveryReason::UserRequest);
+        UI::toastModal("Sensors rescanned", 900, 1);
+        deferUiFor(900);
+        return;
+      }
+      if (d == Dir::Right || d == Dir::Up || d == Dir::Down) {
         if (ev == BUTTON_PRESSED) drawHealth_();
         return;
       }

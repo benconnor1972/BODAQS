@@ -258,6 +258,7 @@ def _stream_data(
 def _bdq_v2_bytes(
     *,
     bad_stream_id: int | None = None,
+    metadata: dict | None = None,
     primary_records: list[bytes] | None = None,
     imu_1_records: list[bytes] | None = None,
     imu_1_observations: list[bytes] | None = None,
@@ -266,7 +267,7 @@ def _bdq_v2_bytes(
         FILE_MAGIC_V2, 2, 0, FILE_HEADER.size, 1_789_272_000_000_000, 0, 0
     )
     chunks = [
-        _json_chunk(1, 0, _metadata()),
+        _json_chunk(1, 0, metadata if metadata is not None else _metadata()),
         _json_chunk(2, 1, _catalog()),
         _chunk(
             3,
@@ -501,6 +502,66 @@ def test_v2_metadata_and_pipeline_expose_native_secondary_streams(tmp_path: Path
     )
     assert session["meta"]["bdq_events"][0]["event_type"] == "user_mark"
     assert session["meta"]["bdq_timing_observations"]["imu_1"][0]["kind"] == 1
+
+
+def test_v2_metadata_preserves_logger_session_warnings(tmp_path: Path) -> None:
+    path = tmp_path / "warnings.bdq"
+    metadata = _metadata()
+    metadata["qc"] = {
+        "warnings": [
+            {
+                "code": "sensor_absent",
+                "impact": "sensor_excluded",
+                "sensor_index": 5,
+                "related_sensor_index": 255,
+            }
+        ]
+    }
+    path.write_bytes(_bdq_v2_bytes(metadata=metadata))
+
+    log_metadata = bdq_to_log_metadata(read_bdq(path))
+    session = load_bdq_session(path)
+
+    assert log_metadata["qc"]["warnings"] == metadata["qc"]["warnings"]
+    assert session["qc"]["logger_warnings"] == metadata["qc"]["warnings"]
+    assert (
+        "logger_sensor_warning:sensor_absent:sensor_index=5:impact=sensor_excluded"
+        in session["qc"]["warnings"]
+    )
+
+
+def test_v2_session_trims_imu_streams_to_primary_interval(tmp_path: Path) -> None:
+    path = tmp_path / "trimmed.bdq"
+    imu_records = [
+        _imu_record(10, 1000, 100),
+        _imu_record(11, 1016, 110),
+        _imu_record(12, 1032, 120),
+        _imu_record(13, 1048, 130),
+    ]
+    imu_observations = [
+        _observation(1000, 10, 99_000, 99_000),
+        _observation(1016, 11, 101_333, 101_333),
+        _observation(1032, 12, 103_667, 103_667),
+        _observation(1048, 13, 106_000, 106_000),
+    ]
+    path.write_bytes(_bdq_v2_bytes(
+        imu_1_records=imu_records,
+        imu_1_observations=imu_observations,
+    ))
+
+    raw = bdq_to_stream_dataframes(path)["imu_1"]
+    session = load_bdq_session(path)
+    trimmed = session["stream_dfs"]["imu_1"]
+    trim_report = session["meta"]["secondary_streams"]["imu_1"][
+        "primary_interval_trim"
+    ]
+
+    assert len(raw.index) == 4
+    assert len(trimmed.index) == 2
+    assert trimmed["time_s"].tolist() == pytest.approx([0.0013333, 0.0036667])
+    assert trim_report["records_before"] == 4
+    assert trim_report["records_after"] == 2
+    assert trim_report["records_trimmed"] == 2
 
 
 def test_v2_rejects_undeclared_stream_id_without_discarding_prior_chunks(tmp_path: Path) -> None:

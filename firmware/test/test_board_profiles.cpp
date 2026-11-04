@@ -24,8 +24,15 @@ int runBoardProfileTests() {
     check(rc3.supports_user_sleep &&
               rc3.buttons.binding_preset == board::ButtonBindingPreset::BodaqsRc3,
           "RC3 retains user sleep and RC3 button defaults");
+    check(a8.can_fd_master.supported && a8.can_fd_master.cs_pin == 40 &&
+              a8.can_fd_master.irq_pin == -1 &&
+              rc3.can_fd_master.supported && rc3.can_fd_master.cs_pin == 40,
+          "A8 and RC3 expose the polling-compatible CAN-FD master wiring");
     check(board::GetBoardProfile(board::BoardID::ThingPlusS3_BODAQS_4_F).supports_user_sleep,
           "Prototype F retains user sleep");
+    check(!board::GetBoardProfile(
+              board::BoardID::ThingPlusS3_BODAQS_4_F).can_fd_master.supported,
+          "Prototype F does not advertise the A8 CAN-FD daughterboard wiring");
     check(&board::GetBoardProfile(board::BoardID::BODAQS_S3_Mini_N4R2) == &a8 &&
               &board::GetBoardProfileByName("BODAQS S3 Mini N4R2") == &a8 &&
               &board::GetBoardProfileByName("BODAQS A8") == &a8 &&

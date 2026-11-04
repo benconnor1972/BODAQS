@@ -35,6 +35,7 @@ public:
   explicit AS5048BAngleSensor(const Params& p);
 
   void begin() override;
+  bool shutdown() override;
   void loop() override {}
   void applyConfig(const LoggerConfig&) override {}
   void onLoggingStart() override;

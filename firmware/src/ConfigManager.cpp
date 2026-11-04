@@ -182,7 +182,7 @@ namespace {
     if (strcasecmp(key, "pin") == 0) {
       const ParamStore& st = g_stores[idx];
       for (uint8_t i = 0; i < st.count; ++i) {
-        const char* k = st.keys[i];
+        const char* k = st.keyAt(i);
         if (k && strcasecmp(k, "ain") == 0) return false;
       }
     }
@@ -253,7 +253,7 @@ namespace {
 
     const char* legacyLocation = store.get("location");
     if (!store.get("domain") && legacyLocation && *legacyLocation) {
-      char domain[sizeof(store.vals[0])] = {0};
+      char domain[ParamStore::MAX_VALUE_CHARS + 1] = {0};
       strncpy(domain, legacyLocation, sizeof(domain) - 1);
       store.set("domain", domain);
     }
@@ -663,6 +663,41 @@ bool ConfigManager::parseOledLoggingPolicy(
   return false;
 }
 
+const char* ConfigManager::canMasterModeKey(CanMasterMode mode) {
+  switch (mode) {
+    case CanMasterMode::Off: return "off";
+    case CanMasterMode::Required: return "required";
+    case CanMasterMode::Auto:
+    default: return "auto";
+  }
+}
+
+const char* ConfigManager::canMasterModeLabel(CanMasterMode mode) {
+  switch (mode) {
+    case CanMasterMode::Off: return "Off";
+    case CanMasterMode::Required: return "Required";
+    case CanMasterMode::Auto:
+    default: return "Automatic";
+  }
+}
+
+bool ConfigManager::parseCanMasterMode(const char* text, CanMasterMode& out) {
+  if (!text || !*text) return false;
+  if (keyEquals(text, "off") || keyEquals(text, "disabled")) {
+    out = CanMasterMode::Off;
+    return true;
+  }
+  if (keyEquals(text, "auto") || keyEquals(text, "automatic")) {
+    out = CanMasterMode::Auto;
+    return true;
+  }
+  if (keyEquals(text, "required") || keyEquals(text, "require")) {
+    out = CanMasterMode::Required;
+    return true;
+  }
+  return false;
+}
+
 
 void ConfigManager::setSampleRateHz(uint16_t hz, bool persist) {
   hz = Rates::nearest(hz);
@@ -783,6 +818,7 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
   if (keyEquals(key, "log_format")) { LogFormat f; if (ConfigManager::parseLogFormat(val, f)) cfg.logFormat = f; return true; }
   if (keyEquals(key, "omit_metadata")) { bool b; if (ConfigManager::parseBool(String(val), b)) cfg.omitMetadata = b; return true; }
   if (keyEquals(key, "startup_log_to_sd")) { bool b; if (ConfigManager::parseBool(String(val), b)) cfg.startupLogToSd = b; return true; }
+  if (keyEquals(key, "can_master_mode")) { CanMasterMode mode; if (ConfigManager::parseCanMasterMode(val, mode)) cfg.canMasterMode = mode; return true; }
   if (keyEquals(key, "timestamp_mode")) { if (!strcasecmp(val,"human")) cfg.timestampHuman=true; else if (!strcasecmp(val,"fast")) cfg.timestampHuman=false; return true; }
   if (keyEquals(key, "tz"))             { copyStrBounded(val, cfg.tz, sizeof(cfg.tz)); return true; }
   if (keyEquals(key, "debounce_ms"))    { long v=strtol(val,nullptr,10); if (v>=0 && v<=1000) cfg.debounceMs=(uint16_t)v; return true; }
@@ -1119,6 +1155,14 @@ bool ConfigManager::load(LoggerConfig& cfg) {
   return true;
 }
 
+bool ConfigManager::reload() {
+  LoggerConfig loaded = s_cfg;
+  if (!load(loaded)) return false;
+  s_cfg = loaded;
+  g_cfg = loaded;
+  return true;
+}
+
 bool ConfigManager::save(const LoggerConfig& cfg) {
   CFG_LOGI("save: starting\n");
 
@@ -1208,6 +1252,7 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
   kv("log_format", ConfigManager::logFormatKey(cfg.logFormat));
   kv_bool("omit_metadata", cfg.omitMetadata);
   kv_bool("startup_log_to_sd", cfg.startupLogToSd);
+  kv("can_master_mode", ConfigManager::canMasterModeKey(cfg.canMasterMode));
   kv("timestamp_mode", cfg.timestampHuman ? "human" : "fast");
   kv("tz", cfg.tz);
   kv("ntp_servers", cfg.ntpServers);
@@ -1311,12 +1356,14 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
 
     const ParamStore& st = g_stores[i];
     for (uint8_t k = 0; k < st.size(); ++k) {
-      if (!shouldPersistSensorKey_(i, st.keys[k])) continue;
+      const char* key = st.keyAt(k);
+      const char* value = st.valueAt(k);
+      if (!shouldPersistSensorKey_(i, key)) continue;
       // Keys/vals are char*; make them null-safe
       out += "sensor"; out += String(i); out += ".";
-      out += NZ(st.keys[k]);
+      out += NZ(key);
       out += "=";
-      out += NZ(st.vals[k]);
+      out += NZ(value);
       out += "\n";
     }
     line("");
@@ -1398,7 +1445,7 @@ void ConfigManager::print(const LoggerConfig& cfg) {
     // Print params from the active ParamStore slot i
     const ParamStore* st = &g_stores[i];
     for (uint8_t k = 0; k < st->size(); ++k) {
-      LOGI("     %s=%s\n", st->keys[k], st->vals[k]);
+      LOGI("     %s=%s\n", st->keyAt(k), st->valueAt(k));
     }
   }
 }
@@ -1410,9 +1457,9 @@ static const char* lookupKV_(uint8_t idx, const char* key) {
   const ParamStore& st = g_stores[idx];
   if (st.count == 0) return nullptr;
   for (uint8_t i = 0; i < st.count; ++i) {
-    const char* k = st.keys[i];
+    const char* k = st.keyAt(i);
     if (k && strcasecmp(k, key) == 0) {
-      return st.vals[i];
+      return st.valueAt(i);
     }
   }
   return nullptr;

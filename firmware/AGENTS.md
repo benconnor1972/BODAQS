@@ -2,16 +2,14 @@
 
 Follow the repository-wide instructions in `../agents.md`.
 
-## Azure Boards backlog management
+## GitHub Issues backlog management
 
-- Organization: `bodaqs`
-- Project: `BODAQS`
-- Team: `BODAQS Team`
-- Process: Agile
-- Default product-backlog work item type: `User Story`
-- Use the configured Azure DevOps MCP server for backlog requests.
-- Treat an explicit request to "add" or "create" an item as authorization for that
-  item. Otherwise, prepare a preview before writing to Azure DevOps.
-- Do not delete work items, perform bulk updates, or change item state unless the
-  user explicitly requests it.
-- After creating an item, report its work item ID and URL.
+Use GitHub Issues in `benconnor1972/BODAQS`, following the repository-wide
+backlog rules and `../docs/agents/issue-tracker.md`.
+Azure Boards is retired for new project work; do not migrate or modify old items
+without an explicit request.
+
+## Project-local skills
+
+The starter skills live in `../.agents/skills/`. Follow the root Agent skills
+instructions and `../docs/agents/engineering.md` for firmware validation.

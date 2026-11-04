@@ -3,6 +3,8 @@
 
 #include <Arduino.h>
 #include "Sensor.h"
+#include "SensorDiagnostics.h"
+#include "SensorInventory.h"
 #include "TimingStats.h"
 #include "LoggingStartStatus.h"
 
@@ -10,6 +12,14 @@ struct LoggerConfig;
 struct BdqV2StreamDescriptor;
 
 namespace SensorManager {
+  enum class DiscoveryReason : uint8_t {
+    Startup = 0,
+    ConfigurationChanged,
+    PostLog,
+    UserRequest,
+    TransportUpdate,
+  };
+
   struct PreviewValue {
     char sensorName[16] = {0};
     char unit[24] = {0};
@@ -26,15 +36,28 @@ namespace SensorManager {
   void begin(const LoggerConfig* cfg);
   void buildSensorsFromConfig(const LoggerConfig& cfg);
   void finalizeBegin();
+  bool shutdownSensors(char* error = nullptr, size_t errorCapacity = 0);
+  bool rebuildFromConfig(const LoggerConfig& cfg, char* error = nullptr, size_t errorCapacity = 0);
   void applyConfig(const LoggerConfig& cfg);
   void loop();
   void noteLiveConfiguration(Sensor* sensor, const SensorSpec& spec);
+  const SensorDiagnosticList& configurationDiagnostics(const LoggerConfig& cfg);
   LoggingConfigIssue configurationIssue(const LoggerConfig& cfg, char* error, size_t capacity);
   bool requiresBdqV2(const LoggerConfig& cfg);
   bool validateLoggingStart(const LoggerConfig& cfg, uint16_t effectiveRateHz, char* error, size_t errorCapacity);
   bool onLoggingStart(char* error = nullptr, size_t errorCapacity = 0);
+  void startLoggingAcquisition();
   void onLoggingStop();
   void onLoggingFinalized();
+  const SensorDiagnosticList& sessionDiagnostics();
+  uint8_t sessionExcludedCount();
+  void discoverHardware(DiscoveryReason reason);
+  const SensorInventory& inventory();
+  uint32_t discoverySequence();
+  DiscoveryReason lastDiscoveryReason();
+  void clearRemoteDiscoveryObservations();
+  bool setRemoteProviderObservation(const SensorProviderObservation& observation);
+  bool setRemoteEndpointObservation(const SensorEndpointObservation& observation);
   size_t pendingLoggingRows();
 
   // registry / access

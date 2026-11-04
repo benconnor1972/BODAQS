@@ -14,6 +14,8 @@
 #include "Rates.h"
 #include "StorageManager.h"
 #include "AnalogInputManager.h"
+#include "CanMasterManager.h"
+#include "CanMasterProtocol.h"
 #include "BoardSelect.h"
 #include "SensorRegistry.h"
 #include "UploadAckIndex.h"
@@ -102,6 +104,9 @@ static void handleDevice_(WebServer& srv) {
   caps.add("session_ack");
   caps.add("session_delete");
   caps.add("mdns_discovery");
+  if (board::gBoard && board::gBoard->can_fd_master.supported) {
+    caps.add("can_fd_master");
+  }
 
   sendJson_(srv, 200, doc);
 }
@@ -155,6 +160,128 @@ static void handleStatus_(WebServer& srv) {
   rtc["valid"] = RTCManager_hasValidTime();
   rtc["external_last_read_ok"] = RTCManager_externalRtcLastReadOk();
   rtc["external_porf"] = RTCManager_externalRtcPorf();
+  const auto& masterDiagnostics = CanMasterManager::diagnostics();
+  JsonObject canMaster = doc["can_fd_master"].to<JsonObject>();
+  canMaster["mode"] = ConfigManager::canMasterModeKey(masterDiagnostics.mode);
+  canMaster["state"] = CanMasterManager::stateKey(masterDiagnostics.state);
+  canMaster["profile_supported"] = masterDiagnostics.profileSupported;
+  canMaster["present"] = CanMasterManager::present();
+  canMaster["compatible"] = masterDiagnostics.compatible;
+  canMaster["irq_available"] = masterDiagnostics.irqAvailable;
+  canMaster["probe_attempts"] = masterDiagnostics.probeAttempts;
+  canMaster["probe_successes"] = masterDiagnostics.probeSuccesses;
+  canMaster["transfer_failures"] = masterDiagnostics.transferFailures;
+  canMaster["invalid_responses"] = masterDiagnostics.invalidResponses;
+  canMaster["last_probe_ms"] = masterDiagnostics.lastProbeMs;
+  canMaster["last_success_ms"] = masterDiagnostics.lastSuccessMs;
+  canMaster["protocol_version"] = masterDiagnostics.protocolVersion;
+  canMaster["firmware_version"] = masterDiagnostics.firmwareVersion;
+  canMaster["capabilities"] = masterDiagnostics.capabilities;
+  char masterUid[17];
+  snprintf(masterUid, sizeof(masterUid), "%016llX",
+           static_cast<unsigned long long>(masterDiagnostics.hardwareUid));
+  canMaster["hardware_uid"] = masterUid;
+  JsonObject masterStatus = canMaster["status"].to<JsonObject>();
+  masterStatus["supported"] = masterDiagnostics.statusSupported;
+  masterStatus["valid"] = masterDiagnostics.statusValid;
+  masterStatus["attempts"] = masterDiagnostics.statusAttempts;
+  masterStatus["successes"] = masterDiagnostics.statusSuccesses;
+  masterStatus["failures"] = masterDiagnostics.statusFailures;
+  masterStatus["last_status_ms"] = masterDiagnostics.lastStatusMs;
+  masterStatus["flags"] = masterDiagnostics.statusFlags;
+  masterStatus["buck_enabled"] =
+      (masterDiagnostics.statusFlags &
+       CanMasterProtocol::kStatusFlagBuckEnabled) != 0;
+  masterStatus["front_enabled"] =
+      (masterDiagnostics.statusFlags &
+       CanMasterProtocol::kStatusFlagFrontEnabled) != 0;
+  masterStatus["rear_enabled"] =
+      (masterDiagnostics.statusFlags &
+       CanMasterProtocol::kStatusFlagRearEnabled) != 0;
+  masterStatus["front_fault"] =
+      (masterDiagnostics.statusFlags &
+       CanMasterProtocol::kStatusFlagFrontFault) != 0;
+  masterStatus["rear_fault"] =
+      (masterDiagnostics.statusFlags &
+       CanMasterProtocol::kStatusFlagRearFault) != 0;
+  masterStatus["can_initialized"] =
+      (masterDiagnostics.statusFlags &
+       CanMasterProtocol::kStatusFlagCanInitialized) != 0;
+  masterStatus["can_bus_off"] =
+      (masterDiagnostics.statusFlags &
+       CanMasterProtocol::kStatusFlagCanBusOff) != 0;
+  masterStatus["clock_fault"] =
+      (masterDiagnostics.statusFlags &
+       CanMasterProtocol::kStatusFlagClockFault) != 0;
+  masterStatus["uptime_ms"] = masterDiagnostics.masterUptimeMs;
+  masterStatus["reset_cause"] = masterDiagnostics.masterResetCause;
+  masterStatus["slots_received"] = masterDiagnostics.masterSlotsReceived;
+  masterStatus["malformed_slots"] = masterDiagnostics.masterMalformedSlots;
+  masterStatus["probes_received"] = masterDiagnostics.masterProbesReceived;
+  masterStatus["status_requests_received"] =
+      masterDiagnostics.masterStatusRequestsReceived;
+  masterStatus["spi_recoveries"] = masterDiagnostics.masterSpiRecoveries;
+  masterStatus["can_rx_frames"] = masterDiagnostics.canRxFrames;
+  masterStatus["can_tx_frames"] = masterDiagnostics.canTxFrames;
+  masterStatus["can_error_events"] = masterDiagnostics.canErrorEvents;
+  masterStatus["can_rx_queue_depth"] = masterDiagnostics.canRxQueueDepth;
+  masterStatus["can_rx_queue_high_water"] =
+      masterDiagnostics.canRxQueueHighWater;
+  masterStatus["spi_tx_queue_depth"] = masterDiagnostics.spiTxQueueDepth;
+  masterStatus["spi_tx_queue_high_water"] =
+      masterDiagnostics.spiTxQueueHighWater;
+  JsonObject masterInventory = canMaster["inventory"].to<JsonObject>();
+  masterInventory["supported"] = masterDiagnostics.inventorySupported;
+  masterInventory["valid"] = masterDiagnostics.inventoryValid;
+  masterInventory["attempts"] = masterDiagnostics.inventoryAttempts;
+  masterInventory["successes"] = masterDiagnostics.inventorySuccesses;
+  masterInventory["failures"] = masterDiagnostics.inventoryFailures;
+  masterInventory["snapshot_retries"] =
+      masterDiagnostics.inventorySnapshotRetries;
+  masterInventory["last_inventory_ms"] = masterDiagnostics.lastInventoryMs;
+  masterInventory["generation"] = masterDiagnostics.inventoryGeneration;
+  masterInventory["node_count"] = masterDiagnostics.inventoryNodeCount;
+  masterInventory["present_count"] =
+      masterDiagnostics.inventoryPresentCount;
+  masterInventory["stale_count"] = masterDiagnostics.inventoryStaleCount;
+  masterInventory["duplicate_count"] =
+      masterDiagnostics.inventoryDuplicateCount;
+  JsonArray masterNodes = masterInventory["nodes"].to<JsonArray>();
+  for (uint8_t i = 0; i < masterDiagnostics.inventoryNodeCount &&
+                      i < CanMasterProtocol::kDiscoveryNodeCount; ++i) {
+    const auto& record = masterDiagnostics.inventory[i];
+    JsonObject node = masterNodes.add<JsonObject>();
+    node["address"] = record.nodeAddress;
+    node["flags"] = record.flags;
+    node["present"] =
+        (record.flags & CanMasterProtocol::kDiscoveryFlagPresent) != 0;
+    node["stale"] =
+        (record.flags & CanMasterProtocol::kDiscoveryFlagStale) != 0;
+    node["duplicate"] =
+        (record.flags & CanMasterProtocol::kDiscoveryFlagDuplicate) != 0;
+    node["status_valid"] =
+        (record.flags & CanMasterProtocol::kDiscoveryFlagStatusValid) != 0;
+    node["hardware_type"] = record.hardwareType;
+    node["endpoint_mask"] = record.endpointMask;
+    node["firmware_version"] = record.firmwareVersion;
+    node["capabilities"] = record.capabilities;
+    char nodeUid[17];
+    snprintf(nodeUid, sizeof(nodeUid), "%016llX",
+             static_cast<unsigned long long>(record.hardwareUid));
+    node["hardware_uid"] = nodeUid;
+    char conflictingUid[17];
+    snprintf(conflictingUid, sizeof(conflictingUid), "%016llX",
+             static_cast<unsigned long long>(record.conflictingHardwareUid));
+    node["conflicting_hardware_uid"] = conflictingUid;
+    node["boot_id"] = record.bootId;
+    node["last_seen_ms"] = record.lastSeenMs;
+    node["uptime_ms"] = record.nodeUptimeMs;
+    node["status_flags"] = record.nodeStatusFlags;
+    node["can_rx_frames"] = record.canRxFrames;
+    node["can_tx_frames"] = record.canTxFrames;
+    node["can_error_events"] = record.canErrorEvents;
+    node["tx_queue_high_water"] = record.txQueueHighWater;
+  }
   doc["wifi_mode"] = ConfigManager::wifiModeKey(st.mode);
   doc["network_up"] = st.networkUp;
   doc["ip"] = st.ip;
@@ -554,6 +681,7 @@ static void addConfigGlobalsJson_(JsonObject obj, const LoggerConfig& cfg) {
   obj["time_check_url"] = cfg.timeCheckUrl;
   obj["oled_logging_policy"] =
       ConfigManager::oledLoggingPolicyKey(cfg.oledLoggingPolicy);
+  obj["can_master_mode"] = ConfigManager::canMasterModeKey(cfg.canMasterMode);
   obj["sensor_count"] = cfg.sensorCount();
 }
 
@@ -641,12 +769,23 @@ static void handleConfigPut_(WebServer& srv) {
       tmp.oledLoggingPolicy = policy;
     }
   }
+  if (!req["can_master_mode"].isNull()) {
+    String s = req["can_master_mode"] | "";
+    CanMasterMode mode;
+    if (!ConfigManager::parseCanMasterMode(s.c_str(), mode)) {
+      sendError_(srv, 400, "invalid_can_master_mode",
+                 "can_master_mode must be off, auto, or required.");
+      return;
+    }
+    tmp.canMasterMode = mode;
+  }
 
   if (!ConfigManager::save(tmp)) {
     sendError_(srv, 500, "save_failed", "Failed to save configuration.");
     return;
   }
   DisplayManager::setLoggingPolicy(ConfigManager::get().oledLoggingPolicy);
+  CanMasterManager::applyConfig(ConfigManager::get());
   handleConfigGet_(srv);
 }
 

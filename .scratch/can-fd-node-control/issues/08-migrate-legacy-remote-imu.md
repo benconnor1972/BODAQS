@@ -1,0 +1,25 @@
+# 08: Offer explicit migration of legacy remote BMI270 placeholders
+
+## What to build
+
+Show existing remote BMI270 placeholder assignments as readable but unresolved,
+with an explicit action to select the LSM type and supported profile. Once the
+user confirms a valid replacement, apply it through the normal saved desired
+configuration path. Preserve local BMI270 operation and installation metadata.
+
+## Acceptance criteria
+
+- [ ] Legacy remote entries remain readable and preserved without silently translating BMI profiles or rewriting the saved file.
+- [ ] API/UI explains the unresolved assignment and offers an explicit migration action; no unsupported placeholder is admitted to recording.
+- [ ] A confirmed valid migration preserves applicable name/calibration/mounting metadata and produces the same verified node configuration as a new canonical LSM entry.
+- [ ] Invalid input or save failure preserves the prior saved entry; local BMI270 profile interpretation, driver behavior and configuration remain compatible.
+- [ ] Tests cover legacy load, diagnostics, successful/failed migration and local compatibility; the affected logger build passes.
+
+## Blocked by
+
+- Preview 07: Save and verify the initial remote LSM6DSO32X profile.
+
+## Publication preview
+
+Repository: benconnor1972/BODAQS. Intended labels: enhancement, ready-for-agent,
+when available. No source parent issue was supplied. Preview only; not published.
