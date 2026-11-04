@@ -142,6 +142,11 @@ static void fence(uint8_t phase,bool pending,bool outage) {
  assert(submitted.size()==after); // no bind/config/rejoin or delayed commit during recording
  assert(!CanMasterManager::diagnostics().apply.phase);
  recording=false;CanMasterManager::endRecordingHandoff();
+ // A new desired edit after uncertain BEGIN must not guess whether that sequence was consumed.
+ muted=!muted;CanMasterManager::scheduleConfigurationReconciliation();
+ advance(100);
+ for(unsigned t=0;t<60000 && !CanMasterManager::configurationReconciled(0);++t) advance(1);
+ assert(CanMasterManager::configurationReconciled(0));
 }
 int main() {
  for(uint8_t phase=1;phase<=5;++phase) {
@@ -149,6 +154,21 @@ int main() {
   fence(phase,true,false);
  }
  fence(1,true,true);fence(4,true,true);fence(5,true,true);
+ // SPI loss before BEGIN submission leaves admission genuinely unknown to the logger.
+ reset();
+ for(unsigned t=0;t<40000 && !CanMasterManager::configurationReconciled(0);++t) advance(1);
+ assert(CanMasterManager::configurationReconciled(0));
+ auto highWater=node.authority.high_water;
+ spiAvailable=false;muted=!muted;CanMasterManager::scheduleConfigurationReconciliation();
+ advance(100);
+ assert(CanMasterManager::diagnostics().apply.pending && node.authority.high_water==highWater);
+ starting=true;CanMasterManager::beginRecordingHandoff();
+ while(!CanMasterManager::recordingHandoffReady()) advance(1);
+ recording=true;starting=false;advance(7000);spiAvailable=true;
+ recording=false;CanMasterManager::endRecordingHandoff();
+ muted=!muted;CanMasterManager::scheduleConfigurationReconciliation();advance(100);
+ for(unsigned t=0;t<60000 && !CanMasterManager::configurationReconciled(0);++t) advance(1);
+ assert(CanMasterManager::configurationReconciled(0));
  reset();spiAvailable=false;starting=true;CanMasterManager::beginRecordingHandoff();
  // An absent remote cannot delay a local-only start when there is no owned work.
  assert(CanMasterManager::recordingHandoffReady());

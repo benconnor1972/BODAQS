@@ -15,6 +15,7 @@ static uint64_t repeatedSession=0;
 static bool randomHigh=true;
 static bool spiAvailable=true, recording=false, muted=false, dropCommit=false, dropInspection=false, corruptReplies=false;
 static unsigned commitAttempts=0, sensorAttempts=0;
+static bool malformedCachedResult=false;
 uint32_t millis() { return clockMs; }
 uint32_t micros() { return clockMs*1000; }
 uint32_t esp_random() {
@@ -73,6 +74,9 @@ bool transfer(int8_t,const SPISettings&,const uint8_t*tx,uint8_t*rx,size_t lengt
   const bool drop=(dropCommit && q.opcode==BODAQS_CONTROL_COMMIT_APPLY) ||
       (dropInspection && q.opcode==BODAQS_CONTROL_GET_OPERATION);
   if(corruptReplies) r.operation+=10000;
+  if(malformedCachedResult && (q.opcode==2 || q.opcode==0x10 || q.opcode==0x12 || q.opcode==0x14))
+    r.data[3]=0x55; // Header correlates and master caches; logger must abandon unusable result.
+
   if(!drop) { const bool received=bodaqs_control_exchange_receive(&master.control,address,decoded,&r); assert(received || corruptReplies); }
  }
  return true;
@@ -176,8 +180,10 @@ int main(int argc,char**) {
  // Repeated failed SPI slots and malformed peer replies cannot freeze ownership.
  spiAvailable=false;advance(8000);spiAvailable=true;advance(8000);reconcile();
  corruptReplies=true;advance(8000);corruptReplies=false;advance(8000);reconcile();
+ malformedCachedResult=true;muted=!muted;CanMasterManager::scheduleConfigurationReconciliation();
+ advance(12000);malformedCachedResult=false;reconcile();
  // Persistent sensor failure retains historical evidence and has a bounded retry interval.
- node.regs.spi_failure=true;muted=true;
+ node.regs.spi_failure=true;muted=!muted;
  CanMasterManager::scheduleConfigurationReconciliation();advance(15000);
  auto faultAttempts=sensorAttempts;advance(10000);assert(sensorAttempts==faultAttempts);
  const auto& fault=CanMasterManager::diagnostics().control.nodes[0].endpoints[0];

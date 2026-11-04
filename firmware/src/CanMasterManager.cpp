@@ -129,11 +129,14 @@ void scheduleDisabled_() {
       s_diagnostics.desiredDisabled[address] = disabled;
       // Preserve an in-flight operation; a changed desired state is picked up
       // after its terminal result and fresh observation.
-      if (!s_diagnostics.apply.phase) s_diagnostics.apply.nodes[address].valid = false;
     }
     auto& outcome = s_diagnostics.apply.nodes[address];
     if (s_diagnostics.apply.phase || (!disabled && !enabled) ||
         CanMasterManager::configurationReconciled(address)) continue;
+    // An uncertain admission cannot be made safe by changing the desired payload.
+    // Inspect fresh effective state, then renew scope before another mutation.
+    if (outcome.valid && outcome.session==s_diagnostics.authority.session &&
+        (outcome.kind==6 || (outcome.kind==1 && (outcome.reason==5 || outcome.reason==12)))) continue;
     if (outcome.valid && outcome.desired_generation == generation &&
         outcome.boot == s_diagnostics.control.nodes[address].node_boot_id &&
         outcome.session == s_diagnostics.authority.session &&
@@ -418,9 +421,13 @@ void serviceControl_() {
         }
         s_nextAuthorityRetryMs[address]=now+5000;
       }
+      const auto& endpoint=s_diagnostics.control.nodes[address].endpoints[0];
+      const bool uncertain=outcome.kind==6 ||
+          (outcome.kind==1 && (outcome.reason==5 || outcome.reason==12));
       if(peer.available && ((peer.bound && !peer.next_mutation) ||
-         (outcome.valid && outcome.kind==6 && outcome.session==s_diagnostics.authority.session &&
-          due_(now,s_nextRecoveryMs[address]) && !CanMasterManager::configurationReconciled(address))))
+         (outcome.valid && uncertain && outcome.session==s_diagnostics.authority.session &&
+          endpoint.current && static_cast<int32_t>(endpoint.observed_ms-outcome.observed_ms)>=0 &&
+          !CanMasterManager::configurationReconciled(address))))
         s_renewSession=true;
     }
     if(!s_diagnostics.authority.next_read || s_diagnostics.apply.next_transfer==UINT64_MAX)
