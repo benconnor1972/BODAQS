@@ -5,6 +5,8 @@
 static volatile uint32_t high, ordinal;
 static volatile unsigned head, tail;
 static volatile bool fault, watermark;
+static volatile bool clock_untrusted;
+static volatile uint32_t dropped;
 static BodaqsNodeCapture captures[128], sync_capture;
 static volatile bool sync_pending, sync_lost;
 static bool sync_seed, sync_valid;
@@ -16,6 +18,8 @@ void bodaqs_node_capture_init(void) {
     sync_pending = sync_lost = sync_seed = sync_valid = false;
     head = tail = 0;
     fault = watermark = false;
+    clock_untrusted=false;
+    dropped=0;
     DL_TimerA_setTimerCount(ACQ_CAPTURE_INST, 0);
     DL_TimerA_setDebugReleaseBehavior(ACQ_CAPTURE_INST, DL_TIMER_DEBUG_RES_RESUME);
     DL_TimerA_clearInterruptStatus(ACQ_CAPTURE_INST, ~0U);
@@ -33,11 +37,15 @@ void bodaqs_node_capture_irq(void) {
         if ((raw & DL_TIMER_INTERRUPT_ZERO_EVENT) && low <= now)
             epoch += 65536U;
         unsigned next = (head + 1U) % 128U;
-        if (next == tail)
+        ++ordinal; /* assign before the software queue, including rejected edges */
+        if (next == tail) {
             fault = true;
+            if(dropped!=UINT32_MAX) ++dropped;
+            else clock_untrusted=true;
+        }
         else {
             captures[head].tick = epoch + low;
-            captures[head].ordinal = ++ordinal;
+            captures[head].ordinal = ordinal;
             head = next;
         }
     }
@@ -92,6 +100,12 @@ void bodaqs_node_capture_discard(void) {
     __set_PRIMASK(mask);
 }
 bool bodaqs_node_capture_fault(void) { return fault; }
+bool bodaqs_node_capture_clock_trusted(void) { return !clock_untrusted; }
+uint32_t bodaqs_node_capture_loss_take(void) {
+    uint32_t mask=__get_PRIMASK(),value;
+    __disable_irq();value=dropped;dropped=0;__set_PRIMASK(mask);
+    return value;
+}
 bool bodaqs_node_watermark_take(void) {
     uint32_t mask = __get_PRIMASK();
     bool v;
@@ -129,8 +143,10 @@ void bodaqs_node_capture_supervise(uint32_t milliseconds) {
      * service blackout. Milliseconds only detect this failure; they are never
      * substituted for captured evidence. Debugger-halt continuity is unqualified.
      */
-    if ((uint32_t)(milliseconds - last_service_ms) >= 65U)
+    if ((uint32_t)(milliseconds - last_service_ms) >= 65U) {
         fault = true;
+        clock_untrusted=true;
+    }
     last_service_ms = milliseconds;
 }
 

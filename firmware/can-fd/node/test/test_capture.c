@@ -49,9 +49,16 @@ int main(void) {
         bodaqs_node_capture_irq();
     }
     assert(bodaqs_node_capture_fault());
+    assert(bodaqs_node_capture_loss_take()==2);
+    bodaqs_node_capture_discard();
+    raw=4;count=200;cc[2]=200;bodaqs_node_capture_irq();
+    assert(bodaqs_node_capture_take(&c) && c.ordinal==130);
+    assert(bodaqs_node_capture_loss_take()==0);
     bodaqs_node_capture_init();
     bodaqs_node_capture_supervise(140);
     assert(bodaqs_node_capture_fault());
+    bodaqs_node_capture_discard();
+    assert(!bodaqs_node_capture_clock_trusted());
     bodaqs_node_capture_init();
     raw=8;count=100;cc[3]=100;bodaqs_node_capture_irq();
     bodaqs_node_sync_marker(41,900000);
