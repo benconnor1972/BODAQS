@@ -90,6 +90,16 @@ typedef struct {
 static uint64_t gCanReceiveOrdinal;
 static CanReceiveRecord gCanReceiveStorage[CAN_RX_CAPACITY];
 static BodaqsRecordQueue gCanReceiveQueue;
+/* ISR-only accumulation; main copies/clears under a short IRQ fence. No
+ * selected reception or service-owned definition is edited in the ISR. */
+typedef struct {
+    uint32_t source,evidence,tick;
+    uint64_t ordinal;
+    uint16_t first,last;
+    uint8_t epoch;
+    bool essential;
+} RejectedCan;
+static RejectedCan gRejectedCan[4];
 static volatile bool gHealthDue;
 
 /* Queue metadata and record copies are serialized; decoding never masks IRQs. */
@@ -293,7 +303,33 @@ static void capture_can_receive_fifo(void)
         DL_MCAN_writeRxFIFOAck(
             MCAN0_INST, fifo_status.num, fifo_status.getIdx);
         ++gMasterRuntimeInfo.can_rx_frames;
-        (void) bodaqs_record_queue_push(&gCanReceiveQueue, &record);
+        if(!bodaqs_record_queue_push(&gCanReceiveQueue, &record) && !record.message.xtd &&
+           !record.message.rtr && record.message.fdf) {
+            uint16_t id=(uint16_t)record.message.id;
+            bool sample=id>=0x100 && id<=0x118 && !(id&7);
+            bool evidence=id>=0x90 && id<=0x93;
+            uint8_t node=sample?(uint8_t)((id-0x100)/8):(uint8_t)(id-0x90);
+            if(sample || evidence) {
+                RejectedCan *r=&gRejectedCan[node];
+                uint8_t *p=record.message.data;
+                size_t length=bodaqs_can_dlc_to_length((uint8_t)record.message.dlc);
+                uint8_t epoch=sample&&length>=4?p[2]:!sample&&length>=14?p[13]:0;
+                if((r->source || r->evidence) && r->epoch!=epoch) r->essential=true;
+                r->epoch=epoch;r->tick=record.received_tick;r->ordinal=record.ordinal;
+                if(sample) {
+                    uint32_t n=p[3]&7;
+                    if(!n || n>5 || length<4+12*n || UINT32_MAX-r->source<n) r->essential=true;
+                    else {
+                        if(!r->source) r->first=(uint16_t)bodaqs_measurement_get(p,2);
+                        r->last=(uint16_t)(bodaqs_measurement_get(p,2)+n-1);
+                        r->source+=n;
+                    }
+                } else {
+                    if(r->evidence==UINT32_MAX) r->essential=true; else ++r->evidence;
+                    if(length!=64 || p[1]!=0x23) r->essential=true;
+                }
+            }
+        }
         DL_MCAN_getRxFIFOStatus(MCAN0_INST, &fifo_status);
     }
 }
@@ -302,6 +338,15 @@ static void capture_can_receive_fifo(void)
 static void service_can_receive(void)
 {
     CanReceiveRecord record;
+    unsigned node;
+    for(node=0;node<4;++node) {
+        RejectedCan lost;
+        uint32_t primask=__get_PRIMASK();
+        __disable_irq();lost=gRejectedCan[node];memset(&gRejectedCan[node],0,sizeof lost);__set_PRIMASK(primask);
+        if(lost.source || lost.evidence || lost.essential)
+            bodaqs_master_service_loss_counts(&gService,(uint8_t)node,5,lost.epoch,
+                lost.first,lost.last,lost.source,lost.evidence,lost.essential,lost.tick,lost.ordinal);
+    }
     if (take_record(&gCanReceiveQueue, &record)) {
         process_can_message(&record.message, record.received_ms, record.received_tick, record.ordinal, record.received_flags);
     }
@@ -721,6 +766,9 @@ void MCAN0_INST_IRQHandler(void)
             DL_MCAN_INTR_SRC_MCAN_LINE_1);
         if ((interrupt_status & DL_MCAN_INTERRUPT_RF0L) != 0U) {
             ++gMasterRuntimeInfo.can_rx_hardware_losses;
+            /* Hardware does not identify how many messages or which source
+             * was overwritten. Preserve unknown counts and fail closed. */
+            for(unsigned node=0;node<4;++node) gRejectedCan[node].essential=true;
         }
         if ((interrupt_status & gCanErrorInterruptMask) != 0U) {
             ++gMasterRuntimeInfo.can_error_events;

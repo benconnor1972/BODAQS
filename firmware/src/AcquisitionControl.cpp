@@ -368,6 +368,8 @@ void service() {
       CanMasterManager::releaseMeasurementObject(data);
   }
   if(dataConsumer) {
+    if(transport.lossReady && dataConsumer(7,transport.lossDiagnostic.node,
+       transport.lossDiagnostic.object,transport.lossDiagnostic.body,8)) transport.lossReady=false;
     auto& shared=transport.inboxes[4][0];
     if(shared.state.complete && !shared.admitted &&
        dataConsumer(5,255,shared.state.object,shared.bytes,shared.state.total))

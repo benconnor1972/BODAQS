@@ -27,6 +27,8 @@ public:
   Acceptance acceptBridge(uint32_t token,uint32_t masterTick,uint32_t masterEpoch,uint64_t lower,uint64_t upper,uint32_t loggerTick);
   Acceptance acceptMissingBridge(uint32_t token,uint32_t loggerTick);
   Acceptance acceptLocalLoss(const uint8_t body[56],uint32_t masterTick,uint64_t order,uint32_t loggerTick);
+  Acceptance acceptManagementLoss(uint8_t cls,uint8_t reason,uint16_t stage,uint32_t counter,uint32_t loggerTick);
+  bool finish(uint32_t loggerTick); // producer quiescent; flush the final coalesced losses
   BdqV2StreamSource sampleSource();
   BdqV2StreamSource evidenceSource();
   BdqV2StreamDescriptor descriptor(bool evidence);
@@ -62,7 +64,16 @@ private:
   std::atomic<bool> failed_{false};
   Acceptance evidence(uint8_t type,const uint8_t* body,uint32_t,uint64_t,uint32_t,bool local=false,uint8_t receptionFlags=0);
   Acceptance pushShared(uint8_t out[224]);
-  Acceptance samples(const uint8_t*,size_t);
+  Acceptance samples(const uint8_t*,size_t,uint32_t);
+  struct Loss {uint32_t source=0,evidence=0,first=0,last=0;};
+  Loss losses_[2];
+  uint32_t lastLossReport_=0;
+  unsigned nextLossLane_=0;
+  uint32_t lossDependency_=0;
+  bool producerGap_=false,alignmentDegraded_=false;
+  uint32_t managementLoss_[2][2]={};
+  bool flushLoss(uint32_t logger);
+  bool drop(unsigned lane,uint32_t count,uint32_t first,uint32_t logger);
   static size_t pendingSamples(const void*);
   static size_t pendingEvidence(const void*);
   static size_t noObservations(const void*) { return 0; }

@@ -31,6 +31,13 @@ typedef struct {
     uint32_t dropped;
 } BodaqsReceptionIngress;
 typedef struct {
+    uint32_t source, evidence, first, last, tick, last_report_ms;
+    uint32_t reported_source,reported_evidence;
+    uint64_t ordinal;
+    uint8_t epoch, stage;
+    bool failed, gap,failure_reported;
+} BodaqsReceptionLoss;
+typedef struct {
     BodaqsFragmentState rx, tx;
     uint8_t incoming[68], outgoing[68];
     uint32_t next_id;
@@ -46,6 +53,10 @@ typedef struct {
     BodaqsControlExchange authorization;
     BodaqsReceptionBatch receptions[4];
     BodaqsReceptionIngress ingress[4];
+    BodaqsReceptionLoss loss[4];
+    BodaqsReceptionLoss isr_loss[4];
+    uint32_t loss_report_ms[4];
+    uint8_t loss_report_stage[4];
     BodaqsMeasurementControlLane lanes[2][4];
     BodaqsFragmentState master_evidence;
     uint8_t master_evidence_bytes[1024];
@@ -107,6 +118,13 @@ bool bodaqs_master_service_control_transmit(BodaqsMasterService *, uint32_t now,
 bool bodaqs_master_service_control_receive(BodaqsMasterService *, uint8_t,
     uint16_t, const BodaqsControlRecord *);
 bool bodaqs_master_service_publish_evidence(BodaqsMasterService *, const uint8_t *, uint16_t);
+/* Main-loop owner reports an observed rejected reception (including ISR queue
+ * rejects copied out under the hardware adapter's IRQ fence). */
+void bodaqs_master_service_loss(BodaqsMasterService *,uint8_t node,uint8_t stage,
+    uint8_t cls,const uint8_t *payload,uint8_t length,uint32_t tick,uint64_t ordinal);
+void bodaqs_master_service_loss_counts(BodaqsMasterService *,uint8_t node,uint8_t stage,
+    uint8_t epoch,uint16_t first,uint16_t last,uint32_t source,uint32_t evidence,
+    bool essential,uint32_t tick,uint64_t ordinal);
 void bodaqs_master_service_init(BodaqsMasterService *service,
     const BodaqsMasterIdentity *identity);
 
