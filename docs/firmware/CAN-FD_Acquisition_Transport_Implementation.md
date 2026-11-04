@@ -21,7 +21,7 @@ are part of this implementation.
 | #169 one-node native BDQ recording | Merged and verified | `20ce5a9`, merged at `fbca8ba`; [native recording evidence](CAN-FD_Native_IMU_Recording_Implementation.md) |
 | #170 synchronization and analysis timing | Merged and verified | `a1d4cba`, merged at `8d5dbc4`; [synchronization evidence](CAN-FD_Synchronization_Implementation.md) |
 | #171 bounded loss and continuity recovery | Merged and verified | `6e64f66`, merged at `bd86b0d`; [bounded loss evidence](CAN-FD_Bounded_Loss_Recovery_Implementation.md) |
-| #172 link/restart containment and cleanup | Implementing | Depends on verified #169 |
+| #172 link/restart containment and cleanup | Merged and verified | `1113809`, merged at `647811a`; [link/restart evidence](CAN-FD_Link_Restart_Implementation.md) |
 | #173 four-node resource admission | Implementing | Depends on verified #170 |
 | #174 integrated software acceptance | Pending | Depends on #171, #172 and #173 |
 
@@ -64,6 +64,18 @@ AcquisitionControl into deduplicated companions; normal and recovered actual
 node data reach the independent BDQ reader. The exact child tree preserves
 passing explicit node/master/A8 build evidence. Physical qualification remains
 deferred.
+
+At `647811a`, the full firmware host/runtime suite, thirteen common binaries,
+node capture/SPI and acquisition scenarios 1-11, and the additional control-apply
+regression pass. Production fixtures cover short recovery, the exact 300 ms
+cutoff, fatal 330 ms loss, restarted-logger cleanup with five seconds of lost
+BIND results, node/master reboot, bus-off and lease expiry. Healthy locals
+continue, and explicit fence/release and global exit wait for stopped-only
+cleanup and physical retirement proof. Optional post-START health requests and
+retries share the 4/s burst-four bucket; real loss diagnostics remain valid.
+The complete merged tree equals the tested child tree, preserving passing
+G3507 node, G3518 master and A8 target-build evidence. Physical qualification
+remains deferred.
 
 ## Deferred physical qualification
 
