@@ -123,7 +123,12 @@ int main() {
  BodaqsControlWrapped protectedRequest={};protectedRequest.master_boot_id=99;
  protectedRequest.node_address=0;protectedRequest.record.opcode=0x26;
  protectedRequest.record.endpoint=255;protectedRequest.record.node_boot_id=node.view.boot_id;
- protectedRequest.record.operation=901;protectedRequest.record.session=1;
+ protectedRequest.record.operation=901;
+ protectedRequest.record.session=CanMasterManager::diagnostics().measurement.session;
+ protectedRequest.record.transfer=9;protectedRequest.record.data_length=16;
+ bodaqs_control_put_u64(protectedRequest.record.data,123);
+ bodaqs_control_put_u32(protectedRequest.record.data+8,1);
+ protectedRequest.record.data[13]=1;
  assert(CanMasterManager::queueMeasurementControl(transport,protectedRequest,
      CanMasterManager::nextMeasurementObjectId(4,0),true));
  uint8_t delivered=0;bool authorizationDelivered=false;

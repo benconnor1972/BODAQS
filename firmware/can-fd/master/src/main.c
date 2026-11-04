@@ -717,6 +717,22 @@ static void retire_spi_boundary(void)
         DL_SPI_isBusy(SPI_A8_INST)) { gSpiRetiring=false; return; }
     DL_DMA_disableChannel(DMA, DMA_SPI_RX_CHAN_ID);
     DL_DMA_disableChannel(DMA, DMA_SPI_TX_CHAN_ID);
+    /* The node owner has fenced its producer; now retire any old preloaded data
+     * only at the real CS boundary with DMA disabled. Control replies survive. */
+    if(gService.acquisition_retirement_pending) {
+        unsigned slot;
+        for(slot=0;slot<2;++slot) {
+            BodaqsMeasurementSlot object;
+            if(bodaqs_measurement_decode(gTransmitSlots[slot],64,&object) &&
+               (object.kind==2 || object.kind==3 || object.kind==13)) {
+                memset(&object,0,sizeof(object));object.context=gService.measurement.mode.context;object.node=255;
+                (void)bodaqs_measurement_encode(&object,gTransmitSlots[slot],64);
+            }
+        }
+        /* RX FIFO/TX FIFO are reset below before rearming. This proof cannot
+         * be manufactured by MODE_INFO or an ordinary control acknowledgement. */
+        bodaqs_master_service_measurement_fence(&gService,true,true);
+    }
     remaining = DL_DMA_getTransferSize(DMA, DMA_SPI_RX_CHAN_ID);
     length = BODAQS_MASTER_SLOT_BYTES - remaining;
     length += DL_SPI_drainRXFIFO8(SPI_A8_INST,

@@ -40,8 +40,22 @@ bool bodaqs_control_descriptor_valid(const uint8_t *d, size_t len,
 {
     unsigned i;
     uint32_t applicable, known, historical;
-    if (!d || len < 4 || endpoint >= 6 || u16(d) != schema || u16(d + 2) != 1)
+    if (!d || len < 4 || u16(d) != schema || u16(d + 2) != 1)
         return false;
+    if (schema == 5)
+    {
+        if (len != 128 || endpoint != 255 || u16(d+4) != 128 || d[6] > 5 ||
+            (d[7] & ~1U) || (bodaqs_control_get_u32(d+28) & ~2047U) ||
+            !zero(d+62,2) || !zero(d+80,8) || !zero(d+120,8)) return false;
+        for (i=0;i<2;++i) {
+            const uint8_t *b=d+88+16*i;
+            bool valid=(bodaqs_control_get_u32(d+28)&(8U<<i))!=0;
+            if ((b[9]&~15U) || !zero(b+10,6) || (!valid && !zero(b,16)) ||
+                (valid && (b[9]&7)!=7)) return false;
+        }
+        return true;
+    }
+    if (endpoint >= 6) return false;
     if (schema == 2)
     {
         if (len != 128 || d[4] != endpoint || d[5] > 1 || d[6] > 16 || d[7] ||
@@ -143,7 +157,8 @@ bool bodaqs_control_snapshot_process(BodaqsControlSnapshot *s,
                                      BodaqsControlRecord *r)
 {
     bool opening = q->opcode == BODAQS_CONTROL_OPEN_CAPABILITIES ||
-                   q->opcode == BODAQS_CONTROL_OPEN_EFFECTIVE;
+                   q->opcode == BODAQS_CONTROL_OPEN_EFFECTIVE ||
+                   q->opcode == BODAQS_CONTROL_OPEN_ACQ_STATE;
     if (!opening && q->opcode != BODAQS_CONTROL_READ_PAGE &&
         q->opcode != BODAQS_CONTROL_RELEASE_SNAPSHOT)
         return false;
@@ -167,7 +182,7 @@ bool bodaqs_control_snapshot_process(BodaqsControlSnapshot *s,
         error(r, SNAPSHOT_REASON_STALE_SESSION);
         return true;
     }
-    if (!(n->endpoint_mask & (1U << q->endpoint)))
+    if (q->endpoint != 255 && !(n->endpoint_mask & (1U << q->endpoint)))
     {
         error(r, BODAQS_CONTROL_REASON_ENDPOINT);
         return true;
@@ -185,6 +200,9 @@ bool bodaqs_control_snapshot_process(BodaqsControlSnapshot *s,
                     s->opening.session == q->session &&
                     s->opening.endpoint == q->endpoint &&
                     s->opening.opcode == q->opcode;
+        if (same && (q->data_length != s->opening.data_length || memcmp(q->data,s->opening.data,24))) {
+            error(r,BODAQS_CONTROL_REASON_REUSED);return true;
+        }
         if (same && (s->expired || s->released))
         {
             error(r, SNAPSHOT_REASON_EXPIRED);
@@ -209,8 +227,16 @@ bool bodaqs_control_snapshot_process(BodaqsControlSnapshot *s,
             s->released = false;
             s->expired = false;
             s->length =
-                q->opcode == BODAQS_CONTROL_OPEN_CAPABILITIES ? 128 : 192;
-            if (s->capture)
+                (q->opcode == BODAQS_CONTROL_OPEN_EFFECTIVE ? 192 : 128);
+            if (q->opcode == BODAQS_CONTROL_OPEN_ACQ_STATE) {
+                if (!s->capture_acquisition) { s->pinned=false;s->expired=true;error(r,1);return true; }
+                s->capture_acquisition(s->acquisition_context,n,s->bytes,now);
+                if (bodaqs_control_get_u64(q->data) &&
+                    bodaqs_control_get_u64(q->data)!=bodaqs_control_get_u64(s->bytes+8)) {
+                    s->pinned=false;s->expired=true;error(r,28);return true;
+                }
+            }
+            else if (s->capture)
                 s->capture(s->capture_context, n, q->endpoint,
                            q->opcode == BODAQS_CONTROL_OPEN_EFFECTIVE,
                            s->bytes);
@@ -220,7 +246,7 @@ bool bodaqs_control_snapshot_process(BodaqsControlSnapshot *s,
                     s->bytes);
             if (!bodaqs_control_descriptor_valid(
                     s->bytes, s->length,
-                    q->opcode == BODAQS_CONTROL_OPEN_CAPABILITIES ? 2 : 3,
+                    (q->opcode == BODAQS_CONTROL_OPEN_ACQ_STATE ? 5 : q->opcode == BODAQS_CONTROL_OPEN_CAPABILITIES ? 2 : 3),
                     q->endpoint))
             {
                 s->pinned = false;
@@ -230,11 +256,15 @@ bool bodaqs_control_snapshot_process(BodaqsControlSnapshot *s,
             }
         }
         r->transfer = s->id;
-        r->data[0] = q->opcode == BODAQS_CONTROL_OPEN_CAPABILITIES ? 2 : 3;
+        r->data[0] = q->opcode == BODAQS_CONTROL_OPEN_ACQ_STATE ? 5 : q->opcode == BODAQS_CONTROL_OPEN_CAPABILITIES ? 2 : 3;
         r->data[2] = 1;
         r->data[4] = (uint8_t)s->length;
         r->data[5] = (uint8_t)(s->length >> 8);
         r->data[6] = (uint8_t)((s->length + 23) / 24);
+        if(q->opcode == BODAQS_CONTROL_OPEN_ACQ_STATE) {
+            memcpy(r->data+8,s->bytes+72,8);
+            memcpy(r->data+16,s->bytes+64,8);
+        }
         if (q->opcode == BODAQS_CONTROL_OPEN_EFFECTIVE)
         {
             memcpy(r->data + 8, s->bytes + 32, 8);

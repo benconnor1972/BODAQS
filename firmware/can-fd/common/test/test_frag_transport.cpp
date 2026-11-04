@@ -22,7 +22,7 @@ int main() {
  assert(!bodaqs_fragment_seal(&tx,data,sizeof data,9,0,0,3,1,64));
  BodaqsMasterService service={}; BodaqsMasterIdentity identity={};
  bodaqs_master_service_init(&service,&identity); bodaqs_control_exchange_init(&service.control,99);
- service.measurement.mode.phase=2;service.measurement.mode.context=9;
+ service.measurement.mode.phase=2;service.measurement.mode.context=9;service.measurement.mode.session=1;service.measurement.mode.recording=1;
  for(unsigned n=0;n<4;++n) {service.discovery[n].flags=1;service.discovery[n].boot_id=5;}
  uint8_t payload[64]={1,2,3},wire[64],response[84];
  for(unsigned n=0;n<4;++n) assert(bodaqs_master_service_receive_can(&service,n,2,0x060+n,payload,64,0,1234,100));
@@ -74,6 +74,10 @@ int main() {
   BodaqsControlWrapped request={};request.master_boot_id=99;request.node_address=0;
   request.record.opcode=opcode;request.record.endpoint=255;request.record.node_boot_id=5;
   request.record.operation=operation;request.record.session=1;
+  if(opcode==0x26) {
+   request.record.transfer=1;request.record.data_length=16;
+   request.record.data[0]=1;request.record.data[8]=1;request.record.data[13]=1;
+  } else if(opcode==0x25) { request.record.data_length=24;request.record.data[0]=1; }
   uint8_t bytes[68]={};BodaqsFragmentState object={};
   assert(bodaqs_control_encode_wrapped(&request,bytes));
   assert(bodaqs_fragment_seal(&object,bytes,68,9,id,0,cls,0,64));

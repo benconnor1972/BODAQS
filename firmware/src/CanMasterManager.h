@@ -97,6 +97,12 @@ bool enterMeasurementMode(uint64_t recording, uint64_t context);
 bool exitMeasurementMode();
 bool inspectMeasurementMode();
 bool measurementReady();
+// Transfer mutable mode/transport/allocator ownership after configuration drain.
+// The callback identifies the task currently executing the lifecycle service.
+bool claimMeasurementControl(bool (*isOwner)());
+void releaseMeasurementControl();
+void retainMeasurementAllocators(uint32_t nextRead, const uint32_t nextMutation[4],
+                                 uint64_t nextTransfer);
 // One bounded physical exchange; caller demultiplexes by immutable identity.
 bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
                              BodaqsMeasurementSlot& response);

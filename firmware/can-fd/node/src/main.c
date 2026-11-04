@@ -8,6 +8,7 @@
 #include "bodaqs_control_authority.h"
 #include "bodaqs_control_snapshot.h"
 #include "bodaqs_control_apply.h"
+#include "bodaqs_control_acquisition.h"
 #include "imu_spi.h"
 #include "bodaqs_record_queue.h"
 #include "ti_msp_dl_config.h"
@@ -84,6 +85,7 @@ static BodaqsControlAuthority gControlAuthority;
 static BodaqsControlSnapshot gControlSnapshot;
 static BodaqsControlApply gControlApply;
 static BodaqsImuDisabled gImuDisabled;
+static BodaqsControlAcquisition gAcquisition;
 static uint64_t gChallengeEntropy;
 static unsigned gChallengeEntropyWords;
 static volatile uint32_t gUptimeMs;
@@ -367,6 +369,7 @@ static void process_can_message(
                  &control, gUptimeMs, challenge_random, NULL, &reply) ||
              bodaqs_control_snapshot_process(&gControlSnapshot, &gControlNode,
                  &control, gUptimeMs, &reply) ||
+             bodaqs_control_acquisition_process(&gAcquisition, &control, gUptimeMs, &reply) ||
              bodaqs_control_apply_process(&gControlApply, &control, gUptimeMs, &reply) ||
              bodaqs_control_node_process(&gControlNode, &control, &reply)) &&
             bodaqs_control_encode_can(&reply, true, transaction, payload)) {
@@ -458,6 +461,12 @@ int main(void)
     gControlNode.endpoint_epoch[0] = 1U;
     bodaqs_imu_disabled_init(&gImuDisabled, bodaqs_node_imu_register, bodaqs_node_imu_cancel, NULL);
     bodaqs_control_apply_init(&gControlApply, &gControlAuthority, &gControlNode, &gImuDisabled);
+    /* Configuration register access is not a native acquisition backend. #169
+     * installs the single main-loop acquisition owner when it is implemented. */
+    bodaqs_control_acquisition_init(&gAcquisition, &gControlAuthority, &gControlNode,
+        gControlApply.effective, NULL, NULL);
+    gControlSnapshot.capture_acquisition = bodaqs_control_acquisition_capture;
+    gControlSnapshot.acquisition_context = &gAcquisition;
     gUptimeMs = 0U;
     bodaqs_record_queue_init(&gCanReceiveQueue, gCanReceiveStorage,
         sizeof(gCanReceiveStorage[0]), CAN_RX_CAPACITY);
@@ -482,7 +491,11 @@ int main(void)
     while (1) {
         uint32_t now = gUptimeMs;
         service_challenge_entropy();
-        bodaqs_control_apply_tick(&gControlApply, now);
+        /* Both services are main-loop owned; membership prohibits configuration
+         * admission. Never run two physical SPI state machines concurrently. */
+        if (!gAcquisition.recording) bodaqs_control_apply_tick(&gControlApply, now);
+        if (gNodeRuntimeInfo.can_bus_off) bodaqs_control_acquisition_exclude(&gAcquisition, 27);
+        bodaqs_control_acquisition_tick(&gAcquisition, now);
         service_can_receive();
         gNodeRuntimeInfo.can_rx_capacity = gCanReceiveQueue.capacity;
         gNodeRuntimeInfo.can_rx_pending = gCanReceiveQueue.depth;

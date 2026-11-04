@@ -14,6 +14,8 @@ extern "C"
         bool effective, uint8_t *data);
     typedef struct
     {
+        void (*capture_acquisition)(void *, const BodaqsControlNode *, uint8_t *, uint32_t);
+        void *acquisition_context;
         BodaqsControlDescriptorCapture capture;
         void *capture_context;
         uint8_t bytes[192];
