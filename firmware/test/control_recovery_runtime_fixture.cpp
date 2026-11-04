@@ -160,6 +160,16 @@ int main(int argc,char**) {
  reconcile();
  assert(bodaqs_control_get_u64(CanMasterManager::diagnostics().control.nodes[0].endpoints[0].effective+184)==verifiedEpoch+1);
  assert(node.regs.resets==verifiedResets);
+ // A saved edit cannot queue apply while a retained-current refresh owns the link.
+ unsigned refreshWait=0;
+ while(!CanMasterManager::diagnostics().control.snapshot_phase && refreshWait<10000) {
+  advance(100); refreshWait+=100;
+ }
+ assert(refreshWait<10000);
+ muted=true; CanMasterManager::scheduleConfigurationReconciliation(); advance(100);
+ assert(!CanMasterManager::diagnostics().apply.phase);
+ reconcile();
+ muted=false; CanMasterManager::scheduleConfigurationReconciliation(); advance(100); reconcile();
  auto session=CanMasterManager::diagnostics().authority.session;
  auto operation=CanMasterManager::diagnostics().authority.nodes[0].next_mutation;
  auto resets=node.regs.resets;
