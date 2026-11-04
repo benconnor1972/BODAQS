@@ -1,12 +1,19 @@
 #ifndef BODAQS_CONTROL_OBSERVER_H
 #define BODAQS_CONTROL_OBSERVER_H
 #include "bodaqs_control.h"
+#include "bodaqs_control_snapshot.h"
 #ifdef __cplusplus
 extern "C"
 {
 #endif
+    typedef struct {
+        uint8_t capability[128], effective[192];
+        uint32_t observed_ms;
+        bool capability_valid, effective_valid, current;
+    } BodaqsControlEndpointObservation;
     typedef struct
     {
+        BodaqsControlEndpointObservation endpoints[6];
         uint32_t node_boot_id, flags, pending_operation, observed_ms;
         uint64_t active_session, endpoint_epoch[6];
         uint16_t endpoint_mask, epoch_valid_mask;
@@ -21,7 +28,14 @@ extern "C"
         BodaqsControlWrapped current;
         uint8_t cursor_address, cursor_endpoint;
         bool pending;
+        uint8_t snapshot_phase, snapshot_address, snapshot_endpoint, snapshot_page;
+        uint8_t snapshot_bytes[192];
+        uint16_t snapshot_length;
+        uint64_t snapshot_id, snapshot_epoch, snapshot_revision;
+        uint32_t now_ms, snapshot_started_ms, snapshot_read_id;
+
     } BodaqsControlObserver;
+    void bodaqs_control_observer_tick(BodaqsControlObserver *observer, uint32_t now_ms);
     void bodaqs_control_observer_init(BodaqsControlObserver *observer);
     void bodaqs_control_observer_boot(BodaqsControlObserver *observer,
                                       uint64_t boot, uint32_t features);

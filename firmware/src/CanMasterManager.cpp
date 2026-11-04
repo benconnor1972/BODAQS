@@ -255,6 +255,7 @@ void serviceControl_() {
   if (!s_diagnostics.controlInfoValid || !s_diagnostics.inventoryValid) return;
   BodaqsControlWrapped wrapped, reply;
   uint8_t type;
+  bodaqs_control_observer_tick(&s_diagnostics.control, millis());
   if (!bodaqs_control_observer_next(&s_diagnostics.control, &wrapped, &type)) return;
   CanMasterProtocol::Frame request, response;
   request.type = static_cast<CanMasterProtocol::MessageType>(type);
@@ -652,6 +653,13 @@ const char* controlShortStatus() {
     available = true;
     if (node.reason) return "C:!";
     if (!node.valid) return "C:...";
+    for (uint8_t endpoint = 0; endpoint < 6; ++endpoint) {
+      if (!(node.endpoint_mask & (1U << endpoint))) continue;
+      const auto& descriptor = node.endpoints[endpoint];
+      if (!descriptor.capability_valid || !descriptor.effective_valid || !descriptor.current) return "C:...";
+      if (descriptor.effective[4] == 0) return "C:unconf";
+      if (descriptor.effective[4] == 3) return "C:unknown";
+    }
   }
   return available ? "C:ok" : "C:--";
 }

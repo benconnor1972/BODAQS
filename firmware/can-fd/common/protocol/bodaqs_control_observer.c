@@ -1,5 +1,12 @@
 #include "bodaqs_control_observer.h"
 #include <string.h>
+void bodaqs_control_observer_tick(BodaqsControlObserver *o,uint32_t now) {
+    o->now_ms=now;
+    if(o->snapshot_phase && (uint32_t)(now-o->snapshot_started_ms)>=BODAQS_CONTROL_SNAPSHOT_LIFETIME_MS) {
+        o->nodes[o->snapshot_address].endpoints[o->snapshot_endpoint].current=false;
+        o->pending=false;o->snapshot_phase=0;
+    }
+}
 void bodaqs_control_observer_init(BodaqsControlObserver *observer)
 {
     memset(observer, 0, sizeof(*observer));
@@ -14,12 +21,14 @@ void bodaqs_control_observer_boot(BodaqsControlObserver *observer,
         !(features & BODAQS_CONTROL_FEATURE_OBSERVATION))
     {
         observer->pending = false;
+        observer->snapshot_phase = 0;
         observer->cursor_address = 0;
         observer->cursor_endpoint = 0;
         for (i = 0; i < 4; ++i)
         {
             observer->nodes[i].valid = false;
             observer->nodes[i].epoch_valid_mask = 0;
+            memset(observer->nodes[i].endpoints,0,sizeof(observer->nodes[i].endpoints));
         }
     }
     observer->master_boot_id = boot;
@@ -43,6 +52,7 @@ void bodaqs_control_observer_node(BodaqsControlObserver *observer,
         if (observer->pending && observer->current.node_address == address)
         {
             observer->pending = false;
+            observer->snapshot_phase = 0;
         }
     }
     node->node_boot_id = boot;
@@ -64,6 +74,29 @@ bool bodaqs_control_observer_next(BodaqsControlObserver *observer,
         *request = observer->current;
         *type = BODAQS_CONTROL_POLL_REQUEST;
         return true;
+    }
+    if(observer->snapshot_phase) {
+        uint8_t phase=observer->snapshot_phase;
+        memset(&observer->current,0,sizeof(observer->current));
+        observer->current.master_boot_id=observer->master_boot_id;
+        observer->current.node_address=observer->snapshot_address;
+        observer->current.record.node_boot_id=observer->nodes[observer->snapshot_address].node_boot_id;
+        observer->current.record.endpoint=observer->snapshot_endpoint;
+        observer->current.record.operation=observer->snapshot_read_id;
+        if(phase==1 || phase==4) {
+            observer->current.record.opcode=phase==1?5:6;
+            observer->snapshot_read_id=observer->next_read_id++;
+            observer->current.record.operation=observer->snapshot_read_id;
+            observer->snapshot_started_ms=observer->now_ms;
+        } else if(phase==2 || phase==5) {
+            observer->current.record.opcode=7;observer->current.record.page=observer->snapshot_page;
+            observer->current.record.transfer=observer->snapshot_id;
+        } else if(phase==3 || phase==6) {
+            observer->current.record.opcode=8;observer->current.record.transfer=observer->snapshot_id;
+        } else {
+            observer->current.record.opcode=4;observer->current.record.operation=observer->next_read_id++;
+        }
+        observer->pending=true;*request=observer->current;*type=BODAQS_CONTROL_SUBMIT_REQUEST;return true;
     }
     for (i = 0; i < 28; ++i)
     {
@@ -114,6 +147,44 @@ bool bodaqs_control_observer_accept(BodaqsControlObserver *observer,
     {
         bodaqs_control_observer_boot(observer, reply->master_boot_id, 0);
         return false;
+    }
+    if(observer->snapshot_phase && request->opcode!=4) {
+        BodaqsControlEndpointObservation *ep=&observer->nodes[reply->node_address].endpoints[observer->snapshot_endpoint];
+        uint8_t phase=observer->snapshot_phase;
+        if(record->operation!=request->operation || record->node_boot_id!=request->node_boot_id || record->endpoint!=request->endpoint || record->session || record->page!=request->page) return false;
+        if(type==BODAQS_CONTROL_RECEIPT_RESPONSE) {
+            if(record->opcode!=request->opcode || record->data_length!=4 || record->data[3]!=request->opcode) return false;
+            if(record->data[0]>=BODAQS_CONTROL_BUSY) {observer->pending=false;observer->snapshot_phase=0;ep->current=false;}
+            return true;
+        }
+        observer->pending=false;
+        if(type!=BODAQS_CONTROL_POLL_RESPONSE || record->opcode!=request->opcode) {observer->snapshot_phase=0;ep->current=false;return false;}
+        if(phase==1 || phase==4) {
+            uint16_t length=phase==1?128:192;
+            uint8_t schema=phase==1?2:3;
+            if(!record->transfer || record->data_length!=24 || record->data[0]!=schema || record->data[1] || record->data[2]!=1 || record->data[3] || record->data[4]!=(uint8_t)length || record->data[5] || record->data[6]!=(length+23)/24 || record->data[7] ||
+               (phase==1 && (bodaqs_control_get_u64(record->data+8)||bodaqs_control_get_u64(record->data+16)))) {observer->snapshot_phase=0;ep->current=false;return false;}
+            observer->snapshot_length=length;observer->snapshot_id=record->transfer;observer->snapshot_page=0;
+            observer->snapshot_revision=bodaqs_control_get_u64(record->data+8);observer->snapshot_epoch=bodaqs_control_get_u64(record->data+16);
+            memset(observer->snapshot_bytes,0,sizeof(observer->snapshot_bytes));++observer->snapshot_phase;return true;
+        }
+        if(record->transfer!=observer->snapshot_id) {observer->snapshot_phase=0;ep->current=false;return false;}
+        if(phase==2 || phase==5) {
+            unsigned offset=observer->snapshot_page*24U;
+            unsigned count=observer->snapshot_length-offset;if(count>24) count=24;
+            if(record->data_length!=count) {observer->snapshot_phase=0;ep->current=false;return false;}
+            memcpy(observer->snapshot_bytes+offset,record->data,count);
+            if(++observer->snapshot_page*24U>=observer->snapshot_length) {
+                if(!bodaqs_control_descriptor_valid(observer->snapshot_bytes,observer->snapshot_length,phase==2?2:3,observer->snapshot_endpoint) ||
+                  (phase==5 && (bodaqs_control_get_u64(observer->snapshot_bytes+32)!=observer->snapshot_revision || bodaqs_control_get_u64(observer->snapshot_bytes+184)!=observer->snapshot_epoch))) {observer->snapshot_phase=0;ep->current=false;return false;}
+                if(phase==2) {memcpy(ep->capability,observer->snapshot_bytes,128);ep->capability_valid=true;}
+                else {memcpy(ep->effective,observer->snapshot_bytes,192);ep->effective_valid=true;ep->observed_ms=now;ep->current=false;}
+                ++observer->snapshot_phase;
+            }
+            return true;
+        }
+        if(record->data_length!=24 || record->data[0] || record->data[1] || record->data[2]) {observer->snapshot_phase=0;ep->current=false;return false;}
+        ++observer->snapshot_phase;return true;
     }
     if (record->operation != request->operation ||
         record->node_boot_id != request->node_boot_id ||
@@ -184,5 +255,14 @@ bool bodaqs_control_observer_accept(BodaqsControlObserver *observer,
         node->epoch_valid_mask |= (uint16_t) (1U << record->endpoint);
     }
     observer->pending = false;
+    if(record->endpoint!=BODAQS_CONTROL_NODE_WIDE) {
+        BodaqsControlEndpointObservation *ep=&node->endpoints[record->endpoint];
+        if(observer->snapshot_phase==7) {
+            ep->current=ep->effective_valid && bodaqs_control_get_u64(ep->effective+184)==node->endpoint_epoch[record->endpoint];
+            observer->snapshot_phase=0;
+        } else {
+            ep->current=false;observer->snapshot_phase=1;observer->snapshot_address=reply->node_address;observer->snapshot_endpoint=record->endpoint;observer->snapshot_started_ms=now;
+        }
+    }
     return true;
 }

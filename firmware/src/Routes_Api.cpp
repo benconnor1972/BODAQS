@@ -219,6 +219,58 @@ static void handleStatus_(WebServer& srv) {
       snprintf(controlDecimal, sizeof(controlDecimal), "%llu",
                static_cast<unsigned long long>(observation.endpoint_epoch[endpoint]));
       state["state_epoch"] = controlDecimal;
+      const auto& descriptor = observation.endpoints[endpoint];
+      state["provenance"] = "observational";
+      state["capability_valid"] = descriptor.capability_valid;
+      state["effective_valid"] = descriptor.effective_valid;
+      state["current"] = descriptor.current;
+      state["observed_ms"] = descriptor.observed_ms;
+      state["configuration_supported"] = descriptor.capability_valid &&
+          (bodaqs_control_get_u32(descriptor.capability + 8) & 1U) != 0;
+      state["acquisition_ready"] = false;
+      if (descriptor.capability_valid) {
+        state["implemented_features"] = bodaqs_control_get_u32(descriptor.capability + 8);
+        state["satisfied_prerequisites"] = bodaqs_control_get_u32(descriptor.capability + 12);
+        state["capability_health"] = bodaqs_control_get_u32(descriptor.capability + 16);
+        JsonArray profiles = state["profiles"].to<JsonArray>();
+        for (uint8_t i = 0; i < descriptor.capability[6]; ++i) {
+          JsonObject profile = profiles.add<JsonObject>();
+          const uint8_t* pair = descriptor.capability + 64 + 4 * i;
+          profile["id"] = pair[0] | (static_cast<uint16_t>(pair[1]) << 8);
+          profile["version"] = pair[2] | (static_cast<uint16_t>(pair[3]) << 8);
+        }
+      }
+      if (descriptor.effective_valid) {
+        const uint8_t* data = descriptor.effective;
+        const uint32_t applicable = bodaqs_control_get_u32(data + 8);
+        const uint32_t known = bodaqs_control_get_u32(data + 12);
+        const uint32_t historical = bodaqs_control_get_u32(data + 16);
+        state["effective_state"] = data[4];
+        state["health_flags"] = bodaqs_control_get_u32(data + 20);
+        state["applicable_mask"] = applicable;
+        state["known_mask"] = known;
+        state["historical_mask"] = historical;
+        static const char* groups[] = {"configuration", "format_axes", "nominal_rates",
+          "ranges", "nominal_sensitivities", "filters", "engines", "native_clock",
+          "measured_rates", "filter_delays", "register_proof", "mismatch"};
+        JsonObject fields = state["field_groups"].to<JsonObject>();
+        for (uint8_t bit = 0; bit < 12; ++bit) {
+          fields[groups[bit]] = !(applicable & (1U << bit)) ? "not_applicable" :
+              !(known & (1U << bit)) ? "unknown" :
+              (historical & (1U << bit)) || !descriptor.current ? "historical" : "current";
+        }
+        auto rational = [&](const char* key, uint8_t bit, size_t offset) {
+          if (!(known & (1U << bit))) { state[key] = nullptr; return; }
+          JsonObject value = state[key].to<JsonObject>();
+          value["numerator"] = bodaqs_control_get_u32(data + offset);
+          value["denominator"] = bodaqs_control_get_u32(data + offset + 4);
+        };
+        rational("nominal_accel_hz", 2, 48);
+        rational("nominal_gyro_hz", 2, 56);
+        rational("measured_accel_hz", 8, 120);
+        rational("measured_gyro_hz", 8, 128);
+      }
+
     }
   }
   JsonObject masterStatus = canMaster["status"].to<JsonObject>();
