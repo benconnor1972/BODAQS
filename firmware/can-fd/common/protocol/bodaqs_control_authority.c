@@ -122,6 +122,7 @@ bool bodaqs_control_authority_process(BodaqsControlAuthority *s, BodaqsControlNo
             *r = *q;
             r->data_length = 24;
             memcpy(r->data, s->latest_result.data, 24);
+            r->data[3] = BODAQS_CONTROL_GET_OPERATION;
             bodaqs_control_put_u32(r->data + 4, target);
             return true;
         }

@@ -57,6 +57,8 @@ int main()
     assert(r.opcode == BODAQS_CONTROL_GET_OPERATION && r.data[0] == 6 && r.data[1] == 13);
     bodaqs_control_put_u32(q.data, 2);
     assert(bodaqs_control_authority_process(&a, &n, &q, 103, random64, 0, &r) && r.data[0] == 3);
+    assert(r.opcode == 0x14 && r.data[3] == 0x14 && bodaqs_control_get_u32(r.data + 4) == 2);
+    assert(a.latest_result.data[3] == outcome.data[3]);
     q.session = 999;
     assert(bodaqs_control_authority_process(&a, &n, &q, 103, random64, 0, &r) && r.data[1] == 5);
     q.session = 0;
