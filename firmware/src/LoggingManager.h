@@ -46,7 +46,12 @@ namespace LoggingManager {
   };
 
   void begin(const LoggerConfig* cfg);
+  // start() returns true only once acquisition has actually started.
   bool start();
+  enum class StartResult : uint8_t { Failed, Pending, Started };
+  StartResult requestStart();
+  bool isStarting();
+  bool configurationLocked();
   void refreshConfigurationStatus();
   LoggingConfigIssue configurationIssue();
   const char* configurationDetail();

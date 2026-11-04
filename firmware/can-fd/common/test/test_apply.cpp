@@ -6,6 +6,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 static int reg(void *, bool, uint8_t, uint8_t *, uint32_t)
 {
     return 0;
@@ -448,6 +449,45 @@ void loggerAcrossRealSpiCanApplyAndSnapshot(bool enabled)
            bodaqs_control_get_u64(endpoint.effective + 32) == 1);
     assert(bodaqs_control_get_u64(endpoint.effective + 184) == observer.nodes[0].endpoint_epoch[0]);
 }
+// Production config-only firmware does not raise recording/lease/acquisition
+// flags. These fault injections verify defensive admission through SPI/CAN.
+void loggerNodeActiveGuards(bool enabled, uint32_t flag, bool beforeCommit) {
+    Fixture f;
+    BodaqsMasterService master;
+    bodaqs_master_service_init(&master, nullptr);
+    bodaqs_control_exchange_init(&master.control, 99);
+    BodaqsControlSnapshot snapshot = {};
+    BodaqsControlAuthorityClient authority;
+    bodaqs_control_authority_client_init(&authority, 9);
+    bodaqs_control_authority_client_node(&authority, 0, 7, true);
+    authority.nodes[0].bound = true; authority.nodes[0].next_mutation = 2;
+    BodaqsControlApplyClient client;
+    bodaqs_control_apply_client_init(&client);
+    uint8_t descriptor[44] = {1,0,1,0};
+    if (enabled) descriptor[4]=descriptor[8]=descriptor[10]=1;
+    assert(bodaqs_control_apply_client_start(&client,&authority,99,0,1,0,descriptor,f.now));
+    bool injected = false; uint8_t guardField=0;
+    for (unsigned i=0;i<200 && client.phase;++i,++f.now) {
+        BodaqsControlWrapped q,r; uint8_t type;
+        if (!bodaqs_control_apply_client_next(&client,&authority,f.now,&q,&type)) continue;
+        if (type==6 && q.record.opcode==(beforeCommit ? 0x12 : 0x10)) {
+            f.view.flags |= flag; injected=true;
+        }
+        auto response=wire(master,type,q);
+        assert(bodaqs_control_decode_wrapped(response.payload,64,&r));
+        if (r.record.data_length==24 && (r.record.data[0]==1 || r.record.data[0]==5)) guardField=r.record.data[2];
+        assert(bodaqs_control_apply_client_accept(&client,&authority,static_cast<uint8_t>(response.type),&r,f.now));
+        deliverCan(master,f,snapshot);
+    }
+    assert(injected && !client.phase && client.nodes[0].valid && client.nodes[0].kind==(beforeCommit ? 5 : 1));
+    assert(client.nodes[0].reason==(flag==2 ? 8 : 21));
+    assert(guardField==(flag==2 ? 12 : 13));
+    assert(f.regs.writes==0 && f.regs.resets==0);
+    // An independent healthy peer's backend remains usable despite rejection.
+    Fixture peer;peer.open();peer.page(0);peer.page(1);peer.commit();peer.finish();
+    assert(peer.authority.latest_result.data[0]==3 && peer.regs.resets==1);
+}
+
 void failedBankSelectionCannotInventAuxiliaryProof()
 {
     Fixture f;
@@ -626,6 +666,9 @@ void clientDeadlineWhileDraining() {
 }
 int main()
 {
+    for (bool enabled : {false,true})
+        for (uint32_t flag : {2U,4U,8U})
+            for (bool beforeCommit : {false,true}) loggerNodeActiveGuards(enabled,flag,beforeCommit);
     failedBankSelectionCannotInventAuxiliaryProof();
     reservedFieldsAndInspectionWhileBackendPending();
     composedClockHealthAndExhaustion();
@@ -640,4 +683,5 @@ int main()
     loggerAcrossRealSpiCanApplyAndSnapshot(false);
     loggerAcrossRealSpiCanApplyAndSnapshot(true);
     puts("apply tests passed");
+    return 0;
 }

@@ -133,7 +133,20 @@ uint64_t RTCManager_getEpochMs() { return 100000; }
 namespace DisplayManager { void prepareLoggingScreen(uint16_t, uint8_t) { events.push_back("screen"); } }
 namespace IndicatorManager { void ledOn() {} }
 
+namespace CanMasterManager {
+  bool handoffReady = true, fenced = false;
+  void beginRecordingHandoff() { fenced = true; }
+  bool recordingHandoffReady() { return handoffReady; }
+  void endRecordingHandoff() { fenced = false; }
+}
+namespace ButtonManager { }
+void ButtonManager_setPollingEnabled(bool) {}
 namespace LoggingManager {
+  enum class StartResult : uint8_t { Failed, Pending, Started };
+  StartResult requestStart();
+  bool isStarting();
+  bool configurationLocked();
+  void loop();
   enum class StartFailureHint { None, RestartNow, ConfigConflict };
   enum class StopReason { StartFailure };
   struct StopContext {};
@@ -143,7 +156,7 @@ namespace LoggingManager {
   bool start();
 }
 const LoggerConfig* s_cfg = &g_cfg;
-bool s_running = false;
+bool s_running = false, s_starting = false, s_stopping = false;
 LoggingManager::StartFailureHint s_startFailureHint;
 LoggingManager::StopContext s_stopContext;
 LoggingConfigIssue s_configurationIssue = LoggingConfigIssue::None;
@@ -188,7 +201,7 @@ void checkAt(bool ok, int line) {
 Sensor live[MAX_SENSORS];
 void reset() {
   g_cfg = LoggerConfig{}; savedConfig = LoggerConfig{}; profile = board::BoardProfile{};
-  events.clear(); s_running = false; s_configurationIssue = LoggingConfigIssue::None; s_configurationDetail[0] = 0;
+  events.clear(); s_running = s_starting = s_stopping = false; CanMasterManager::handoffReady=true; CanMasterManager::fenced=false; s_configurationIssue = LoggingConfigIssue::None; s_configurationDetail[0] = 0;
   saveOk = powerOk = storageOk = openOk = validateOk = sensorsStartOk = true; upload = false; prepares = 0;
   excludedSensors = 0;
   for (int i = 0; i < MAX_SENSORS; ++i) { SensorManager::s_list[i] = nullptr; live[i] = Sensor{}; }
@@ -220,6 +233,19 @@ int index(const char* event) { return std::find(events.begin(), events.end(), ev
 int main() {
   using T = SensorType; using I = LoggingConfigIssue;
   reset(); check(issue() == I::None);
+  add(T::AnalogPot,"local",0,0);
+  CanMasterManager::handoffReady=false;
+  check(LoggingManager::requestStart()==LoggingManager::StartResult::Pending);
+  check(LoggingManager::isStarting() && LoggingManager::configurationLocked() && !s_running && !has("acquire"));
+  check(LoggingManager::requestStart()==LoggingManager::StartResult::Pending);
+  CanMasterManager::handoffReady=true; LoggingManager::loop();
+  check(s_running && !LoggingManager::isStarting() && has("acquire"));
+  reset();
+  CanMasterManager::handoffReady=false;
+  check(LoggingManager::requestStart()==LoggingManager::StartResult::Pending);
+  powerOk=false; CanMasterManager::handoffReady=true; LoggingManager::loop();
+  check(!s_running && !LoggingManager::configurationLocked() && !CanMasterManager::fenced);
+  reset();
   add(T::BMI270ImuI2C, "imu0", 1, 104); add(T::BMI270ImuI2C, "imu1", 1, 105);
   check(issue() == I::None); check(SensorManager::requiresBdqV2(g_cfg));
   check(LoggingManager::start()); check(s_running); check(savedConfig.logFormat == LogFormat::BodaqsMultiStreamBinary);

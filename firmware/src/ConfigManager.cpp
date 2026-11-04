@@ -404,7 +404,7 @@ struct SensorConfigEdit::State {
 };
 
 SensorConfigEdit::SensorConfigEdit() {
-  if (LoggingManager::isRunning() || UploadModeManager::isActive()) return;
+  if (LoggingManager::configurationLocked() || UploadModeManager::isActive()) return;
   state_ = new (std::nothrow) State;
   if (!state_) return;
   state_->config = s_cfg;

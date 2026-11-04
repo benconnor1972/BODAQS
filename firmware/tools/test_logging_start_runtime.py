@@ -32,7 +32,9 @@ def main():
         definition(logging, sig) for sig in (
             "void LoggingManager::refreshConfigurationStatus(",
             "LoggingConfigIssue LoggingManager::configurationIssue(",
-            "const char* LoggingManager::configurationDetail(", "bool LoggingManager::start(")))
+            "const char* LoggingManager::configurationDetail(", "bool LoggingManager::isStarting(",
+            "bool LoggingManager::configurationLocked(", "LoggingManager::StartResult LoggingManager::requestStart(",
+            "void LoggingManager::loop(", "bool LoggingManager::start(")))
     fixture = fixture.replace("// PRODUCTION_FORMAT", definition(config, "bool ConfigManager::setLogFormat("))
     fixture = fixture.replace("// PRODUCTION_BUTTON", definition(buttons, "  void handleButtonBinding_("))
     fixture = fixture.replace("// PRODUCTION_NOTICE", "namespace HtmlUtil {\n" +

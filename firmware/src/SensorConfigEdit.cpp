@@ -99,7 +99,7 @@ bool validateSensorEdit_(const LoggerConfig& cfg, char* error, size_t capacity) 
 SensorConfigEdit::Result SensorConfigEdit::commit(
     const LoggerConfig& config, char* error, size_t capacity) {
   if (error && capacity) error[0] = '\0';
-  if (!ready() || LoggingManager::isRunning() || UploadModeManager::isActive()) {
+  if (!ready() || LoggingManager::configurationLocked() || UploadModeManager::isActive()) {
     snprintf(error, capacity, "Configuration edit unavailable while recording/uploading or out of memory");
     return Result::Locked;
   }
