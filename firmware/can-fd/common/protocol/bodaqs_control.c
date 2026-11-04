@@ -225,6 +225,29 @@ bool bodaqs_control_decode_info(const uint8_t *in, size_t length,
     return true;
 }
 
+bool bodaqs_control_node_update_clock_fault(BodaqsControlNode *node, bool clock_fault)
+{
+    unsigned endpoint;
+    if (node->epoch_exhausted)
+        return false;
+    if (!!(node->flags & (1UL << 7)) == clock_fault)
+        return true;
+    for (endpoint = 0; endpoint < 6; ++endpoint)
+    {
+        if ((node->endpoint_mask & (1U << endpoint)) &&
+            node->endpoint_epoch[endpoint] == UINT64_MAX)
+        {
+            node->epoch_exhausted = true;
+            return false;
+        }
+    }
+    for (endpoint = 0; endpoint < 6; ++endpoint)
+        if (node->endpoint_mask & (1U << endpoint))
+            ++node->endpoint_epoch[endpoint];
+    node->flags = (node->flags & ~(1UL << 7)) | (clock_fault ? (1UL << 7) : 0U);
+    return true;
+}
+
 bool bodaqs_control_node_process(const BodaqsControlNode *node,
                                  const BodaqsControlRecord *request,
                                  BodaqsControlRecord *reply)
@@ -241,6 +264,11 @@ bool bodaqs_control_node_process(const BodaqsControlNode *node,
     {
         reason = BODAQS_CONTROL_REASON_STALE_NODE;
         field = BODAQS_CONTROL_FIELD_NODE_BOOT;
+    }
+    else if (node->epoch_exhausted)
+    {
+        reason = BODAQS_CONTROL_REASON_EXHAUSTED;
+        field = BODAQS_CONTROL_FIELD_SEQUENCE;
     }
     else if (request->session && request->session != node->active_session)
     {

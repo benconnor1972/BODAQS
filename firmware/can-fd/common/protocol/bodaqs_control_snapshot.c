@@ -157,6 +157,11 @@ bool bodaqs_control_snapshot_process(BodaqsControlSnapshot *s,
         error(r, BODAQS_CONTROL_REASON_STALE_NODE);
         return true;
     }
+    if (n->epoch_exhausted)
+    {
+        error(r, BODAQS_CONTROL_REASON_EXHAUSTED);
+        return true;
+    }
     if (q->session && q->session != n->active_session)
     {
         error(r, SNAPSHOT_REASON_STALE_SESSION);

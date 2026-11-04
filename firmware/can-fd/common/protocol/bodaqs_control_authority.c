@@ -28,6 +28,8 @@ uint8_t bodaqs_control_authority_admit(BodaqsControlAuthority *s, const BodaqsCo
 {
     if (q->node_boot_id != v->boot_id)
         return 4;
+    if (v->epoch_exhausted)
+        return BODAQS_CONTROL_REASON_EXHAUSTED;
     if (!q->session || q->session != v->active_session)
         return 5;
     if (v->pending_operation)
@@ -61,6 +63,11 @@ bool bodaqs_control_authority_process(BodaqsControlAuthority *s, BodaqsControlNo
     if (q->node_boot_id != v->boot_id)
     {
         result(q, r, 4, 5);
+        return true;
+    }
+    if (v->epoch_exhausted)
+    {
+        result(q, r, BODAQS_CONTROL_REASON_EXHAUSTED, BODAQS_CONTROL_FIELD_SEQUENCE);
         return true;
     }
     if (q->opcode == BODAQS_CONTROL_GET_CHALLENGE)
