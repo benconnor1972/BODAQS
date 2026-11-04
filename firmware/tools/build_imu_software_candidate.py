@@ -68,7 +68,8 @@ def plan(args: argparse.Namespace, output: Path) -> list[dict]:
              "firmware/tools/test_control_apply_runtime.py", "--compiler", args.cxx]),
         step("integrated-recording", [sys.executable,
              "firmware/tools/test_integrated_imu_recording_runtime.py",
-             "--compiler", args.cxx, "--output-dir", str(output / "scenarios")]),
+             "--compiler", args.cxx, "--cc", args.cc,
+             "--output-dir", str(output / "scenarios")]),
         step("analysis", [sys.executable, "-m", "pytest", "-q"], cwd=ROOT / "analysis"),
     ]
     for profile in ("bringup", "acquisition"):
