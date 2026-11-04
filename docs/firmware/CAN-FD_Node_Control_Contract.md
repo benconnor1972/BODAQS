@@ -2,7 +2,9 @@
 
 Status: decisions through Q70 confirmed; pre-implementation interview closed
 on 4 November 2026.
-No implementation or physical validation is claimed.
+Implementation progress and software validation are recorded in the
+[implementation index](CAN-FD_Control_Implementation.md). Physical validation
+remains pending; this contract alone is not evidence of hardware behavior.
 Created: 3 November 2026. Last updated: 4 November 2026.
 
 The authoritative behavior is section 13 of
