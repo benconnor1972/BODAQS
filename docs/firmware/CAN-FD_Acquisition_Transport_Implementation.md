@@ -18,10 +18,10 @@ are part of this implementation.
 | #166 measurement-mode negotiation | Merged and verified | `93ef410`, merged at `918fa87`; [mode evidence](CAN-FD_Measurement_Mode_Implementation.md) |
 | #167 bounded fragmented transfer | Merged and verified | `a00e81b`, merged at `655bbcd`; [fragment evidence](CAN-FD_Fragment_Transport_Implementation.md) |
 | #168 leased recording lifecycle | Merged and verified | `4411809`, merged at `6255dc2`; [lifecycle evidence](CAN-FD_Acquisition_Lifecycle_Implementation.md) |
-| #169 one-node native BDQ recording | Implementing | Depends on verified #165 and #168 |
-| #170 synchronization and analysis timing | Pending | Depends on #169 |
-| #171 bounded loss and continuity recovery | Pending | Depends on #169 |
-| #172 link/restart containment and cleanup | Pending | Depends on #169 |
+| #169 one-node native BDQ recording | Merged and verified | `20ce5a9`, merged at `fbca8ba`; [native recording evidence](CAN-FD_Native_IMU_Recording_Implementation.md) |
+| #170 synchronization and analysis timing | Implementing | Depends on verified #169 |
+| #171 bounded loss and continuity recovery | Implementing | Depends on verified #169 |
+| #172 link/restart containment and cleanup | Ready | Depends on verified #169 |
 | #173 four-node resource admission | Pending | Depends on #170 |
 | #174 integrated software acceptance | Pending | Depends on #171, #172 and #173 |
 
@@ -42,6 +42,14 @@ recording, recovery, mute, apply and sensor-configuration runtime checks pass.
 The merged source matches the child-tested node/master/A8 builds. Native-clock
 deadline units and terminal staging cancellation are covered by independent
 fixtures. Production acquisition backend and sample draining remain #169.
+
+At `fbca8ba`, all twelve common binaries, three node adapter binaries, production
+stream/coordinator and existing control/storage fixtures pass, including actual
+node adapter output through master fragments and native BDQ into an independent
+reader. The child full analysis suite passes 577 tests with one skip; merged
+focused analysis passes 58 tests. Identical source trees preserve the passing
+node/master/A8 build evidence. Broader timing, loss/restart recovery and four-node
+resource admission remain the following software slices.
 
 ## Deferred physical qualification
 

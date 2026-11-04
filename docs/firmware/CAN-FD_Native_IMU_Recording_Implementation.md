@@ -116,7 +116,7 @@ unchanged. See [the independent raw reader](../analysis/CAN_IMU_Raw_Reader.md).
   masks, original reception order and evidence chunks before sample chunks.
   Separate literal vectors and torn predecessor tests prevent a writer/reader
   implementation from serving as its own expected-value oracle.
-- Explicit G3507 node and G5187 master TI Arm Clang/SDK 2.11 builds pass. Node:
+- Explicit G3507 node and G3518 master TI Arm Clang/SDK 2.11 builds pass. Node:
   FLASH 36,792 bytes, SRAM 10,819 including reserved stack. Master: FLASH 35,544,
   SRAM bank 0 49,609 including reserved stack; bank 1 remains unused.
 - Explicit A8 PlatformIO `bodaqs_s3_mini_n4r2` builds: static RAM 264,308 bytes,
