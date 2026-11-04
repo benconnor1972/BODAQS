@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "bodaqs_can_network.h"
+#include "bodaqs_control.h"
 #include "bodaqs_record_queue.h"
 #include "ti_msp_dl_config.h"
 
@@ -74,6 +75,7 @@ static bool take_record(BodaqsRecordQueue *queue, void *record)
 
 volatile NodeRuntimeInfo gNodeRuntimeInfo;
 
+static BodaqsControlNode gControlNode;
 static volatile uint32_t gUptimeMs;
 static volatile bool gAnnounceScheduled;
 static volatile uint32_t gAnnounceDueMs;
@@ -313,6 +315,22 @@ static void process_can_message(
         ++gNodeRuntimeInfo.malformed_frames;
         return;
     }
+    if (can_standard_identifier(message) == BODAQS_CAN_ID_TARGET_REQUEST_BASE + gNodeRuntimeInfo.node_address) {
+        BodaqsControlRecord control, reply;
+        uint16_t transaction;
+        uint8_t payload[64];
+        gControlNode.flags = gNodeRuntimeInfo.clock_fault ? (1UL << 7) : 0U;
+        if (bodaqs_control_decode_can(message->data, bodaqs_can_dlc_to_length((uint8_t)message->dlc), false, &transaction, &control) &&
+            bodaqs_control_node_process(&gControlNode, &control, &reply) &&
+            bodaqs_control_encode_can(&reply, true, transaction, payload)) {
+            if (!send_can_frame((uint16_t)(BODAQS_CAN_ID_RESPONSE_BASE + gNodeRuntimeInfo.node_address), payload, sizeof(payload))) {
+                ++gNodeRuntimeInfo.transmit_enqueue_failures;
+            }
+        } else {
+            ++gNodeRuntimeInfo.malformed_frames;
+        }
+        return;
+    }
     if (can_standard_identifier(message) !=
         BODAQS_CAN_ID_BROADCAST_CONTROL) {
         ++gNodeRuntimeInfo.unknown_frames;
@@ -383,6 +401,10 @@ int main(void)
     gNodeRuntimeInfo.hardware_uid = read_hardware_uid();
     gNodeRuntimeInfo.boot_id = read_boot_id(gNodeRuntimeInfo.hardware_uid);
     gNodeRuntimeInfo.node_address = read_node_address();
+    memset(&gControlNode, 0, sizeof(gControlNode));
+    gControlNode.boot_id = gNodeRuntimeInfo.boot_id;
+    gControlNode.endpoint_mask = NODE_ENDPOINT_MASK;
+    gControlNode.endpoint_epoch[0] = 1U;
     gUptimeMs = 0U;
     bodaqs_record_queue_init(&gCanReceiveQueue, gCanReceiveStorage,
         sizeof(gCanReceiveStorage[0]), CAN_RX_CAPACITY);

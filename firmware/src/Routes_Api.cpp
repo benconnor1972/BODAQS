@@ -181,6 +181,45 @@ static void handleStatus_(WebServer& srv) {
   snprintf(masterUid, sizeof(masterUid), "%016llX",
            static_cast<unsigned long long>(masterDiagnostics.hardwareUid));
   canMaster["hardware_uid"] = masterUid;
+  JsonObject masterControl = canMaster["control"].to<JsonObject>();
+  masterControl["supported"] = masterDiagnostics.controlSupported;
+  masterControl["info_valid"] = masterDiagnostics.controlInfoValid;
+  masterControl["features"] = masterDiagnostics.control.features;
+  masterControl["configuration_supported"] = false;
+  masterControl["acquisition_ready"] = false;
+  char controlDecimal[21];
+  snprintf(controlDecimal, sizeof(controlDecimal), "%llu",
+           static_cast<unsigned long long>(masterDiagnostics.control.master_boot_id));
+  masterControl["master_boot_id"] = controlDecimal;
+  JsonArray controlNodes = masterControl["nodes"].to<JsonArray>();
+  for (uint8_t address = 0; address < 4; ++address) {
+    const auto& observation = masterDiagnostics.control.nodes[address];
+    JsonObject node = controlNodes.add<JsonObject>();
+    node["address"] = address;
+    node["available"] = observation.available;
+    node["valid"] = observation.valid;
+    node["node_boot_id"] = observation.node_boot_id;
+    node["flags"] = observation.flags;
+    node["pending_operation"] = observation.pending_operation;
+    node["observed_ms"] = observation.observed_ms;
+    node["receipt_state"] = observation.receipt_state;
+    node["reason"] = observation.reason;
+    node["reason_key"] = bodaqs_control_reason_key(observation.reason);
+    node["field"] = observation.field;
+    snprintf(controlDecimal, sizeof(controlDecimal), "%llu",
+             static_cast<unsigned long long>(observation.active_session));
+    node["active_session_id"] = controlDecimal;
+    JsonArray endpoints = node["endpoints"].to<JsonArray>();
+    for (uint8_t endpoint = 0; endpoint < 6; ++endpoint) {
+      if (!(observation.endpoint_mask & (1U << endpoint))) continue;
+      JsonObject state = endpoints.add<JsonObject>();
+      state["endpoint"] = endpoint;
+      state["valid"] = (observation.epoch_valid_mask & (1U << endpoint)) != 0;
+      snprintf(controlDecimal, sizeof(controlDecimal), "%llu",
+               static_cast<unsigned long long>(observation.endpoint_epoch[endpoint]));
+      state["state_epoch"] = controlDecimal;
+    }
+  }
   JsonObject masterStatus = canMaster["status"].to<JsonObject>();
   masterStatus["supported"] = masterDiagnostics.statusSupported;
   masterStatus["valid"] = masterDiagnostics.statusValid;

@@ -196,6 +196,17 @@ static void process_can_message(
     }
     identifier = can_standard_identifier(message);
 
+    if (bodaqs_can_identifier_node(identifier, BODAQS_CAN_ID_RESPONSE_BASE, &node_address)) {
+        BodaqsControlRecord reply;
+        uint16_t transaction;
+        if (bodaqs_control_decode_can(message->data, length, true, &transaction, &reply)) {
+            (void)bodaqs_control_exchange_receive(&gService.control, node_address, transaction, &reply);
+        } else {
+            ++gMasterRuntimeInfo.can_malformed_frames;
+        }
+        return;
+    }
+
     if (bodaqs_can_identifier_node(identifier,
             BODAQS_CAN_ID_ANNOUNCE_BASE, &node_address)) {
         BodaqsCanNodeAnnounce announce;
@@ -566,6 +577,7 @@ int main(void)
 
     identity = master_identity_read();
     bodaqs_master_service_init(&gService, &identity);
+    bodaqs_control_exchange_init(&gService.control, master_control_boot_id_read());
     bodaqs_node_inventory_init(&gNodeInventory);
     gTransmitIndex = 0U;
     gReceiveIndex = 0U;
@@ -602,11 +614,19 @@ int main(void)
     NVIC_EnableIRQ(MCAN0_INST_INT_IRQN);
 
     while (1) {
+        bodaqs_control_exchange_tick(&gService.control, gUptimeMs);
         service_spi_receive();
         gMasterRuntimeInfo.spi_rx_capacity = gSpiReceiveQueue.capacity;
         gMasterRuntimeInfo.spi_rx_high_water = gSpiReceiveQueue.high_water;
         gMasterRuntimeInfo.spi_rx_dropped = gSpiReceiveQueue.dropped;
         service_can_receive();
+        {
+            uint8_t address, payload[64];
+            uint16_t transaction;
+            if (bodaqs_control_exchange_transmit(&gService.control, gUptimeMs, &address, &transaction, payload)) {
+                (void)send_can_frame((uint16_t)(BODAQS_CAN_ID_TARGET_REQUEST_BASE + address), payload, sizeof(payload));
+            }
+        }
         gMasterRuntimeInfo.can_rx_capacity = gCanReceiveQueue.capacity;
         gMasterRuntimeInfo.can_rx_pending = gCanReceiveQueue.depth;
         gMasterRuntimeInfo.can_rx_pending_high_water = gCanReceiveQueue.high_water;

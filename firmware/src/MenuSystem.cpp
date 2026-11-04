@@ -955,10 +955,11 @@ namespace {
     }
     const uint8_t issues =
         SensorManager::configurationDiagnostics(ConfigManager::get()).count();
-    String sensors = String("Sensors: ") + present + "/" +
+    String sensors = String("S:") + present + "/" +
         ConfigManager::get().sensorCount();
     if (issues) sensors += String(" !") + issues;
-    sensors += String(" ") + CanMasterManager::shortStatus();
+    sensors += String(" ") + CanMasterManager::shortStatus() + " " +
+        CanMasterManager::controlShortStatus();
     UI::oledText(0, 54, truncateForOled_(sensors, 21));
     DisplayManager::present();
   }

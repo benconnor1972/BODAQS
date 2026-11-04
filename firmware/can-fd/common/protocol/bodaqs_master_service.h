@@ -2,12 +2,14 @@
 #define BODAQS_MASTER_SERVICE_H
 
 #include "bodaqs_master_protocol.h"
+#include "bodaqs_control_exchange.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef struct {
+    BodaqsControlExchange control;
     BodaqsMasterIdentity identity;
     BodaqsMasterStatus status;
     BodaqsMasterDiscoveryRecord

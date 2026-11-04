@@ -6,6 +6,7 @@
 #define BODAQS_MASTER_FIRMWARE_VERSION (0x00010008U)
 
 BodaqsMasterIdentity master_identity_read(void);
+uint64_t master_control_boot_id_read(void);
 
 #endif
 
