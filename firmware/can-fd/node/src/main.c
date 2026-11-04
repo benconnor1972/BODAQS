@@ -180,6 +180,18 @@ static uint64_t challenge_random(void *context)
     return gChallengeEntropyWords == 2U ? gChallengeEntropy : 0U;
 }
 
+static void capture_endpoint_descriptor(void *context,
+    const BodaqsControlNode *view, uint8_t endpoint, bool effective,
+    uint8_t *data)
+{
+    (void)context;
+    bodaqs_control_unconfigured_descriptor(view, endpoint, effective, data);
+    if (!effective) {
+        bodaqs_control_put_u32(data + 36, NODE_FIRMWARE_VERSION);
+        bodaqs_control_put_u64(data + 40, gNodeRuntimeInfo.hardware_uid);
+    }
+}
+
 static uint8_t read_node_address(void)
 {
     uint8_t address = 0U;
@@ -432,6 +444,7 @@ int main(void)
     memset(&gControlNode, 0, sizeof(gControlNode));
     bodaqs_control_authority_init(&gControlAuthority);
     memset(&gControlSnapshot, 0, sizeof(gControlSnapshot));
+    gControlSnapshot.capture = capture_endpoint_descriptor;
     DL_TRNG_enablePower(TRNG);
     gControlNode.boot_id = gNodeRuntimeInfo.boot_id;
     gControlNode.endpoint_mask = NODE_ENDPOINT_MASK;
