@@ -47,6 +47,7 @@ int main() {
  s_diagnostics.authority.nodes[0].bound=true; s_diagnostics.authority.session=node.active_session=9;
  s_diagnostics.desiredGeneration[0]=1; s_diagnostics.desiredDisabled[0]=true;
  auto* d=endpoint.effective; d[4]=1; bodaqs_control_put_u32(d+12,0x441);
+ bodaqs_control_put_u32(d+20,3);
  bodaqs_control_put_u64(d+144,9); bodaqs_control_put_u64(d+24,1);
  assert(CanMasterManager::configurationReconciled(0));
  bodaqs_control_put_u32(d+16,0x400); assert(!CanMasterManager::configurationReconciled(0));

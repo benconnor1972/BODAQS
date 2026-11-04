@@ -550,10 +550,12 @@ bool configurationReconciled(uint8_t address) {
   const auto& authority = s_diagnostics.authority.nodes[address];
   const uint8_t* d = endpoint.effective;
   return authority.bound && node.available && node.valid && endpoint.current && endpoint.effective_valid &&
+      authority.boot == node.node_boot_id &&
+      static_cast<int32_t>(node.observed_ms - authority.confirmed_ms) >= 0 &&
       node.active_session == s_diagnostics.authority.session && d[4] == 1 &&
       !(bodaqs_control_get_u32(d + 16) & 0x441) &&
       (bodaqs_control_get_u32(d + 12) & 0x441) == 0x441 &&
-      !(bodaqs_control_get_u32(d + 20) & 60) &&
+      (bodaqs_control_get_u32(d + 20) & 63) == 3 &&
       bodaqs_control_get_u64(d + 144) == s_diagnostics.authority.session &&
       bodaqs_control_get_u64(d + 24) == s_diagnostics.desiredGeneration[address] &&
       (!s_diagnostics.apply.phase || s_diagnostics.apply.current.node_address != address);

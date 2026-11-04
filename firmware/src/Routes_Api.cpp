@@ -273,6 +273,8 @@ static void handleStatus_(WebServer& srv) {
       state["observed_ms"] = descriptor.observed_ms;
       state["configuration_supported"] = descriptor.capability_valid &&
           (bodaqs_control_get_u32(descriptor.capability + 8) & 1U) != 0;
+      if (descriptor.capability_valid && (bodaqs_control_get_u32(descriptor.capability + 8) & 1U))
+        masterControl["configuration_supported"] = true;
       state["acquisition_ready"] = false;
       if (descriptor.capability_valid) {
         state["implemented_features"] = bodaqs_control_get_u32(descriptor.capability + 8);

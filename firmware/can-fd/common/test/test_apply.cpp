@@ -525,10 +525,45 @@ void reservedFieldsAndInspectionWhileBackendPending()
     bodaqs_control_apply_tick(&wrap.apply, wrap.now + 5000);
     assert(wrap.authority.latest_result.data[1] == 10 && !wrap.view.pending_operation);
 }
+void composedClockHealthAndExhaustion()
+{
+    Fixture f;
+    f.open();
+    f.page(0);
+    f.page(1);
+    f.commit();
+    f.finish();
+    uint8_t d[192];
+    f.descriptor(d);
+    const auto epoch = bodaqs_control_get_u64(d + 184);
+    assert(bodaqs_control_node_update_clock_fault(&f.view, true));
+    f.descriptor(d);
+    assert((bodaqs_control_get_u32(d + 20) & 8) && bodaqs_control_get_u64(d + 184) == epoch + 1);
+    assert(bodaqs_control_node_update_clock_fault(&f.view, false));
+    f.descriptor(d);
+    assert(!(bodaqs_control_get_u32(d + 20) & 8) && bodaqs_control_get_u64(d + 184) == epoch + 2);
+    f.open(3, 1, 2);
+    f.page(0);
+    f.page(1);
+    f.commit();
+    f.view.endpoint_epoch[0] = UINT64_MAX;
+    assert(!bodaqs_control_node_update_clock_fault(&f.view, true));
+    f.finish();
+    assert(f.view.endpoint_epoch[0] == UINT64_MAX && f.authority.latest_result.data[1] == 22);
+    auto q = f.begin;
+    q.operation = 4;
+    q.transfer = 16;
+    f.send(q);
+    assert(f.reply.data[1] == 22 && f.view.endpoint_epoch[0] == UINT64_MAX);
+    q.node_boot_id = 8;
+    f.send(q);
+    assert(f.reply.data[1] == 4);
+}
 int main()
 {
     failedBankSelectionCannotInventAuxiliaryProof();
     reservedFieldsAndInspectionWhileBackendPending();
+    composedClockHealthAndExhaustion();
     stagingExpiry();
     physicalDisableAndFreshNoOp();
     invalidStagingNeverTouchesHardware();

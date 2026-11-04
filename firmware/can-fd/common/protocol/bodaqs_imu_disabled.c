@@ -25,6 +25,7 @@ enum
     RESET_WRITE,
     RESET_POLL,
     RESET_ID,
+    RESET_BANK_READ,
     SELECT_BANK,
     SELECT_VERIFY,
     READ,
@@ -90,6 +91,7 @@ int bodaqs_imu_disabled_tick(BodaqsImuDisabled *s, uint32_t now)
     switch (s->phase)
     {
     case BANK_READ:
+    case RESET_BANK_READ:
     case BANK_VERIFY:
     case SELECT_VERIFY:
     case RESTORE_VERIFY:
@@ -182,7 +184,19 @@ int bodaqs_imu_disabled_tick(BodaqsImuDisabled *s, uint32_t now)
     case RESET_ID:
         if (s->value != 0x6c)
             return fail(s, 15);
-        s->phase = (s->phase == RESET_ID || s->no_op) ? READ : RESET_READ;
+        s->phase = s->phase == RESET_ID ? RESET_BANK_READ : s->no_op ? READ : RESET_READ;
+        break;
+    case RESET_BANK_READ:
+        if (s->value & 0xc0)
+        {
+            s->mismatch_address = 1;
+            s->expected = 0;
+            s->observed = s->value & 0xc0;
+            s->mask = 0xc0;
+            return fail(s, 17);
+        }
+        s->bank_low = s->value & 0x3f;
+        s->phase = READ;
         break;
     case RESET_READ:
         s->value = (s->value & 0x7e) | 1;
@@ -208,6 +222,10 @@ int bodaqs_imu_disabled_tick(BodaqsImuDisabled *s, uint32_t now)
     case READ:
         if (s->index < 22)
             s->image[s->index] = s->value;
+        if (!o->bank && o->address == 15 && s->value != 0x6c)
+            return fail(s, 15); /* Read-only identity never becomes a write target. */
+        if (!o->bank && o->address == 1)
+            s->bank_low = s->value & 0x3f;
         if ((s->value & o->mask) != (o->expected & o->mask))
         {
             if (s->mismatch_address == o->address && s->mask == o->mask)

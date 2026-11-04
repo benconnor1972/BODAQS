@@ -15,6 +15,38 @@ static void result(BodaqsControlApply *s, const BodaqsControlRecord *q, BodaqsCo
     memset(r->data, 0, 24);
     r->data[0] = kind;
     r->data[1] = reason;
+    if (field == 1)
+    {
+        switch (reason)
+        {
+        case 2:
+            field = 2;
+            break;
+        case 3:
+            field = 3;
+            break;
+        case 6:
+            field = 8;
+            break;
+        case 8:
+            field = 12;
+            break;
+        case 11:
+            field = 10;
+            break;
+        case 21:
+            field = 13;
+            break;
+        case 22:
+            field = 18;
+            break;
+        case 23:
+            field = 19;
+            break;
+        default:
+            break;
+        }
+    }
     r->data[2] = field;
     r->data[3] = q->opcode;
     bodaqs_control_put_u32(r->data + 4, q->operation);
@@ -37,6 +69,8 @@ static void publish(BodaqsControlApply *s, uint8_t kind, uint8_t reason, uint8_t
 }
 static uint8_t guards(BodaqsControlApply *s)
 {
+    if (s->view->epoch_exhausted)
+        return 22;
     if (s->view->flags & 2)
         return 8;
     if (s->view->flags & 12)
@@ -47,6 +81,16 @@ static uint8_t guards(BodaqsControlApply *s)
     if (bodaqs_control_get_u64(s->begin.data + 16) != bodaqs_control_get_u64(s->effective + 32))
         return 6;
     return 0;
+}
+static bool advance_epoch(BodaqsControlApply *s)
+{
+    if (s->view->epoch_exhausted || s->view->endpoint_epoch[0] == UINT64_MAX)
+    {
+        s->view->epoch_exhausted = true;
+        return false;
+    }
+    ++s->view->endpoint_epoch[0];
+    return true;
 }
 void bodaqs_control_apply_init(BodaqsControlApply *s, BodaqsControlAuthority *a,
                                BodaqsControlNode *v, BodaqsImuDisabled *b)
@@ -89,6 +133,11 @@ void bodaqs_control_apply_tick(BodaqsControlApply *s, uint32_t now)
 {
     int rc;
     uint32_t known;
+    if (s->view->epoch_exhausted && s->phase == STAGING)
+    {
+        publish(s, 5, 22, 18);
+        return;
+    }
     if (s->phase == STAGING && (uint32_t)(now - s->started) >= 5000)
     {
         publish(s, 5, 10, 11);
@@ -96,13 +145,24 @@ void bodaqs_control_apply_tick(BodaqsControlApply *s, uint32_t now)
     }
     if (s->phase != APPLYING)
         return;
-    rc = bodaqs_imu_disabled_tick(s->backend, now);
+    if (s->view->epoch_exhausted)
+    {
+        bodaqs_imu_disabled_cancel(s->backend);
+        s->backend->reason = 22;
+        rc = -1;
+    }
+    else
+        rc = bodaqs_imu_disabled_tick(s->backend, now);
     if (s->backend->changed && s->effective[4] != 3)
     {
         s->effective[4] = 3;
         bodaqs_control_put_u32(s->effective + 16, bodaqs_control_get_u32(s->effective + 12));
         bodaqs_control_put_u32(s->effective + 20, 32);
-        ++s->view->endpoint_epoch[0];
+        if (!advance_epoch(s))
+        {
+            s->backend->reason = 22;
+            rc = -1;
+        }
         s->view->flags = (s->view->flags & ~(1U << 8)) | (1U << 9);
     }
     if (!rc)
@@ -115,6 +175,7 @@ void bodaqs_control_apply_tick(BodaqsControlApply *s, uint32_t now)
         bodaqs_control_put_u32(s->effective + 20, 36U);
         if (s->backend->reason == 17)
         {
+            bodaqs_control_put_u32(s->effective + 16, known & ~0x800U);
             bodaqs_control_put_u32(s->effective + 8,
                                    bodaqs_control_get_u32(s->effective + 8) | 0x800U);
             bodaqs_control_put_u32(s->effective + 12, known | 0x800U);
@@ -123,10 +184,14 @@ void bodaqs_control_apply_tick(BodaqsControlApply *s, uint32_t now)
             s->effective[179] = s->backend->observed;
             s->effective[180] = s->backend->mask;
         }
-        ++s->view->endpoint_epoch[0];
+        (void)advance_epoch(s);
         s->view->flags = (s->view->flags & ~(1U << 8)) | (1U << 9);
         publish(s, 5, s->backend->reason,
-                s->backend->reason == 15 ? 14 : (s->backend->reason == 16 ? 15 : 16));
+                s->backend->reason == 15   ? 14
+                : s->backend->reason == 16 ? 15
+                : s->backend->reason == 18 ? 0
+                : s->backend->reason == 22 ? 18
+                                           : 16);
         return;
     }
     {
@@ -137,6 +202,15 @@ void bodaqs_control_apply_tick(BodaqsControlApply *s, uint32_t now)
                             bodaqs_control_get_u64(s->effective + 144) != s->begin.session;
         if (!revision || s->backend->changed)
             ++revision;
+        if (epoch_change && !advance_epoch(s))
+        {
+            s->effective[4] = 3;
+            bodaqs_control_put_u32(s->effective + 16, known);
+            bodaqs_control_put_u32(s->effective + 20, 36);
+            s->view->flags = (s->view->flags & ~(1U << 8)) | (1U << 9);
+            publish(s, 5, 22, 18);
+            return;
+        }
         memset(s->effective, 0, 192);
         s->effective[0] = 3;
         s->effective[2] = 1;
@@ -150,8 +224,6 @@ void bodaqs_control_apply_tick(BodaqsControlApply *s, uint32_t now)
         bodaqs_control_put_u64(s->effective + 144, s->begin.session);
         bodaqs_control_put_u32(s->effective + 108, now);
         memcpy(s->effective + 152, s->backend->image, 24);
-        if (epoch_change)
-            ++s->view->endpoint_epoch[0];
         s->view->flags = (s->view->flags & ~(1U << 9)) | (1U << 8);
         publish(s, 3, 0, 0);
     }
@@ -166,11 +238,13 @@ bool bodaqs_control_apply_process(BodaqsControlApply *s, const BodaqsControlReco
     bodaqs_control_apply_tick(s, now);
     if (q->node_boot_id != s->view->boot_id)
         reason = 4;
+    else if (s->view->epoch_exhausted)
+        reason = 22;
     else if (!q->session || q->session != s->view->active_session)
         reason = 5;
     if (reason)
     {
-        result(s, q, r, 1, reason, reason == 4 ? 5 : 6);
+        result(s, q, r, 1, reason, reason == 4 ? 5 : reason == 22 ? 18 : 6);
         return true;
     }
     same = s->valid && q->operation == s->begin.operation && q->session == s->begin.session;
