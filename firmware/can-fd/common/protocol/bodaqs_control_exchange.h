@@ -11,17 +11,21 @@ extern "C"
         uint32_t attempt_ms;
         uint16_t transaction;
         uint8_t attempts;
-        uint8_t state; /* 0 empty, 1 pending, 2 complete, 3 uncertain */
+        uint8_t state; /* 0 empty, 1 pending, 2 complete, 3 uncertain, 4 not dispatched */
     } BodaqsControlExchangeSlot;
     typedef struct
     {
         uint64_t master_boot_id;
         uint32_t next_transaction;
         uint32_t late_replies;
+        uint8_t excluded_addresses;
         BodaqsControlExchangeSlot slots[4];
     } BodaqsControlExchange;
     void bodaqs_control_exchange_init(BodaqsControlExchange *exchange,
                                       uint64_t boot);
+    /* Live master duplicate latch. Stop configuration dispatch/retry; a possibly
+     * transmitted exchange becomes uncertain, never a node rejection/cancel. */
+    void bodaqs_control_exchange_exclude(BodaqsControlExchange *, uint8_t addresses);
     bool bodaqs_control_exchange_request(BodaqsControlExchange *exchange,
                                          bool poll,
                                          const BodaqsControlWrapped *request,

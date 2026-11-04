@@ -42,7 +42,7 @@ clean:
 test_control.exe: test_control.cpp $(CONTROL)
 	$(CXX) $(CXXFLAGS) -I../protocol -o $@ $(filter %.cpp %.c,$^)
 
-test_control_transport.exe: test_control_transport.cpp $(LOGGER_PROTOCOL) $(MASTER_PROTOCOL) $(MASTER_SERVICE)
+test_control_transport.exe: test_control_transport.cpp $(LOGGER_PROTOCOL) $(MASTER_PROTOCOL) $(MASTER_SERVICE) $(CAN_NETWORK) $(NODE_INVENTORY)
 	$(CXX) $(CXXFLAGS) -I../protocol -I../../../src -o $@ $(filter %.cpp %.c,$^)
 
 $(filter-out test_can_network.exe,$(TEST_BINS)): $(wildcard ../protocol/bodaqs_control*.h)

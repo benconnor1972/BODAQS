@@ -30,6 +30,7 @@ void bodaqs_master_service_set_inventory(BodaqsMasterService *service,
     uint8_t record_count)
 {
     uint8_t index;
+    uint8_t excluded = 0U;
 
     if ((service == NULL) || (records == NULL) ||
         (record_count != BODAQS_MASTER_DISCOVERY_NODE_COUNT)) {
@@ -41,12 +42,15 @@ void bodaqs_master_service_set_inventory(BodaqsMasterService *service,
     }
     service->discovery_generation = generation;
     for (index = 0U; index < BODAQS_MASTER_DISCOVERY_NODE_COUNT; ++index) {
+        if (records[index].flags & BODAQS_MASTER_DISCOVERY_FLAG_DUPLICATE)
+            excluded |= (uint8_t)(1U << index);
         service->discovery[index] = records[index];
         service->discovery[index].node_address = index;
         service->discovery[index].node_count =
             BODAQS_MASTER_DISCOVERY_NODE_COUNT;
         service->discovery[index].generation = generation;
     }
+    bodaqs_control_exchange_exclude(&service->control, excluded);
 }
 
 BodaqsMasterSlotResult bodaqs_master_service_process_slot(

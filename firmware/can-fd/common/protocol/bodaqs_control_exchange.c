@@ -5,8 +5,32 @@ enum
     EXCHANGE_EMPTY,
     EXCHANGE_PENDING,
     EXCHANGE_COMPLETE,
-    EXCHANGE_UNCERTAIN
+    EXCHANGE_UNCERTAIN,
+    EXCHANGE_NOT_DISPATCHED
 };
+static bool inspection(uint8_t opcode)
+{
+    return opcode == BODAQS_CONTROL_GET_CHALLENGE ||
+           opcode == BODAQS_CONTROL_GET_NODE_STATE ||
+           opcode == BODAQS_CONTROL_OPEN_CAPABILITIES ||
+           opcode == BODAQS_CONTROL_OPEN_EFFECTIVE ||
+           opcode == BODAQS_CONTROL_READ_PAGE ||
+           opcode == BODAQS_CONTROL_RELEASE_SNAPSHOT ||
+           opcode == BODAQS_CONTROL_GET_OPERATION;
+}
+void bodaqs_control_exchange_exclude(BodaqsControlExchange *exchange, uint8_t addresses)
+{
+    unsigned i;
+    exchange->excluded_addresses = addresses;
+    for (i = 0; i < 4; ++i)
+    {
+        BodaqsControlExchangeSlot *slot = &exchange->slots[i];
+        if ((addresses & (1U << i)) && slot->state == EXCHANGE_PENDING &&
+            !inspection(slot->request.opcode))
+            slot->state = slot->attempts ? EXCHANGE_UNCERTAIN : EXCHANGE_NOT_DISPATCHED;
+    }
+}
+
 static bool same_header(const BodaqsControlRecord *a,
                         const BodaqsControlRecord *b)
 {
@@ -94,6 +118,11 @@ bool bodaqs_control_exchange_request(BodaqsControlExchange *exchange, bool poll,
             response->record = slot->result;
             *type = BODAQS_CONTROL_POLL_RESPONSE;
         }
+        else if (slot->state == EXCHANGE_NOT_DISPATCHED)
+        {
+            receipt(response, BODAQS_CONTROL_BUSY,
+                    BODAQS_CONTROL_REASON_BUSY, BODAQS_CONTROL_FIELD_RECORD);
+        }
         else if (slot->state == EXCHANGE_UNCERTAIN)
         {
             receipt(response, BODAQS_CONTROL_UNCERTAIN,
@@ -114,7 +143,8 @@ bool bodaqs_control_exchange_request(BodaqsControlExchange *exchange, bool poll,
                 BODAQS_CONTROL_FIELD_RECORD);
         return true;
     }
-    if (slot->state == EXCHANGE_PENDING)
+    if (((exchange->excluded_addresses & (1U << request->node_address)) &&
+         !inspection(request->record.opcode)) || slot->state == EXCHANGE_PENDING)
     {
         receipt(response, BODAQS_CONTROL_BUSY, BODAQS_CONTROL_REASON_BUSY,
                 BODAQS_CONTROL_FIELD_RECORD);

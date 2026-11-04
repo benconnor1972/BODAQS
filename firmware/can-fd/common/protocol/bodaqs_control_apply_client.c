@@ -175,9 +175,7 @@ bool bodaqs_control_apply_client_accept(BodaqsControlApplyClient *s,
     s->pending = false;
     if (p->data[0] == 2 || p->data[0] == 3 || p->data[0] == 4 || p->data[0] == 5)
     {
-        uint32_t *next = &a->nodes[r->node_address].next_mutation;
-        if (*next && *next <= o->operation)
-            *next = o->operation == UINT32_MAX ? 0 : o->operation + 1;
+        bodaqs_control_authority_client_reserve_mutation(a, &s->current, o->operation);
     }
     if (p->data[0] == 2)
     {
@@ -199,4 +197,43 @@ bool bodaqs_control_apply_client_accept(BodaqsControlApplyClient *s,
     o->observed_ms = now;
     s->phase = 0;
     return true;
+}
+
+void bodaqs_control_apply_client_transport_timeout(BodaqsControlApplyClient *s, uint32_t now)
+{
+    BodaqsControlApplyOutcome *o;
+    if (!s->pending) return;
+    o = &s->nodes[s->current.node_address];
+    s->pending = false;
+    s->phase = 5;
+    s->resume_phase = 0;
+    s->next_query = now;
+    o->valid = true;
+    o->kind = 6;
+    o->reason = BODAQS_CONTROL_REASON_TIMEOUT;
+    o->observed_ms = now;
+}
+void bodaqs_control_apply_client_quarantine(BodaqsControlApplyClient *s,
+                                            BodaqsControlAuthorityClient *a, uint32_t now)
+{
+    BodaqsControlApplyOutcome *o;
+    if (!s->phase) return;
+    o = &s->nodes[s->current.node_address];
+    o->kind = 6;
+    o->reason = BODAQS_CONTROL_REASON_UNKNOWN_OPERATION;
+    o->valid = true;
+    o->observed_ms = now;
+    bodaqs_control_authority_client_reserve_mutation(a, &s->current, o->operation);
+    s->phase = 0;
+    s->pending = false;
+    s->resume_phase = 0;
+}
+void bodaqs_control_apply_client_recording_fence(BodaqsControlApplyClient *s,
+                                                 BodaqsControlAuthorityClient *a, uint32_t now)
+{
+    /* Drain a submitted exchange, but abandon staged continuation before COMMIT.
+     * A possibly accepted COMMIT permits only read-only outcome inspection. */
+    if (s->phase && !s->pending && !s->commit_sent)
+        bodaqs_control_apply_client_quarantine(s, a, now);
+    if (s->commit_sent) s->resume_phase = 0;
 }
