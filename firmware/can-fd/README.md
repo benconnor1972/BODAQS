@@ -6,7 +6,7 @@ PlatformIO project in the parent directory.
 
 ## Layout
 
-- `common/protocol`: portable logger-to-master SPI protocol code
+- `common/protocol`: portable SPI/control codecs, authority, snapshots and IMU configuration state machines
 - `common/network`: portable CAN-FD codecs and four-address node inventory
 - `common/test`: host tests for both portable protocol layers
 - `master`: MSPM0G3518 master-daughterboard firmware
@@ -63,8 +63,22 @@ can also retain HFXT and SYSPLL state, so startup returns MCLK to SYSOSC and
 waits for both retained sources to stop before running the generated clock
 initialization.
 
-General trunk power policy, sensor configuration, synchronization, sample
-transport and logger-side inventory transfer are not enabled in this slice.
+The control extension supports logger inventory inspection, reset-scoped
+authority, coherent capability/effective-state snapshots and verified IMU
+configuration. The node uses SPI0 mode 3 at 1 MHz with PA8 GPIO chip select
+and PA9/PA10/PA11 for PICO/POCI/SCK. Profile 1/version 1 runs the sensing
+engines at nominal 3333 Hz, +/-32 g and +/-2000 degrees/s while stopped;
+explicit disable powers the sensing engines down. Both modes leave FIFO,
+batching, sample collection and measurement transport disabled.
+
+The logger's canonical remote type is `lsm6dso32x_imu`, using a CAN provider
+and `endpoint=imu`. Legacy remote BMI assignments remain unresolved until
+explicit migration. Configuration agreement does not imply acquisition
+readiness. See the [implementation and validation index](../../docs/firmware/CAN-FD_Control_Implementation.md)
+for completed slices, tests and outstanding physical checks.
+
+General trunk power policy, synchronization, sample transport and acquisition
+start/stop/lease wire operations remain deferred.
 For the physical discovery test, the front branch is enabled only after
 successful logger communication; front-fault status remains available over SPI
 and in `gMasterRuntimeInfo`.

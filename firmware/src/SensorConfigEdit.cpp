@@ -14,6 +14,28 @@
 #include <stdlib.h>
 #include <strings.h>
 
+bool SensorConfigEdit::isLegacyRemoteImu(const SensorSpec& spec) {
+  return spec.type == SensorType::BMI270ImuI2C &&
+      sensorAssignment(spec, nullptr).provider.kind == SensorProviderKind::CanNode;
+}
+
+bool SensorConfigEdit::migrateLegacyRemoteImu(SensorSpec& spec, const char* type,
+    const char* profile, char* error, size_t capacity) {
+  if (!isLegacyRemoteImu(spec) || !type || strcmp(type, "lsm6dso32x_imu") ||
+      !profile || strcmp(profile, Lsm6dso32xConfig::profile)) {
+    snprintf(error, capacity, "Select lsm6dso32x_imu and its supported LSM profile for a legacy remote BMI270 assignment");
+    return false;
+  }
+  // Keep saved identity, calibration, mounting and assignment data. Retained
+  // legacy acquisition keys are opaque: only the selected LSM profile is used.
+  if (!spec.params.set("profile", profile)) {
+    snprintf(error, capacity, "Could not store migration profile");
+    return false;
+  }
+  spec.type = SensorType::LSM6DSO32XImu;
+  return Lsm6dso32xConfig::validateSpec(spec, error, capacity);
+}
+
 namespace {
 bool validateSensorEdit_(const LoggerConfig& cfg, char* error, size_t capacity) {
   for (uint8_t i = 0; i < cfg.sensorCount(); ++i) {

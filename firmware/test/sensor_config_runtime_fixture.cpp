@@ -34,8 +34,9 @@ const ParamDef defs[] = {
 const ParamDef* params(size_t& n) { n = 3; return defs; }
 const SensorTypeInfo info = {SensorType::AnalogPot, "analog_pot", "Analog", params, nullptr};
 const SensorTypeInfo lsm = {SensorType::LSM6DSO32XImu, "lsm6dso32x_imu", "LSM", Lsm6dso32xConfig::paramDefs, nullptr};
-const SensorTypeInfo* lookup(SensorType t) { return t == SensorType::LSM6DSO32XImu ? &lsm : t == SensorType::AnalogPot ? &info : nullptr; }
-const char* typeKey(SensorType t) { return t == SensorType::LSM6DSO32XImu ? "lsm6dso32x_imu" : "analog_pot"; }
+const SensorTypeInfo bmi = {SensorType::BMI270ImuI2C, "bmi270_imu_i2c", "BMI", params, nullptr};
+const SensorTypeInfo* lookup(SensorType t) { return t == SensorType::LSM6DSO32XImu ? &lsm : t == SensorType::BMI270ImuI2C ? &bmi : t == SensorType::AnalogPot ? &info : nullptr; }
+const char* typeKey(SensorType t) { return t == SensorType::LSM6DSO32XImu ? "lsm6dso32x_imu" : t == SensorType::BMI270ImuI2C ? "bmi270_imu_i2c" : "analog_pot"; }
 const char* typeLabel(SensorType) { return "Analog"; }
 CalModeMask supportedCalMask(SensorType) { return CAL_NONE; }
 }
@@ -114,6 +115,106 @@ int main() {
     assert(sp.type==SensorType::LSM6DSO32XImu); String metadata; sp.params.get("calibration_ref",metadata); assert(metadata=="host-cal");
     assert(ConfigManager::deleteSensorByIndex(0)); assert(ConfigManager::save(ConfigManager::get()));
     rebuilds=0; live.mute=true;
+  }
+  {
+    // Legacy saved input stays byte-for-byte unchanged on reload and inspection.
+    assert(ConfigManager::appendSensor(SensorType::BMI270ImuI2C, "legacy"));
+    SensorSpec legacy; assert(ConfigManager::getSensorSpec(0, legacy));
+    assert(legacy.params.set("provider", "can1"));
+    assert(legacy.params.set("endpoint", "imu"));
+    assert(legacy.params.set("profile", "orientation_200"));
+    assert(legacy.params.set("calibration_ref", "cal-legacy"));
+    assert(legacy.params.set("mount_point", "fork"));
+    assert(legacy.params.set("orient_valid", "true"));
+    assert(legacy.params.set("orient_qw", "1"));
+    assert(legacy.params.set("orient_qx", "0"));
+    assert(legacy.params.set("orient_qy", "0"));
+    assert(legacy.params.set("orient_qz", "0"));
+    assert(ConfigManager::save(ConfigManager::get()));
+    Calibration calibration; calibration.capture_n = 41;
+    assert(ConfigManager::saveCalibrationByIndex(0, calibration));
+    const String before = disk;
+    assert(ConfigManager::reload() && disk == before);
+    WebServer srv; mockSetArg("id", "0"); handleSensorGet_(srv);
+    JsonDocument response; assert(!deserializeJson(response, mockLastBody.c_str()));
+    assert(response["sensor"]["assignment_state"] == "unresolved_legacy_remote_imu");
+    assert(response["sensor"]["migration"]["type"] == "lsm6dso32x_imu");
+    assert(response["sensor"]["migration"]["url"] == "/api/v1/sensor?id=0");
+    assert(response["sensor"]["migration"]["profile"] == "imu6_3333_32g_2000dps_v1");
+    assert(response["sensor"]["recording_eligible"] == false && disk == before);
+    for (const char* request : {
+        R"({"type":"lsm6dso32x_imu"})",
+        R"({"migration":{"type":"lsm6dso32x_imu","profile":"orientation_200"}})",
+        R"({"migration":{"type":"lsm6dso32x_imu"}})",
+        R"({"migration":null})",
+        R"({"migration":{"type":"lsm6dso32x_imu","profile":"imu6_3333_32g_2000dps_v1"},"name":"ignored"})"}) {
+      mockSetArg("plain", request); handleSensorPut_(srv);
+      assert(mockLastStatus == 400 && disk == before);
+      assert(ConfigManager::getSensorSpec(0, legacy) && legacy.type == SensorType::BMI270ImuI2C);
+      String profile; assert(legacy.params.get("profile", profile) && profile == "orientation_200");
+    }
+    mockSetArg("plain", R"({"migration":{"type":"lsm6dso32x_imu","profile":"imu6_3333_32g_2000dps_v1"}})");
+    // Invalid retained mounting data is rejected rather than discarded.
+    legacy.params.set("orient_qw", "0");
+    assert(ConfigManager::save(ConfigManager::get())); const String invalidMount = disk;
+    handleSensorPut_(srv); assert(mockLastStatus == 400 && disk == invalidMount);
+    assert(ConfigManager::getSensorSpec(0, legacy) && legacy.type == SensorType::BMI270ImuI2C);
+    disk = before; assert(ConfigManager::reload());
+    saveOk = false; handleSensorPut_(srv); saveOk = true;
+    assert(mockLastStatus == 500 && disk == before);
+    assert(ConfigManager::getSensorSpec(0, legacy) && legacy.type == SensorType::BMI270ImuI2C);
+    String oldProfile; assert(legacy.params.get("profile", oldProfile) && oldProfile == "orientation_200");
+    Calibration retained; assert(ConfigManager::loadCalibrationByIndex(0, retained) && retained.capture_n == 41);
+    recording = true; handleSensorPut_(srv); recording = false;
+    assert(mockLastStatus == 423 && disk == before);
+    mockSetArg("plain", R"({"migration":{"type":"lsm6dso32x_imu","profile":"imu6_3333_32g_2000dps_v1"}})");
+    handleSensorPut_(srv); assert(mockLastStatus == 200);
+    assert(ConfigManager::getSensorSpec(0, legacy) && legacy.type == SensorType::LSM6DSO32XImu);
+    String value;
+    assert(String(legacy.name) == "legacy");
+    assert(legacy.params.get("provider", value) && value == "can1");
+    assert(legacy.params.get("endpoint", value) && value == "imu");
+    assert(legacy.params.get("calibration_ref", value) && value == "cal-legacy");
+    assert(legacy.params.get("mount_point", value) && value == "fork");
+    assert(legacy.params.get("orient_qw", value) && value == "1");
+    assert(legacy.params.get("profile", value) && value == "imu6_3333_32g_2000dps_v1");
+    assert(ConfigManager::reload());
+    assert(ConfigManager::getSensorSpec(0, legacy) && legacy.type == SensorType::LSM6DSO32XImu);
+    assert(ConfigManager::loadCalibrationByIndex(0, retained) && retained.capture_n == 41);
+    // The web action selects the same canonical desired profile through commit.
+    disk = before; assert(ConfigManager::reload()); mockReset();
+    mockSetArg("s0.type", "lsm6dso32x_imu");
+    web::post(srv); assert(mockLastStatus == 400 && disk == before);
+    mockReset();
+    mockSetArg("migrate_legacy_idx", "0");
+    mockSetArg("s0.migration_type", "lsm6dso32x_imu");
+    web::post(srv); assert(mockLastStatus == 400 && disk == before);
+    mockSetArg("s0.migration_profile", "orientation_200");
+    web::post(srv); assert(mockLastStatus == 400 && disk == before);
+    mockSetArg("s0.migration_profile", "imu6_3333_32g_2000dps_v1");
+    saveOk = false; web::post(srv); saveOk = true;
+    assert(mockLastStatus == 500 && disk == before);
+    recording = true; web::post(srv); recording = false;
+    assert(mockLastStatus == 423 && disk == before);
+    web::post(srv); assert(mockLastStatus == 303);
+    assert(ConfigManager::getSensorSpec(0, legacy) && legacy.type == SensorType::LSM6DSO32XImu);
+    assert(String(legacy.name) == "legacy");
+    assert(legacy.params.get("calibration_ref", value) && value == "cal-legacy");
+    assert(legacy.params.get("orient_qw", value) && value == "1");
+    assert(ConfigManager::loadCalibrationByIndex(0, retained) && retained.capture_n == 41);
+    // Local BMI configuration remains local and cannot use remote migration.
+    disk = before; assert(ConfigManager::reload()); mockReset();
+    assert(ConfigManager::getSensorSpec(0, legacy)); legacy.params.set("provider", "local");
+    assert(ConfigManager::save(ConfigManager::get())); const String local = disk;
+    mockSetArg("id", "0"); handleSensorGet_(srv);
+    assert(!deserializeJson(response, mockLastBody.c_str()));
+    assert(response["sensor"]["migration"].isNull());
+    mockSetArg("plain", R"({"migration":{"type":"lsm6dso32x_imu","profile":"imu6_3333_32g_2000dps_v1"}})");
+    handleSensorPut_(srv); assert(mockLastStatus == 400 && disk == local);
+    assert(ConfigManager::getSensorSpec(0, legacy) && legacy.type == SensorType::BMI270ImuI2C);
+    assert(legacy.params.get("profile", value) && value == "orientation_200");
+    assert(ConfigManager::deleteSensorByIndex(0)); assert(ConfigManager::save(ConfigManager::get()));
+    mockReset(); rebuilds = 0; live.mute = true;
   }
   assert(ConfigManager::appendSensor(SensorType::AnalogPot, "front"));
   assert(ConfigManager::save(ConfigManager::get()));

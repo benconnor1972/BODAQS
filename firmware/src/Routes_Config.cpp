@@ -786,6 +786,19 @@ static void emitSensorEditor_(ChunkedHtmlResponse& html,
   if (locked) html += F(" disabled");
   html += F(">Apply Type</button><small>Rebuilds fields and applies the saved sensor configuration immediately.</small></div>");
 
+  if (SensorConfigEdit::isLegacyRemoteImu(sp)) {
+    html += F("<div class='alert'>Unresolved legacy remote BMI270 placeholder. It cannot record. BMI profiles are not translated. Explicitly select the LSM type and supported profile, then migrate; saved installation and calibration data are retained.</div>");
+    html += F("<div class='row'><label>Migration type</label><select name='s");
+    html += String(idx);
+    html += F(".migration_type'"); html += dis;
+    html += F("><option value=''>Choose replacement type</option><option value='lsm6dso32x_imu'>LSM6DSO32X IMU (CAN)</option></select></div>");
+    html += F("<div class='row'><label>Migration profile</label><select name='s");
+    html += String(idx);
+    html += F(".migration_profile'"); html += dis;
+    html += F("><option value=''>Choose supported profile</option><option value='imu6_3333_32g_2000dps_v1'>IMU6 3333 Hz / 32 g / 2000 dps v1</option></select></div><button type='submit' name='migrate_legacy_idx' value='");
+    html += String(idx); html += F("'"); html += dis;
+    html += F(">Migrate saved assignment</button><small>Migration saves only the selected replacement, preserving the existing name, calibration, mounting and provider/endpoint. Save other edits separately. Configuration support does not enable sample recording.</small>");
+  }
   emitProviderEndpointRows_(html, idx, sp, locked);
   if (sp.type == SensorType::LSM6DSO32XImu) {
     const auto assignment = sensorAssignment(sp, board::gBoard);
@@ -1477,6 +1490,29 @@ void registerConfigRoutes(WebServer& srv) {
     if (!edit.ready()) { srv.send(503, F("text/plain"), F("Sensor editor unavailable")); return; }
     LoggerConfig tmp = ConfigManager::get();
 
+    if (srv.hasArg("migrate_legacy_idx")) {
+      const String indexText = srv.arg("migrate_legacy_idx");
+      char* end = nullptr;
+      const long index = strtol(indexText.c_str(), &end, 10);
+      SensorSpec sp;
+      char error[160] = {};
+      const String prefix = String("s") + String(index) + ".";
+      if (!indexText.length() || *end || index < 0 || index >= tmp.sensorCount() ||
+          !tmp.getSensorSpec((uint8_t)index, sp) ||
+          !SensorConfigEdit::migrateLegacyRemoteImu(sp,
+              srv.arg(prefix + "migration_type").c_str(),
+              srv.arg(prefix + "migration_profile").c_str(), error, sizeof(error))) {
+        srv.send(400, F("text/plain"), error[0] ? error : "Invalid migration sensor");
+        return;
+      }
+      tmp.sensors[index] = sp;
+      ConfigManager::setSensorHeaderByIndex((uint8_t)index, sp);
+      if (!commitSensorEdit_(srv, edit, tmp)) return;
+      srv.sendHeader("Location", String("/config/sensor?id=") + String(index) + "&ok=1");
+      srv.send(303, F("text/plain"), F("Legacy remote assignment migrated"));
+      return;
+    }
+
     if (srv.hasArg("delete_sensor_idx")) {
       const int idx = srv.arg("delete_sensor_idx").toInt();
       if (idx < 0 || idx >= (int)ConfigManager::sensorCount()) {
@@ -1537,7 +1573,7 @@ void registerConfigRoutes(WebServer& srv) {
       SensorSpec sp;
       if (!current.getSensorSpec(idx, sp)) continue;
 
-      const String pfx = String("s") + idx + ".";
+      const String pfx = String("s") + String(idx) + ".";
 
       auto getArgLast = [&](const char* key, String& out) -> bool {
         const String full = pfx + key;
@@ -1565,6 +1601,13 @@ void registerConfigRoutes(WebServer& srv) {
             if (!parseSensorTypeKey_(v, sp.type)) {
               srv.send(400, F("text/plain"), F("Invalid sensor type")); return;
             }
+          }
+        }
+        if (oldType == SensorType::BMI270ImuI2C && sp.type == SensorType::LSM6DSO32XImu) {
+          SensorSpec previous = sp; previous.type = oldType;
+          if (SensorConfigEdit::isLegacyRemoteImu(previous)) {
+            srv.send(400, F("text/plain"), F("Use Migrate saved assignment and explicitly select its LSM type and profile to preserve installation data"));
+            return;
           }
         }
         typeChanged = (sp.type != oldType);
