@@ -1326,6 +1326,18 @@ void registerConfigRoutes(WebServer& srv) {
     html += F("<div class='row'><label>Name</label><input type='text' name='add_sensor_name' maxlength='15' placeholder='optional'");
     html += dis;
     html += F("><small>Leave blank to auto-name.</small></div>");
+    html += F("<div class='row'><label>CAN node for LSM6DSO32X</label><select name='add_sensor_can_node'");
+    html += dis;
+    html += F("><option value=''>-- choose node --</option>");
+    for (uint8_t node = 0; node < MAX_CAN_SENSOR_NODES; ++node) {
+      html += F("<option value='");
+      html += String((int)node);
+      html += F("'>CAN node ");
+      html += String((int)node);
+      html += F("</option>");
+    }
+    html += F("</select><small>Required for an LSM6DSO32X IMU. Choose its hardware strap address; the on-node IMU and supported profile are assigned automatically.</small></div>");
+    html += F("<p>Unassigned or muted CAN IMU endpoints are automatically reconciled to disabled while idle. There is no separate automatic-disable setting.</p>");
     html += F("<p><button type='submit' name='add_sensor' value='1'");
     html += dis;
     html += F(">Add Sensor</button></p></fieldset></form>");
@@ -1538,21 +1550,42 @@ void registerConfigRoutes(WebServer& srv) {
           srv.send(400, F("text/plain"), F("Invalid sensor type")); return;
         }
       }
+      String canProvider;
+      if (newType == SensorType::LSM6DSO32XImu) {
+        String selected = srv.arg("add_sensor_can_node");
+        selected.trim();
+        char* end = nullptr;
+        const long node = strtol(selected.c_str(), &end, 10);
+        if (!selected.length() || *end || node < 0 || node >= MAX_CAN_SENSOR_NODES) {
+          srv.send(400, F("text/plain"), F("Choose a CAN node address for the LSM6DSO32X IMU"));
+          return;
+        }
+        canProvider = String("can:") + String(node);
+      }
       const String uniqueName = uniqueSensorName_(newType, srv.hasArg("add_sensor_name") ? srv.arg("add_sensor_name") : String());
       if (!ConfigManager::appendSensor(newType, uniqueName.c_str())) {
         srv.send(400, F("text/plain"), F("Could not add sensor"));
         return;
       }
+      if (newType == SensorType::LSM6DSO32XImu) {
+        SensorSpec sp;
+        if (!ConfigManager::getSensorSpec(ConfigManager::sensorCount() - 1, sp) ||
+            !sp.params.set("provider", canProvider) || !sp.params.set("endpoint", "imu")) {
+          srv.send(500, F("text/plain"), F("Could not assign the new CAN IMU"));
+          return;
+        }
+      }
       if (!commitSensorEdit_(srv, edit, ConfigManager::get())) return;
       const int newIdx = (int)ConfigManager::sensorCount() - 1;
+      const String redirect = newType == SensorType::LSM6DSO32XImu
+          ? String("/config/sensor?id=") + String(newIdx) + "&ok=1"
+          : String("/config/sensors?ok=1#sensor-") + String(newIdx);
       if (isHtmxRequest(srv)) {
-        String redirect = F("/config/sensors?ok=1#sensor-");
-        redirect += String(newIdx);
         srv.sendHeader(F("HX-Redirect"), redirect);
         HttpFileSender::sendText(srv, 200, F("text/html"), F(""), F("no-store"));
         return;
       }
-      srv.sendHeader("Location", "/config/sensors?ok=1#sensor-" + String(newIdx));
+      srv.sendHeader("Location", redirect);
       srv.send(303, F("text/plain"), F("Sensor added"));
       return;
     }

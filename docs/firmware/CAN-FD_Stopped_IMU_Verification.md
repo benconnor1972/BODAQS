@@ -24,6 +24,19 @@ The control API exposes matching observations and decimal-string 64-bit identiti
 After the original five-second COMMIT result deadline, knowledge is uncertain;
 an outstanding transport exchange is drained without extending that deadline.
 
+In the web **New sensor** form, select the LSM6DSO32X type and its **CAN node for
+LSM6DSO32X** address before selecting **Add Sensor**. Creation assigns the on-node
+IMU endpoint and supported profile before validation, then opens the sensor editor.
+An address is required; the form does not silently choose a node. The endpoint
+can be configured while offline, with successful persistence kept separate from
+hardware agreement.
+
+Automatic disable is background reconciliation, not a selectable mode: a supported
+unassigned or muted IMU endpoint is explicitly disabled while idle. Enable CAN-FD
+master **Automatic** mode to discover/reconcile it, and inspect effective state
+through Health or the status API. **Muted by default** saves a persistent mute;
+menu mute is temporary. A verified configuration still does not enable sampling.
+
 Profile 1 runs accel and gyro while stopped: CTRL1_XL=94h, CTRL2_G=9Ch.
 Both use nominal 3333/1 Hz, +/-32g and +/-2000 degrees/s. Sensitivities are
 122/125000 g/count and 7/100 degrees/s/count. High performance operation and

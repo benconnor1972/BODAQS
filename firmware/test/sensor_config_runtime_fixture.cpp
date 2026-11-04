@@ -16,6 +16,7 @@ bool canConvertFromJson(JsonVariantConst value, const String&) { return value.is
 #include <memory>
 #include <new>
 #include <cmath>
+#include <cstdio>
 using LogLevel = uint8_t;
 bool Log_parseLevel(const char*, LogLevel&) { return false; }
 const char* Log_levelName(LogLevel) { return "info"; }
@@ -93,6 +94,58 @@ String configurationNotice_(bool) { return ""; }
 
 int main() {
   ConfigManager::begin("loggercfg");
+  {
+    WebServer srv;
+    assert(ConfigManager::save(ConfigManager::get()));
+    const String before = disk;
+    for (const char* address : {"", "-1", "4", "not-a-node"}) {
+      mockReset();
+      mockSetArg("add_sensor", "1");
+      mockSetArg("add_sensor_type", "lsm6dso32x_imu");
+      mockSetArg("add_sensor_can_node", address);
+      web::post(srv);
+      assert(mockLastStatus == 400 && disk == before && ConfigManager::sensorCount() == 0);
+      assert(mockLastBody.indexOf("Choose a CAN node") >= 0);
+    }
+    for (uint8_t address = 0; address < 4; ++address) {
+      mockReset();
+      mockSetArg("add_sensor", "1");
+      mockSetArg("add_sensor_type", "lsm6dso32x_imu");
+      mockSetArg("add_sensor_name", "bench_imu");
+      mockSetArg("add_sensor_can_node", String((int)address));
+      saveOk = false; web::post(srv); saveOk = true;
+      assert(mockLastStatus == 500 && disk == before && ConfigManager::sensorCount() == 0);
+      starting = true; web::post(srv); starting = false;
+      assert(mockLastStatus == 423 && disk == before && ConfigManager::sensorCount() == 0);
+      recording = true; web::post(srv); recording = false;
+      assert(mockLastStatus == 423 && disk == before && ConfigManager::sensorCount() == 0);
+      HtmlUtil::htmx = address != 0;
+      web::post(srv);
+      const int expectedStatus = HtmlUtil::htmx ? 200 : 303;
+      if (mockLastStatus != expectedStatus) {
+        std::fprintf(stderr, "Web IMU creation returned %d: %s\n", mockLastStatus, mockLastBody.c_str());
+      }
+      assert(mockLastStatus == expectedStatus);
+      assert(mockHeaders[HtmlUtil::htmx ? "HX-Redirect" : "Location"] == "/config/sensor?id=0&ok=1");
+      HtmlUtil::htmx = false;
+      assert(ConfigManager::reload());
+      SensorSpec created; assert(ConfigManager::getSensorSpec(0, created));
+      assert(created.type == SensorType::LSM6DSO32XImu && String(created.name) == "bench_imu");
+      String value;
+      assert(created.params.get("provider", value) && value == String("can:") + String((int)address));
+      assert(created.params.get("endpoint", value) && value == "imu");
+      assert(created.params.get("profile", value) && value == "imu6_3333_32g_2000dps_v1");
+      assert(ConfigManager::deleteSensorByIndex(0));
+      assert(ConfigManager::save(ConfigManager::get()));
+      assert(disk == before);
+    }
+    mockReset(); mockSetArg("add_sensor", "1"); mockSetArg("add_sensor_type", "analog_pot");
+    mockSetArg("add_sensor_can_node", "");
+    web::post(srv); assert(mockLastStatus == 303);
+    assert(ConfigManager::get().sensors[0].type == SensorType::AnalogPot);
+    assert(ConfigManager::deleteSensorByIndex(0)); assert(ConfigManager::save(ConfigManager::get()));
+    mockReset(); rebuilds = 0; live.mute = true;
+  }
   {
     WebServer srv;
     mockSetArg("plain", R"({"type":"lsm6dso32x_imu","name":"remote","params":{"provider":"can2","endpoint":"imu","profile":"imu6_3333_32g_2000dps_v1","calibration_ref":"host-cal","mount_point":"fork","orient_valid":true,"orient_qw":1,"orient_qx":0,"orient_qy":0,"orient_qz":0}})");
