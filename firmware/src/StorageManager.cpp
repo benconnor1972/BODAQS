@@ -1717,6 +1717,11 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
   JsonDocument document;
   document["summary_format"] = "bdq.final_summary.v2";
   document["remote_imu_excluded"] = RemoteImuRecording::failed();
+  const auto& admission=RemoteImuRecording::admission();
+  document["remote_admission_attempted"]=admission.attempted;
+  document["remote_admission_qualified"]=admission.qualified;
+  document["remote_admission_reason"]=admission.attempted?ImuAdmission::reasonText(admission.reason):"not evaluated";
+  document["remote_reserved_bytes"]=admission.loggerBytes;
   document["remote_cleanup_complete"] = RemoteImuRecording::stopped();
   document["remote_tail_objects_discarded"] = RemoteImuRecording::discardedTailObjects();
   // Storage finalization and membership cleanup do not prove complete source

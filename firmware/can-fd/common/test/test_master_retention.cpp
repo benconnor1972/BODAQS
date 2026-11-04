@@ -16,42 +16,42 @@ static void reset() {
     master.acquisition_record[0] = 77;
     master.acquisition_boot[0] = 5;
 }
-static BodaqsMeasurementSlot poll(unsigned cls, unsigned index, unsigned id, unsigned now) {
+static BodaqsMeasurementSlot poll(unsigned cls, unsigned index, unsigned id, unsigned now, uint8_t node=0) {
     BodaqsMeasurementSlot request = {}, reply = {};
     uint8_t wire[64], response[84];
-    request.kind = 1; request.context = 9; request.node = 0;
+    request.kind = 1; request.context = 9; request.node = node;
     request.body[0] = cls; request.index = index; request.object = id;
     assert(bodaqs_measurement_encode(&request, wire, 64));
     assert(bodaqs_master_service_process_transfer(&master, wire, 64, now, response) == 0);
     assert(bodaqs_measurement_decode(response, 64, &reply));
     return reply;
 }
-static void acknowledge(unsigned cls, unsigned now) {
+static void acknowledge(unsigned cls, unsigned now, uint8_t node=0) {
     BodaqsFragmentState assembled = {};
     BodaqsMeasurementSlot ack = {};
     uint8_t bytes[1024] = {}, wire[64], response[84];
-    auto first = poll(cls, 0, 0, now);
+    auto first = poll(cls, 0, 0, now,node);
     assert(first.kind == (cls == 1 ? 2 : 3));
     const unsigned fragments = (first.total + 39) / 40;
     for (unsigned i = 0; i < fragments; ++i) {
-        auto fragment = poll(cls, i, first.object, now);
+        auto fragment = poll(cls, i, first.object, now,node);
         assert(bodaqs_fragment_accept(&assembled, bytes, sizeof bytes, &fragment, 1, &ack)
             == (i + 1 == fragments ? 1 : 0));
     }
     assert(bodaqs_measurement_encode(&ack, wire, 64));
     assert(bodaqs_master_service_process_transfer(&master, wire, 64, now, response) == 0);
 }
-static void anchor(unsigned now) {
+static void anchor(unsigned now, uint8_t node=0) {
     // Literal version-1 STREAM_ANCHOR: epoch3, sequence0, tick100, step300/1.
     const uint8_t bytes[32] = {1,0x22,1,0,0,0,20,0,0,1,3,0,
         0,0,0,0,100,0,0,0,44,1,0,0,1,0,0,0,0,0,0,0};
-    assert(bodaqs_master_service_receive_can(&master, 0, 2, 0x090, bytes, 32, 0, 1234, now));
+    assert(bodaqs_master_service_receive_can(&master, node, 2, 0x090+node, bytes, 32, 0, 1234, now));
 }
-static bool samples(unsigned sequence, unsigned now) {
+static bool samples(unsigned sequence, unsigned now, uint8_t node=0) {
     uint8_t bytes[64] = {0,0,3,5};
     bytes[0] = sequence; bytes[1] = sequence >> 8;
     bytes[4] = 0x34; bytes[5] = 0x12; bytes[6] = 0xff; bytes[7] = 0xff;
-    return bodaqs_master_service_receive_can(&master, 0, 1, 0x100, bytes, 64, 0, 5678, now);
+    return bodaqs_master_service_receive_can(&master, node, 1, 0x100+8*node, bytes, 64, 0, 5678, now);
 }
 int main() {
     reset(); anchor(0);
@@ -128,6 +128,19 @@ int main() {
     assert(bodaqs_master_service_control_receive(&master, 0, transaction, &result));
     assert(master.retired_tail_frames == 2);
     assert(poll(2, 0, 0, 31).kind == 0 && !samples(5, 32));
+    // One pinned/full node cannot consume another node's retention/service.
+    reset();anchor(0);
+    const auto held=poll(2,0,0,0);
+    for(unsigned i=0;i<128;++i) assert(samples(5*i,1));
+    assert(!samples(640,2));
+    for(uint8_t n=1;n<4;++n) {
+        master.discovery[n].flags=1;master.discovery[n].boot_id=5;
+        master.acquisition_record[n]=77;master.acquisition_boot[n]=5;
+        anchor(3,n);assert(samples(0,4,n));
+        assert(poll(2,0,0,5,n).kind==3);acknowledge(2,6,n);
+        assert(poll(1,0,0,30,n).kind==2);
+    }
+    assert(poll(2,0,held.object,31).object==held.object);
     // Exhaustion cannot wrap an object identity or append beyond a full head.
     reset(); anchor(0); acknowledge(2, 0);
     master.receptions[0].next_id[0] = UINT32_MAX;

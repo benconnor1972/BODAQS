@@ -73,7 +73,7 @@ int main() {
   losses.chunkWritten(losses.context);
   // Periodic evidence cannot occupy the slots reserved for interpretation.
   s.release();assert(s.configure(binding,2,3));
-  for(unsigned i=0;i<140;++i) assert(s.acceptSharedSync(i,1000*i,1,3000000)==RemoteImuStream::Accepted);
+  for(unsigned i=0;i<524;++i) assert(s.acceptSharedSync(i,1000*i,1,3000000)==RemoteImuStream::Accepted);
   assert(!s.failed());
   assert(s.finish(3200000));
   ev=s.evidenceSource();unsigned evidenceLost=0;
@@ -89,6 +89,6 @@ int main() {
   assert(s.accept(0x90,b,64,0,0,3300000)==RemoteImuStream::Accepted);
   b[14]=3;unsigned retained=1;
   while(s.accept(0x90,b,64,0,0,3300000)==RemoteImuStream::Accepted) ++retained;
-  assert(s.failed() && retained==128);
-  assert(ev.pendingRecords(ev.context)==128); // essential exhaustion preserves every old record
+  assert(s.failed() && retained==512);
+  assert(ev.pendingRecords(ev.context)==512); // essential exhaustion preserves every old record
 }

@@ -6,14 +6,16 @@ int main() {
  ImuAdmission::Profile p;p.maximumSourceSamplesPerSecond=3333;p.qualified=true;p.adcAttemptsPerConversion=1;p.canBurstFrames=20;p.spiBurstSlots=32;p.sampleSlotUs=64;p.auxiliarySlotUs=64;p.sampleDrainSlotsPerSecond=14000;
  auto r=ImuAdmission::evaluate(d,p);
  assert(r.reason==ImuAdmission::Reason::None);
- assert(r.nodePackets==46 && r.masterPackets==116 && r.loggerSamples==4487 && r.loggerEvidence==104);
- assert(r.loggerBytes==1188096); // independent layout sum for four sources
+ assert(r.nodePackets==46 && r.masterPackets==116 && r.loggerSamples==4487 && r.loggerEvidence==502);
+ assert(r.loggerBytes==1532160); // independent layout sum for four sources
+ assert(std::fabs(r.canOccupancy-0.6249385)<0.0000001);
+ assert(std::fabs(r.spiOccupancy-0.6344329846153846)<0.0000001);
  d.adc[0]={600,1000000};d.adc[1]={600,1000000};
  assert(ImuAdmission::evaluate(d,p).reason==ImuAdmission::Reason::None);
  d.adc[0].conversionsPerSecond=2000;d.adc[1].conversionsPerSecond=2000;
  assert(ImuAdmission::evaluate(d,p).reason==ImuAdmission::Reason::SpiCapacity);
  p.qualified=false;assert(ImuAdmission::evaluate(d,p).reason==ImuAdmission::Reason::Unqualified);
- p.maximumSourceSamplesPerSecond=3333;p.qualified=true;p.adcAttemptsPerConversion=1;p.canBurstFrames=20;p.spiBurstSlots=32;p.arrivalBurstEvidence=25;assert(ImuAdmission::evaluate(d,p).reason==ImuAdmission::Reason::SpiCapacity);
+ p.maximumSourceSamplesPerSecond=3333;p.qualified=true;p.adcAttemptsPerConversion=1;p.canBurstFrames=20;p.spiBurstSlots=32;p.arrivalBurstEvidence=77;assert(ImuAdmission::evaluate(d,p).reason==ImuAdmission::Reason::SpiCapacity);
  d.adc[0]={};d.adc[1]={};assert(ImuAdmission::evaluate(d,p).reason==ImuAdmission::Reason::Coverage);
  p.arrivalBurstEvidence=0;
  p.arrivalBurstPackets=UINT32_MAX;assert(ImuAdmission::evaluate(d,p).reason==ImuAdmission::Reason::Coverage);

@@ -1,3 +1,5 @@
+#include "RemoteImuRecording.h"
+#include "../can-fd/common/network/bodaqs_can_link.h"
 #include "Arduino.h"
 #include "WebServer.h"
 #include <ArduinoJson.h>
@@ -43,10 +45,13 @@ CalModeMask supportedCalMask(SensorType) { return CAL_NONE; }
 }
 namespace CanMasterManager {
 Diagnostics controlDiagnostics;
+uint8_t acquisitionLinkProfile(uint8_t) {return 0;}
+bool acquisitionLinkCompatible(uint8_t) {return false;}
 const Diagnostics& diagnostics() { return controlDiagnostics; }
 bool configurationReconciled(uint8_t) { return false; }
 void scheduleConfigurationReconciliation() {}
 }
+namespace RemoteImuRecording { const ImuAdmission::Report& admission() {static ImuAdmission::Report report;return report;} }
 namespace LoggingManager { bool isRunning() { return recording; } bool configurationLocked() { return recording || starting; } void refreshConfigurationStatus() {} }
 namespace UploadModeManager { bool isActive() { return upload; } }
 struct Sensor {

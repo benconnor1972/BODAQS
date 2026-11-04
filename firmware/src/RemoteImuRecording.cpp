@@ -141,7 +141,7 @@ void service() {
   AcquisitionControl::Outcome out;AcquisitionControl::outcome(node,out);
   const bool fresh=out.serial!=serial;
   const bool success=fresh && out.result==AcquisitionControl::Result::Succeeded;
-  if((phase<=Starting && uint32_t(now-began)>=10000) || stream.failed()) {fault=true;stop();}
+  if(((phase==Prepare || phase==PreparedSnapshot || phase==Starting) && uint32_t(now-began)>=10000) || stream.failed()) {fault=true;stop();}
   if(fault.load() && phase<Stop) stop();
   if(fresh && (out.result==AcquisitionControl::Result::Rejected || out.result==AcquisitionControl::Result::Uncertain || out.result==AcquisitionControl::Result::Unavailable)) {
     fault=true;if(phase<Stop) stop();
@@ -151,7 +151,7 @@ void service() {
     case Prepare: if(success && out.action==AcquisitionControl::Action::Prepare) {phase=PreparedSnapshot;send(AcquisitionControl::Action::Snapshot);} break;
     case PreparedSnapshot:
       if(success && out.action==AcquisitionControl::Action::Snapshot && out.snapshotValid) {revision=out.revision;epoch=out.epoch;phase=Ready;} break;
-    case Ready: if(startIntent) {phase=Starting;send(AcquisitionControl::Action::Start);} break;
+    case Ready: if(startIntent) {phase=Starting;began=now;send(AcquisitionControl::Action::Start);} break;
     case Starting: if(success && out.action==AcquisitionControl::Action::Start) phase=Recording;break;
     case Stop:
       if((success && out.action==AcquisitionControl::Action::Stop) || uint32_t(now-tailBegan)>=1000) phase=Tail;
@@ -217,6 +217,7 @@ bool configure(const LoggerConfig& cfg) {
   if(!cfg.getSensorSpec(i,spec) || spec.type!=SensorType::LSM6DSO32XImu) continue;
   if(!SensorManager::getMuted(i,muted)) muted=spec.mutedDefault;
   if(muted) continue;
+  report.attempted=true;
   auto assignment=sensorAssignment(spec,board::gBoard);uint8_t n=assignment.provider.index;
   if(assignment.kind!=SensorAssignment::Kind::NodeImu || n>3 || (mask&(1u<<n)) || !CanMasterManager::configurationReconciled(n)) {
    report.reason=ImuAdmission::Reason::Eligibility;return true;

@@ -24,7 +24,7 @@ struct Profile {
 };
 struct Demand { uint8_t nodes=0; Adc adc[2]; };
 struct Report {
- Reason reason=Reason::None; bool qualified=false;
+ Reason reason=Reason::None; bool qualified=false, attempted=false;
  double canOccupancy=0, spiOccupancy=0, drainRatio=0;
  size_t loggerBytes=0, masterBytes=0, nodeBytes=0;
  uint32_t nodePackets=0, masterPackets=0, loggerSamples=0, loggerEvidence=0;

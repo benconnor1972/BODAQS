@@ -1,5 +1,6 @@
 #include "RemoteImuRecording.h"
 static bool retirePhysicalMaster=true;
+static std::vector<BdqV2StreamSource> simulatedStorage;
 
 static void recordingSteps(unsigned duration) {
   const uint32_t until=clockMs+duration;
@@ -11,6 +12,13 @@ static void recordingSteps(unsigned duration) {
     if(retirePhysicalMaster && master.acquisition_retirement_pending)
       bodaqs_master_service_measurement_fence(&master,true,true);
     AcquisitionControl::service();
+    // A healthy independently scheduled storage owner drains old companions.
+    // Retain recent rows for the exact diagnostic assertions below.
+    for(auto& source:simulatedStorage) if(source.pendingRecords(source.context)>64) {
+      uint8_t row[224];
+      while(source.pendingRecords(source.context)>32) assert(source.popRecord(source.context,row,sizeof row));
+      source.chunkWritten(source.context);
+    }
     const bool wasFailed=RemoteImuRecording::failed();
     RemoteImuRecording::service();
     if(!wasFailed && RemoteImuRecording::failed()) {
@@ -28,7 +36,7 @@ int main(int argc,char** argv) {
   assert(savedParams.set("endpoint","imu"));
   assert(savedParams.set("profile","imu6_3333_32g_2000dps_v1"));
   saved.params.bind(&savedParams);
-  fixtureSensorCount=argc>1 && !std::strcmp(argv[1],"four")?4:1;
+  fixtureSensorCount=argc>1 && (!std::strcmp(argv[1],"four") || !std::strcmp(argv[1],"four-bus-off"))?4:1;
   for(unsigned n=1;n<fixtureSensorCount;++n) {
     extra[n-1]=saved;extraParams[n-1]=savedParams;
     char provider[8];std::snprintf(provider,sizeof provider,"can:%u",n);
@@ -88,10 +96,12 @@ int main(int argc,char** argv) {
   assert(!RemoteImuRecording::recording()); // Preparation cannot start samples.
   BdqV2StreamDescriptor descriptors[8];
   assert(RemoteImuRecording::describe(descriptors,8,2)==2*fixtureSensorCount);
+  for(unsigned n=0;n<fixtureSensorCount;++n) simulatedStorage.push_back(descriptors[n*2+1].source);
   assert(!strcmp(descriptors[0].payloadSchema,"bodaqs.can_imu6.v1"));
   assert(!strcmp(descriptors[1].payloadSchema,"bodaqs.can_timing_evidence.v1"));
   RemoteImuRecording::start();recordingSteps(2000);
   assert(RemoteImuRecording::recording());
+  assert(!RemoteImuRecording::failed());
 
   for(unsigned n=0;n<fixtureSensorCount;++n) assert(acquisitions[n].phase==3 && acquisitions[n].lease_valid);
 
@@ -106,7 +116,7 @@ int main(int argc,char** argv) {
       const auto identity=master.identity;
       bodaqs_master_service_init(&master,&identity);bodaqs_control_exchange_init(&master.control,100);
       inventory();allowMalformedMeasurement=true;
-    } else if(!std::strcmp(argv[1],"bus-off")) {
+    } else if((!std::strcmp(argv[1],"bus-off") || !std::strcmp(argv[1],"four-bus-off"))) {
       bodaqs_control_acquisition_exclude(&acquisitions[0],27);
     } else {
       assert(!std::strcmp(argv[1],"lease-expiry"));
@@ -118,7 +128,17 @@ int main(int argc,char** argv) {
     assert(recording); // Remote fault cannot stop healthy local sampling.
     AcquisitionControl::Request rejoin;rejoin.node=0;rejoin.action=AcquisitionControl::Action::Prepare;rejoin.recording=1;
     assert(!AcquisitionControl::enqueue(rejoin));
-    recordingSteps(6000);assert(RemoteImuRecording::tailDrained());
+    recordingSteps(6000);
+    if(fixtureSensorCount==4) {
+      assert(!RemoteImuRecording::tailDrained() && AcquisitionControl::active());
+      for(unsigned n=1;n<4;++n) {
+        AcquisitionControl::Outcome check;AcquisitionControl::outcome(n,check);
+        if(acquisitions[n].phase!=3 || !acquisitions[n].lease_valid) std::fprintf(stderr,"healthy peer%u phase%u leased%d excluded%d result%u reason%u action%u\n",n,acquisitions[n].phase,acquisitions[n].lease_valid,check.excluded,unsigned(check.result),check.reason,unsigned(check.action));
+        assert(acquisitions[n].phase==3 && acquisitions[n].lease_valid);
+      }
+      RemoteImuRecording::stop();recordingSteps(6000);
+    }
+    assert(RemoteImuRecording::tailDrained());
     recording=false;
     for(unsigned i=0;i<20000 && !RemoteImuRecording::stopped();++i) recordingSteps(1);
     assert(RemoteImuRecording::stopped() && !AcquisitionControl::active());
@@ -176,9 +196,10 @@ int main(int argc,char** argv) {
   assert(!AcquisitionControl::active());
   assert(RemoteImuRecording::stopped());
   assert(!RemoteImuRecording::failed());
-  RemoteImuRecording::release();
+  simulatedStorage.clear();RemoteImuRecording::release();
   assert(!RemoteImuRecording::configured());
   CanMasterManager::endRecordingHandoff();
+  if(fixtureSensorCount==4) {puts("production four-node resource/lifecycle isolation passed");return 0;}
   // Restart the logger while a previous measurement context survives. A node
   // reboot leaves no membership, but old master retention still needs an
   // explicit current-boot hardware fence before context retirement.
@@ -208,7 +229,7 @@ int main(int argc,char** argv) {
   assert(dispatchControl(0,replay,rejected) && rejected.opcode==127 && rejected.data[1]==5);
   advance(12000);
   CanMasterManager::beginRecordingHandoff();advance(4000);
-  assert(RemoteImuRecording::configure(config));recordingSteps(3000);
+  assert(RemoteImuRecording::configure(config));assert(RemoteImuRecording::resourcesReady());recordingSteps(3000);
   assert(!RemoteImuRecording::failed());
   RemoteImuRecording::start();recordingSteps(500);recording=true;
   loseMeasurementReplies=true;recordingSteps(330);loseMeasurementReplies=false;
@@ -225,7 +246,7 @@ int main(int argc,char** argv) {
   for(unsigned i=0;i<20000 && !RemoteImuRecording::stopped();++i) recordingSteps(1);
   assert(RemoteImuRecording::stopped() && !AcquisitionControl::active());
   assert(!acquisitions[0].recording && acquisitions[0].fenced);
-  RemoteImuRecording::release();CanMasterManager::endRecordingHandoff();
+  simulatedStorage.clear();RemoteImuRecording::release();CanMasterManager::endRecordingHandoff();
   // A configured but unavailable remote sensor must not silently become ready.
   reset();spiAvailable=false;
   assert(RemoteImuRecording::configure(config));
@@ -234,6 +255,6 @@ int main(int argc,char** argv) {
   assert(RemoteImuRecording::prepared()); // Local start gate remains usable.
   RemoteImuRecording::start();assert(RemoteImuRecording::recording());
   assert(saved.type==SensorType::LSM6DSO32XImu && !saved.mutedDefault);
-  RemoteImuRecording::release();
+  simulatedStorage.clear();RemoteImuRecording::release();
   puts("production remote coordinator prepare/snapshot/START/STOP/tail/fence/release/exit passed");
 }

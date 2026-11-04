@@ -44,7 +44,7 @@ def main():
         subprocess.run([args.compiler, "-std=c++17", "-DBODAQS_QUEUE_ALLOCATION_TEST", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-I", str(root/"test/stubs"), "-I", str(root/"src"), "-I", str(protocol), "-I", str(root/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
         subprocess.run([str(exe), "four"], check=True)
-        for scenario in ("node-reboot", "master-reboot", "bus-off", "lease-expiry"):
+        for scenario in ("node-reboot", "master-reboot", "bus-off", "lease-expiry", "four-bus-off"):
             subprocess.run([str(exe), scenario], check=True)
 
 

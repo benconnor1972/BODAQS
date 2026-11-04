@@ -3,6 +3,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cmath>
+#include <new>
 namespace {
 uint32_t u32(const uint8_t* p) { return BdqV2Format::getU32(p); }
 uint16_t u16(const uint8_t* p) { return BdqV2Format::getU16(p); }
@@ -90,12 +91,12 @@ const BdqV2CatalogChannel evidenceChannels[]={
 }
 bool RemoteImuStream::configure(const RemoteImuBinding& b,uint16_t sample,uint16_t companion) {
   release(); if(!b.boot || b.node>3 || !sample || !companion || sample==companion) return false;
-  if(!samples_.allocate(8192) || !evidence_.allocate(224,128)) {release();return false;}
+  if(!samples_.allocate(8192) || !evidence_.allocate(224,512)) {release();return false;}
   provenance_=static_cast<char*>(DynamicSpscQueueDetail::allocateBytes(3072));
   models_=static_cast<Model*>(DynamicSpscQueueDetail::allocateBytes(32*sizeof(Model)));
   anchors_=static_cast<Anchor*>(DynamicSpscQueueDetail::allocateBytes(32*sizeof(Anchor)));
   if(!provenance_ || !models_ || !anchors_) {release();return false;}
-  for(unsigned i=0;i<32;++i) {models_[i]=Model{};anchors_[i]=Anchor{};}
+  for(unsigned i=0;i<32;++i) {new(models_+i) Model{};new(anchors_+i) Anchor{};}
   binding_=b;sampleId_=sample;evidenceId_=companion;
   char raw[385];for(size_t i=0;i<192;++i) std::snprintf(raw+2*i,3,"%02x",b.effective[i]);
   const bool scalingKnown=(u32(b.effective+12)&16u) && !(u32(b.effective+16)&16u) &&
@@ -145,7 +146,7 @@ bool RemoteImuStream::configure(const RemoteImuBinding& b,uint16_t sample,uint16
   return true;
 }
 size_t RemoteImuStream::allocatedBufferBytes() {
- return 8192*sizeof(Sample)+128*224+3072+32*sizeof(Model)+32*sizeof(Anchor);
+ return 8192*sizeof(Sample)+512*224+3072+32*sizeof(Model)+32*sizeof(Anchor);
 }
 void RemoteImuStream::release() {
   samples_.release();evidence_.release();sampleId_=evidenceId_=0;

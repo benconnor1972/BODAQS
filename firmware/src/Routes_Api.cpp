@@ -944,8 +944,9 @@ static void addSensorJson_(JsonObject obj, uint8_t index, const SensorSpec& sp, 
     control["acquisition_ready"] = false;
     const auto& admission=RemoteImuRecording::admission();
     JsonObject capacity=control["recording_admission"].to<JsonObject>();
+    capacity["attempted"]=admission.attempted;
     capacity["qualified"]=admission.qualified;
-    capacity["reason"]=ImuAdmission::reasonText(admission.reason);
+    capacity["reason"]=admission.attempted?ImuAdmission::reasonText(admission.reason):"not evaluated";
     capacity["can_occupancy"]=admission.canOccupancy;
     capacity["shared_spi_occupancy"]=admission.spiOccupancy;
     capacity["drain_ratio"]=admission.drainRatio;

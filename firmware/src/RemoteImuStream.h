@@ -18,6 +18,7 @@ struct RemoteImuBinding {
 // native records and their evidence dependency until a successful chunk write.
 class RemoteImuStream {
 public:
+  ~RemoteImuStream() {release();}
   enum Acceptance { Invalid=-1, Blocked=0, Accepted=1 };
   bool configure(const RemoteImuBinding&,uint16_t sampleId,uint16_t evidenceId);
   static size_t allocatedBufferBytes();
