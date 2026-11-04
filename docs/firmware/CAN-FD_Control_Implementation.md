@@ -8,7 +8,7 @@ protocol section 13 define the behavior. This index records implementation
 and verification separately. No firmware upload or physical validation was
 performed during this implementation.
 
-## Implementation progress
+## Implemented scope
 
 | Tickets | Integrated behavior |
 |---|---|
@@ -19,10 +19,13 @@ performed during this implementation.
 | #157 | Boot/session authority, challenge/bind/release and one mutation sequence owner |
 | #158 | Staged complete requests, verified physical disabled configuration and fresh no-op readback |
 | #159 | Canonical remote LSM type and profile 1/v1, saved desired versus verified effective evidence |
+| #160 | Explicit legacy remote BMI migration preserving installation metadata |
+| #161 | Bounded idle recovery, scoped counter preservation and historical provenance |
+| #162 | Remote runtime mute, early recording locks and bounded logging-start handoff |
 
-Tickets #160 (explicit legacy migration), #161 (idle recovery) and #162
-(remote mute and recording guards) are in progress. GitHub issues remain open;
-local implementation does not close them automatically.
+All ten software slices are integrated. GitHub issues remain open; local
+implementation does not close them automatically. Physical acceptance remains
+pending.
 
 The profile is configuration-only. Enabled-stopped runs sensing engines at
 nominal 3333 Hz, +/-32 g and +/-2000 degrees/s, with the confirmed filter
@@ -33,13 +36,22 @@ which remain unknown.
 
 ## Software evidence
 
-The integrated slices through #159 pass the portable CAN/SPI/control host
+The integrated slices pass the portable CAN/SPI/control host
 suite, logger host suite and production configuration/API runtime fixtures.
 Tests include independent wire vectors, lost replies, duplicate identities,
 staging expiry, no-op revisions, hardware-boundary fault injection and
 current versus historical evidence. Enabled and disabled exchanges run through
 the real SPI/CAN codecs, master exchange, node authority/apply/backend and
 snapshot observer with a deterministic register/time fake.
+
+The full logger suite includes both complete production manager fixtures for
+recovery and recording handoff, 128 logging start/stop/finalization checks,
+remote runtime mute and configuration/migration entrypoints. Recovery scenarios
+cover same-boot outages, node/master restarts, all lost COMMIT/query replies,
+sensor faults, independent peers, malformed cached results, replacement
+provenance, entropy failure and millisecond wrap. Recording tests cover every
+apply phase, pending transport, uncertain admission, cancellation and immediate
+desired edits after stopping.
 
 Both MSPM0 production targets compile with MSPM0 SDK 2.11.00.07,
 SysConfig 1.28.1 and TI Arm Clang 5.1.1 LTS. The A8 logger compiles with
@@ -52,6 +64,20 @@ Build commands are in the [CAN-FD firmware overview](../../firmware/can-fd/READM
 and `skills/firmware-build/SKILL.md`. The portable host suite is
 `firmware/can-fd/common/test`; the full logger suite is `firmware/test`.
 Prefix the installed MinGW `ucrt64/bin` on `PATH` when using that compiler.
+The additional production JSON projections are reproducible with
+`firmware/tools/test_control_apply_runtime.py` and
+`firmware/tools/test_control_authority_api.py`.
+
+Remote temporary mute is a bounded runtime override separate from the saved
+muted default. It survives unrelated rebuilds and clears on configured
+identity/assignment/type/default changes or reboot. Starting/running/stopping
+locks reject edits before saved or aliased parameter mutation. Logging-start
+admission freezes new remote mutations and drains existing ownership with an
+original 5500 ms local ceiling; the recovery watchdog can quarantine earlier.
+An already accepted COMMIT cannot be cancelled. During transport failure its
+hardware application may finish after local recording begins; uncertainty
+stays explicit and remote acquisition remains excluded. These local deadlines
+are not physical cancellation or timing guarantees.
 
 ## Physical acceptance still required
 
@@ -63,6 +89,9 @@ identities, instrument setup, observations and pass/fail results using:
 - [Authority verification](CAN-FD_Control_Authority_Verification.md)
 - [Disabled IMU verification](CAN-FD_Disabled_IMU_Verification.md)
 - [Enabled-stopped IMU verification](CAN-FD_Stopped_IMU_Verification.md)
+- [Legacy migration checks](CAN-FD_Legacy_IMU_Migration.md)
+- [Idle recovery verification](CAN-FD_Idle_Recovery_Verification.md)
+- [Remote mute and recording verification](CAN-FD_Remote_Mute_Recording_Verification.md)
 
 Outstanding evidence includes GPIO/SPI/CS levels, actual sensor register
 readback, reset/application deadlines, inspection responsiveness under load,
