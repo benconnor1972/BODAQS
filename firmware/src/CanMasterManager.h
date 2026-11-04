@@ -4,6 +4,7 @@
 
 #include "BoardProfile.h"
 #include "CanMasterProtocol.h"
+#include "../can-fd/common/protocol/bodaqs_fragment_transport.h"
 #include "CanControlProtocol.h"
 #include "../can-fd/common/protocol/bodaqs_measurement.h"
 #include "ConfigManager.h"
@@ -57,6 +58,11 @@ struct Diagnostics {
   uint16_t canRxQueueHighWater = 0;
   uint16_t spiTxQueueDepth = 0;
   uint16_t spiTxQueueHighWater = 0;
+  uint32_t measurementObjectsReceived = 0, measurementDuplicates = 0;
+  uint32_t measurementTransferErrors = 0, measurementControlSubmitted = 0;
+  uint16_t measurementAssemblyBytes = 0;
+  uint8_t measurementLastClass = 0, measurementLastNode = 255;
+  uint32_t measurementLastObject = 0;
   BodaqsMeasurementMode measurement = {};
   bool measurementStatusValid = false;
   bool measurementConfirmed = false;
@@ -94,6 +100,53 @@ bool measurementReady();
 // One bounded physical exchange; caller demultiplexes by immutable identity.
 bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
                              BodaqsMeasurementSlot& response);
+struct MeasurementInbox {
+  BodaqsFragmentState state = {};
+  uint8_t bytes[1024] = {};
+  bool ackPending = false;
+  bool admitted = false;
+  BodaqsMeasurementSlot pendingAck = {};
+};
+// Caller allocates this bank persistently (not on a task stack). It demultiplexes
+// all pipelined traffic, including MISO received while sending another lane/ACK.
+struct MeasurementOutbox {
+  BodaqsFragmentState state = {};
+  uint8_t bytes[68] = {};
+  uint8_t nextFragment = 0;
+  uint8_t error = 0;
+  uint32_t startedMs = 0;
+};
+struct MeasurementTransport {
+  MeasurementInbox inboxes[5][4];
+  MeasurementOutbox controls[2][4];
+  uint64_t context = 0;
+  uint8_t nextControlNode[2] = {};
+  uint32_t nextHeadPollMs[5] = {};
+};
+// Queue immutable control; repeated identical queueing is idempotent. STOP can
+// replace a queued renewal. Service routes all concurrent MISO into the bank.
+bool queueMeasurementControl(MeasurementTransport&, const BodaqsControlWrapped&,
+                             uint32_t objectId, bool authorization = false);
+int serviceMeasurementTransport(MeasurementTransport&, uint8_t pollClass,
+                                uint8_t pollNode, MeasurementInbox*& completed);
+// Call only after the whole validated object is retained in downstream bounded
+// RAM. Until then the bank keeps it pinned and does not send its RAM ACK.
+void releaseMeasurementObject(MeasurementInbox&);
+// Single-lane convenience: repeat the same class/node until delivery/ACK.
+// For interleaved lanes use serviceMeasurementTransport.
+// One physical slot per call. 1 new complete RAM object, 2 duplicate, 0 pending,
+// negative transport error. Consume/copy a complete object before calling again.
+// Keep a distinct inbox per class/node; the master pins one data object per node.
+int pollMeasurementObject(uint8_t cls, uint8_t node, MeasurementInbox& inbox);
+bool acknowledgeMeasurementObject(MeasurementInbox& inbox);
+// Shared logger-to-master ID allocator for classes 3/4. Zero means unavailable
+// or exhausted. All callers, including lifecycle code, use this allocator.
+uint32_t nextMeasurementObjectId(uint8_t cls, uint8_t node);
+// Caller retains immutable ID/content across retries, never wraps/reuses IDs.
+bool submitMeasurementControl(const BodaqsControlWrapped&, uint32_t objectId,
+                              bool authorization = false);
+bool queryMeasurementNodeState(uint8_t node, uint32_t boot, uint32_t operation,
+                               BodaqsControlWrapped& result);
 void scheduleConfigurationReconciliation();
 // Freeze mutations before recording; the original deadline is never extended.
 void beginRecordingHandoff();

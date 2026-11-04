@@ -3,14 +3,42 @@
 
 #include "bodaqs_master_protocol.h"
 #include "bodaqs_control_exchange.h"
-#include "bodaqs_measurement.h"
+#include "bodaqs_fragment_transport.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef struct {
+    BodaqsFragmentState object;
+    uint8_t bytes[1024];
+    uint32_t started_ms, next_id[2];
+    uint16_t count;
+    uint8_t cls;
+} BodaqsReceptionBatch;
+typedef struct {
+    BodaqsFragmentState rx, tx;
+    uint8_t incoming[68], outgoing[68];
+    uint32_t next_id;
+    bool awaiting_result;
+    uint8_t rx_rejection;
+} BodaqsMeasurementControlLane;
+typedef struct {
     BodaqsControlExchange control;
+    BodaqsControlExchange authorization;
+    BodaqsReceptionBatch receptions[4];
+    BodaqsMeasurementControlLane lanes[2][4];
+    BodaqsFragmentState master_evidence;
+    uint8_t master_evidence_bytes[1024];
+    uint32_t master_evidence_next_id;
+    uint64_t reception_ordinal, transfer_context;
+    uint32_t retained_frames, backpressure_frames, objects_acked, transfer_errors;
+    BodaqsFragmentState acknowledged[5][4];
+    uint8_t fair_node[6];
+    uint32_t anchor_boot[4], anchor_sequence[4];
+    uint8_t anchor_epoch[4];
+    uint32_t ordinary_budget_ms, authorization_budget_ms[4];
+    uint8_t ordinary_tokens, authorization_tokens[4];
     BodaqsMeasurementState measurement;
     BodaqsMasterIdentity identity;
     BodaqsMasterStatus status;
@@ -35,6 +63,22 @@ typedef enum {
     BODAQS_MASTER_SLOT_MALFORMED
 } BodaqsMasterSlotResult;
 
+/* Capture timestamp is supplied by the CAN ISR/driver, never poll time. False
+ * reports bounded backpressure; caller must account for the lost reception. */
+bool bodaqs_master_service_receive_can(BodaqsMasterService *, uint8_t node,
+    uint8_t cls, uint16_t identifier, const uint8_t *payload, uint8_t length,
+    uint8_t flags, uint32_t receive_tick, uint32_t now_ms);
+/* Hardware ingress supplies the ISR-assigned global ordinal, including gaps
+ * from dropped/unforwarded CAN traffic. The convenience ingress above allocates
+ * a local ordinal for host callers without a capture driver. */
+bool bodaqs_master_service_receive_can_ordered(BodaqsMasterService *, uint8_t node,
+    uint8_t cls, uint16_t identifier, const uint8_t *payload, uint8_t length,
+    uint8_t flags, uint32_t receive_tick, uint64_t ordinal, uint32_t now_ms);
+bool bodaqs_master_service_control_transmit(BodaqsMasterService *, uint32_t now,
+    uint8_t *, uint16_t *, uint8_t payload[64]);
+bool bodaqs_master_service_control_receive(BodaqsMasterService *, uint8_t,
+    uint16_t, const BodaqsControlRecord *);
+bool bodaqs_master_service_publish_evidence(BodaqsMasterService *, const uint8_t *, uint16_t);
 void bodaqs_master_service_init(BodaqsMasterService *service,
     const BodaqsMasterIdentity *identity);
 

@@ -300,6 +300,14 @@ static void handleStatus_(WebServer& srv) {
   measurement["spi_hz"] = masterDiagnostics.measurement.hz;
   measurement["physical_bytes"] = masterDiagnostics.measurement.physical;
   measurement["inactive_cs_us"] = masterDiagnostics.measurement.gap;
+  measurement["objects_received"] = masterDiagnostics.measurementObjectsReceived;
+  measurement["duplicates"] = masterDiagnostics.measurementDuplicates;
+  measurement["transfer_errors"] = masterDiagnostics.measurementTransferErrors;
+  measurement["control_submitted"] = masterDiagnostics.measurementControlSubmitted;
+  measurement["assembly_bytes"] = masterDiagnostics.measurementAssemblyBytes;
+  measurement["last_class"] = masterDiagnostics.measurementLastClass;
+  measurement["last_node"] = masterDiagnostics.measurementLastNode;
+  measurement["last_object"] = masterDiagnostics.measurementLastObject;
   char measurementId[21];
   snprintf(measurementId, sizeof(measurementId), "%llu",
            static_cast<unsigned long long>(masterDiagnostics.measurement.boot));

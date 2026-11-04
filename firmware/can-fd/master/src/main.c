@@ -81,7 +81,9 @@ typedef struct {
 typedef struct {
     DL_MCAN_RxBufElement message;
     uint32_t received_ms;
+    uint64_t ordinal;
 } CanReceiveRecord;
+static uint64_t gCanReceiveOrdinal;
 static CanReceiveRecord gCanReceiveStorage[CAN_RX_CAPACITY];
 static BodaqsRecordQueue gCanReceiveQueue;
 static volatile bool gHealthDue;
@@ -180,7 +182,7 @@ static void note_can_decode_result(BodaqsCanDecodeResult result)
 }
 
 static void process_can_message(
-    const DL_MCAN_RxBufElement *message, uint32_t received_ms)
+    const DL_MCAN_RxBufElement *message, uint32_t received_ms, uint64_t ordinal)
 {
     uint16_t identifier;
     size_t length;
@@ -202,7 +204,7 @@ static void process_can_message(
         BodaqsControlRecord reply;
         uint16_t transaction;
         if (bodaqs_control_decode_can(message->data, length, true, &transaction, &reply)) {
-            (void)bodaqs_control_exchange_receive(&gService.control, node_address, transaction, &reply);
+            (void)bodaqs_master_service_control_receive(&gService, node_address, transaction, &reply);
         } else {
             ++gMasterRuntimeInfo.can_malformed_frames;
         }
@@ -242,6 +244,20 @@ static void process_can_message(
         return;
     }
 
+    /* Forward compact receptions only from current discovered identities.
+     * Stream data is gated on a same-boot/epoch anchor below. */
+    if(identifier>=BODAQS_CAN_ID_STREAM_BASE && identifier<BODAQS_CAN_ID_STREAM_BASE+32) {
+        node_address=(uint8_t)((identifier-BODAQS_CAN_ID_STREAM_BASE)/8);
+        (void)bodaqs_master_service_receive_can_ordered(&gService,node_address,1,identifier,
+            message->data,(uint8_t)length,0,received_ms*1000U,ordinal,gUptimeMs);
+        return;
+    }
+    if(bodaqs_can_identifier_node(identifier,BODAQS_CAN_ID_TIMING_BASE,&node_address) ||
+       bodaqs_can_identifier_node(identifier,BODAQS_CAN_ID_EVENT_BASE,&node_address)) {
+        (void)bodaqs_master_service_receive_can_ordered(&gService,node_address,2,identifier,
+            message->data,(uint8_t)length,0,received_ms*1000U,ordinal,gUptimeMs);
+        return;
+    }
     ++gMasterRuntimeInfo.can_unknown_frames;
 }
 
@@ -261,6 +277,11 @@ static void capture_can_receive_fifo(void)
         DL_MCAN_readMsgRam(MCAN0_INST, DL_MCAN_MEM_TYPE_FIFO, 0U,
             fifo_status.num, &record.message);
         record.received_ms = gUptimeMs;
+        /* ISR capture order includes frames later rejected or dropped by queues. */
+        if(gCanReceiveOrdinal==UINT64_MAX) {
+            ++gMasterRuntimeInfo.can_malformed_frames;
+            record.ordinal=0; /* Fail closed while still retiring the hardware FIFO. */
+        } else record.ordinal=++gCanReceiveOrdinal;
         DL_MCAN_writeRxFIFOAck(
             MCAN0_INST, fifo_status.num, fifo_status.getIdx);
         ++gMasterRuntimeInfo.can_rx_frames;
@@ -274,7 +295,7 @@ static void service_can_receive(void)
 {
     CanReceiveRecord record;
     if (take_record(&gCanReceiveQueue, &record)) {
-        process_can_message(&record.message, record.received_ms);
+        process_can_message(&record.message, record.received_ms, record.ordinal);
     }
 }
 
@@ -485,6 +506,15 @@ static void update_service_status(void)
     status.can_rx_queue_depth = gCanReceiveQueue.depth;
     status.can_rx_queue_high_water =
         gCanReceiveQueue.high_water;
+    status.spi_tx_queue_depth=gService.master_evidence.complete?1U:0U;
+    for(node=0;node<4;++node) {
+        if(gService.receptions[node].count) ++status.spi_tx_queue_depth;
+        if(gService.lanes[0][node].tx.complete) ++status.spi_tx_queue_depth;
+        if(gService.lanes[1][node].tx.complete) ++status.spi_tx_queue_depth;
+    }
+    status.spi_tx_queue_high_water=gService.status.spi_tx_queue_high_water;
+    if(status.spi_tx_queue_depth>status.spi_tx_queue_high_water)
+        status.spi_tx_queue_high_water=status.spi_tx_queue_depth;
     bodaqs_master_service_set_status(&gService, &status);
 
     do {
@@ -582,7 +612,7 @@ int main(void)
     }
 
     update_runtime_info();
-    DL_SYSTICK_init(CPUCLK_FREQ / 10U);
+    DL_SYSTICK_init(CPUCLK_FREQ / 1000U);
     DL_SYSTICK_enableInterrupt();
     DL_SYSTICK_enable();
     /* CS input is already enabled by the SPI peripheral pin configuration.
@@ -611,7 +641,7 @@ int main(void)
         {
             uint8_t address, payload[64];
             uint16_t transaction;
-            if (bodaqs_control_exchange_transmit(&gService.control, gUptimeMs, &address, &transaction, payload)) {
+            if (bodaqs_master_service_control_transmit(&gService, gUptimeMs, &address, &transaction, payload)) {
                 (void)send_can_frame((uint16_t)(BODAQS_CAN_ID_TARGET_REQUEST_BASE + address), payload, sizeof(payload));
             }
         }
@@ -762,20 +792,20 @@ void SPI_A8_INST_IRQHandler(void)
 
 void SysTick_Handler(void)
 {
-    static uint8_t heartbeat_ticks;
+    static uint16_t heartbeat_ticks;
     static uint16_t discovery_ticks;
 
-    gUptimeMs += 100U;
+    gUptimeMs += 1U;
     ++heartbeat_ticks;
-    if (heartbeat_ticks >= 5U) {
+    if (heartbeat_ticks >= 500U) {
         heartbeat_ticks = 0U;
         DL_GPIO_togglePins(GPIO_BOARD_PORT, GPIO_BOARD_STATUS_LED_PIN);
     }
     ++discovery_ticks;
-    if (discovery_ticks >= (DISCOVERY_INTERVAL_MS / 100U)) {
+    if (discovery_ticks >= (DISCOVERY_INTERVAL_MS)) {
         discovery_ticks = 0U;
         gDiscoveryDue = true;
     }
-    gHealthDue = true;
+    if ((gUptimeMs % 100U)==0U) gHealthDue = true;
 }
 
