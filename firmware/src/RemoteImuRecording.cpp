@@ -41,7 +41,15 @@ bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint
     if(tailDiscards.load()!=UINT32_MAX) tailDiscards.fetch_add(1);
     return true;
   }
+
   struct Retire {std::atomic<uint8_t>& gate;~Retire(){gate.fetch_and(1,std::memory_order_release);}} retire{dataGate};
+  if(cls==7 && address==node && total==8) {
+    const auto accepted=stream.acceptManagementLoss(p[0],p[1],BdqV2Format::getU16(p+2),
+      BdqV2Format::getU32(p+4),static_cast<uint32_t>(esp_timer_get_time()));
+    if(accepted==RemoteImuStream::Invalid) fault=true;
+    return accepted!=RemoteImuStream::Blocked;
+  }
+
   if(address==255 && cls==6) {
     if(total!=32) {fault=true;return true;}
     if(p[12]==2) return stream.acceptMissingBridge(BdqV2Format::getU32(p),
@@ -152,7 +160,8 @@ void service() {
       // interval. The independent storage worker continues writing throughout.
       if(uint32_t(now-tailBegan)>=5000) {
         dataGate.fetch_or(1,std::memory_order_acq_rel);
-        if(!(dataGate.load(std::memory_order_acquire)&2u)) {
+        if(!(dataGate.load(std::memory_order_acquire)&2u) &&
+           (stream.failed() || stream.finish(static_cast<uint32_t>(esp_timer_get_time())))) {
           phase=Fence;cleanupQueued=send(AcquisitionControl::Action::Fence);nextCleanupAttempt=now+3500;
         }
       }

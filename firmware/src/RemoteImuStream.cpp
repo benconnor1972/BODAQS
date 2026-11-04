@@ -148,9 +148,15 @@ void RemoteImuStream::release() {
   samples_.release();evidence_.release();sampleId_=evidenceId_=0;
   segment_=nextSequence_=stagedEvidence_=modelCount_=epoch_=anchorCount_=0;nextEvidence_=1;
   persistedEvidence_.store(0);haveSequence_=haveBoundary_=failed_=holding_=false;
+
   DynamicSpscQueueDetail::releaseBytes(provenance_);provenance_=nullptr;
   DynamicSpscQueueDetail::releaseBytes(models_);models_=nullptr;
   DynamicSpscQueueDetail::releaseBytes(anchors_);anchors_=nullptr;
+  for(auto& l:losses_) l=Loss{};
+  producerGap_=alignmentDegraded_=false;lossDependency_=0;
+  std::memset(managementLoss_,0,sizeof managementLoss_);
+  lastLossReport_=nextLossLane_=0;
+
 }
 BdqV2StreamSource RemoteImuStream::sampleSource() {
   BdqV2StreamSource s;s.streamId=sampleId_;s.recordSizeBytes=28;s.nativeTickModulus=uint64_t{1}<<32;
@@ -196,7 +202,7 @@ BdqV2StreamDescriptor RemoteImuStream::descriptor(bool ev) {
 }
 RemoteImuStream::Acceptance RemoteImuStream::accept(uint16_t id,const uint8_t* p,size_t n,uint32_t tick,uint64_t order,uint32_t logger,uint8_t receptionFlags) {
   if(failed_ || !sampleId_ || !p) return Invalid;
-  if(id==0x100+8*binding_.node) return samples(p,n);
+  if(id==0x100+8*binding_.node) return samples(p,n,logger);
   if(id!=0x90+binding_.node || n<8 || p[0]!=1 || p[2]!=1 || p[3] || p[7]) return Invalid;
   if(p[1]==0x22) {
     if(n!=32 || p[6]!=20 || p[8] || p[9]!=1 || u16(p+26) || u32(p+28)) return Invalid;
@@ -236,6 +242,10 @@ RemoteImuStream::Acceptance RemoteImuStream::accept(uint16_t id,const uint8_t* p
   return evidence(p[1],p+8,tick,order,logger,false,receptionFlags);
 }
 RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t* b,uint32_t tick,uint64_t order,uint32_t logger,bool local,uint8_t receptionFlags) {
+  if(type==0x23 && evidence_.size()>=evidence_.capacity()-8) {
+    return drop(1,1,0,logger)?Accepted:Invalid;
+  }
+  if(!flushLoss(logger)) return Invalid;
   if(evidence_.size()==evidence_.capacity() || nextEvidence_==UINT32_MAX) {failed_=true;return Invalid;}
   uint8_t out[224]={};put(out,nextEvidence_);put(out+4,logger);out[12]=type==0x23?1:type==0x24?2:b[6]==3?7:6;
   out[13]=b[4];out[14]=b[5];put(out+28,binding_.boot);put(out+76,(receptionFlags&1)?0:tick);put(out+180,receptionFlags);put(out+80,(uint32_t)order);put(out+188,(uint32_t)(order>>32));
@@ -248,7 +258,7 @@ RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t
       if(segment_==UINT32_MAX) {failed_=true;return Invalid;}
       ++segment_;epoch_=b[5];haveBoundary_=true;haveSequence_=false;modelCount_=0;
     }
-    if(!haveBoundary_ || b[5]!=epoch_) return Invalid;
+    if(!local && (!haveBoundary_ || b[5]!=epoch_)) return Invalid;
     if(v&1) {put(out+24,u32(b+20));valid|=1u<<4;}
     if(v&2) {put(out+160,u32(b+24));put(out+164,u32(b+28));valid|=1u<<19;}
     if(v&4) {put(out+148,u32(b+32));valid|=1u<<16;}
@@ -305,13 +315,14 @@ RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t
   }
   put(out+20,segment_);put(out+16,valid);
   if(!evidence_.push(out,224)) {failed_=true;return Invalid;}
-  ++nextEvidence_;return Accepted;
+  ++nextEvidence_;
+  if(local && u16(b+44)==31) failed_=true;
+  return Accepted;
 }
-RemoteImuStream::Acceptance RemoteImuStream::samples(const uint8_t* p,size_t n) {
+RemoteImuStream::Acceptance RemoteImuStream::samples(const uint8_t* p,size_t n,uint32_t logger) {
   if(n<16 || !haveBoundary_ || p[2]!=epoch_) return Invalid;
   const uint8_t count=p[3]&7;if(!count || count>5 || n<4+12u*count) return Invalid;
   for(size_t i=4+12u*count;i<n;++i) if(p[i]) return Invalid;
-  if(samples_.capacity()-samples_.size()<count) return Blocked;
   uint32_t seq=haveSequence_?nextSequence_:0;
   const uint16_t delta=(uint16_t)(u16(p)-(uint16_t)seq);if(delta>=32768) return Invalid;
   seq+=delta;
@@ -325,26 +336,64 @@ RemoteImuStream::Acceptance RemoteImuStream::samples(const uint8_t* p,size_t n) 
   // definition cannot be fetched behind this pinned dependent head: fail the
   // source explicitly instead of waiting forever or inventing a native tick.
   if(!selected) {failed_=true;return Invalid;}
+  if(!flushLoss(logger)) return Invalid;
+  if(samples_.capacity()-samples_.size()<count || losses_[0].source) {
+    nextSequence_=seq+count;haveSequence_=true;
+    return drop(0,count,seq,logger)?Accepted:Invalid;
+  }
   auto& m=*selected;
   for(uint8_t i=0;i<count;++i) {
     Sample out={};put(out.bytes,seq+i);put(out.bytes+4,m.tick+(uint32_t)((uint64_t)(seq+i-m.anchor)*m.numerator/m.denominator));
     uint16_t status=BdqV2Format::NativeTickEstimated;
-    if(!(m.flags&2) || (p[3]&64)) status|=BdqV2Format::TimingDegraded;
+    if(!(m.flags&2) || (p[3]&64) || alignmentDegraded_) status|=BdqV2Format::TimingDegraded;
     if(i==0 && (!haveSequence_ || delta || (p[3]&8))) status|=BdqV2Format::DiscontinuityBefore;
     if(i==0 && !haveSequence_ && (m.flags&16)) status|=BdqV2Format::SourceRecoveryBefore;
     if(i==0 && (p[3]&48)) status|=BdqV2Format::ProducerQueueDropBefore;
+    if(i==0 && producerGap_) status|=BdqV2Format::DiscontinuityBefore|BdqV2Format::ProducerQueueDropBefore;
     BdqV2Format::putU16(out.bytes+8,status);put(out.bytes+12,segment_);std::memcpy(out.bytes+16,p+4+12*i,12);
-    out.dependency=m.dependency;if(!samples_.push(out)) return Invalid;
+    out.dependency=std::max(m.dependency,lossDependency_);if(!samples_.push(out)) return Invalid;
   }
+  producerGap_=false;
   nextSequence_=seq+count;haveSequence_=true;return Accepted;
 }
 
 RemoteImuStream::Acceptance RemoteImuStream::pushShared(uint8_t out[224]) {
   if(failed_ || !sampleId_ || nextEvidence_==UINT32_MAX) return Invalid;
-  if(evidence_.size()==evidence_.capacity()) return Blocked;
+  if(evidence_.size()>=evidence_.capacity()-8) return drop(1,1,0,u32(out+4))?Accepted:Invalid;
+  if(!flushLoss(u32(out+4))) return Invalid;
   put(out,nextEvidence_);
   if(!evidence_.push(out,224)) return Blocked;
   ++nextEvidence_;return Accepted;
+}
+bool RemoteImuStream::drop(unsigned lane,uint32_t count,uint32_t first,uint32_t logger) {
+  auto& l=losses_[lane];uint32_t& total=lane?l.evidence:l.source;
+  if(UINT32_MAX-total<count) {failed_=true;return false;}
+  if(!lane && !total) l.first=first;
+  total+=count;if(!lane) {l.last=first+count-1;producerGap_=true;} else alignmentDegraded_=true;
+  return flushLoss(logger);
+}
+bool RemoteImuStream::flushLoss(uint32_t logger) {
+  if(uint32_t(logger-lastLossReport_)<100000) return true;
+  for(unsigned turn=0;turn<2;++turn) {
+    const unsigned lane=(nextLossLane_+turn)%2;
+    auto& l=losses_[lane];
+    if(!l.source && !l.evidence) continue;
+    if(evidence_.size()==evidence_.capacity() || nextEvidence_==UINT32_MAX) {failed_=true;return false;}
+    uint8_t out[224]={};put(out,nextEvidence_);put(out+4,logger);out[12]=7;out[14]=epoch_;
+    put(out+28,binding_.boot);put(out+20,segment_);out[168]=lane?9:8;out[200]=3;
+    const uint32_t valid=(1u<<0)|(1u<<22)|(lane?(1u<<17):((1u<<16)|(1u<<19)));
+    put(out+16,valid);put(out+148,l.source);put(out+152,l.evidence);
+    if(!lane) {put(out+160,l.first);put(out+164,l.last);}
+    BdqV2Format::putU16(out+170,lane?8:6);BdqV2Format::putU16(out+208,lane?8:6);
+    if(!evidence_.push(out,224)) {failed_=true;return false;}
+    lossDependency_=nextEvidence_++;l.source=l.evidence=0;lastLossReport_=logger;
+    nextLossLane_=(lane+1)%2;return true;
+  }
+  return true;
+}
+bool RemoteImuStream::finish(uint32_t logger) {
+  if(!flushLoss(logger)) return false;
+  return !losses_[0].source && !losses_[1].evidence;
 }
 RemoteImuStream::Acceptance RemoteImuStream::acceptSharedSync(uint32_t sequence,uint32_t tick,uint32_t epoch,uint32_t logger) {
   if(!epoch) return Invalid;
@@ -362,6 +411,27 @@ RemoteImuStream::Acceptance RemoteImuStream::acceptBridge(uint32_t token,uint32_
 }
 RemoteImuStream::Acceptance RemoteImuStream::acceptLocalLoss(const uint8_t b[56],uint32_t tick,uint64_t order,uint32_t logger) {
   return evidence(0x25,b,tick,order,logger,true);
+}
+RemoteImuStream::Acceptance RemoteImuStream::acceptManagementLoss(uint8_t cls,uint8_t reason,uint16_t stage,uint32_t counter,uint32_t logger) {
+  if(cls<1 || cls>2 || (stage!=5 && stage!=6) || (reason!=9 && reason!=14)) return Invalid;
+  uint32_t& previous=managementLoss_[stage-5][cls-1];
+  if(reason==9 && counter==previous) return Accepted;
+  if(reason==9 && counter<previous) {failed_=true;return Invalid;}
+  if(evidence_.size()==evidence_.capacity() || nextEvidence_==UINT32_MAX) {failed_=true;return Invalid;}
+  uint8_t out[224]={};put(out,nextEvidence_);put(out+4,logger);out[12]=7;
+  // ERROR counters are context/node/class scoped. Their wire representation
+  // does not identify a source epoch, acquisition tick or CAN reception.
+  put(out+28,binding_.boot);out[168]=(uint8_t)stage;out[200]=3;
+  uint32_t valid=(1u<<0)|(1u<<22);
+  if(reason==9) {
+    put(out+(cls==1?148:152),counter-previous);valid|=1u<<(cls==1?16:17);
+    BdqV2Format::putU16(out+170,cls==1?4:8);BdqV2Format::putU16(out+208,cls==1?4:8);
+  } else BdqV2Format::putU16(out+142,31);
+  put(out+16,valid);
+  if(!evidence_.push(out,224)) {failed_=true;return Invalid;}
+  previous=counter;++nextEvidence_;
+  if(reason==14) failed_=true;
+  return Accepted;
 }
 
 RemoteImuStream::Acceptance RemoteImuStream::acceptMissingBridge(uint32_t token,uint32_t logger) {

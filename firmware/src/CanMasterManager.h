@@ -132,6 +132,8 @@ struct MeasurementTransport {
   uint8_t nextControlNode[2] = {};
   uint32_t nextHeadPollMs[5] = {};
   uint8_t terminalNodes = 0;
+    BodaqsMeasurementSlot lossDiagnostic = {};
+    bool lossReady=false;
 };
 // Queue immutable control; repeated identical queueing is idempotent. STOP can
 // replace a queued renewal. Service routes all concurrent MISO into the bank.

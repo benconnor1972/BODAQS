@@ -290,6 +290,7 @@ int main(int argc, char **argv) {
         fifo_drained = false;
         bool recovery_failed=false;
         unsigned failure_reason=0;
+        if(selected_fault==11) bodaqs_node_capture_supervise(sim_tick/1000+65);
         uint32_t next_fault=sim_tick+1000;
         for (uint32_t us = sim_tick + 100; us < start + (selected_fault==10?90000000:250000); us += 100) {
             if(selected_fault==10 && us>=next_fault) {fault_mode=6;fifo_drained=false;next_fault+=350000;}
@@ -304,6 +305,12 @@ int main(int argc, char **argv) {
         if(selected_fault==7 || selected_fault==8) assert(recovery_failed && failure_reason==32);
         if(selected_fault==9) assert(!recovery_failed && detected_loss>0 && reported_loss==detected_loss && gap_seen);
         if(selected_fault==10) assert(recovery_failed && failure_reason==31 && recovery_events==254);
+        if(selected_fault==11) {
+            assert(recovery_failed && failure_reason==35);
+            memset(&e,0,sizeof e);
+            bodaqs_node_acquisition_backend(0,BODAQS_ACQ_PREPARE,3,2,sim_tick/1000,&e);
+            assert(e.kind==BODAQS_ACQ_FAILED && e.reason==35); // discard cannot repair a missed clock wrap
+        }
         return 0;
     }
     memset(&e, 0, sizeof(e));

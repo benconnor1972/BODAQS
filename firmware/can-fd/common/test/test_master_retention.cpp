@@ -69,6 +69,25 @@ int main() {
     assert(data.body[18] == 64);
     assert(data.body[20] == 0x2e && data.body[21] == 0x16); // ISR receive tick5678 preserved.
     assert(data.body[32] == 0x34 && data.body[33] == 0x12 && data.body[34] == 0xff);
+    // Exact known loss is retained outside the full queue, then published on
+    // the master-local evidence lane without editing the selected old head.
+    BodaqsMeasurementSlot lossRequest={},lossReply={};
+    uint8_t lossWire[64],lossResponse[84];
+    lossRequest.kind=1;lossRequest.context=9;lossRequest.node=0;lossRequest.body[0]=1;
+    assert(bodaqs_measurement_encode(&lossRequest,lossWire,64));
+    assert(bodaqs_master_service_process_transfer(&master,lossWire,64,101,lossResponse)==0);
+    assert(bodaqs_measurement_decode(lossResponse,64,&lossReply));
+    assert(lossReply.kind==7 && lossReply.body[1]==9 && lossReply.body[2]==6);
+    assert(lossReply.body[4]==5); // exact cumulative dropped samples; no fake CAN record
+    assert(bodaqs_master_service_process_transfer(&master,lossWire,64,201,lossResponse)==0);
+    assert(bodaqs_measurement_decode(lossResponse,64,&lossReply));
+    assert(lossReply.kind==7 && lossReply.body[4]==5); // repeat safely after a lost reply
+    reset();anchor(0);const auto oldHead=poll(2,0,0,0);
+    bodaqs_master_service_loss_counts(&master,0,5,0,0,0,0,0,true,0,0);
+    const auto unknown=poll(2,0,0,100);
+    assert(unknown.kind==7 && unknown.body[1]==14 && unknown.body[2]==5 && !unknown.body[4]);
+    const auto retained=poll(2,0,oldHead.object,101);
+    assert(std::memcmp(&oldHead,&retained,sizeof oldHead)==0 && !samples(0,102));
     // Partial fill uses original ingress age even when an older head delayed selection.
     reset(); anchor(0); assert(samples(0, 1)); assert(samples(5, 49)); acknowledge(2, 50);
     assert(poll(1, 0, 0, 50).total == 96);

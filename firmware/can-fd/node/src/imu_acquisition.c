@@ -24,7 +24,7 @@ static struct {
     bool sync_present, seed_started;
     uint8_t seed_attempts;
     uint8_t recovery_step, recovery_count, recovery_stage;
-    uint32_t recovery_ms, attempts[3], resync_timestamp;
+    uint32_t recovery_ms, recovery_tick, attempts[3], resync_timestamp;
     uint32_t loss_count, loss_evidence, loss_first, loss_last, loss_ms, model_tick, model_anchor_tick, model_numerator, sent_sync;
     uint16_t model_denominator;
     uint32_t recovery_capture;
@@ -87,8 +87,13 @@ static bool emit(uint8_t type, uint8_t *p, size_t n) {
     }
     return true;
 }
+static bool evidence_available(void) {
+    if(a.evidence>=UINT32_MAX-1) {a.reason=31;return false;}
+    return true;
+}
 static bool boundary(uint8_t kind, uint16_t reason, uint32_t tick) {
     uint8_t p[64], *b = p + 8;
+    if(!evidence_available()) return false;
     envelope(p, 0x25, 56);
     bodaqs_control_put_u32(b, a.boot);
     b[5] = a.epoch;
@@ -118,6 +123,7 @@ static void fail(uint8_t reason) {
 }
 static bool snapshot(uint32_t seq, uint32_t tick, uint32_t ts) {
     uint8_t p[64], *b = p + 8;
+    if(!evidence_available()) return false;
     uint32_t sync_sequence=0,sync_tick=0;
     if(seq && tx_depth>=24) {
         if(a.loss_evidence==UINT32_MAX || a.evidence==UINT32_MAX) return false;
@@ -149,8 +155,10 @@ static bool snapshot(uint32_t seq, uint32_t tick, uint32_t ts) {
 }
 static bool model(uint32_t seq, uint32_t tick, uint32_t now) {
     uint8_t p[64], *b = p + 8;
-    if (a.model_id == UINT32_MAX)
+    if (a.model_id == UINT32_MAX) {
+        a.reason=31;
         return false;
+    }
     ++a.model_id;
     a.model_seq = seq;
     a.model_ms = now;
@@ -218,6 +226,7 @@ static bool flush(bool final) {
 static bool loss_report(uint32_t now, bool anchor) {
     uint8_t p[64], *b=p+8;
     if ((!a.loss_count && !a.loss_evidence) || (uint32_t)(now-a.loss_ms)<100) return true;
+    if(!evidence_available()) return false;
     if (tx_depth>(anchor?30:31)) return false;
     envelope(p,0x25,56);
     bodaqs_control_put_u32(b,a.boot); b[5]=a.epoch; b[6]=3; b[7]=4;
@@ -238,17 +247,19 @@ static bool loss_report(uint32_t now, bool anchor) {
 }
 static bool recovery_boundary(uint8_t kind,uint32_t now) {
     uint8_t p[64],*b=p+8;
+    (void)now;
+    if(!evidence_available()) return false;
     envelope(p,0x25,56); bodaqs_control_put_u32(b,a.boot);
     b[5]=a.epoch; b[6]=kind; b[7]=a.recovery_stage;
     bodaqs_control_put_u32(b+8,++a.evidence);
     bodaqs_control_put_u32(b+12,a.sensor_epoch); bodaqs_control_put_u32(b+16,1);
     if (a.sequence) bodaqs_control_put_u32(b+20,a.sequence-1);
-    put16(b+44,27); put16(b+46,(uint16_t)(0x60 | (a.sequence?1:0)));
+    put16(b+44,27); put16(b+46,(uint16_t)(0x60 | (a.sequence || kind==2 || kind==5?1:0) | (kind==2?256:0)));
     if(kind==4 && a.recovery_capture) {
         bodaqs_control_put_u32(b+36,a.recovery_capture);
         put16(b+46,(uint16_t)(0x70 | (a.sequence?1:0)));
     }
-    bodaqs_control_put_u32(b+48,(now-a.recovery_ms)*1000);
+    bodaqs_control_put_u32(b+48,clock_tick()-a.recovery_tick);
     bodaqs_control_put_u32(b+52,clock_tick());
     return emit(0x25,p,64);
 }
@@ -263,7 +274,7 @@ static void recover(uint8_t stage,uint32_t now) {
     if(tx_depth>23 || a.epoch==255 || a.evidence>UINT32_MAX-8 || a.model_id==UINT32_MAX) {fail(31);return;}
     a.attempts[a.recovery_count++]=now;
     if(a.phase!=RECOVER) {
-        a.recovery_ms=now; a.recovery_stage=stage;
+        a.recovery_ms=now; a.recovery_tick=clock_tick(); a.recovery_stage=stage;
         a.recovery_capture=bodaqs_node_capture_loss_take();
         if(!flush(false) || !recovery_boundary(1,now) || !recovery_boundary(4,now)) {fail(31);return;}
     }
@@ -344,8 +355,10 @@ static bool word(const uint8_t *w, uint32_t now) {
         a.ready_event = true;
     }
     if (a.phase == STARTING && (int32_t)(tick - a.start_tick) > 0) {
-        if (a.epoch == 255)
+        if (a.epoch == 255) {
+            a.reason=31;
             return false;
+        }
         ++a.epoch;
         a.sequence = 0;
         a.recorded = false;
@@ -358,8 +371,10 @@ static bool word(const uint8_t *w, uint32_t now) {
         a.pending_event = BODAQS_ACQ_FIRST;
     }
     if (a.phase == RECORDING) {
-        if (a.sequence == UINT32_MAX)
+        if (a.sequence == UINT32_MAX) {
+            a.reason=31;
             return false;
+        }
         if ((uint32_t)(tick - a.model_tick) >= 100000 || a.sequence - a.model_seq >= 500) {
             if (!flush(false) || !loss_report(now,true) || !model(a.sequence, tick, now) || !snapshot(a.sequence, tick, ts))
                 return false;
@@ -394,6 +409,7 @@ void bodaqs_node_acquisition_service(uint32_t now) {
     service_transmit();
     if (a.phase == IDLE || a.phase == FAILED)
         return;
+    if(a.phase!=STOPPING && !bodaqs_node_capture_clock_trusted()) {fail(35);return;}
     if (a.phase == RECOVER) {
         if ((uint32_t)(now-a.recovery_ms)>=100) {(void)recovery_boundary(6,now);fail(32);return;}
         /* Bypass FIFO and discard all ambiguous words/captures, observe a fresh
@@ -645,7 +661,7 @@ void bodaqs_node_acquisition_backend(void *context, uint8_t command, uint32_t ge
         a.reason = 0;
         a.pending_event = 0;
         a.failure_after_first = false;
-        a.recovery_count=0; a.recovered=a.gap=a.evidence_gap=false; a.loss_count=a.loss_evidence=0;
+        a.recovered=a.gap=a.evidence_gap=false; a.loss_count=a.loss_evidence=0;
         bodaqs_node_capture_discard();
     } else if (command == BODAQS_ACQ_START) {
         a.start_tick = clock_tick();

@@ -47,6 +47,7 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_remote_imu_stream_contract.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_remote_imu_recording_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_remote_imu_loss_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_node_master_bdq_runtime.py --compiler "$(CXX)"
 	@echo "All tests passed."
 

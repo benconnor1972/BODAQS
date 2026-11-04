@@ -85,7 +85,26 @@ int main(int argc,char**) {
   assert(!strcmp(descriptors[1].payloadSchema,"bodaqs.can_timing_evidence.v1"));
   RemoteImuRecording::start();recordingSteps(2000);
   assert(RemoteImuRecording::recording());
+
   for(unsigned n=0;n<fixtureSensorCount;++n) assert(acquisitions[n].phase==3 && acquisitions[n].lease_valid);
+
+  // Actual management ERROR diagnostics cross the pipelined SPI manager and
+  // control owner into a companion without fabricating a CAN reception.
+  bodaqs_master_service_loss_counts(&master,0,5,1,0,6,7,0,false,1234,9);
+  recordingSteps(500);
+  assert(!RemoteImuRecording::failed());
+  unsigned observedLoss=0,lossReports=0;uint8_t lossRow[224];
+  auto& lossSource=descriptors[1].source;
+  while(lossSource.pendingRecords(lossSource.context)) {
+    assert(lossSource.popRecord(lossSource.context,lossRow,sizeof lossRow));
+    if(lossRow[168]==5) {
+      observedLoss+=BdqV2Format::getU32(lossRow+148);++lossReports;
+      assert(lossRow[184]==0 && BdqV2Format::getU32(lossRow+76)==0);
+    }
+  }
+  lossSource.chunkWritten(lossSource.context);
+  assert(observedLoss==7 && lossReports==1); // repeated cumulative errors deduplicate
+
   const uint32_t stoppedAt=clockMs;
   RemoteImuRecording::stop();
   clockMs+=37; // Main-loop scheduling delay must not extend the operator tail.
