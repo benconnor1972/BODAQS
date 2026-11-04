@@ -7,6 +7,7 @@
 
 #include "ConfigManager.h"
 #include "SensorConfigEdit.h"
+#include "Lsm6dso32xConfig.h"
 #include "DisplayManager.h"
 #include "FirmwareInfo.h"
 #include "LoggingManager.h"
@@ -889,6 +890,17 @@ static void addSensorJson_(JsonObject obj, uint8_t index, const SensorSpec& sp, 
   sp.params.get("endpoint", endpoint);
   obj["provider"] = provider;
   obj["endpoint"] = endpoint;
+  if (SensorConfigEdit::isLegacyRemoteImu(sp)) {
+    obj["assignment_state"] = "unresolved_legacy_remote_imu";
+    obj["recording_eligible"] = false;
+    obj["message"] = "Legacy remote BMI270 placeholder: explicitly select the LSM type and profile to migrate. BMI profiles are not translated.";
+    JsonObject migration = obj["migration"].to<JsonObject>();
+    migration["type"] = "lsm6dso32x_imu";
+    migration["profile"] = Lsm6dso32xConfig::profile;
+    migration["method"] = "PUT";
+    migration["url"] = String("/api/v1/sensor?id=") + String(index);
+    migration["request_field"] = "migration";
+  }
   if (sp.type == SensorType::LSM6DSO32XImu) {
     JsonObject control = obj["remote_control"].to<JsonObject>();
     String profile; sp.params.get("profile", profile);
@@ -1188,6 +1200,17 @@ static bool commitSensorEdit_(WebServer& srv, SensorConfigEdit& edit, const Logg
 }
 
 static bool applySensorJson_(WebServer& srv, JsonDocument& req, SensorSpec& sp) {
+  if (!req["migration"].isUnbound()) {
+    JsonObjectConst migration = req["migration"].as<JsonObjectConst>();
+    char error[160] = {};
+    if (req.size() != 1 || migration.size() != 2 ||
+        !migration["type"].is<const char*>() || !migration["profile"].is<const char*>() ||
+        !SensorConfigEdit::migrateLegacyRemoteImu(sp, migration["type"], migration["profile"], error, sizeof(error))) {
+      sendError_(srv, 400, "invalid_migration", error[0] ? error : "migration requires only explicit type and profile selections.");
+      return false;
+    }
+    return true;
+  }
   if ((!req["params"].isNull() && !req["params"].is<JsonObjectConst>()) ||
       (!req["muted"].isNull() && !req["muted"].is<bool>())) {
     sendError_(srv, 400, "invalid_sensor_params", "params must be an object and muted must be a boolean.");
@@ -1198,6 +1221,10 @@ static bool applySensorJson_(WebServer& srv, JsonDocument& req, SensorSpec& sp) 
     SensorType newType = sp.type;
     if (!parseSensorTypeKey_(typeText, newType) || !SensorRegistry::lookup(newType)) {
       sendError_(srv, 400, "invalid_sensor_type", "Unknown sensor type.");
+      return false;
+    }
+    if (newType == SensorType::LSM6DSO32XImu && SensorConfigEdit::isLegacyRemoteImu(sp)) {
+      sendError_(srv, 400, "migration_required", "Use the explicit migration action to select the LSM type and profile while preserving installation data.");
       return false;
     }
     if (newType != sp.type) {
