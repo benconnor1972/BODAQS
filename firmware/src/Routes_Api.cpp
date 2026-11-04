@@ -291,6 +291,28 @@ static void handleStatus_(WebServer& srv) {
   snprintf(masterUid, sizeof(masterUid), "%016llX",
            static_cast<unsigned long long>(masterDiagnostics.hardwareUid));
   canMaster["hardware_uid"] = masterUid;
+  JsonObject measurement = canMaster["measurement"].to<JsonObject>();
+  measurement["status_valid"] = masterDiagnostics.measurementStatusValid;
+  measurement["phase"] = masterDiagnostics.measurement.phase;
+  measurement["reason"] = masterDiagnostics.measurement.reason;
+  measurement["confirmed"] = masterDiagnostics.measurementConfirmed;
+  measurement["unavailable"] = masterDiagnostics.measurementUnavailable;
+  measurement["spi_hz"] = masterDiagnostics.measurement.hz;
+  measurement["physical_bytes"] = masterDiagnostics.measurement.physical;
+  measurement["inactive_cs_us"] = masterDiagnostics.measurement.gap;
+  char measurementId[21];
+  snprintf(measurementId, sizeof(measurementId), "%llu",
+           static_cast<unsigned long long>(masterDiagnostics.measurement.boot));
+  measurement["master_boot"] = measurementId;
+  snprintf(measurementId, sizeof(measurementId), "%llu",
+           static_cast<unsigned long long>(masterDiagnostics.measurement.session));
+  measurement["owning_session"] = measurementId;
+  snprintf(measurementId, sizeof(measurementId), "%llu",
+           static_cast<unsigned long long>(masterDiagnostics.measurement.recording));
+  measurement["recording"] = measurementId;
+  snprintf(measurementId, sizeof(measurementId), "%llu",
+           static_cast<unsigned long long>(masterDiagnostics.measurement.context));
+  measurement["context"] = measurementId;
   JsonObject masterControl = canMaster["control"].to<JsonObject>();
   masterControl["supported"] = masterDiagnostics.controlSupported;
   masterControl["info_valid"] = masterDiagnostics.controlInfoValid;

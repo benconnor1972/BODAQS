@@ -5,6 +5,7 @@
 #include "BoardProfile.h"
 #include "CanMasterProtocol.h"
 #include "CanControlProtocol.h"
+#include "../can-fd/common/protocol/bodaqs_measurement.h"
 #include "ConfigManager.h"
 
 namespace CanMasterManager {
@@ -56,6 +57,10 @@ struct Diagnostics {
   uint16_t canRxQueueHighWater = 0;
   uint16_t spiTxQueueDepth = 0;
   uint16_t spiTxQueueHighWater = 0;
+  BodaqsMeasurementMode measurement = {};
+  bool measurementStatusValid = false;
+  bool measurementConfirmed = false;
+  bool measurementUnavailable = false;
   bool controlSupported = false;
   bool controlInfoValid = false;
   BodaqsControlObserver control = {};
@@ -80,6 +85,15 @@ struct Diagnostics {
       inventory[CanMasterProtocol::kDiscoveryNodeCount];
 };
 
+// Stages legacy limits, confirms at 8 MHz/64 bytes, then requires correlated status.
+// A false result is unavailable, even if the master may have switched.
+bool enterMeasurementMode(uint64_t recording, uint64_t context);
+bool exitMeasurementMode();
+bool inspectMeasurementMode();
+bool measurementReady();
+// One bounded physical exchange; caller demultiplexes by immutable identity.
+bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
+                             BodaqsMeasurementSlot& response);
 void scheduleConfigurationReconciliation();
 // Freeze mutations before recording; the original deadline is never extended.
 void beginRecordingHandoff();

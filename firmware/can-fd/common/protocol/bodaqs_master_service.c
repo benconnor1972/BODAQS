@@ -13,6 +13,8 @@ void bodaqs_master_service_init(BodaqsMasterService *service,
     if (identity != NULL) {
         service->identity = *identity;
     }
+    service->measurement.quiescent = true;
+    service->measurement.fenced = true;
     service->status.status_version = BODAQS_MASTER_STATUS_VERSION;
 }
 
@@ -146,4 +148,72 @@ BodaqsMasterSlotResult bodaqs_master_service_process_slot(
             request.sequence, next_transmit, BODAQS_MASTER_SLOT_BYTES);
     }
     return BODAQS_MASTER_SLOT_PROCESSED;
+}
+
+void bodaqs_master_service_measurement_fence(BodaqsMasterService *service,
+    bool stopped_authorization_invalid, bool data_retired)
+{
+    service->measurement.quiescent = stopped_authorization_invalid;
+    service->measurement.fenced = data_retired;
+}
+
+BodaqsMasterSlotResult bodaqs_master_service_process_transfer(
+    BodaqsMasterService *service, const uint8_t *received, size_t length,
+    uint32_t now_ms, uint8_t next_transmit[BODAQS_MASTER_SLOT_BYTES])
+{
+    BodaqsMasterFrame request, response;
+    BodaqsMeasurementMode requested, observed;
+    BodaqsMeasurementSlot slot, reply;
+    uint16_t reason = 0;
+    if (!service || !received || !next_transmit) return BODAQS_MASTER_SLOT_MALFORMED;
+    service->measurement.mode.boot = service->control.master_boot_id;
+    bodaqs_measurement_tick(&service->measurement, now_ms);
+    memset(next_transmit, 0, BODAQS_MASTER_SLOT_BYTES);
+    if (length == 64) {
+        if (!bodaqs_measurement_decode(received, length, &slot) ||
+            !bodaqs_measurement_manage(&service->measurement, &slot, now_ms, &reply))
+            goto malformed;
+        (void)bodaqs_measurement_encode(&reply, next_transmit, 64);
+        ++service->slots_received;
+        return BODAQS_MASTER_SLOT_PROCESSED;
+    }
+    if (length != 84 || bodaqs_master_decode_slot(received, length, &request) != BODAQS_MASTER_DECODE_OK)
+        goto malformed;
+    if ((unsigned)request.type >= 8 && (unsigned)request.type <= 10) {
+        if (!request.sequence || request.flags) goto malformed;
+        if ((unsigned)request.type == 10) {
+            if (request.payload_length != 16 || !bodaqs_measurement_get(request.payload,8)) goto malformed;
+            if (bodaqs_measurement_get(request.payload+8,8) &&
+                bodaqs_measurement_get(request.payload+8,8) != service->control.master_boot_id) reason=4;
+        } else {
+            unsigned i;
+            if (!bodaqs_measurement_mode_decode(request.payload,request.payload_length,&requested)) goto malformed;
+            /* Do not enter while old ordinary control is awaiting a result. */
+            for(i=0;i<4;++i) if(service->control.slots[i].state==1) reason=8;
+            if (!reason) reason=bodaqs_measurement_stage(&service->measurement,&requested,
+                request.sequence,now_ms,(unsigned)request.type==9);
+        }
+        observed=service->measurement.mode; observed.reason=reason;
+        if (observed.phase==0) {
+            observed.version=1; observed.maximum=1024;
+            observed.physical=84; observed.hz=4000000; observed.gap=1000;
+        }
+        observed.flags=(service->measurement.mode.phase==2?1U:0U) |
+            (service->measurement.fenced?2U:0U) | (!service->measurement.quiescent?4U:0U);
+        observed.caller=(unsigned)request.type==10 ? bodaqs_measurement_get(request.payload,8) : requested.caller;
+        memset(&response,0,sizeof(response)); response.type=(BodaqsMasterMessageType)((unsigned)request.type|0x80);
+        response.sequence=request.sequence; response.payload_length=64;
+        bodaqs_measurement_mode_encode(&observed,response.payload);
+        (void)bodaqs_master_encode_slot(&response,next_transmit,84);
+        ++service->slots_received;
+        return BODAQS_MASTER_SLOT_PROCESSED;
+    }
+    /* Live measurement mode has no ordinary legacy dispatch. Restricted
+     * administrative cleanup is installed by the acquisition lifecycle slice. */
+    if (service->measurement.mode.phase != 0 && (unsigned)request.type != 2 &&
+        (unsigned)request.type != 5 && (unsigned)request.type != 7) goto malformed;
+    return bodaqs_master_service_process_slot(service,received,next_transmit);
+malformed:
+    ++service->malformed_slots;
+    return BODAQS_MASTER_SLOT_MALFORMED;
 }
