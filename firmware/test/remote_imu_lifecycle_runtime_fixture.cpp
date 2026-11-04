@@ -184,6 +184,7 @@ int main(int argc,char** argv) {
   loseMeasurementReplies=true;recordingSteps(330);loseMeasurementReplies=false;
   AcquisitionControl::Outcome excluded;AcquisitionControl::outcome(0,excluded);
   assert(excluded.excluded && !excluded.leaseAcknowledged);
+  assert(!CanMasterManager::measurementReady());
   assert(RemoteImuRecording::failed() && recording); // Healthy locals remain running.
   const uint32_t oldRenewal=acquisitions[0].renewal_sequence;
   recordingSteps(6000);

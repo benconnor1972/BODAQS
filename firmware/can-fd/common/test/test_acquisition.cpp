@@ -464,5 +464,42 @@ int main()
     assert(bodaqs_control_authority_process(&canceled.authority, &canceled.node, &bind,
                                             canceled.now, entropy, nullptr, &bindReply));
     assert(bindReply.opcode == 2 && canceled.acq.recording == 13 && canceled.acq.owner == 11);
+    // Empty reboot cleanup still requires a physical fence. Its terminal ID
+    // is scoped to the bound session, so a later owner may reuse the number.
+    Rig empty;
+    uint64_t entropyWord=100;
+    auto nextEntropy=[](void* p)->uint64_t {return ++*static_cast<uint64_t*>(p);};
+    auto bindOwner=[&](uint64_t session) {
+        auto challenge=empty.request(1);challenge.data_length=8;challenge.session=0;
+        bodaqs_control_put_u64(challenge.data,session);
+        BodaqsControlRecord reply={};
+        assert(bodaqs_control_authority_process(&empty.authority,&empty.node,&challenge,
+            empty.now,nextEntropy,&entropyWord,&reply));
+        auto bind=empty.request(2,1);bind.session=session;bind.transfer=reply.transfer;
+        assert(bodaqs_control_authority_process(&empty.authority,&empty.node,&bind,
+            empty.now,nextEntropy,&entropyWord,&reply));
+        assert(reply.opcode==2 && reply.data[0]==0);
+    };
+    bindOwner(22);
+    auto cleanupFence=empty.request(0x2A,2);cleanupFence.session=22;cleanupFence.data_length=24;
+    bodaqs_control_put_u64(cleanupFence.data,71);
+    BodaqsControlRecord cleanupResult={};
+    assert(bodaqs_control_acquisition_process(&empty.acq,&cleanupFence,empty.now,&cleanupResult));
+    assert(cleanupResult.data[0]==2 && !empty.acq.fenced && !empty.acq.recording);
+    bodaqs_control_acquisition_tick(&empty.acq,++empty.now);
+    assert(!empty.acq.fenced);
+    empty.hardware.emit(BODAQS_ACQ_FENCED);
+    bodaqs_control_acquisition_tick(&empty.acq,++empty.now);
+    assert(empty.acq.fenced && !empty.acq.recording);
+    auto cleanupRelease=cleanupFence;cleanupRelease.opcode=0x29;cleanupRelease.operation=3;
+    assert(bodaqs_control_acquisition_process(&empty.acq,&cleanupRelease,empty.now,&cleanupResult));
+    assert(cleanupResult.data[0]==3 && !empty.acq.recording);
+    bindOwner(33);
+    auto reused=empty.begin();reused.session=33;bodaqs_control_put_u64(reused.data+8,71);
+    assert(bodaqs_control_acquisition_process(&empty.acq,&reused,empty.now,&cleanupResult));
+    assert(cleanupResult.data[0]==2 && empty.acq.staging && !empty.acq.lease_valid);
+    auto stale=cleanupRelease;stale.operation=4;
+    assert(bodaqs_control_acquisition_process(&empty.acq,&stale,empty.now,&cleanupResult));
+    assert(cleanupResult.opcode==127 && cleanupResult.data[1]==5 && empty.acq.staging);
     puts("real fragmented master/CAN acquisition lifecycle tests passed");
 }

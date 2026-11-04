@@ -79,6 +79,19 @@ static void transitions() {
     assert(CanMasterProtocol::decodeSlot(rx,84,observed)==CanMasterProtocol::DecodeResult::Ok);
     assert(static_cast<unsigned>(observed.type)==0x8a && observed.payload[48]==57 && observed.payload[38]==2);
     assert(master.measurement.mode.context==23);
+    // Administrative legacy traffic cannot grant acquisition in an old context.
+    CanMasterProtocol::Frame forbidden;
+    forbidden.type=CanMasterProtocol::MessageType::ControlSubmitRequest;
+    forbidden.sequence=61;forbidden.payloadLength=64;
+    BodaqsControlWrapped grant={};grant.master_boot_id=7;grant.node_address=0;
+    grant.record.opcode=BODAQS_CONTROL_START;grant.record.node_boot_id=9;
+    grant.record.endpoint=255;grant.record.operation=2;grant.record.session=11;
+    grant.record.data_length=24;bodaqs_control_put_u64(grant.record.data,mode.recording);
+    assert(bodaqs_control_request_valid(&grant.record));
+    assert(bodaqs_control_encode_wrapped(&grant,forbidden.payload));
+    assert(CanMasterProtocol::encodeSlot(forbidden,tx,sizeof tx));
+    assert(bodaqs_master_service_process_transfer(&master,tx,84,1501,rx)==BODAQS_MASTER_SLOT_MALFORMED);
+    assert(master.control.slots[0].state==0 && master.measurement.mode.context==23);
     // Optional post-START health snapshots use the 4/s burst-four bucket for
     // OPEN, continuation pages, release and retries, not the lifecycle bucket.
     static BodaqsMasterService diagnostic;

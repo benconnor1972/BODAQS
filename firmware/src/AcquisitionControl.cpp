@@ -322,6 +322,15 @@ void service() {
   bool enter=false,exit=false;
   {Lock lock;if(!owned) return;enter=enterPending;enterPending=false;exit=exitPending;}
   servicing=true;
+  if(transport.failed) for(uint8_t n=0;n<4;++n) {
+    Request terminal;bool queued=false;
+    {Lock lock;if(mailboxes[n].pending) {
+      terminal=mailboxes[n].request;mailboxes[n].pending=false;queued=true;
+    }}
+    if(queued && terminal.action==Action::Fence) cleanupRequested=true;
+    // The unavailable measurement context cannot carry another command. STOP
+    // has already stopped renewal; the node's original lease must expire.
+  }
   bool liveRemote=false;for(const auto& peer:peers) liveRemote|=peer.leased;
   if(cleanupRequested && !liveRemote) {
     if(CanMasterManager::cleanupUnavailableMeasurement()) {

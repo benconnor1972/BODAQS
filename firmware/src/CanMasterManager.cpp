@@ -728,6 +728,10 @@ static uint64_t loggerClockUs_() {
   return micros();
 #endif
 }
+static int unavailableTransport_(MeasurementTransport& transport) {
+  transport.failed=true;s_diagnostics.measurementConfirmed=false;
+  s_diagnostics.measurementUnavailable=true;return -14;
+}
 int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint8_t node,
                                 MeasurementInbox*& completed) {
   completed=nullptr;
@@ -743,7 +747,7 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
   }
   if(transport.recovering) {
     if(static_cast<uint32_t>(millis()-transport.recoveryStarted)>=300) {
-      transport.failed=true;return -14;
+      return unavailableTransport_(transport);
     }
     BodaqsMeasurementSlot query={},status={};
     query.kind=6;query.node=255;query.object=transport.recoveryToken;query.context=transport.context;
@@ -759,7 +763,7 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
        bodaqs_measurement_get(status.body+24,8)!=bound.context ||
        status.body[32]!=2 || status.body[33] || status.body[34] || status.body[35] ||
        !(status.body[36]&1u) || (bodaqs_measurement_get(status.body+36,4)&~15ULL)) {
-      transport.failed=true;return -14;
+      return unavailableTransport_(transport);
     }
     transport.recovering=false;return 0;
   }
@@ -823,7 +827,7 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
     transport.recovering=true;transport.recoveryStarted=millis();
     transport.recoveryBinding=s_diagnostics.measurement;
     transport.recoveryToken=nextSequence_();
-    if(!transport.recoveryToken) {transport.failed=true;return -14;}
+    if(!transport.recoveryToken) return unavailableTransport_(transport);
     return 0;
   }
   if(response.context!=s_diagnostics.measurement.context) {
@@ -894,7 +898,7 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
     if(inbox->admitted) {inbox->ackPending=true;inbox->pendingAck=ack;}
   } else if(result<0) {
     ++s_diagnostics.measurementTransferErrors;
-    if(result!=-6) {transport.failed=true;return -14;}
+    if(result!=-6) return unavailableTransport_(transport);
   }
   s_diagnostics.measurementAssemblyBytes=inbox->state.complete?0:inbox->state.total;
   s_diagnostics.measurementLastClass=responseClass;s_diagnostics.measurementLastNode=response.node;

@@ -579,7 +579,9 @@ bool bodaqs_control_acquisition_process(BodaqsControlAcquisition *s, const Bodaq
          * This creates only a bounded tombstone, never acquisition membership.
          * The hardware owner must still acknowledge retirement below. */
         if(op==0x2A && !s->recording && !s->staging && s->stopped && !s->lease_valid &&
-           !s->command && !s->terminated_record && bodaqs_control_get_u64(q->data) &&
+           !s->command && (!s->terminated_record ||
+             (!s->terminal && s->fenced && q->session!=s->terminated_session)) &&
+           bodaqs_control_get_u64(q->data) &&
            s->authority->bound_retry && s->authority->bind_request.session==q->session) {
             s->terminal=true;s->terminated_record=bodaqs_control_get_u64(q->data);
             s->terminated_session=q->session;
@@ -666,8 +668,6 @@ bool bodaqs_control_acquisition_process(BodaqsControlAcquisition *s, const Bodaq
     {
         if (s->fenced)
         {
-            if (!s->fenced)
-                (void)epoch(s);
             s->fenced = true;
             publish(s, 3, 0);
         }

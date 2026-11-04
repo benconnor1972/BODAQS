@@ -100,3 +100,12 @@ Explicit target builds use G3507 node and G3518 master TI Arm Clang with SDK
 2.11, plus PlatformIO `bodaqs_s3_mini_n4r2` for the A8 logger. Host tests/builds
 do not qualify disconnect/reset/halt behavior, physical lease latency, bus
 utilization, runtime stack headroom or the 25 us rearm/100 us mutex targets.
+
+Final validation includes integration `c2fdbbd` (#170/#171): the complete firmware
+host target, all thirteen common executables, and capture/SPI plus all eleven
+node acquisition scenarios pass. Focused lifecycle, measurement and four-node
+control ownership regressions also pass after the final unavailable-context
+guard. Explicit target builds pass: G3518 master FLASH 40,320 bytes, SRAM bank 0
+50,358 bytes; G3507 node FLASH 40,472 bytes, SRAM 10,984 bytes, including reserved
+stacks. The A8 build reports 264,916 bytes static RAM and 2,018,341 bytes flash.
+These map sizes do not establish measured runtime stack/heap headroom.
