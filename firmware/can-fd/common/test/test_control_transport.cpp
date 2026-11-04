@@ -157,9 +157,61 @@ void malformedNodeCompletionCannotWedgeInspection()
     assert(bodaqs_control_observer_next(&logger, &request, &type));
     assert(type == 6 && request.record.operation == 2);
 }
+
+void snapshotsCrossBothLinksWithinLifetime(bool corrupt)
+{
+    BodaqsMasterService master;
+    bodaqs_master_service_init(&master, nullptr);
+    bodaqs_control_exchange_init(&master.control, 99);
+    BodaqsControlObserver logger;
+    bodaqs_control_observer_init(&logger);
+    bodaqs_control_observer_boot(&logger,99,3);
+    BodaqsControlNode nodes[4] = {};
+    BodaqsControlSnapshot snapshots[4] = {};
+    for(unsigned i=0;i<4;i++) {
+        nodes[i].boot_id=55+i;nodes[i].endpoint_mask=1;nodes[i].endpoint_epoch[0]=1;
+        bodaqs_control_observer_node(&logger,(uint8_t)i,55+i,1,true);
+    }
+    bool corrupted=false;
+    for(uint32_t now=0;now<30000;now+=100) {
+        bodaqs_control_observer_tick(&logger,now);
+        BodaqsControlWrapped q,r;uint8_t type;
+        assert(bodaqs_control_observer_next(&logger,&q,&type));
+        auto result=spi(master,type,&q);
+        assert(bodaqs_control_decode_wrapped(result.payload,result.payloadLength,&r));
+        bool accepted=bodaqs_control_observer_accept(&logger,(uint8_t)result.type,&r,now);
+        if(!accepted) {assert(corrupt);assert(!logger.nodes[q.node_address].endpoints[0].current);return;}
+        uint8_t address,wire[64];uint16_t transaction;
+        if(bodaqs_control_exchange_transmit(&master.control,now,&address,&transaction,wire)) {
+            BodaqsControlRecord nq,nr;uint16_t nt;
+            assert(bodaqs_control_decode_can(wire,64,false,&nt,&nq));
+            assert(bodaqs_control_snapshot_process(&snapshots[address],&nodes[address],&nq,now,&nr) ||
+                   bodaqs_control_node_process(&nodes[address],&nq,&nr));
+            if(corrupt && nq.opcode==7 && nq.page==1 && !corrupted) {nr.data[7]=1;corrupted=true;}
+            assert(bodaqs_control_encode_can(&nr,true,nt,wire));
+            assert(bodaqs_control_decode_can(wire,64,true,&nt,&nr));
+            assert(bodaqs_control_exchange_receive(&master.control,address,nt,&nr));
+        }
+        bool all=true;
+        for(unsigned i=0;i<4;i++) {
+            const auto& ep=logger.nodes[i].endpoints[0];
+            all=all && ep.current && ep.capability_valid && ep.effective_valid;
+            if(ep.effective_valid) {
+                assert(ep.effective[4]==0);
+                assert(bodaqs_control_get_u32(ep.effective+12)==0);
+                assert(bodaqs_control_get_u32(ep.effective+120)==0);
+                assert(ep.capability[6]==0 && bodaqs_control_get_u32(ep.capability+8)==0);
+            }
+        }
+        if(all) {assert(!corrupt);return;}
+    }
+    assert(false && "snapshot pages must complete at 100ms SPI cadence for four nodes");
+}
 } // namespace
 int main()
 {
+    snapshotsCrossBothLinksWithinLifetime(false);
+    snapshotsCrossBothLinksWithinLifetime(true);
     loggerReadsNodeStateThroughBothRealTransports();
     malformedTypedSlotReservedBytesAreDiscarded();
     malformedNodeCompletionCannotWedgeInspection();
