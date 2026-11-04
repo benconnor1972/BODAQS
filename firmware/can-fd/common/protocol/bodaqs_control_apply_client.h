@@ -7,7 +7,7 @@ extern "C"
 #endif
     typedef struct
     {
-        uint64_t desired_generation, revision, accepted_generation;
+        uint64_t desired_generation, revision, accepted_generation, session;
         uint32_t operation, boot, observed_ms;
         uint8_t kind, reason;
         bool valid;
@@ -15,7 +15,7 @@ extern "C"
     typedef struct
     {
         BodaqsControlWrapped current;
-        BodaqsControlApplyOutcome nodes[4];
+        BodaqsControlApplyOutcome nodes[4], previous[4];
         uint8_t descriptor[44], metadata[24], phase, resume_phase;
         uint32_t started, committed, next_query;
         uint64_t next_transfer;

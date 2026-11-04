@@ -13,13 +13,18 @@ void bodaqs_control_authority_client_node(BodaqsControlAuthorityClient *s, uint8
     if (a >= 4)
         return;
     p = &s->nodes[a];
-    if (p->boot != boot || !available)
+    if (boot && p->boot != boot)
     {
         memset(p, 0, sizeof(*p));
         if (s->pending && s->current.node_address == a)
             s->pending = false;
     }
-    p->boot = boot;
+    if (!available) {
+        p->bound = false;
+        if (p->bind.record.opcode) p->phase = 1;
+        if (s->pending && s->current.node_address == a) s->pending = false;
+    }
+    if (boot) p->boot = boot;
     p->available = available && boot;
 }
 bool bodaqs_control_authority_client_next(BodaqsControlAuthorityClient *s, uint64_t master, BodaqsControlWrapped *q,
@@ -41,6 +46,8 @@ bool bodaqs_control_authority_client_next(BodaqsControlAuthorityClient *s, uint6
         if (s->nodes[a].available && s->nodes[a].phase == 1)
         {
             s->pending = true;
+            s->current = s->nodes[a].bind;
+            s->current.master_boot_id = master;
             *q = s->current;
             *type = BODAQS_CONTROL_SUBMIT_REQUEST;
             s->nodes[a].phase = 2;
@@ -117,6 +124,7 @@ bool bodaqs_control_authority_client_accept(BodaqsControlAuthorityClient *s, uin
         q->transfer = challenge;
         /* New exchange must be submitted before polling. */
         p->phase = 1;
+        p->bind = s->current;
         s->pending = false;
         return true;
     }
@@ -132,8 +140,12 @@ bool bodaqs_control_authority_client_accept(BodaqsControlAuthorityClient *s, uin
     if (r->opcode == q->opcode && r->data[0] == 0)
     {
         p->bound = q->opcode == BODAQS_CONTROL_BIND_SESSION;
-        p->next_mutation = q->operation + 1;
+        if (p->next_mutation && p->next_mutation <= q->operation)
+            p->next_mutation = q->operation == UINT32_MAX ? 0 : q->operation + 1;
+        else if (q->opcode == BODAQS_CONTROL_BIND_SESSION && !p->next_mutation && !p->ever_bound)
+            p->next_mutation = 2;
         p->confirmed_ms = now;
+        if (p->bound) p->ever_bound = true;
         p->phase = p->bound ? 2 : 3;
         p->releasing = false;
     }

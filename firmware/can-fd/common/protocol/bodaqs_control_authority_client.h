@@ -7,11 +7,12 @@ extern "C"
 #endif
     typedef struct
     {
+        BodaqsControlWrapped bind; /* Exact successful/uncertain BIND retry identity. */
         uint32_t boot;
         uint32_t next_mutation;
         uint32_t confirmed_ms;
         uint8_t phase, reason;
-        bool available, bound, releasing;
+        bool available, bound, releasing, ever_bound;
     } BodaqsControlAuthorityPeer;
     typedef struct
     {

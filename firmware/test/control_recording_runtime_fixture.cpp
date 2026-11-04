@@ -129,7 +129,12 @@ static void fence(uint8_t phase,bool pending,bool outage) {
   assert(clockMs-began<=5500);
  }
  assert(clockMs-began<=5500);
- if(outage)assert(clockMs-began>=5500);
+ if(outage) {
+  // Recovery's independent owner watchdog can quarantine sooner than the
+  // handoff ceiling, retaining uncertainty and reserving the mutation identity.
+  assert(clockMs-began>=3400);
+  assert(CanMasterManager::diagnostics().apply.nodes[0].kind==6);
+ }
  for(size_t i=count;i<submitted.size();++i) assert(committed && submitted[i]==0x14);
  assert(!CanMasterManager::diagnostics().apply.phase);
  assert(CanMasterManager::diagnostics().authority.nodes[0].next_mutation>operation);
@@ -137,6 +142,11 @@ static void fence(uint8_t phase,bool pending,bool outage) {
  assert(submitted.size()==after); // no bind/config/rejoin or delayed commit during recording
  assert(!CanMasterManager::diagnostics().apply.phase);
  recording=false;CanMasterManager::endRecordingHandoff();
+ // A new desired edit after uncertain BEGIN must not guess whether that sequence was consumed.
+ muted=!muted;CanMasterManager::scheduleConfigurationReconciliation();
+ advance(100);
+ for(unsigned t=0;t<60000 && !CanMasterManager::configurationReconciled(0);++t) advance(1);
+ assert(CanMasterManager::configurationReconciled(0));
 }
 int main() {
  for(uint8_t phase=1;phase<=5;++phase) {
@@ -144,8 +154,39 @@ int main() {
   fence(phase,true,false);
  }
  fence(1,true,true);fence(4,true,true);fence(5,true,true);
+ // SPI loss before BEGIN submission leaves admission genuinely unknown to the logger.
+ reset();
+ for(unsigned t=0;t<40000 && !CanMasterManager::configurationReconciled(0);++t) advance(1);
+ assert(CanMasterManager::configurationReconciled(0));
+ auto highWater=node.authority.high_water;
+ spiAvailable=false;muted=!muted;CanMasterManager::scheduleConfigurationReconciliation();
+ advance(100);
+ assert(CanMasterManager::diagnostics().apply.pending && node.authority.high_water==highWater);
+ starting=true;CanMasterManager::beginRecordingHandoff();
+ while(!CanMasterManager::recordingHandoffReady()) advance(1);
+ recording=true;starting=false;advance(7000);spiAvailable=true;
+ recording=false;CanMasterManager::endRecordingHandoff();
+ muted=!muted;CanMasterManager::scheduleConfigurationReconciliation();advance(100);
+ for(unsigned t=0;t<60000 && !CanMasterManager::configurationReconciled(0);++t) advance(1);
+ assert(CanMasterManager::configurationReconciled(0));
  reset();spiAvailable=false;starting=true;CanMasterManager::beginRecordingHandoff();
  // An absent remote cannot delay a local-only start when there is no owned work.
  assert(CanMasterManager::recordingHandoffReady());
- puts("production manager recording handoff phase/outage/deadline guards passed");
+ reset();
+ for(unsigned t=0;t<40000 && !CanMasterManager::configurationReconciled(0);++t) advance(1);
+ assert(CanMasterManager::configurationReconciled(0));
+ const auto oldSession=CanMasterManager::diagnostics().authority.session;
+ starting=true;CanMasterManager::beginRecordingHandoff();
+ while(!CanMasterManager::recordingHandoffReady()) advance(1);
+ recording=true;starting=false;
+ bodaqs_control_exchange_init(&master.control,101);
+ assert(CanMasterManager::probeNow());
+ assert(CanMasterManager::diagnostics().authority.session==oldSession);
+ assert(!CanMasterManager::configurationReconciled(0));
+ const auto resetCount=submitted.size();advance(7000);assert(submitted.size()==resetCount);
+ recording=false;CanMasterManager::endRecordingHandoff();
+ for(unsigned t=0;t<40000 && !CanMasterManager::configurationReconciled(0);++t) advance(1);
+ assert(CanMasterManager::configurationReconciled(0));
+ assert(CanMasterManager::diagnostics().authority.session!=oldSession);
+ puts("production manager recording handoff phase/outage/deadline/reset guards passed");
 }

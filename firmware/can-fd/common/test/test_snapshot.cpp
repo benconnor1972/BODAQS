@@ -1,3 +1,4 @@
+#include "bodaqs_control_observer.h"
 #include "bodaqs_control_snapshot.h"
 #include <cassert>
 #include <cstring>
@@ -83,5 +84,17 @@ int main()
         d, 192, 3, 0)); // retained historical nominal evidence
     d[12] = 0;
     assert(!bodaqs_control_descriptor_valid(d, 192, 3, 0));
+    BodaqsControlObserver observer={};
+    bodaqs_control_observer_init(&observer);
+    bodaqs_control_observer_boot(&observer,77,3);
+    bodaqs_control_observer_node(&observer,0,123,1,true);
+    observer.nodes[0].endpoints[0].effective_valid=true;
+    observer.nodes[0].endpoints[0].effective[4]=1;
+    observer.snapshot_phase=2; observer.snapshot_address=0; observer.pending=false;
+    bodaqs_control_observer_node(&observer,0,123,1,false);
+    assert(!observer.snapshot_phase && observer.nodes[0].endpoints[0].effective_valid);
+    assert(!observer.nodes[0].endpoints[0].current);
+    bodaqs_control_observer_boot(&observer,0,0);
+    assert(observer.nodes[0].endpoints[0].effective_valid);
     return 0;
 }

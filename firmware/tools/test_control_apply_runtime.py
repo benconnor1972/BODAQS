@@ -25,6 +25,8 @@ static SensorSpec specs[2];
 static uint8_t count;
 static bool liveMuted;
 static CanMasterManager::Diagnostics s_diagnostics;
+static bool s_renewSession=false;
+static bool s_configurationDirty[4]={};
 static const board::BoardProfile* s_board = nullptr;
 uint8_t LoggerConfig::sensorCount() const { return count; }
 bool LoggerConfig::getSensorSpec(uint8_t i, SensorSpec& out) const { if(i>=count) return false; out=specs[i]; return true; }
@@ -36,6 +38,7 @@ namespace CanMasterManager {
 }
 // JSON
 int main() {
+ s_diagnostics.control.next_read_id=1;
  assert(desiredDisabled_(0)); // fitted but unassigned
  ParamStore params; assert(params.set("provider","can:0") && params.set("endpoint","imu"));
  specs[0].type=SensorType::BMI270ImuI2C; specs[0].params.bind(&params); count=1;

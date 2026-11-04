@@ -9,7 +9,8 @@ extern "C"
     typedef struct
     {
         uint8_t capability[128], effective[192];
-        uint32_t observed_ms;
+        uint64_t effective_uid;
+        uint32_t effective_boot, observed_ms;
         bool capability_valid, effective_valid, current;
     } BodaqsControlEndpointObservation;
     typedef struct
