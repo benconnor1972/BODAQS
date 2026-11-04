@@ -28,6 +28,9 @@ extern "C"
                                               BodaqsControlWrapped *, uint8_t *);
     bool bodaqs_control_authority_client_accept(BodaqsControlAuthorityClient *, uint8_t type,
                                                 const BodaqsControlWrapped *, uint32_t now);
+    /* A fresh node-wide observation can revoke acknowledged authority, never grant it. */
+    void bodaqs_control_authority_client_observe_session(BodaqsControlAuthorityClient *, uint8_t address,
+                                                         uint64_t active_session);
     bool bodaqs_control_authority_client_release(BodaqsControlAuthorityClient *, uint8_t address);
 #ifdef __cplusplus
 }

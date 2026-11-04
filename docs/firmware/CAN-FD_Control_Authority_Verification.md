@@ -27,6 +27,16 @@ snapshot accepting-session/generation/revision fields retain their own provenanc
 `CanMasterManager::releaseControlAuthority(address)` is an idle-only integration
 API. There is no new HTTP mutation endpoint.
 
+Live node clock-fault transitions use `bodaqs_control_node_update_clock_fault`
+to advance every fitted endpoint epoch once, including fault clearance. Repeated
+unchanged health consumes no epochs. If any fitted epoch cannot advance, the
+node latches epoch exhaustion until reboot and rejects inspection, snapshots and
+authority requests with reason 22; boot/session/epoch identities never wrap.
+Captured pages remain immutable, and the observer rejects their old health as
+current when the final fresh endpoint epoch differs. No wire format changes.
+The authority client owns revocation after a fresh observed session mismatch via
+`bodaqs_control_authority_client_observe_session`; observations never grant binding.
+
 ## Automated checks
 
 - `gmake -C firmware/can-fd/common/test test`: codec, master service, SPI/CAN,

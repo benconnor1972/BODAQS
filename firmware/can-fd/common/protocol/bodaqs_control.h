@@ -106,7 +106,12 @@ extern "C"
         uint64_t endpoint_epoch[6];
         uint32_t flags;
         uint32_t pending_operation;
+        bool epoch_exhausted;
     } BodaqsControlNode;
+    /* Update live clock health and fitted-endpoint epochs together. Unchanged
+     * health does not consume epochs. False means epoch exhaustion: control
+     * remains unavailable until reboot, without wrapping boot-scoped identities. */
+    bool bodaqs_control_node_update_clock_fault(BodaqsControlNode *node, bool clock_fault);
     bool bodaqs_control_node_process(const BodaqsControlNode *node,
                                      const BodaqsControlRecord *request,
                                      BodaqsControlRecord *reply);

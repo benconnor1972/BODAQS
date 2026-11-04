@@ -1,5 +1,6 @@
 #include "bodaqs_control_authority_client.h"
 #include <string.h>
+enum { AUTHORITY_PHASE_STOPPED = 3, AUTHORITY_REASON_STALE_SESSION = 5 };
 void bodaqs_control_authority_client_init(BodaqsControlAuthorityClient *s, uint64_t session)
 {
     memset(s, 0, sizeof(*s));
@@ -149,4 +150,14 @@ bool bodaqs_control_authority_client_release(BodaqsControlAuthorityClient *s, ui
         return false;
     s->nodes[a].releasing = true;
     return true;
+}
+
+void bodaqs_control_authority_client_observe_session(BodaqsControlAuthorityClient *s, uint8_t a,
+                                                     uint64_t active_session)
+{
+    if (a >= 4 || !s->nodes[a].bound || active_session == s->session)
+        return;
+    s->nodes[a].bound = false;
+    s->nodes[a].phase = AUTHORITY_PHASE_STOPPED;
+    s->nodes[a].reason = AUTHORITY_REASON_STALE_SESSION;
 }
