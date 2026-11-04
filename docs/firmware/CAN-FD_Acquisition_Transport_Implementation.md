@@ -20,7 +20,7 @@ are part of this implementation.
 | #168 leased recording lifecycle | Merged and verified | `4411809`, merged at `6255dc2`; [lifecycle evidence](CAN-FD_Acquisition_Lifecycle_Implementation.md) |
 | #169 one-node native BDQ recording | Merged and verified | `20ce5a9`, merged at `fbca8ba`; [native recording evidence](CAN-FD_Native_IMU_Recording_Implementation.md) |
 | #170 synchronization and analysis timing | Merged and verified | `a1d4cba`, merged at `8d5dbc4`; [synchronization evidence](CAN-FD_Synchronization_Implementation.md) |
-| #171 bounded loss and continuity recovery | Implementing | Depends on verified #169 |
+| #171 bounded loss and continuity recovery | Merged and verified | `6e64f66`, merged at `bd86b0d`; [bounded loss evidence](CAN-FD_Bounded_Loss_Recovery_Implementation.md) |
 | #172 link/restart containment and cleanup | Implementing | Depends on verified #169 |
 | #173 four-node resource admission | Implementing | Depends on verified #170 |
 | #174 integrated software acceptance | Pending | Depends on #171, #172 and #173 |
@@ -56,6 +56,14 @@ adapter scenarios 1-10 pass; focused timing/BDQ analysis passes 69 tests. The
 child full analysis run passes 588 with one skip, and identical merged source
 preserves passing node/master/A8 builds. Raw synchronization captures remain
 available when absolute association and finite alignment bounds are unknown.
+
+At `bd86b0d`, the full logger host/runtime suite, thirteen common binaries,
+node capture/SPI and acquisition scenarios 1-11, and master timing pass. Native
+reader/timing analysis passes 27 tests. Production ERROR diagnostics cross
+AcquisitionControl into deduplicated companions; normal and recovered actual
+node data reach the independent BDQ reader. The exact child tree preserves
+passing explicit node/master/A8 build evidence. Physical qualification remains
+deferred.
 
 ## Deferred physical qualification
 
