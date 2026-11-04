@@ -11,6 +11,7 @@
 #include "I2CBusScheduler.h"
 #include "BMI270ImuSensor.h"
 #include "BMI270Profile.h"
+#include "Lsm6dso32xConfig.h"
 #include "BdqV2Catalog.h"
 #include "LoggerLimits.h"
 #include "SensorAssignment.h"
@@ -195,6 +196,7 @@ namespace {
 
   uint32_t capabilitiesForType_(SensorType type) {
     switch (type) {
+      case SensorType::LSM6DSO32XImu: return SENSOR_CAP_IMU;
       case SensorType::BMI270ImuI2C:
         return SENSOR_CAP_IMU | SENSOR_CAP_NATIVE_STREAM | SENSOR_CAP_SYNC_CAPTURE;
       case SensorType::AnalogPot:
@@ -214,6 +216,7 @@ namespace {
   bool assignmentMatchesType_(SensorType type, const SensorAssignment& assignment) {
     if (assignment.provider.kind != SensorProviderKind::CanNode) return true;
     switch (type) {
+      case SensorType::LSM6DSO32XImu:
       case SensorType::BMI270ImuI2C:
         return assignment.kind == SensorAssignment::Kind::NodeImu;
       case SensorType::AnalogPot:
@@ -735,6 +738,13 @@ const SensorDiagnosticList& configurationDiagnostics(const LoggerConfig& cfg) {
       add(SensorIssueCode::CapabilityMismatch, SensorIssueSeverity::Error,
           SensorIssueImpact::ExcludeSensor, i, 0xFF, assignment);
       continue;
+    }
+    if (current.type == SensorType::LSM6DSO32XImu) {
+      char validation[128] = {};
+      if (!Lsm6dso32xConfig::validateSpec(current, validation, sizeof(validation))) {
+        add(SensorIssueCode::CapabilityMismatch, SensorIssueSeverity::Error,
+            SensorIssueImpact::ExcludeSensor, i, 0xFF, assignment);
+      }
     }
     if (current.type == SensorType::BMI270ImuI2C) {
       char validation[128] = {0};

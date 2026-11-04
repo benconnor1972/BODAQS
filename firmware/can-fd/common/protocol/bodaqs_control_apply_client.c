@@ -67,8 +67,13 @@ bool bodaqs_control_apply_client_next(BodaqsControlApplyClient *s, BodaqsControl
         o->valid = false;
         return false;
     }
-    /* Finish an issued exchange before yielding ownership; its timeout cannot
-     * cancel node work. Subsequent uncertainty leaves the operation inspectable. */
+    /* Knowledge expires at the original deadline even while the SPI owner
+     * drains an already-issued CAN exchange. Late evidence remains inspectable. */
+    if ((uint32_t)(now - (s->commit_sent ? s->committed : s->started)) >= 5000)
+    {
+        o->kind = 6; o->reason = 19; o->valid = true; o->observed_ms = now;
+        if (!s->pending) { s->phase = 0; return false; }
+    }
     if (s->pending)
     {
         *out = s->current;
@@ -76,15 +81,6 @@ bool bodaqs_control_apply_client_next(BodaqsControlApplyClient *s, BodaqsControl
         memset(out->record.data, 0, 24);
         *type = 7;
         return true;
-    }
-    if ((uint32_t)(now - (s->commit_sent ? s->committed : s->started)) >= 5000)
-    {
-        s->phase = 0;
-        o->kind = 6;
-        o->reason = 19;
-        o->valid = true;
-        o->observed_ms = now;
-        return false;
     }
     if (s->phase == 5 && (int32_t)(now - s->next_query) < 0)
         return false;

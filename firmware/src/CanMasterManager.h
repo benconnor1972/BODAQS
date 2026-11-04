@@ -63,6 +63,7 @@ struct Diagnostics {
   BodaqsControlApplyClient apply = {};
   uint64_t desiredGeneration[4] = {};
   bool desiredDisabled[4] = {};
+  bool desiredEnabled[4] = {};
   bool inventorySupported = false;
   bool inventoryValid = false;
   uint32_t inventoryAttempts = 0;
@@ -79,6 +80,7 @@ struct Diagnostics {
       inventory[CanMasterProtocol::kDiscoveryNodeCount];
 };
 
+void scheduleConfigurationReconciliation();
 void enableControlAuthority(uint64_t session);
 // Idle-only release changes authority and preserves hardware configuration.
 bool releaseControlAuthority(uint8_t address);

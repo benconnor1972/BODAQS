@@ -1,5 +1,6 @@
 #include "bodaqs_control_apply.h"
 #include <string.h>
+static uint16_t read16(const uint8_t *p) { return (uint16_t)(p[0] | ((uint16_t)p[1] << 8)); }
 enum
 {
     IDLE,
@@ -123,8 +124,11 @@ void bodaqs_control_apply_capture(void *ctx, const BodaqsControlNode *v, uint8_t
     {
         bodaqs_control_unconfigured_descriptor(v, ep, false, d);
         if (s->backend && s->backend->reg)
-            d[8] = 3; /* Disabled config/readback only, zero enabled profiles. */
-        d[12] = s->effective[4] == 1 ? 1 : 0;
+        {
+            d[8] = 3; /* Configuration/readback only; acquisition unsupported. */
+            d[6] = 1; d[64] = 1; d[66] = 1;
+        }
+        d[12] = (s->effective[4] == 1 || s->effective[4] == 2) ? 1 : 0;
         bodaqs_control_put_u32(d + 16, (bodaqs_control_get_u32(s->effective + 20) & ~8U) |
                                            ((v->flags & 128) ? 8U : 0));
     }
@@ -153,7 +157,7 @@ void bodaqs_control_apply_tick(BodaqsControlApply *s, uint32_t now)
     }
     else
         rc = bodaqs_imu_disabled_tick(s->backend, now);
-    if (s->backend->changed && s->effective[4] != 3)
+    if ((s->backend->changed || s->backend->proof_invalid) && s->effective[4] != 3)
     {
         s->effective[4] = 3;
         bodaqs_control_put_u32(s->effective + 16, bodaqs_control_get_u32(s->effective + 12));
@@ -196,7 +200,7 @@ void bodaqs_control_apply_tick(BodaqsControlApply *s, uint32_t now)
     }
     {
         uint64_t revision = bodaqs_control_get_u64(s->effective + 32);
-        bool epoch_change = s->effective[4] != 1 || s->backend->changed ||
+        bool epoch_change = s->effective[4] != (s->enabled ? 2 : 1) || s->backend->changed ||
                             bodaqs_control_get_u64(s->effective + 24) !=
                                 bodaqs_control_get_u64(s->begin.data + 8) ||
                             bodaqs_control_get_u64(s->effective + 144) != s->begin.session;
@@ -214,10 +218,20 @@ void bodaqs_control_apply_tick(BodaqsControlApply *s, uint32_t now)
         memset(s->effective, 0, 192);
         s->effective[0] = 3;
         s->effective[2] = 1;
-        s->effective[4] = 1;
+        s->effective[4] = s->enabled ? 2 : 1;
+        if (s->enabled) {
+            s->effective[5] = 3;
+            s->effective[40] = 1; s->effective[42] = 1;
+            s->effective[44] = 1; s->effective[46] = 1; s->effective[47] = 1;
+            bodaqs_control_put_u32(s->effective + 48,3333); bodaqs_control_put_u32(s->effective + 52,1);
+            bodaqs_control_put_u32(s->effective + 56,3333); bodaqs_control_put_u32(s->effective + 60,1);
+            bodaqs_control_put_u32(s->effective + 64,32000); bodaqs_control_put_u32(s->effective + 68,2000000);
+            bodaqs_control_put_u32(s->effective + 72,122); bodaqs_control_put_u32(s->effective + 76,125000);
+            bodaqs_control_put_u32(s->effective + 80,7); bodaqs_control_put_u32(s->effective + 84,100);
+        }
         bodaqs_control_put_u32(s->effective + 8,
-                               0x441); /* identity, engines, register proof; acquisition NA */
-        bodaqs_control_put_u32(s->effective + 12, 0x441);
+                               s->enabled ? 0x7ff : 0x441); /* identity, engines, register proof; acquisition NA */
+        bodaqs_control_put_u32(s->effective + 12, s->enabled ? 0x47f : 0x441);
         bodaqs_control_put_u32(s->effective + 20, 3);
         bodaqs_control_put_u64(s->effective + 24, bodaqs_control_get_u64(s->begin.data + 8));
         bodaqs_control_put_u64(s->effective + 32, revision);
@@ -225,7 +239,7 @@ void bodaqs_control_apply_tick(BodaqsControlApply *s, uint32_t now)
         bodaqs_control_put_u32(s->effective + 108, now);
         memcpy(s->effective + 152, s->backend->image, 24);
         s->view->flags = (s->view->flags & ~(1U << 9)) | (1U << 8);
-        publish(s, 3, 0, 0);
+        publish(s, s->adjusted ? 4 : 3, 0, 0);
     }
 }
 bool bodaqs_control_apply_process(BodaqsControlApply *s, const BodaqsControlRecord *q, uint32_t now,
@@ -355,13 +369,26 @@ bool bodaqs_control_apply_process(BodaqsControlApply *s, const BodaqsControlReco
         else if (s->staging[0] != 1 || s->staging[1] || s->staging[2] != 1 || s->staging[3])
             reason = 2;
         else
-        { /* Disabled-only transaction; enabled profiles deliberately unsupported. */
-            for (i = 4; i < 44; i++)
-                if (s->staging[i])
-                {
-                    reason = s->staging[4] == 1 ? 3 : 24;
-                    break;
+        {
+            s->enabled = s->staging[4] == 1;
+            s->adjusted = false;
+            if (s->staging[4] > 1 || s->staging[5] > 8 || s->staging[6] || s->staging[7]) reason = 24;
+            if (!s->enabled) {
+                for (i=5;i<44;i++) if (s->staging[i]) reason=24;
+            } else if (!reason) {
+                uint16_t id=read16(s->staging+8), version=read16(s->staging+10);
+                bool supported=id==1 && version==1;
+                if (!id || !version) reason=24;
+                for (i=0;i<8;i++) {
+                    id=read16(s->staging+12+4*i);
+                    version=read16(s->staging+14+4*i);
+                    if (i<s->staging[5]) {
+                        if (!id || !version) reason=24;
+                        if (!supported && id==1 && version==1) {supported=true; s->adjusted=true;}
+                    } else if (id || version) reason=24;
                 }
+                if (!reason && !supported) reason=3;
+            }
         }
         if (!reason)
             reason = guards(s);
@@ -371,7 +398,7 @@ bool bodaqs_control_apply_process(BodaqsControlApply *s, const BodaqsControlReco
         {
             s->phase = APPLYING;
             s->view->flags = (s->view->flags & ~(1U << 5)) | (1U << 4);
-            bodaqs_imu_disabled_start(s->backend, s->effective[4] == 1, now);
+            bodaqs_imu_profile_start(s->backend, s->enabled, s->effective[4] == (s->enabled ? 2 : 1), now);
             publish(s, 2, 0, 0);
         }
         *r = s->authority->latest_result;

@@ -1,7 +1,7 @@
 #include "bodaqs_imu_disabled.h"
 #include <string.h>
 /* DS13607 / exact-part ST bitfields; expected bytes are the agreed disabled
- * image, masks exclude reserved fields and include self-clearing commands. */
+ * baseline image (enabled ODR fields are selected below), masks exclude reserved fields and include self-clearing commands. */
 typedef struct
 {
     uint8_t bank, address, expected, mask;
@@ -50,6 +50,7 @@ void bodaqs_imu_disabled_cancel(BodaqsImuDisabled *s)
 }
 void bodaqs_imu_disabled_start(BodaqsImuDisabled *s, bool verified, uint32_t now)
 {
+    s->enabled = false;
     s->started = now;
     s->phase = WAIT;
     s->index = 0;
@@ -57,8 +58,14 @@ void bodaqs_imu_disabled_start(BodaqsImuDisabled *s, bool verified, uint32_t now
     s->reason = 0;
     s->no_op = verified;
     s->changed = false;
+    s->proof_invalid = false;
     s->mismatch_address = s->expected = s->observed = s->mask = 0;
     memset(s->image, 0, sizeof(s->image));
+}
+void bodaqs_imu_profile_start(BodaqsImuDisabled *s, bool enabled, bool verified, uint32_t now)
+{
+    bodaqs_imu_disabled_start(s, verified, now);
+    s->enabled = enabled;
 }
 static int fail(BodaqsImuDisabled *s, uint8_t reason)
 {
@@ -71,6 +78,7 @@ int bodaqs_imu_disabled_tick(BodaqsImuDisabled *s, uint32_t now)
 {
     int rc;
     const Owned *o;
+    uint8_t expected;
     if (s->phase == DONE)
         return 1;
     if (s->phase == FAILED)
@@ -88,6 +96,8 @@ int bodaqs_imu_disabled_tick(BodaqsImuDisabled *s, uint32_t now)
     if (s->phase == RESET_POLL && (uint32_t)(now - s->reset_started) >= 100)
         return fail(s, 16);
     o = &owned[s->index];
+    expected = o->expected;
+    if (s->enabled && !o->bank && (o->address == 16 || o->address == 17)) expected |= 0x90;
     switch (s->phase)
     {
     case BANK_READ:
@@ -226,7 +236,7 @@ int bodaqs_imu_disabled_tick(BodaqsImuDisabled *s, uint32_t now)
             return fail(s, 15); /* Read-only identity never becomes a write target. */
         if (!o->bank && o->address == 1)
             s->bank_low = s->value & 0x3f;
-        if ((s->value & o->mask) != (o->expected & o->mask))
+        if ((s->value & o->mask) != (expected & o->mask))
         {
             if (s->mismatch_address == o->address && s->mask == o->mask)
             {
@@ -235,6 +245,7 @@ int bodaqs_imu_disabled_tick(BodaqsImuDisabled *s, uint32_t now)
             }
             if (s->no_op)
             {
+                s->proof_invalid = true;
                 s->no_op = false;
                 s->index = 0;
                 s->phase = RESTORE;
@@ -243,7 +254,7 @@ int bodaqs_imu_disabled_tick(BodaqsImuDisabled *s, uint32_t now)
             if (!s->changed)
                 return fail(s, 17);
             /* Preserve reserved bits; each changed field gets a separate readback. */
-            s->value = (s->value & (uint8_t)~o->mask) | (o->expected & o->mask);
+            s->value = (s->value & (uint8_t)~o->mask) | (expected & o->mask);
             s->phase = WRITE;
             break;
         }
@@ -253,7 +264,7 @@ int bodaqs_imu_disabled_tick(BodaqsImuDisabled *s, uint32_t now)
          * terminate, rather than writing forever or accepting a partial image. */
         s->phase = READ;
         s->mismatch_address = o->address;
-        s->expected = o->expected & o->mask;
+        s->expected = expected & o->mask;
         s->mask = o->mask;
         return 0;
     case RESTORE:

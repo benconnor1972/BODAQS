@@ -8,6 +8,8 @@ bool canConvertFromJson(JsonVariantConst value, const String&) { return value.is
 #include "SensorAssignment.h"
 #include "SensorConfigEdit.h"
 #include "Rates.h"
+#include "Lsm6dso32xConfig.h"
+#include "CanMasterManager.h"
 #include "ImuOrientation.h"
 #include "BoardSelect.h"
 #include <cassert>
@@ -31,10 +33,17 @@ const ParamDef defs[] = {
   {"optional_count", ParamType::Int, "", nullptr, nullptr, nullptr, nullptr}};
 const ParamDef* params(size_t& n) { n = 3; return defs; }
 const SensorTypeInfo info = {SensorType::AnalogPot, "analog_pot", "Analog", params, nullptr};
-const SensorTypeInfo* lookup(SensorType t) { return t == SensorType::AnalogPot ? &info : nullptr; }
-const char* typeKey(SensorType) { return "analog_pot"; }
+const SensorTypeInfo lsm = {SensorType::LSM6DSO32XImu, "lsm6dso32x_imu", "LSM", Lsm6dso32xConfig::paramDefs, nullptr};
+const SensorTypeInfo* lookup(SensorType t) { return t == SensorType::LSM6DSO32XImu ? &lsm : t == SensorType::AnalogPot ? &info : nullptr; }
+const char* typeKey(SensorType t) { return t == SensorType::LSM6DSO32XImu ? "lsm6dso32x_imu" : "analog_pot"; }
 const char* typeLabel(SensorType) { return "Analog"; }
 CalModeMask supportedCalMask(SensorType) { return CAL_NONE; }
+}
+namespace CanMasterManager {
+Diagnostics controlDiagnostics;
+const Diagnostics& diagnostics() { return controlDiagnostics; }
+bool configurationReconciled(uint8_t) { return false; }
+void scheduleConfigurationReconciliation() {}
 }
 namespace LoggingManager { bool isRunning() { return recording; } void refreshConfigurationStatus() {} }
 namespace UploadModeManager { bool isActive() { return upload; } }
@@ -81,6 +90,29 @@ String configurationNotice_(bool) { return ""; }
 
 int main() {
   ConfigManager::begin("loggercfg");
+  {
+    WebServer srv;
+    mockSetArg("plain", R"({"type":"lsm6dso32x_imu","name":"remote","params":{"provider":"can2","endpoint":"imu","profile":"imu6_3333_32g_2000dps_v1","calibration_ref":"host-cal","mount_point":"fork","orient_valid":true,"orient_qw":1,"orient_qx":0,"orient_qy":0,"orient_qz":0}})");
+    handleSensorPost_(srv); assert(mockLastStatus==201);
+    JsonDocument remote; assert(!deserializeJson(remote,mockLastBody.c_str()));
+    assert(remote["sensor"]["remote_control"]["desired_profile"]=="imu6_3333_32g_2000dps_v1");
+    assert(remote["sensor"]["remote_control"]["acquisition_ready"]==false);
+    static_assert(uint8_t(SensorType::BMI270ImuI2C)==7 && uint8_t(SensorType::LSM6DSO32XImu)==8);
+    assert(disk.indexOf("lsm6dso32x_imu")>=0 && disk.indexOf("host-cal")>=0);
+    const String saved=disk;
+    mockSetArg("id","0"); mockSetArg("plain",R"({"params":{"profile":"orientation_200"}})");
+    handleSensorPut_(srv); assert(mockLastStatus==400 && disk==saved);
+    mockSetArg("plain",R"({"params":{"provider":"local"}})");
+    handleSensorPut_(srv); assert(mockLastStatus==400 && disk==saved);
+    mockSetArg("plain",R"({"params":{"orient_qw":0}})");
+    handleSensorPut_(srv); assert(mockLastStatus==400 && disk==saved);
+    saveOk=false; mockSetArg("plain",R"({"name":"failed"})");
+    handleSensorPut_(srv); assert(mockLastStatus==500 && disk==saved); saveOk=true;
+    assert(ConfigManager::reload()); SensorSpec sp; assert(ConfigManager::getSensorSpec(0,sp));
+    assert(sp.type==SensorType::LSM6DSO32XImu); String metadata; sp.params.get("calibration_ref",metadata); assert(metadata=="host-cal");
+    assert(ConfigManager::deleteSensorByIndex(0)); assert(ConfigManager::save(ConfigManager::get()));
+    rebuilds=0; live.mute=true;
+  }
   assert(ConfigManager::appendSensor(SensorType::AnalogPot, "front"));
   assert(ConfigManager::save(ConfigManager::get()));
   {

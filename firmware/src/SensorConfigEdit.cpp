@@ -3,6 +3,8 @@
 #include "SensorRegistry.h"
 #include "SensorAssignment.h"
 #include "BMI270ImuSensor.h"
+#include "Lsm6dso32xConfig.h"
+#include "CanMasterManager.h"
 #include "BoardSelect.h"
 #include "LoggingManager.h"
 #include "UploadModeManager.h"
@@ -41,6 +43,8 @@ bool validateSensorEdit_(const LoggerConfig& cfg, char* error, size_t capacity) 
     }
     if (spec.type == SensorType::BMI270ImuI2C &&
         assignment.provider.kind == SensorProviderKind::CanNode) continue;
+    if (spec.type == SensorType::LSM6DSO32XImu &&
+        !Lsm6dso32xConfig::validateSpec(spec,error,capacity)) return false;
     size_t count = 0;
     const ParamDef* defs = type->paramDefs(count);
     for (size_t d = 0; defs && d < count; ++d) {
@@ -108,6 +112,7 @@ SensorConfigEdit::Result SensorConfigEdit::commit(
   const LoggerConfig& saved = ConfigManager::get();
   if (!SensorManager::rebuildFromConfig(saved, error, capacity)) return Result::SavedNotApplied;
   restoreLocalRuntimeMutes_();
+  CanMasterManager::scheduleConfigurationReconciliation();
   const uint16_t rate = AnalogInputManager::configureFromConfig(saved, saved.sampleRateHz);
   StorageManager_setSampleRate(rate);
   LoggingManager::refreshConfigurationStatus();

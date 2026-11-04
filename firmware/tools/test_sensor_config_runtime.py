@@ -26,6 +26,7 @@ def main():
         "static bool configEditLocked_(", "static bool rejectConfigEditLocked_(",
         "static bool parseSensorTypeKey_(", "static const char* loggerOutputModeName_(",
         "static long parseLoggerOutputMode_(", "static void addSensorParamsJson_(",
+        "static void addControlApplyJson_(", "static void addImuConfigurationJson_(",
         "static void addSensorJson_(", "static bool readSensorIndexArg_(",
         "static void handleSensorGet_(", "static void seedSensorDefaults_(",
         "static bool commitSensorEdit_(", "static bool applySensorJson_(", "static void handleSensorPut_(",
@@ -45,7 +46,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="bodaqs-sensor-edit-") as temp:
         cpp, exe = Path(temp) / "runtime.cpp", Path(temp) / "runtime.exe"
         cpp.write_text(fixture, encoding="utf-8")
-        subprocess.run([args.compiler, "-std=gnu++2a", "-Wall", "-Wno-unused", "-I", str(json_include), "-I", str(root / "test/stubs"), "-I", str(root / "src"), str(cpp), str(root / "src/SensorParams.cpp"), str(root / "src/SensorAssignment.cpp"), "-o", str(exe)], check=True)
+        subprocess.run([args.compiler, "-std=gnu++2a", "-Wall", "-Wno-unused", "-I", str(json_include), "-I", str(root / "test/stubs"), "-I", str(root / "src"), str(cpp), str(root / "src/SensorParams.cpp"), str(root / "src/SensorAssignment.cpp"), str(root / "can-fd/common/protocol/bodaqs_control.c"), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
 
 

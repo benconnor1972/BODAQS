@@ -1,3 +1,4 @@
+#include "Lsm6dso32xConfig.h"
 #include "Arduino.h"
 #include "SensorAssignment.h"
 #include "SensorDiagnostics.h"

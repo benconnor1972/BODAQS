@@ -19,10 +19,12 @@ extern "C"
         uint32_t started, reset_started;
         uint8_t phase, index, value, bank_low, bank, reason;
         uint8_t image[24], mismatch_address, expected, observed, mask;
-        bool no_op, changed;
+        bool no_op, changed, enabled, proof_invalid;
     } BodaqsImuDisabled;
     void bodaqs_imu_disabled_init(BodaqsImuDisabled *, BodaqsImuRegister, BodaqsImuCancel, void *);
     void bodaqs_imu_disabled_start(BodaqsImuDisabled *, bool previously_verified, uint32_t now);
+    /* Select stopped engines; existing disabled entry point remains compatible. */
+    void bodaqs_imu_profile_start(BodaqsImuDisabled *, bool enabled, bool previously_verified, uint32_t now);
     /* 0 pending, 1 verified, -1 failure; total budget 2000ms, reset budget 100ms. */
     int bodaqs_imu_disabled_tick(BodaqsImuDisabled *, uint32_t now);
     void bodaqs_imu_disabled_cancel(BodaqsImuDisabled *);
