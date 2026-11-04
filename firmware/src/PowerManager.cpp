@@ -123,7 +123,7 @@ static bool checkAnalogRailFault_(bool stopLogging)
     UI::toast("Analog fault", 2000, 1);
   }
 
-  if (stopLogging && LoggingManager::isRunning()) {
+  if (stopLogging && (LoggingManager::isRunning() || LoggingManager::isStarting())) {
     PWR_LOGW("Stopping logging because analog rail fault asserted\n");
     LoggingManager::stop(
         LoggingManager::StopReason::AnalogRailFault,
@@ -366,7 +366,7 @@ static void fuelGaugeInitIfNeeded_()
 
 static void preSleep_() {
   // Stop high-level activities cleanly
-  if (LoggingManager::isRunning()) {
+  if (LoggingManager::isRunning() || LoggingManager::isStarting()) {
     LoggingManager::stop(
         LoggingManager::StopReason::SleepRequest,
         "pre_sleep");

@@ -108,7 +108,7 @@ namespace UI {
   void toast(const char*, int, int) { events.push_back("toast"); }
   void status(const String&) {}
   void loop() { events.push_back("paint"); }
-  constexpr int TARGET_SERIAL = 0, LVL_INFO = 0;
+  constexpr int TARGET_SERIAL = 0, LVL_INFO = 0, LVL_ERROR = 2;
   void println(const char*, const char*, int, int) {}
 }
 namespace UploadModeManager { bool isActive() { return upload; } }
@@ -145,10 +145,12 @@ namespace LoggingManager {
   enum class StartResult : uint8_t { Failed, Pending, Started };
   StartResult requestStart();
   bool isStarting();
+  void cancelStart();
   bool configurationLocked();
   void loop();
   enum class StartFailureHint { None, RestartNow, ConfigConflict };
-  enum class StopReason { StartFailure };
+  enum class StopReason { StartFailure, UserRequest };
+  void stop(StopReason, const char*);
   struct StopContext {};
   void refreshConfigurationStatus();
   LoggingConfigIssue configurationIssue();
@@ -188,6 +190,11 @@ struct Binding { uint8_t buttonIndex; ButtonEvent event; int action; };
 Binding s_bindings[] = {{0, BUTTON_PRESSED, 1}, {0, BUTTON_RELEASED, 1}};
 uint8_t s_bindingCount = 2;
 // PRODUCTION_BUTTON
+const char* evName(ButtonEvent) { return "test"; }
+namespace LoggingManager { void stop(StopReason,const char*) { s_running=false; } }
+namespace ButtonActions {
+// PRODUCTION_TOGGLE
+}
 
 int checks = 0;
 void checkAt(bool ok, int line) {
@@ -235,11 +242,18 @@ int main() {
   reset(); check(issue() == I::None);
   add(T::AnalogPot,"local",0,0);
   CanMasterManager::handoffReady=false;
+  ButtonActions::onToggleLogging(BUTTON_CLICK);
   check(LoggingManager::requestStart()==LoggingManager::StartResult::Pending);
   check(LoggingManager::isStarting() && LoggingManager::configurationLocked() && !s_running && !has("acquire"));
   check(LoggingManager::requestStart()==LoggingManager::StartResult::Pending);
   CanMasterManager::handoffReady=true; LoggingManager::loop();
   check(s_running && !LoggingManager::isStarting() && has("acquire"));
+  reset();
+  CanMasterManager::handoffReady=false;
+  check(LoggingManager::requestStart()==LoggingManager::StartResult::Pending);
+  LoggingManager::cancelStart(); LoggingManager::cancelStart();
+  check(!LoggingManager::configurationLocked() && !CanMasterManager::fenced && !s_running);
+  CanMasterManager::handoffReady=true; LoggingManager::loop(); check(!has("acquire"));
   reset();
   CanMasterManager::handoffReady=false;
   check(LoggingManager::requestStart()==LoggingManager::StartResult::Pending);

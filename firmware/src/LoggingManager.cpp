@@ -336,10 +336,16 @@ LoggingConfigIssue LoggingManager::configurationIssue() { return s_configuration
 const char* LoggingManager::configurationDetail() { return s_configurationDetail; }
 
 bool LoggingManager::isStarting() { return s_starting; }
+void LoggingManager::cancelStart() {
+  if (!s_starting) return;
+  s_starting = false;
+  CanMasterManager::endRecordingHandoff();
+}
 bool LoggingManager::configurationLocked() { return s_starting || s_running || s_stopping; }
 
 LoggingManager::StartResult LoggingManager::requestStart() {
   if (s_running) return StartResult::Started;
+  if (s_stopping) return StartResult::Failed;
   if (!s_starting) {
     s_starting = true;
     CanMasterManager::beginRecordingHandoff();
@@ -610,6 +616,7 @@ LoggingManager::StopContext LoggingManager::stopContext() {
 }
 
 void LoggingManager::stop(StopReason reason, const char* triggerEvent) {
+  cancelStart();
   if (!s_running) {
     LOGGING_LOGW("stop ignored because logging is not active reason=%s trigger=%s\n",
                  stopReasonName(reason), triggerEvent ? triggerEvent : "");

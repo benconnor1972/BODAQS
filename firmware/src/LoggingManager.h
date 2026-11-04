@@ -51,6 +51,7 @@ namespace LoggingManager {
   enum class StartResult : uint8_t { Failed, Pending, Started };
   StartResult requestStart();
   bool isStarting();
+  void cancelStart();
   bool configurationLocked();
   void refreshConfigurationStatus();
   LoggingConfigIssue configurationIssue();
