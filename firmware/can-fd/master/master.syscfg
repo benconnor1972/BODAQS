@@ -68,6 +68,8 @@ MCAN1.rrfe = true;
 MCAN1.rrfs = true;
 MCAN1.anfe = "0";
 MCAN1.anfs = "0";
+// Generated startup defaults preserve bring-up. The shared verified startup
+// adapter applies the explicit CAN_LINK_PROFILE build selector before TX.
 MCAN1.desiredNomRate = 500;
 MCAN1.desiredDataRate = 2;
 MCAN1.spPercent = 80;

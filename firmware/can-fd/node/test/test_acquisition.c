@@ -286,7 +286,7 @@ int main(int argc, char **argv) {
         unsigned before_recovery = samples;
         fault_mode = selected_fault>=9?0:6;
         silence_after_overrun=selected_fault==7;
-        if(selected_fault==9) tx_blocked_until=sim_tick+60000;
+        if(selected_fault==9 || selected_fault==12) tx_blocked_until=sim_tick+(selected_fault==12?50000:110000);
         fifo_drained = false;
         bool recovery_failed=false;
         unsigned failure_reason=0;
@@ -303,6 +303,7 @@ int main(int argc, char **argv) {
         }
         if(selected_fault==6) assert(!recovery_failed && recovery_events == 1 && samples > before_recovery);
         if(selected_fault==7 || selected_fault==8) assert(recovery_failed && failure_reason==32);
+        if(selected_fault==12) assert(!recovery_failed && detected_loss==0 && reported_loss==0 && !gap_seen && samples>before_recovery);
         if(selected_fault==9) assert(!recovery_failed && detected_loss>0 && reported_loss==detected_loss && gap_seen);
         if(selected_fault==10) assert(recovery_failed && failure_reason==31 && recovery_events==254);
         if(selected_fault==11) {

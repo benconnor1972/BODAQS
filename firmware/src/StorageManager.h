@@ -57,6 +57,21 @@ extern volatile bool g_sdWriteSinceLastSample;
 extern bool g_sdTrackEnabled;
 
 
+// Actual requested allocation sizes for the current/last BDQ-v2 start. Heap
+// allocator overhead, filesystem internals and task watermarks are not measured.
+// Fields are independently published observations, not an atomic heap snapshot.
+struct StorageRecordingAllocation {
+  size_t primaryQueueBytes = 0;
+  size_t workspaceBytes = 0;
+  size_t outputBufferBytes = 0;
+  size_t catalogPeakBytes = 0;
+  size_t primaryColumnsPeakBytes = 0;
+  size_t metadataPayloadBytes = 0;
+  size_t staticStateBytes = 0;
+  size_t storageTaskStackBytes = 0;
+};
+StorageRecordingAllocation StorageManager_recordingAllocation();
+
 // Nonblocking observations; pending includes startup, recording and finalization.
 bool StorageManager_recordingIoPending();
 bool StorageManager_recordingReady();

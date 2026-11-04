@@ -3,6 +3,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cmath>
+#include <new>
 namespace {
 uint32_t u32(const uint8_t* p) { return BdqV2Format::getU32(p); }
 uint16_t u16(const uint8_t* p) { return BdqV2Format::getU16(p); }
@@ -90,7 +91,12 @@ const BdqV2CatalogChannel evidenceChannels[]={
 }
 bool RemoteImuStream::configure(const RemoteImuBinding& b,uint16_t sample,uint16_t companion) {
   release(); if(!b.boot || b.node>3 || !sample || !companion || sample==companion) return false;
-  if(!samples_.allocate(4096) || !evidence_.allocate(224,128)) {release();return false;}
+  if(!samples_.allocate(8192) || !evidence_.allocate(224,512)) {release();return false;}
+  provenance_=static_cast<char*>(DynamicSpscQueueDetail::allocateBytes(3072));
+  models_=static_cast<Model*>(DynamicSpscQueueDetail::allocateBytes(32*sizeof(Model)));
+  anchors_=static_cast<Anchor*>(DynamicSpscQueueDetail::allocateBytes(32*sizeof(Anchor)));
+  if(!provenance_ || !models_ || !anchors_) {release();return false;}
+  for(unsigned i=0;i<32;++i) {new(models_+i) Model{};new(anchors_+i) Anchor{};}
   binding_=b;sampleId_=sample;evidenceId_=companion;
   char raw[385];for(size_t i=0;i<192;++i) std::snprintf(raw+2*i,3,"%02x",b.effective[i]);
   const bool scalingKnown=(u32(b.effective+12)&16u) && !(u32(b.effective+16)&16u) &&
@@ -111,7 +117,7 @@ bool RemoteImuStream::configure(const RemoteImuBinding& b,uint16_t sample,uint16
       2*(x*y+z*w),1-2*(x*x+z*z),2*(y*z-x*w),
       2*(x*z-y*w),2*(y*z+x*w),1-2*(x*x+y*y));
   }
-  const int provenanceLength=std::snprintf(provenance_,sizeof provenance_,
+  const int provenanceLength=std::snprintf(provenance_,3072,
     "\"provider_uid\":\"%llu\",\"node_address\":%u,\"node_boot\":%lu,\"master_boot\":\"%llu\",\"master_uid\":\"%llu\","
     "\"recording_id\":\"%llu\",\"control_session\":\"%llu\",\"measurement_context\":\"%llu\","
     "\"desired_generation\":\"%llu\",\"applied_revision\":\"%llu\",\"effective_descriptor_hex\":\"%s\","
@@ -136,19 +142,25 @@ bool RemoteImuStream::configure(const RemoteImuBinding& b,uint16_t sample,uint16
     (unsigned long)u32(b.effective+72),(unsigned long)u32(b.effective+76),
     (unsigned long)u32(b.effective+80),(unsigned long)u32(b.effective+84),
     b.node,(unsigned long)b.boot,(unsigned long long)b.masterBoot);
-  if(provenanceLength<0 || size_t(provenanceLength)>=sizeof provenance_) {release();return false;}
+  if(provenanceLength<0 || size_t(provenanceLength)>=3072) {release();return false;}
   return true;
+}
+size_t RemoteImuStream::allocatedBufferBytes() {
+ return 8192*sizeof(Sample)+512*224+3072+32*sizeof(Model)+32*sizeof(Anchor);
 }
 void RemoteImuStream::release() {
   samples_.release();evidence_.release();sampleId_=evidenceId_=0;
   segment_=nextSequence_=stagedEvidence_=modelCount_=epoch_=anchorCount_=0;nextEvidence_=1;
   persistedEvidence_.store(0);haveSequence_=haveBoundary_=failed_=holding_=false;
-  for(auto& m:models_) m=Model{};
-  for(auto& a:anchors_) a=Anchor{};
+
+  DynamicSpscQueueDetail::releaseBytes(provenance_);provenance_=nullptr;
+  DynamicSpscQueueDetail::releaseBytes(models_);models_=nullptr;
+  DynamicSpscQueueDetail::releaseBytes(anchors_);anchors_=nullptr;
   for(auto& l:losses_) l=Loss{};
   producerGap_=alignmentDegraded_=false;lossDependency_=0;
   std::memset(managementLoss_,0,sizeof managementLoss_);
   lastLossReport_=nextLossLane_=0;
+
 }
 BdqV2StreamSource RemoteImuStream::sampleSource() {
   BdqV2StreamSource s;s.streamId=sampleId_;s.recordSizeBytes=28;s.nativeTickModulus=uint64_t{1}<<32;

@@ -1,3 +1,4 @@
+#include "../can-fd/common/network/bodaqs_can_link.h"
 #include "../can-fd/common/protocol/bodaqs_timing.h"
 #if defined(ARDUINO_ARCH_ESP32)
 #include <esp_timer.h>
@@ -1155,6 +1156,16 @@ bool releaseControlAuthority(uint8_t address) {
       bodaqs_control_authority_client_release(&s_diagnostics.authority, address);
 }
 
+uint8_t acquisitionLinkProfile(uint8_t address) {
+ if(address>=4 || !s_diagnostics.inventoryValid) return BODAQS_CAN_LINK_UNKNOWN;
+ for(const auto& peer:s_diagnostics.inventory) if(peer.nodeAddress==address && (peer.flags&1u))
+  return bodaqs_can_link_from_capabilities(peer.capabilities);
+ return BODAQS_CAN_LINK_UNKNOWN;
+}
+bool acquisitionLinkCompatible(uint8_t address) {
+ return bodaqs_can_link_from_capabilities(s_diagnostics.capabilities)==BODAQS_CAN_LINK_ACQUISITION &&
+        acquisitionLinkProfile(address)==BODAQS_CAN_LINK_ACQUISITION;
+}
 bool configurationReconciled(uint8_t address) {
   if (address >= 4 || (!s_diagnostics.desiredDisabled[address] && !s_diagnostics.desiredEnabled[address])) return false;
   const bool enabled=s_diagnostics.desiredEnabled[address];

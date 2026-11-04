@@ -18,10 +18,17 @@ int main() {
   uint8_t b[64]={1,0x25,1,0,0,0,56,0,7};b[13]=1;b[14]=2;b[54]=0x60;
   assert(s.accept(0x90,b,64,0,0,2000000)==RemoteImuStream::Accepted);
   uint8_t p[64]={0,0,1,5};
-  for(unsigned seq=0;seq<4100;seq+=5) {
-    if(seq%100==0) origin(s,seq,seq/100+1);
+  for(unsigned seq=0;seq<8195;seq+=5) {
+    if(seq%100==0) {
+      origin(s,seq,seq/100+1);
+      // Persist definitions while samples remain queued through many model
+      // retirements; only expanded bytes/evidence serials keep references.
+      auto source=s.evidenceSource();uint8_t definition[224];
+      while(source.pendingRecords(source.context)) assert(source.popRecord(source.context,definition,sizeof definition));
+      source.chunkWritten(source.context);
+    }
     BdqV2Format::putU16(p,seq);
-    // The last complete batch is dropped; the immutable 4095 old rows remain.
+    // The last complete batch is dropped; the immutable 8190 old rows remain.
     assert(s.accept(0x100,p,64,0,0,2000000)==RemoteImuStream::Accepted);
   }
   assert(!s.failed());
@@ -30,7 +37,7 @@ int main() {
     assert(ev.popRecord(ev.context,record,sizeof record));
     if(record[12]==7) {
       assert(record[168]==8 && BdqV2Format::getU32(record+148)==5);
-      assert(BdqV2Format::getU32(record+160)==4095 && BdqV2Format::getU32(record+164)==4099);
+      assert(BdqV2Format::getU32(record+160)==8190 && BdqV2Format::getU32(record+164)==8194);
       assert(record[184]==0);loss=true;
     }
   }
@@ -41,16 +48,16 @@ int main() {
     assert(BdqV2Format::getU32(record)==seq);
     assert(BdqV2Format::getU32(record+4)==1000+300*seq);
   }
-  origin(s,4100,42);BdqV2Format::putU16(p,4100);
+  origin(s,8195,83);BdqV2Format::putU16(p,8195);
   assert(s.accept(0x100,p,64,0,0,2100000)==RemoteImuStream::Accepted);
   while(ev.pendingRecords(ev.context)) assert(ev.popRecord(ev.context,record,sizeof record));
   ev.chunkWritten(ev.context);
-  for(unsigned seq=5;seq<4095;++seq) {
+  for(unsigned seq=5;seq<8190;++seq) {
     assert(data.popRecord(data.context,record,sizeof record));
     assert(BdqV2Format::getU32(record)==seq);
   }
   assert(data.popRecord(data.context,record,sizeof record));
-  assert(BdqV2Format::getU32(record)==4100 && (record[8]&3)==3);
+  assert(BdqV2Format::getU32(record)==8195 && (record[8]&3)==3);
   assert(s.acceptManagementLoss(1,9,6,15,2500000)==RemoteImuStream::Accepted);
   assert(s.acceptManagementLoss(1,9,6,15,2500001)==RemoteImuStream::Accepted);
   assert(s.acceptManagementLoss(1,9,6,20,2600000)==RemoteImuStream::Accepted);
@@ -66,7 +73,7 @@ int main() {
   losses.chunkWritten(losses.context);
   // Periodic evidence cannot occupy the slots reserved for interpretation.
   s.release();assert(s.configure(binding,2,3));
-  for(unsigned i=0;i<140;++i) assert(s.acceptSharedSync(i,1000*i,1,3000000)==RemoteImuStream::Accepted);
+  for(unsigned i=0;i<524;++i) assert(s.acceptSharedSync(i,1000*i,1,3000000)==RemoteImuStream::Accepted);
   assert(!s.failed());
   assert(s.finish(3200000));
   ev=s.evidenceSource();unsigned evidenceLost=0;
@@ -82,6 +89,6 @@ int main() {
   assert(s.accept(0x90,b,64,0,0,3300000)==RemoteImuStream::Accepted);
   b[14]=3;unsigned retained=1;
   while(s.accept(0x90,b,64,0,0,3300000)==RemoteImuStream::Accepted) ++retained;
-  assert(s.failed() && retained==128);
-  assert(ev.pendingRecords(ev.context)==128); // essential exhaustion preserves every old record
+  assert(s.failed() && retained==512);
+  assert(ev.pendingRecords(ev.context)==512); // essential exhaustion preserves every old record
 }

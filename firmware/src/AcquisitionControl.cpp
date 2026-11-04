@@ -301,6 +301,12 @@ bool begin(uint64_t recording,uint64_t context) {
   {Lock lock;owned=true;enterPending=true;exitPending=false;cleanupRequested=false;}
   return true;
 }
+size_t reservedBytes() {
+ return sizeof(peers)+sizeof(mailboxes)+sizeof(outcomes)+sizeof(transport)+
+        sizeof(recordingId)+sizeof(contextId)+sizeof(session)+sizeof(masterBoot)+sizeof(nextTransfer)+
+        sizeof(nextRead)+sizeof(cursor)+sizeof(dataConsumer)+sizeof(dataMask)+sizeof(dataCursor)+sizeof(serviceCursor)+
+        4096; // configured control task stack; watermark qualification remains deferred
+}
 bool active() {Lock lock;return owned;}
 bool setDataConsumer(DataConsumer consumer,uint8_t mask) {
   Lock lock;if(owned || (mask&~15u)) return false;

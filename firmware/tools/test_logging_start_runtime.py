@@ -68,6 +68,8 @@ struct TestStorageSink : RecordingStorageSink {
 } storageSink;
 RecordingStorageWorker storageWorker(storageSink);
 bool StorageManager_startLog() { return storageWorker.requestStart(); }
+struct FixtureAllocation {size_t primaryQueueBytes=0,workspaceBytes=0,outputBufferBytes=0,catalogPeakBytes=0,primaryColumnsPeakBytes=0,metadataPayloadBytes=0,staticStateBytes=0,storageTaskStackBytes=0;};
+FixtureAllocation StorageManager_recordingAllocation() {return {};}
 bool StorageManager_recordingIoPending() { return storageWorker.pending(); }
 bool StorageManager_recordingReady() { return storageWorker.recording(); }
 bool StorageManager_storageFault() { return storageWorker.fault() != RecordingStorageWorker::Fault::None; }

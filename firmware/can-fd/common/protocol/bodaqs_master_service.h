@@ -19,7 +19,7 @@ typedef struct {
 
 /* Independent of the immutable selected head. Admission must charge this exact
  * representation and its finite burst/service envelope, not just CAN axes. */
-#define BODAQS_MASTER_RETENTION_CAPACITY 96U
+#define BODAQS_MASTER_RETENTION_CAPACITY 128U
 typedef struct {
     uint8_t bytes[76];
     uint32_t boot, ordinal_high, received_ms;

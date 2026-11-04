@@ -18,8 +18,10 @@ struct RemoteImuBinding {
 // native records and their evidence dependency until a successful chunk write.
 class RemoteImuStream {
 public:
+  ~RemoteImuStream() {release();}
   enum Acceptance { Invalid=-1, Blocked=0, Accepted=1 };
   bool configure(const RemoteImuBinding&,uint16_t sampleId,uint16_t evidenceId);
+  static size_t allocatedBufferBytes();
   void release(); // only after both producer and storage owner stop
   Acceptance accept(uint16_t identifier,const uint8_t*,size_t length,
                     uint32_t masterTick,uint64_t masterOrder,uint32_t loggerTick,uint8_t receptionFlags=0);
@@ -50,14 +52,14 @@ private:
     uint8_t epoch=0;
   };
   RemoteImuBinding binding_;
-  char provenance_[3072]={};
+  char* provenance_=nullptr;
   DynamicSpscQueue<Sample> samples_;
   DynamicSpscRecordQueue evidence_;
   uint16_t sampleId_=0,evidenceId_=0;
   uint32_t segment_=0,nextSequence_=0,nextEvidence_=1,stagedEvidence_=0;
   std::atomic<uint32_t> persistedEvidence_{0};
-  Model models_[32];
-  Anchor anchors_[32];
+  Model* models_=nullptr;
+  Anchor* anchors_=nullptr;
   uint8_t anchorCount_=0;
   uint8_t modelCount_=0,epoch_=0;
   bool haveSequence_=false,haveBoundary_=false;

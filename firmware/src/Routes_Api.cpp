@@ -1,3 +1,5 @@
+#include "../can-fd/common/network/bodaqs_can_link.h"
+#include "RemoteImuRecording.h"
 #include "Routes_Api.h"
 
 #include <Arduino.h>
@@ -940,10 +942,23 @@ static void addSensorJson_(JsonObject obj, uint8_t index, const SensorSpec& sp, 
     String profile; sp.params.get("profile", profile);
     control["desired_profile"] = profile;
     control["acquisition_ready"] = false;
+    const auto& admission=RemoteImuRecording::admission();
+    JsonObject capacity=control["recording_admission"].to<JsonObject>();
+    capacity["attempted"]=admission.attempted;
+    capacity["qualified"]=admission.qualified;
+    capacity["reason"]=admission.attempted?ImuAdmission::reasonText(admission.reason):"not evaluated";
+    capacity["can_occupancy"]=admission.canOccupancy;
+    capacity["shared_spi_occupancy"]=admission.spiOccupancy;
+    capacity["drain_ratio"]=admission.drainRatio;
+    capacity["logger_reserved_bytes"]=admission.loggerBytes;
+
     const auto assignment = sensorAssignment(sp, nullptr);
     if (assignment.provider.kind == SensorProviderKind::CanNode) {
       const uint8_t address = assignment.provider.index;
       const auto& master = CanMasterManager::diagnostics();
+      control["master_link_profile"]=bodaqs_can_link_from_capabilities(master.capabilities);
+      control["node_link_profile"]=CanMasterManager::acquisitionLinkProfile(address);
+      control["acquisition_link_compatible"]=CanMasterManager::acquisitionLinkCompatible(address);
       addControlApplyJson_(control, master.apply, address, master.desiredGeneration[address],
           master.desiredDisabled[address], CanMasterManager::configurationReconciled(address),
           master.desiredEnabled[address]);

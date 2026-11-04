@@ -139,6 +139,8 @@ namespace DisplayManager { void prepareLoggingScreen(uint16_t, uint8_t) { events
 namespace IndicatorManager { void ledOn() {} void ledOff() {} }
 
 namespace RemoteImuRecording {
+const char* failureReason() {return "fixture remote unavailable";}
+bool resourcesReady(size_t=0) {return true;}
 bool configure(const LoggerConfig&) { return true; }
 bool configured() {return false;} bool prepared() {return true;}
 bool recording() {return true;} bool failed() {return false;}
