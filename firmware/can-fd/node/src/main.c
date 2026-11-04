@@ -5,6 +5,8 @@
 
 #include "bodaqs_can_network.h"
 #include "bodaqs_control.h"
+#include "bodaqs_control_authority.h"
+#include "bodaqs_control_snapshot.h"
 #include "bodaqs_record_queue.h"
 #include "ti_msp_dl_config.h"
 
@@ -76,6 +78,10 @@ static bool take_record(BodaqsRecordQueue *queue, void *record)
 volatile NodeRuntimeInfo gNodeRuntimeInfo;
 
 static BodaqsControlNode gControlNode;
+static BodaqsControlAuthority gControlAuthority;
+static BodaqsControlSnapshot gControlSnapshot;
+static uint64_t gChallengeEntropy;
+static unsigned gChallengeEntropyWords;
 static volatile uint32_t gUptimeMs;
 static volatile bool gAnnounceScheduled;
 static volatile uint32_t gAnnounceDueMs;
@@ -155,6 +161,35 @@ static uint32_t read_boot_id(uint64_t hardware_uid)
         }
     }
     return boot_id;
+}
+
+/* One readiness check/capture per turn; runtime entropy never blocks CAN. */
+static void service_challenge_entropy(void)
+{
+    if (gChallengeEntropyWords < 2U && !DL_TRNG_isHealthTestFail(TRNG) &&
+        !DL_TRNG_isCommandFail(TRNG) && DL_TRNG_isCaptureReady(TRNG)) {
+        uint32_t value = DL_TRNG_getCapture(TRNG);
+        DL_TRNG_clearInterruptStatus(TRNG, DL_TRNG_INTERRUPT_CAPTURE_RDY_EVENT);
+        gChallengeEntropy |= (uint64_t)value << (32U * gChallengeEntropyWords++);
+        if (gChallengeEntropyWords == 2U) DL_TRNG_disablePower(TRNG);
+    }
+}
+static uint64_t challenge_random(void *context)
+{
+    (void)context;
+    return gChallengeEntropyWords == 2U ? gChallengeEntropy : 0U;
+}
+
+static void capture_endpoint_descriptor(void *context,
+    const BodaqsControlNode *view, uint8_t endpoint, bool effective,
+    uint8_t *data)
+{
+    (void)context;
+    bodaqs_control_unconfigured_descriptor(view, endpoint, effective, data);
+    if (!effective) {
+        bodaqs_control_put_u32(data + 36, NODE_FIRMWARE_VERSION);
+        bodaqs_control_put_u64(data + 40, gNodeRuntimeInfo.hardware_uid);
+    }
 }
 
 static uint8_t read_node_address(void)
@@ -319,9 +354,14 @@ static void process_can_message(
         BodaqsControlRecord control, reply;
         uint16_t transaction;
         uint8_t payload[64];
-        gControlNode.flags = gNodeRuntimeInfo.clock_fault ? (1UL << 7) : 0U;
+        gControlNode.flags = (gControlNode.flags & ~(1UL << 7)) |
+            (gNodeRuntimeInfo.clock_fault ? (1UL << 7) : 0U);
         if (bodaqs_control_decode_can(message->data, bodaqs_can_dlc_to_length((uint8_t)message->dlc), false, &transaction, &control) &&
-            bodaqs_control_node_process(&gControlNode, &control, &reply) &&
+            (bodaqs_control_authority_process(&gControlAuthority, &gControlNode,
+                 &control, gUptimeMs, challenge_random, NULL, &reply) ||
+             bodaqs_control_snapshot_process(&gControlSnapshot, &gControlNode,
+                 &control, gUptimeMs, &reply) ||
+             bodaqs_control_node_process(&gControlNode, &control, &reply)) &&
             bodaqs_control_encode_can(&reply, true, transaction, payload)) {
             if (!send_can_frame((uint16_t)(BODAQS_CAN_ID_RESPONSE_BASE + gNodeRuntimeInfo.node_address), payload, sizeof(payload))) {
                 ++gNodeRuntimeInfo.transmit_enqueue_failures;
@@ -402,6 +442,10 @@ int main(void)
     gNodeRuntimeInfo.boot_id = read_boot_id(gNodeRuntimeInfo.hardware_uid);
     gNodeRuntimeInfo.node_address = read_node_address();
     memset(&gControlNode, 0, sizeof(gControlNode));
+    bodaqs_control_authority_init(&gControlAuthority);
+    memset(&gControlSnapshot, 0, sizeof(gControlSnapshot));
+    gControlSnapshot.capture = capture_endpoint_descriptor;
+    DL_TRNG_enablePower(TRNG);
     gControlNode.boot_id = gNodeRuntimeInfo.boot_id;
     gControlNode.endpoint_mask = NODE_ENDPOINT_MASK;
     gControlNode.endpoint_epoch[0] = 1U;
@@ -428,6 +472,7 @@ int main(void)
 
     while (1) {
         uint32_t now = gUptimeMs;
+        service_challenge_entropy();
         service_can_receive();
         gNodeRuntimeInfo.can_rx_capacity = gCanReceiveQueue.capacity;
         gNodeRuntimeInfo.can_rx_pending = gCanReceiveQueue.depth;

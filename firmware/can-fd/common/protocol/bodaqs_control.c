@@ -242,6 +242,11 @@ bool bodaqs_control_node_process(const BodaqsControlNode *node,
         reason = BODAQS_CONTROL_REASON_STALE_NODE;
         field = BODAQS_CONTROL_FIELD_NODE_BOOT;
     }
+    else if (request->session && request->session != node->active_session)
+    {
+        reason = 5;
+        field = 6;
+    }
     else if (request->opcode != BODAQS_CONTROL_GET_NODE_STATE)
     {
         reason = BODAQS_CONTROL_REASON_UNSUPPORTED;

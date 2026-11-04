@@ -1,5 +1,28 @@
 #include "bodaqs_control_observer.h"
 #include <string.h>
+enum
+{
+    SNAPSHOT_IDLE,
+    SNAPSHOT_OPEN_CAPABILITY,
+    SNAPSHOT_CAPABILITY_PAGES,
+    SNAPSHOT_RELEASE_CAPABILITY,
+    SNAPSHOT_OPEN_EFFECTIVE,
+    SNAPSHOT_EFFECTIVE_PAGES,
+    SNAPSHOT_RELEASE_EFFECTIVE,
+    SNAPSHOT_REFRESH_EPOCH
+};
+void bodaqs_control_observer_tick(BodaqsControlObserver *o, uint32_t now)
+{
+    o->now_ms = now;
+    if (o->snapshot_phase && (uint32_t)(now - o->snapshot_started_ms) >=
+                                 BODAQS_CONTROL_SNAPSHOT_LIFETIME_MS)
+    {
+        o->nodes[o->snapshot_address].endpoints[o->snapshot_endpoint].current =
+            false;
+        o->pending = false;
+        o->snapshot_phase = 0;
+    }
+}
 void bodaqs_control_observer_init(BodaqsControlObserver *observer)
 {
     memset(observer, 0, sizeof(*observer));
@@ -14,12 +37,15 @@ void bodaqs_control_observer_boot(BodaqsControlObserver *observer,
         !(features & BODAQS_CONTROL_FEATURE_OBSERVATION))
     {
         observer->pending = false;
+        observer->snapshot_phase = 0;
         observer->cursor_address = 0;
         observer->cursor_endpoint = 0;
         for (i = 0; i < 4; ++i)
         {
             observer->nodes[i].valid = false;
             observer->nodes[i].epoch_valid_mask = 0;
+            memset(observer->nodes[i].endpoints, 0,
+                   sizeof(observer->nodes[i].endpoints));
         }
     }
     observer->master_boot_id = boot;
@@ -43,6 +69,7 @@ void bodaqs_control_observer_node(BodaqsControlObserver *observer,
         if (observer->pending && observer->current.node_address == address)
         {
             observer->pending = false;
+            observer->snapshot_phase = 0;
         }
     }
     node->node_boot_id = boot;
@@ -65,6 +92,50 @@ bool bodaqs_control_observer_next(BodaqsControlObserver *observer,
         *type = BODAQS_CONTROL_POLL_REQUEST;
         return true;
     }
+    if (observer->snapshot_phase)
+    {
+        uint8_t phase = observer->snapshot_phase;
+        memset(&observer->current, 0, sizeof(observer->current));
+        observer->current.master_boot_id = observer->master_boot_id;
+        observer->current.node_address = observer->snapshot_address;
+        observer->current.record.node_boot_id =
+            observer->nodes[observer->snapshot_address].node_boot_id;
+        observer->current.record.endpoint = observer->snapshot_endpoint;
+        observer->current.record.operation = observer->snapshot_read_id;
+        if (phase == SNAPSHOT_OPEN_CAPABILITY ||
+            phase == SNAPSHOT_OPEN_EFFECTIVE)
+        {
+            observer->current.record.opcode =
+                phase == SNAPSHOT_OPEN_CAPABILITY
+                    ? BODAQS_CONTROL_OPEN_CAPABILITIES
+                    : BODAQS_CONTROL_OPEN_EFFECTIVE;
+            observer->snapshot_read_id = observer->next_read_id++;
+            observer->current.record.operation = observer->snapshot_read_id;
+            observer->snapshot_started_ms = observer->now_ms;
+        }
+        else if (phase == SNAPSHOT_CAPABILITY_PAGES ||
+                 phase == SNAPSHOT_EFFECTIVE_PAGES)
+        {
+            observer->current.record.opcode = BODAQS_CONTROL_READ_PAGE;
+            observer->current.record.page = observer->snapshot_page;
+            observer->current.record.transfer = observer->snapshot_id;
+        }
+        else if (phase == SNAPSHOT_RELEASE_CAPABILITY ||
+                 phase == SNAPSHOT_RELEASE_EFFECTIVE)
+        {
+            observer->current.record.opcode = BODAQS_CONTROL_RELEASE_SNAPSHOT;
+            observer->current.record.transfer = observer->snapshot_id;
+        }
+        else
+        {
+            observer->current.record.opcode = BODAQS_CONTROL_GET_NODE_STATE;
+            observer->current.record.operation = observer->next_read_id++;
+        }
+        observer->pending = true;
+        *request = observer->current;
+        *type = BODAQS_CONTROL_SUBMIT_REQUEST;
+        return true;
+    }
     for (i = 0; i < 28; ++i)
     {
         uint8_t address = observer->cursor_address,
@@ -73,7 +144,7 @@ bool bodaqs_control_observer_next(BodaqsControlObserver *observer,
         if (++observer->cursor_endpoint == 7)
         {
             observer->cursor_endpoint = 0;
-            observer->cursor_address = (uint8_t) ((address + 1) % 4);
+            observer->cursor_address = (uint8_t)((address + 1) % 4);
         }
         if (!node->available ||
             (endpoint && !(node->endpoint_mask & (1U << (endpoint - 1)))))
@@ -85,8 +156,8 @@ bool bodaqs_control_observer_next(BodaqsControlObserver *observer,
         observer->current.node_address = address;
         observer->current.record.opcode = BODAQS_CONTROL_GET_NODE_STATE;
         observer->current.record.endpoint =
-            endpoint ? (uint8_t) (endpoint - 1)
-                     : (uint8_t) BODAQS_CONTROL_NODE_WIDE;
+            endpoint ? (uint8_t)(endpoint - 1)
+                     : (uint8_t)BODAQS_CONTROL_NODE_WIDE;
         observer->current.record.node_boot_id = node->node_boot_id;
         observer->current.record.operation = observer->next_read_id++;
         observer->pending = true;
@@ -102,6 +173,7 @@ bool bodaqs_control_observer_accept(BodaqsControlObserver *observer,
                                     const BodaqsControlWrapped *reply,
                                     uint32_t now)
 {
+    bodaqs_control_observer_tick(observer, now);
     const BodaqsControlRecord *record = &reply->record,
                               *request = &observer->current.record;
     BodaqsControlObservation *node;
@@ -114,6 +186,143 @@ bool bodaqs_control_observer_accept(BodaqsControlObserver *observer,
     {
         bodaqs_control_observer_boot(observer, reply->master_boot_id, 0);
         return false;
+    }
+    if (observer->snapshot_phase &&
+        request->opcode != BODAQS_CONTROL_GET_NODE_STATE)
+    {
+        BodaqsControlEndpointObservation *ep =
+            &observer->nodes[reply->node_address]
+                 .endpoints[observer->snapshot_endpoint];
+        uint8_t phase = observer->snapshot_phase;
+        if (record->operation != request->operation ||
+            record->node_boot_id != request->node_boot_id ||
+            record->endpoint != request->endpoint || record->session ||
+            record->page != request->page)
+            return false;
+        if (type == BODAQS_CONTROL_RECEIPT_RESPONSE)
+        {
+            if (record->opcode != request->opcode || record->data_length != 4 ||
+                record->data[3] != request->opcode)
+                return false;
+            if (record->data[0] >= BODAQS_CONTROL_BUSY)
+            {
+                observer->pending = false;
+                observer->snapshot_phase = 0;
+                ep->current = false;
+            }
+            return true;
+        }
+        observer->pending = false;
+        if (type == BODAQS_CONTROL_POLL_RESPONSE &&
+            record->opcode == BODAQS_CONTROL_ERROR &&
+            record->data_length == 24 &&
+            record->data[0] == BODAQS_CONTROL_COMMAND_REJECTED &&
+            record->data[3] == request->opcode)
+        {
+            observer->nodes[reply->node_address].reason = record->data[1];
+            observer->nodes[reply->node_address].field = record->data[2];
+            observer->snapshot_phase = SNAPSHOT_IDLE;
+            ep->current = false;
+            return true;
+        }
+        if (type != BODAQS_CONTROL_POLL_RESPONSE ||
+            record->opcode != request->opcode)
+        {
+            observer->snapshot_phase = 0;
+            ep->current = false;
+            return false;
+        }
+        if (phase == SNAPSHOT_OPEN_CAPABILITY ||
+            phase == SNAPSHOT_OPEN_EFFECTIVE)
+        {
+            uint16_t length = phase == SNAPSHOT_OPEN_CAPABILITY ? 128 : 192;
+            uint8_t schema = phase == SNAPSHOT_OPEN_CAPABILITY ? 2 : 3;
+            if (!record->transfer || record->data_length != 24 ||
+                record->data[0] != schema || record->data[1] ||
+                record->data[2] != 1 || record->data[3] ||
+                record->data[4] != (uint8_t)length || record->data[5] ||
+                record->data[6] != (length + 23) / 24 || record->data[7] ||
+                (phase == SNAPSHOT_OPEN_CAPABILITY &&
+                 (bodaqs_control_get_u64(record->data + 8) ||
+                  bodaqs_control_get_u64(record->data + 16))))
+            {
+                observer->snapshot_phase = 0;
+                ep->current = false;
+                return false;
+            }
+            observer->snapshot_length = length;
+            observer->snapshot_id = record->transfer;
+            observer->snapshot_page = 0;
+            observer->snapshot_revision =
+                bodaqs_control_get_u64(record->data + 8);
+            observer->snapshot_epoch =
+                bodaqs_control_get_u64(record->data + 16);
+            memset(observer->snapshot_bytes, 0,
+                   sizeof(observer->snapshot_bytes));
+            ++observer->snapshot_phase;
+            return true;
+        }
+        if (record->transfer != observer->snapshot_id)
+        {
+            observer->snapshot_phase = 0;
+            ep->current = false;
+            return false;
+        }
+        if (phase == SNAPSHOT_CAPABILITY_PAGES ||
+            phase == SNAPSHOT_EFFECTIVE_PAGES)
+        {
+            unsigned offset = observer->snapshot_page * 24U;
+            unsigned count = observer->snapshot_length - offset;
+            if (count > 24)
+                count = 24;
+            if (record->data_length != count)
+            {
+                observer->snapshot_phase = 0;
+                ep->current = false;
+                return false;
+            }
+            memcpy(observer->snapshot_bytes + offset, record->data, count);
+            if (++observer->snapshot_page * 24U >= observer->snapshot_length)
+            {
+                if (!bodaqs_control_descriptor_valid(
+                        observer->snapshot_bytes, observer->snapshot_length,
+                        phase == SNAPSHOT_CAPABILITY_PAGES ? 2 : 3,
+                        observer->snapshot_endpoint) ||
+                    (phase == SNAPSHOT_EFFECTIVE_PAGES &&
+                     (bodaqs_control_get_u64(observer->snapshot_bytes + 32) !=
+                          observer->snapshot_revision ||
+                      bodaqs_control_get_u64(observer->snapshot_bytes + 184) !=
+                          observer->snapshot_epoch)))
+                {
+                    observer->snapshot_phase = 0;
+                    ep->current = false;
+                    return false;
+                }
+                if (phase == SNAPSHOT_CAPABILITY_PAGES)
+                {
+                    memcpy(ep->capability, observer->snapshot_bytes, 128);
+                    ep->capability_valid = true;
+                }
+                else
+                {
+                    memcpy(ep->effective, observer->snapshot_bytes, 192);
+                    ep->effective_valid = true;
+                    ep->observed_ms = now;
+                    ep->current = false;
+                }
+                ++observer->snapshot_phase;
+            }
+            return true;
+        }
+        if (record->data_length != 24 || record->data[0] || record->data[1] ||
+            record->data[2] || record->data[3] != request->opcode)
+        {
+            observer->snapshot_phase = 0;
+            ep->current = false;
+            return false;
+        }
+        ++observer->snapshot_phase;
+        return true;
     }
     if (record->operation != request->operation ||
         record->node_boot_id != request->node_boot_id ||
@@ -181,8 +390,28 @@ bool bodaqs_control_observer_accept(BodaqsControlObserver *observer,
     {
         node->endpoint_epoch[record->endpoint] =
             bodaqs_control_get_u64(record->data + 8);
-        node->epoch_valid_mask |= (uint16_t) (1U << record->endpoint);
+        node->epoch_valid_mask |= (uint16_t)(1U << record->endpoint);
     }
     observer->pending = false;
+    if (record->endpoint != BODAQS_CONTROL_NODE_WIDE)
+    {
+        BodaqsControlEndpointObservation *ep =
+            &node->endpoints[record->endpoint];
+        if (observer->snapshot_phase == SNAPSHOT_REFRESH_EPOCH)
+        {
+            ep->current = ep->effective_valid &&
+                          bodaqs_control_get_u64(ep->effective + 184) ==
+                              node->endpoint_epoch[record->endpoint];
+            observer->snapshot_phase = 0;
+        }
+        else
+        {
+            ep->current = false;
+            observer->snapshot_phase = SNAPSHOT_OPEN_CAPABILITY;
+            observer->snapshot_address = reply->node_address;
+            observer->snapshot_endpoint = record->endpoint;
+            observer->snapshot_started_ms = now;
+        }
+    }
     return true;
 }

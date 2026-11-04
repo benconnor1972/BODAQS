@@ -76,3 +76,40 @@ success and host tests do not prove physical latency, TRNG freshness or wiring.
 5. Measure CAN retry spacing, SPI CS spacing/rearm, foreground latency and Health
    responsiveness on actual boards. No acquisition traffic or IMU configuration
    is enabled by this change; its physical application tests belong to #156/#157.
+
+## Endpoint snapshot inspection (#156)
+
+The logger now reads capability schema 2/v1 (128 bytes) and effective schema
+3/v1 (192 bytes), one immutable snapshot at a time per node. It completes all
+24-byte pages and releases the snapshot before starting another endpoint or
+node. Each transfer has its original five-second lifetime; a retry cannot
+renew it. A fresh endpoint GET_NODE_STATE must match the effective snapshot's
+epoch before diagnostics label it current. This is observational evidence;
+it does not establish authority, desired agreement or acquisition admission.
+
+An unconfigured IMU reports its fitted endpoint separately from implemented
+features and profiles: features and profile count are zero, acquisition is
+not ready, and no register proof, measured frequency, calibration or clock
+measurement is claimed. Capability UID is provenance. Applicable unknown
+fields have zero payload and a clear known bit; fields that do not apply have
+all masks clear. Known retained settings use the historical mask. API field
+statuses distinguish current, historical, unknown and not_applicable, and
+nominal and measured rates have separate nullable rational values. Health
+shows C:unconf or C:unknown when inspection completes with those states.
+
+On the real logger/master/node chain, inspect `/api/v1/status` while the node
+is initially unconfigured, then disconnect CAN midway through a descriptor.
+Confirm no incomplete transfer is marked current, and reconnect restores
+inspection. Repeat with four nodes and capture SPI/CAN timestamps: every
+snapshot's final page/release must finish inside five seconds, with no
+round-robin delay across nodes. Retry an identical opening request near its
+original deadline and confirm it does not extend the retention period.
+Change endpoint epoch while reading pages: pages must retain their original
+bytes, and the final fresh epoch check must reject currentness. Record board
+revisions, commits, actual bus timing and stack high-water measurements.
+Host tests and target compilation do not establish those physical results.
+
+The portable snapshot capture callback is the extension point for verified
+sensor application/readback. A later backend must publish actual support,
+profiles, masks and evidence there; fitted presence alone cannot enable a
+feature or establish sensor health.
