@@ -106,6 +106,65 @@ immediately per target/profile; no stale successful image can mask a failed buil
 The candidate's manifest/logs are the exact final-run evidence; a focused fixture
 pass alone does not establish those full-suite or target-build results.
 
+### Verified candidate
+
+The complete runner passed on the clean committed source
+`144175e07f1e614bbddff075016a48cf3b7ab19f`, tree
+`73d9799c9d1401dfbb0709eaf1dab5b4f20a66e9`. The source guard confirmed the same
+HEAD and no tracked changes after validation. The retained bundle is
+`C:/Users/benco/dev/BODAQS-worktrees/imu-software-candidate-174-complete`.
+The later evidence-only documentation commit does not change the tested firmware,
+analysis, runner or verifier sources.
+
+| Validation | Result |
+|---|---|
+| A8 dependencies | Explicit PlatformIO package installation succeeded before host fixtures consumed vendor headers. |
+| Full firmware host/runtime target | Passed, including all original control/configuration/storage regressions and the combined acceptance fixture. |
+| Common protocol/link host target | All 14 binaries passed. |
+| Node adapter host target | SPI/capture binaries and acquisition scenarios 1–12 passed. |
+| Control-apply runtime | Passed. |
+| Retained combined recording | Five scenarios, two explicit restarts and eight cut/CRC cases passed; normal/recovery renewal gaps were 107/113/111/116 logical ms per node, and stalled-write gaps were 107/113/111/108 ms. |
+| Full analysis `python -m pytest -q` | 588 passed, one skipped, seven warnings in 83.64 s. The retained log records the skip count and existing dependency/pandas warnings. |
+| TI G3507 node / G3518 master | All four explicit target/profile builds passed with forced rebuilds. |
+| A8 `bodaqs_s3_mini_n4r2` | Clean and production build passed; RAM 260460/327680 bytes, flash 2020553/4063232 bytes. |
+
+The Windows run skips
+`test_default_import_agent_app_config_path_uses_macos_convention`; its existing
+`skipif(os.name == "nt")` reason explains that POSIX path resolution is anchored
+to a drive letter on Windows. That reason remains in the archived test source.
+
+Actual TI link-map allocation, including each reserved 2048-byte stack:
+
+| Target/profile | FLASH bytes | SRAM bytes |
+|---|---:|---:|
+| G3507 node, bringup | 41504 | 13169 |
+| G3507 node, acquisition | 41456 | 13169 |
+| G3518 master, bringup | 41344 | 62139 in bank 0 |
+| G3518 master, acquisition | 41352 | 62139 in bank 0 |
+
+The master maps report 3397 unused bank-0 bytes and unused bank 1. These static
+allocations establish neither stack watermarks nor runtime heap headroom.
+Observed tool identities include GCC/G++ 16.2.0, Python 3.11.9, TI ARM Clang
+5.1.1 LTS, SDK 2.11.00.07, SysConfig 1.28.1+4785, PlatformIO 6.2.0 and Espressif
+32 platform 6.13.0. Complete compiler/framework/library identities and command
+arguments are retained in `logs/` and `BUILD_MANIFEST.json`.
+
+All 70 entries in the retained SHA-256 inventory were independently rechecked.
+Key bundle identities are:
+
+- `SOURCE.zip`: `ab2491c26d4f0c0c3c2f7f98b018f6246708d703ead5f382efe6a0165b5945ab`.
+- `BUILD_MANIFEST.json`: `ebed5f638495a6fa612f8ae59eeb91b84f54162735ed322fe8d7ff6dd5900d62`.
+- `SHA256SUMS.txt`: `478c51a5a6f809b8ec808121af0b2cd0cb4af88b3db7636f8352911486a5acce`.
+- A8 application `firmware.bin`: `c5bd679fa7d876c102d89da8ac632a77eb2e13328d98364823575894a3a3e282`.
+
+The manifest identifies each TI `.out`/map and A8 ELF/application/bootloader/
+partition artifact by exact target, link profile, byte count and SHA-256. The
+inventory additionally covers every log, input/dispatch ledger, BDQ result and
+damaged prefix. Earlier interrupted/missing-dependency attempts have non-passing
+manifests and are not this verified candidate. Integration merge and the final
+independent Standards/Spec review are recorded separately in the implementation
+index.
+
 Physical qualification [#175](https://github.com/benconnor1972/BODAQS/issues/175)
 and fault qualification [#176](https://github.com/benconnor1972/BODAQS/issues/176)
 remain deferred and unexecuted: FIFO/DRDY/SYNC association, 25 us rearm, 100 us

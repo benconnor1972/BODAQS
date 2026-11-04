@@ -23,7 +23,7 @@ are part of this implementation.
 | #171 bounded loss and continuity recovery | Merged and verified | `6e64f66`, merged at `bd86b0d`; [bounded loss evidence](CAN-FD_Bounded_Loss_Recovery_Implementation.md) |
 | #172 link/restart containment and cleanup | Merged and verified | `1113809`, merged at `647811a`; [link/restart evidence](CAN-FD_Link_Restart_Implementation.md) |
 | #173 four-node resource admission | Merged and verified | `0628154`, merged at `e8c5123`; [admission evidence](CAN-FD_Four_Node_Admission_Implementation.md), [link profiles](CAN-FD_Link_Profile_Implementation.md) |
-| #174 integrated software acceptance | Pending | Depends on #171, #172 and #173 |
+| #174 integrated software acceptance | Candidate verified; integration merge/review pending | Tested source `144175e`, [combined acceptance and exact candidate evidence](CAN-FD_Integrated_Software_Acceptance.md), [reusable candidate runner](CAN-FD_Software_Candidate_Bundle.md) |
 
 At `9c20ead`, the combined common CAN/control suite (nine binaries), full logger
 host/runtime suite, asynchronous storage-controller fixtures and explicit A8
@@ -91,6 +91,21 @@ and acquisition link selectors pass. Target builds were not repeated.
 Production has no qualified scheduling profile and explicitly rejects remote
 admission before PREPARE; deterministic synthetic profiles establish software
 behavior only. #174 integrated acceptance and final review remain pending.
+
+At `144175e`, the complete #174 software candidate passes on committed tree
+`73d9799c9d1401dfbb0709eaf1dab5b4f20a66e9`: all firmware host/runtime checks,
+14 common binaries, node adapter scenarios 1–12, baseline control-apply,
+independent combined four-node recording/ingress ledger/prefix recovery, full
+analysis (588 passed, one skipped, seven warnings), all four TI node/master
+bringup/acquisition builds and clean A8 production build. The source guard
+confirms unchanged HEAD and tracked source. The retained local bundle is
+`C:/Users/benco/dev/BODAQS-worktrees/imu-software-candidate-174-complete`;
+its complete 70-file SHA-256 inventory was independently verified. Exact
+source/archive/manifest/image identities, target allocation and reproduction
+commands are recorded in the #174 evidence above. Later evidence-only docs do
+not alter the tested firmware, analysis or tools. Final integration merge and
+independent Standards/Spec review remain pending; physical qualification remains
+deferred and production remote admission remains unsupported/unqualified.
 
 ## Deferred physical qualification
 
