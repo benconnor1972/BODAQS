@@ -35,6 +35,7 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_i2c_startup_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_startup_log_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_logging_start_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_sensor_config_runtime.py --compiler "$(CXX)"
 	@echo "All tests passed."
 
 $(TEST_BIN): $(PROD_SRCS) $(STUB_SRCS) $(TEST_SRCS)

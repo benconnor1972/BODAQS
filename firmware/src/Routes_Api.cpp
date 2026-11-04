@@ -6,6 +6,7 @@
 #include "SD_MMC.h"
 
 #include "ConfigManager.h"
+#include "SensorConfigEdit.h"
 #include "DisplayManager.h"
 #include "FirmwareInfo.h"
 #include "LoggingManager.h"
@@ -613,6 +614,17 @@ static void addSensorParamsJson_(JsonObject obj, const SensorSpec& sp) {
   const SensorTypeInfo* ti = SensorRegistry::lookup(sp.type);
   size_t defCount = 0;
   const ParamDef* defs = ti ? ti->paramDefs(defCount) : nullptr;
+  // Generic saved fields need not appear in the driver's parameter schema.
+  for (uint8_t k = 0; k < sp.params.size(); ++k) {
+    const char* key = sp.params.keyAt(k);
+    if (!key || !*key || !strncasecmp(key, "__", 2) || !strcasecmp(key, "output_id")) continue;
+    bool hidden = false;
+    for (size_t d = 0; defs && d < defCount; ++d) {
+      if (!strcasecmp(key, defs[d].key)) { hidden = defs[d].hidden; break; }
+    }
+    if (!hidden) params[key] = sp.params.valueAt(k);
+  }
+
   for (size_t i = 0; defs && i < defCount; ++i) {
     const ParamDef& pd = defs[i];
     if (!pd.key || !*pd.key || pd.hidden) continue;
@@ -652,6 +664,12 @@ static void addSensorJson_(JsonObject obj, uint8_t index, const SensorSpec& sp, 
   obj["type"] = SensorRegistry::typeKey(sp.type);
   obj["type_label"] = SensorRegistry::typeLabel(sp.type);
   obj["muted"] = sp.mutedDefault;
+  String provider = "local", endpoint;
+  sp.params.get("provider", provider);
+  sp.params.get("endpoint", endpoint);
+  obj["provider"] = provider;
+  obj["endpoint"] = endpoint;
+
   const CalModeMask supported = SensorRegistry::supportedCalMask(sp.type);
   const CalModeMask allowed = ConfigManager::calAllowedMaskByIndex(index);
   const CalModeMask effective = (allowed == 0xFF) ? supported : (supported & allowed);
@@ -871,7 +889,12 @@ static void handleSensorGet_(WebServer& srv) {
 }
 
 static void seedSensorDefaults_(SensorSpec& sp) {
+  String provider, endpoint;
+  const bool haveProvider = sp.params.get("provider", provider);
+  const bool haveEndpoint = sp.params.get("endpoint", endpoint);
   sp.params.clear();
+  if (haveProvider) sp.params.set("provider", provider);
+  if (haveEndpoint) sp.params.set("endpoint", endpoint);
   const SensorTypeInfo* ti = SensorRegistry::lookup(sp.type);
   size_t defCount = 0;
   const ParamDef* defs = ti ? ti->paramDefs(defCount) : nullptr;
@@ -884,34 +907,40 @@ static void seedSensorDefaults_(SensorSpec& sp) {
   }
 }
 
-static void handleSensorPut_(WebServer& srv) {
-  if (rejectConfigEditLocked_(srv)) return;
+static bool commitSensorEdit_(WebServer& srv, SensorConfigEdit& edit, const LoggerConfig& cfg) {
+  char detail[160] = {};
+  const auto result = edit.commit(cfg, detail, sizeof(detail));
+  if (result == SensorConfigEdit::Result::Applied) return true;
+  JsonDocument doc;
+  addEnvelope_(doc, "bodaqs.logger.sensor_edit");
+  doc["saved"] = result == SensorConfigEdit::Result::SavedNotApplied;
+  doc["runtime_rebuilt"] = false;
+  doc["restart_recommended"] = false;
+  doc["error"] = result == SensorConfigEdit::Result::Invalid ? "invalid_sensor_config"
+      : result == SensorConfigEdit::Result::Locked ? "configuration_locked"
+      : result == SensorConfigEdit::Result::SaveFailed ? "save_failed" : "runtime_rebuild_failed";
+  doc["message"] = detail;
+  sendJson_(srv, result == SensorConfigEdit::Result::Invalid ? 400
+      : result == SensorConfigEdit::Result::Locked ? 423 : 500, doc);
+  return false;
+}
 
-  uint8_t idx = 0;
-  if (!readSensorIndexArg_(srv, idx)) return;
-
-  JsonDocument req;
-  if (!readJsonBody_(srv, req)) return;
-
-  LoggerConfig tmp = ConfigManager::get();
-  SensorSpec sp;
-  if (!tmp.getSensorSpec(idx, sp)) {
-    sendError_(srv, 404, "unknown_sensor", "Sensor index is not configured.");
-    return;
+static bool applySensorJson_(WebServer& srv, JsonDocument& req, SensorSpec& sp) {
+  if ((!req["params"].isNull() && !req["params"].is<JsonObjectConst>()) ||
+      (!req["muted"].isNull() && !req["muted"].is<bool>())) {
+    sendError_(srv, 400, "invalid_sensor_params", "params must be an object and muted must be a boolean.");
+    return false;
   }
-
-  bool restartRecommended = false;
   if (!req["type"].isNull()) {
     String typeText = req["type"] | "";
     SensorType newType = sp.type;
     if (!parseSensorTypeKey_(typeText, newType) || !SensorRegistry::lookup(newType)) {
       sendError_(srv, 400, "invalid_sensor_type", "Unknown sensor type.");
-      return;
+      return false;
     }
     if (newType != sp.type) {
       sp.type = newType;
       seedSensorDefaults_(sp);
-      restartRecommended = true;
     }
   }
   if (!req["name"].isNull()) {
@@ -921,28 +950,64 @@ static void handleSensorPut_(WebServer& srv) {
   }
   if (!req["muted"].isNull()) sp.mutedDefault = req["muted"] | sp.mutedDefault;
 
+
+  for (const char* key : {"provider", "endpoint"}) {
+    if (!req[key].isNull() && (!req[key].is<const char*>() || !sp.params.set(key, req[key].as<String>()))) {
+      sendError_(srv, 400, "invalid_sensor_params", "Could not store sensor assignment."); return false;
+    }
+  }
   JsonObjectConst params = req["params"].as<JsonObjectConst>();
   for (JsonPairConst kv : params) {
     const char* key = kv.key().c_str();
     if (!key || !*key || strcasecmp(key, "output_id") == 0) continue;
     if (strcasecmp(key, "units_label") == 0 || strcasecmp(key, "i2c_hz") == 0) continue;
+    if (kv.value().isNull() || kv.value().is<JsonObjectConst>() || kv.value().is<JsonArrayConst>()) {
+      sendError_(srv, 400, "invalid_sensor_params", "Sensor parameter must be a scalar value."); return false;
+    }
+    bool stored = false;
     if (strcasecmp(key, "output_mode") == 0) {
       String text;
       if (kv.value().is<const char*>()) text = kv.value().as<const char*>();
       else text = String((long)(kv.value() | 1));
-      sp.params.setInt(key, parseLoggerOutputMode_(text));
+      if (!text.equalsIgnoreCase("RAW") && !text.equalsIgnoreCase("LINEAR") && text != "0" && text != "1") {
+        sendError_(srv, 400, "invalid_sensor_params", "Invalid output mode."); return false;
+      }
+      stored = sp.params.setInt(key, parseLoggerOutputMode_(text));
     } else if (kv.value().is<bool>()) {
-      sp.params.setBool(key, kv.value().as<bool>());
+      stored = sp.params.setBool(key, kv.value().as<bool>());
     } else if (kv.value().is<long>() || kv.value().is<int>()) {
-      sp.params.setInt(key, kv.value().as<long>());
+      stored = sp.params.setInt(key, kv.value().as<long>());
     } else if (kv.value().is<double>() || kv.value().is<float>()) {
-      sp.params.setFloat(key, kv.value().as<double>());
+      stored = sp.params.setFloat(key, kv.value().as<double>());
     } else {
       String text = kv.value().as<String>();
-      sp.params.set(key, text);
+      stored = sp.params.set(key, text);
     }
+    if (!stored) { sendError_(srv, 400, "invalid_sensor_params", "Could not store sensor parameter."); return false; }
   }
-  sp.params.set("output_id", "identity");
+
+  return true;
+}
+
+static void handleSensorPut_(WebServer& srv) {
+  if (rejectConfigEditLocked_(srv)) return;
+
+  uint8_t idx = 0;
+  if (!readSensorIndexArg_(srv, idx)) return;
+
+  JsonDocument req;
+  if (!readJsonBody_(srv, req)) return;
+
+  SensorConfigEdit edit;
+  if (!edit.ready()) { sendError_(srv, 503, "editor_unavailable", "Sensor editor unavailable."); return; }
+  LoggerConfig tmp = ConfigManager::get();
+  SensorSpec sp;
+  if (!tmp.getSensorSpec(idx, sp)) {
+    sendError_(srv, 404, "unknown_sensor", "Sensor index is not configured.");
+    return;
+  }
+
+  if (!applySensorJson_(srv, req, sp)) return;
 
   tmp.sensors[idx].type = sp.type;
   tmp.sensors[idx].mutedDefault = sp.mutedDefault;
@@ -951,14 +1016,13 @@ static void handleSensorPut_(WebServer& srv) {
   tmp.sensors[idx].params = sp.params;
   ConfigManager::setSensorHeaderByIndex(idx, sp);
 
-  if (!ConfigManager::save(tmp)) {
-    sendError_(srv, 500, "save_failed", "Failed to save sensor configuration.");
-    return;
-  }
+  if (!commitSensorEdit_(srv, edit, tmp)) return;
 
   JsonDocument doc;
   addEnvelope_(doc, "bodaqs.logger.sensor");
-  doc["restart_recommended"] = restartRecommended;
+  doc["restart_recommended"] = false;
+  doc["saved"] = true;
+  doc["runtime_rebuilt"] = true;
   JsonObject sensor = doc["sensor"].to<JsonObject>();
   addSensorJson_(sensor, idx, sp, true);
   sendJson_(srv, 200, doc);
@@ -979,8 +1043,9 @@ static void handleSensorPost_(WebServer& srv) {
 
   String name = req["name"] | "";
   name.trim();
-  if (!ConfigManager::appendSensor(type, name.length() ? name.c_str() : nullptr) ||
-      !ConfigManager::save(ConfigManager::get())) {
+  SensorConfigEdit edit;
+  if (!edit.ready()) { sendError_(srv, 503, "editor_unavailable", "Sensor editor unavailable."); return; }
+  if (!ConfigManager::appendSensor(type, name.length() ? name.c_str() : nullptr)) {
     sendError_(srv, 500, "add_sensor_failed", "Failed to add sensor.");
     return;
   }
@@ -988,9 +1053,16 @@ static void handleSensorPost_(WebServer& srv) {
   const uint8_t idx = ConfigManager::sensorCount() - 1;
   SensorSpec sp;
   ConfigManager::getSensorSpec(idx, sp);
+  if (!applySensorJson_(srv, req, sp)) return;
+  ConfigManager::setSensorHeaderByIndex(idx, sp);
+  LoggerConfig tmp = ConfigManager::get();
+  tmp.sensors[idx] = sp;
+  if (!commitSensorEdit_(srv, edit, tmp)) return;
   JsonDocument doc;
   addEnvelope_(doc, "bodaqs.logger.sensor");
-  doc["restart_recommended"] = true;
+  doc["restart_recommended"] = false;
+  doc["saved"] = true;
+  doc["runtime_rebuilt"] = true;
   JsonObject sensor = doc["sensor"].to<JsonObject>();
   addSensorJson_(sensor, idx, sp, true);
   sendJson_(srv, 201, doc);
@@ -1001,14 +1073,19 @@ static void handleSensorDelete_(WebServer& srv) {
 
   uint8_t idx = 0;
   if (!readSensorIndexArg_(srv, idx)) return;
-  if (!ConfigManager::deleteSensorByIndex(idx) || !ConfigManager::save(ConfigManager::get())) {
+  SensorConfigEdit edit;
+  if (!edit.ready()) { sendError_(srv, 503, "editor_unavailable", "Sensor editor unavailable."); return; }
+  if (!ConfigManager::deleteSensorByIndex(idx)) {
     sendError_(srv, 500, "delete_sensor_failed", "Failed to delete sensor.");
     return;
   }
   JsonDocument doc;
+  if (!commitSensorEdit_(srv, edit, ConfigManager::get())) return;
   addEnvelope_(doc, "bodaqs.logger.sensor_deleted");
   doc["deleted_index"] = idx;
-  doc["restart_recommended"] = true;
+  doc["restart_recommended"] = false;
+  doc["saved"] = true;
+  doc["runtime_rebuilt"] = true;
   sendJson_(srv, 200, doc);
 }
 

@@ -71,6 +71,9 @@ public:
         char text[32]; snprintf(text, sizeof(text), "%ld", value); copy_(text);
     }
     String(int value) : String(static_cast<long>(value)) {}
+    String(unsigned long long value) : String() {
+        char tmp[32]; snprintf(tmp, sizeof(tmp), "%llu", value); copy_(tmp);
+    }
     String(unsigned int value) : String(static_cast<long>(value)) {}
     String(double value, unsigned char digits = 2) : String() {
         char text[64]; snprintf(text, sizeof(text), "%.*f", int(digits), value); copy_(text);

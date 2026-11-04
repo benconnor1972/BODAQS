@@ -1,4 +1,9 @@
 #include "ConfigManager.h"
+#include "SensorConfigEdit.h"
+#include "SensorManager.h"
+#include "LoggingManager.h"
+#include "UploadModeManager.h"
+#include <new>
 #include "SensorParams.h"
 #include "SensorTypes.h"
 #include "Rates.h"
@@ -382,6 +387,80 @@ namespace {
   }
 
 } // namespace
+
+// Sensor edits are synchronous on the logger loop. Snapshot on the heap: the
+// 32 compact ParamStores are too large for the task stack. Do not reload the
+// file to roll back: storage may still be unavailable after a failed write.
+struct SensorConfigEdit::State {
+  LoggerConfig config;
+  SensorSpec specs[MAX_SENSORS];
+  ParamStore stores[MAX_SENSORS];
+  Calibration calibrations[MAX_SENSORS];
+  CalModeMask allowed[MAX_SENSORS];
+  uint8_t count;
+  bool haveRuntimeMute[MAX_SENSORS] = {};
+  bool runtimeMuted[MAX_SENSORS] = {};
+};
+
+SensorConfigEdit::SensorConfigEdit() {
+  if (LoggingManager::isRunning() || UploadModeManager::isActive()) return;
+  state_ = new (std::nothrow) State;
+  if (!state_) return;
+  state_->config = s_cfg;
+  state_->count = g_specCount;
+  for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
+    state_->specs[i] = g_specs[i];
+    state_->stores[i] = g_stores[i];
+    state_->calibrations[i] = g_cals[i];
+    state_->allowed[i] = g_calAllowed[i];
+    if (i >= g_specCount) continue;
+    String provider;
+    g_specs[i].params.get("provider", provider);
+    if (provider.length() && !provider.equalsIgnoreCase("local")) continue;
+    for (uint8_t j = 0; j < SensorManager::count(); ++j) {
+      Sensor* live = SensorManager::get(j);
+      if (live && !strcasecmp(live->name(), g_specs[i].name)) {
+        state_->haveRuntimeMute[i] = true;
+        state_->runtimeMuted[i] = live->muted();
+        break;
+      }
+    }
+  }
+}
+
+void SensorConfigEdit::restoreLocalRuntimeMutes_() {
+  for (uint8_t i = 0; i < state_->count; ++i) {
+    if (!state_->haveRuntimeMute[i]) continue;
+    const SensorSpec& previous = state_->specs[i];
+    const int8_t index = s_cfg.findSensorByName(previous.name);
+    if (index < 0) continue;
+    const SensorSpec& current = s_cfg.sensors[index];
+    String provider;
+    current.params.get("provider", provider);
+    if ((provider.length() && !provider.equalsIgnoreCase("local")) ||
+        current.type != previous.type || current.mutedDefault != previous.mutedDefault) continue;
+    for (uint8_t j = 0; j < SensorManager::count(); ++j) {
+      Sensor* live = SensorManager::get(j);
+      if (live && !strcasecmp(live->name(), current.name)) live->setMuted(state_->runtimeMuted[i]);
+    }
+  }
+}
+
+SensorConfigEdit::~SensorConfigEdit() {
+  if (!state_) return;
+  if (!saved_) {
+    s_cfg = state_->config;
+    g_cfg = s_cfg;
+    g_specCount = state_->count;
+    for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
+      g_specs[i] = state_->specs[i];
+      g_stores[i] = state_->stores[i];
+      g_cals[i] = state_->calibrations[i];
+      g_calAllowed[i] = state_->allowed[i];
+    }
+  }
+  delete state_;
+}
 
 const LoggerConfig& ConfigManager::get() {
     return s_cfg;
