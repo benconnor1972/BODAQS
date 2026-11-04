@@ -39,7 +39,8 @@ static void addControlAuthorityJson_(JsonObject node,
   node["logger_session_id"] = decimal;
   node["authority_bound"] = authority.bound;
   node["authority_observed_current"] = authority.bound && observation.available &&
-      observation.valid && observation.active_session == session && session != 0 &&
+      observation.valid && authority.boot == observation.node_boot_id &&
+      observation.active_session == session && session != 0 &&
       static_cast<int32_t>(observation.observed_ms - authority.confirmed_ms) >= 0;
   node["authority_reason"] = authority.reason;
   node["authority_reason_key"] = bodaqs_control_reason_key(authority.reason);

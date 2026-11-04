@@ -122,6 +122,10 @@ bool bodaqs_control_authority_client_accept(BodaqsControlAuthorityClient *s, uin
     if (r->data_length != 24 || r->data[3] != q->opcode ||
         (r->opcode != q->opcode && r->opcode != BODAQS_CONTROL_ERROR))
         return false;
+    if (r->transfer != q->transfer ||
+        ((q->opcode == BODAQS_CONTROL_BIND_SESSION || q->opcode == BODAQS_CONTROL_RELEASE_SESSION) &&
+         bodaqs_control_get_u32(r->data + 4) != q->operation))
+        return false;
     s->pending = false;
     p->reason = r->data[1];
     if (r->opcode == q->opcode && r->data[0] == 0)

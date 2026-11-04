@@ -32,10 +32,10 @@ uint8_t bodaqs_control_authority_admit(BodaqsControlAuthority *s, const BodaqsCo
         return 5;
     if (v->pending_operation)
         return 7;
-    if (q->operation <= s->high_water)
-        return 12;
     if (s->high_water == UINT32_MAX)
         return 22;
+    if (q->operation <= s->high_water)
+        return 12;
     if (q->operation != s->high_water + 1)
         return 24;
     return 0;

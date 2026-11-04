@@ -26,7 +26,7 @@ int main() {
     JsonDocument document;
     BodaqsControlObservation observation = {};
     BodaqsControlAuthorityPeer authority = {};
-    observation.available = true; observation.valid = true;
+    observation.available = true; observation.valid = true; observation.node_boot_id = 55; authority.boot = 55;
     observation.active_session = 18446744073709551615ULL;
     observation.observed_ms = 100;
     authority.bound = true; authority.confirmed_ms = 90;
