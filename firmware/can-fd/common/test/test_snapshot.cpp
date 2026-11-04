@@ -51,6 +51,13 @@ int main()
     q.operation = 9;
     assert(bodaqs_control_snapshot_process(&s, &n, &q, 5400, &r));
     assert(r.opcode == 127 && r.data[1] == 10);
+    q.operation = 8;
+    q.opcode = BODAQS_CONTROL_RELEASE_SNAPSHOT;
+    q.page = 0;
+    assert(bodaqs_control_snapshot_process(&s, &n, &q, 5500, &r));
+    assert(r.opcode == 8 && r.data[0] == 0 && r.data[3] == 8);
+    assert(bodaqs_control_snapshot_process(&s, &n, &q, 5600, &r));
+    assert(r.opcode == 8 && r.data[3] == 8);
     uint8_t d[192];
     bodaqs_control_unconfigured_descriptor(&n, 0, true, d);
     d[12] = 1;

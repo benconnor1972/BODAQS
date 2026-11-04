@@ -21,7 +21,7 @@ extern "C"
         uint64_t id, next_id;
         uint32_t opened_ms;
         uint16_t length;
-        bool pinned, expired;
+        bool pinned, expired, released;
     } BodaqsControlSnapshot;
     bool bodaqs_control_descriptor_valid(const uint8_t *data, size_t length,
                                          uint16_t schema, uint8_t endpoint);

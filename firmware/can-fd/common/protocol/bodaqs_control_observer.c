@@ -314,7 +314,7 @@ bool bodaqs_control_observer_accept(BodaqsControlObserver *observer,
             return true;
         }
         if (record->data_length != 24 || record->data[0] || record->data[1] ||
-            record->data[2])
+            record->data[2] || record->data[3] != request->opcode)
         {
             observer->snapshot_phase = 0;
             ep->current = false;

@@ -106,7 +106,8 @@ void bodaqs_control_unconfigured_descriptor(const BodaqsControlNode *n,
     d[2] = 1;
     if (effective)
     {
-        bodaqs_control_put_u32(d + 8, BODAQS_CONTROL_FIELD_GROUPS);
+        bodaqs_control_put_u32(d + 8,
+                               ep == 0 ? BODAQS_CONTROL_FIELD_GROUPS : 0);
         bodaqs_control_put_u32(d + 20,
                                32U | ((n->flags & (1U << 7)) ? 8U : 0U));
         bodaqs_control_put_u64(d + 184, n->endpoint_epoch[ep]);
@@ -166,10 +167,11 @@ bool bodaqs_control_snapshot_process(BodaqsControlSnapshot *s,
         error(r, BODAQS_CONTROL_REASON_ENDPOINT);
         return true;
     }
-    if (s->pinned &&
+    if ((s->pinned || s->released) &&
         (uint32_t)(now - s->opened_ms) >= BODAQS_CONTROL_SNAPSHOT_LIFETIME_MS)
     {
         s->pinned = false;
+        s->released = false;
         s->expired = true;
     }
     if (opening)
@@ -178,7 +180,7 @@ bool bodaqs_control_snapshot_process(BodaqsControlSnapshot *s,
                     s->opening.session == q->session &&
                     s->opening.endpoint == q->endpoint &&
                     s->opening.opcode == q->opcode;
-        if (same && s->expired)
+        if (same && (s->expired || s->released))
         {
             error(r, SNAPSHOT_REASON_EXPIRED);
             return true;
@@ -199,6 +201,7 @@ bool bodaqs_control_snapshot_process(BodaqsControlSnapshot *s,
             s->opening = *q;
             s->opened_ms = now;
             s->pinned = true;
+            s->released = false;
             s->expired = false;
             s->length =
                 q->opcode == BODAQS_CONTROL_OPEN_CAPABILITIES ? 128 : 192;
@@ -234,8 +237,9 @@ bool bodaqs_control_snapshot_process(BodaqsControlSnapshot *s,
         }
         return true;
     }
-    if (!s->pinned || q->transfer != s->id ||
-        q->operation != s->opening.operation ||
+    if ((!s->pinned &&
+         !(s->released && q->opcode == BODAQS_CONTROL_RELEASE_SNAPSHOT)) ||
+        q->transfer != s->id || q->operation != s->opening.operation ||
         q->session != s->opening.session || q->endpoint != s->opening.endpoint)
     {
         error(r, SNAPSHOT_REASON_EXPIRED);
@@ -244,7 +248,8 @@ bool bodaqs_control_snapshot_process(BodaqsControlSnapshot *s,
     if (q->opcode == BODAQS_CONTROL_RELEASE_SNAPSHOT)
     {
         s->pinned = false;
-        s->expired = true;
+        s->released = true;
+        r->data[3] = q->opcode;
         return true;
     }
     if (q->page >= (s->length + 23) / 24)
