@@ -1,5 +1,9 @@
+# OS Artifacts
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# Editors/IDEs
 *.swp
 .vscode/
 .idea/
