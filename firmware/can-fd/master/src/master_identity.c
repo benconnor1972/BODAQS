@@ -3,6 +3,8 @@
 #include "bodaqs_control.h"
 
 #include <ti/driverlib/driverlib.h>
+#include "ti_msp_dl_config.h"
+#include "bodaqs_can_link_ti.h"
 
 BodaqsMasterIdentity master_identity_read(void)
 {
@@ -16,7 +18,8 @@ BodaqsMasterIdentity master_identity_read(void)
 
     identity.firmware_version = BODAQS_MASTER_FIRMWARE_VERSION;
     identity.capabilities = BODAQS_MEASUREMENT_CAPABILITY | BODAQS_MASTER_CAPABILITY_STATUS |
-        BODAQS_MASTER_CAPABILITY_DISCOVERY | BODAQS_CONTROL_CAPABILITY;
+        BODAQS_MASTER_CAPABILITY_DISCOVERY | BODAQS_CONTROL_CAPABILITY |
+        bodaqs_can_link_capability(bodaqs_can_link_active(MCAN0_INST));
     identity.hardware_uid = ((uint64_t) device_description << 32) |
         DL_FactoryRegion_getTraceID();
     identity.minimum_protocol_version = BODAQS_MASTER_PROTOCOL_VERSION;

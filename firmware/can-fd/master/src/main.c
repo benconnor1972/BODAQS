@@ -9,6 +9,7 @@
 #include "bodaqs_node_inventory.h"
 #include "master_identity.h"
 #include "ti_msp_dl_config.h"
+#include "bodaqs_can_link_ti.h"
 
 #define NODE_STALE_AFTER_MS (3000U)
 #define DISCOVERY_INTERVAL_MS (5000U)
@@ -22,6 +23,7 @@
 
 typedef struct {
     uint32_t reset_cause;
+    uint32_t can_link_profile;
     uint32_t uptime_ms;
     uint32_t slots_received;
     uint32_t probes_received;
@@ -126,6 +128,7 @@ static uint32_t gDiscoveryNonce;
 static volatile bool gCanRecoveryDue;
 static volatile uint32_t gCanRecoveryDueMs;
 static bool gCanWasBusOff;
+static bool gCanLinkReady;
 static bool gLoggerCommunicationEstablished;
 
 static const uint32_t gCanErrorInterruptMask =
@@ -151,7 +154,7 @@ static void update_can_state(void)
     DL_MCAN_ProtocolStatus protocol_status = {0};
     uint32_t clock_status = DL_SYSCTL_getClockStatus();
 
-    gMasterRuntimeInfo.can_initialized =
+    gMasterRuntimeInfo.can_initialized = gCanLinkReady &&
         DL_MCAN_isMemInitDone(MCAN0_INST) &&
         (DL_MCAN_getOpMode(MCAN0_INST) == DL_MCAN_OPERATION_MODE_NORMAL);
     DL_MCAN_getProtocolStatus(MCAN0_INST, &protocol_status);
@@ -310,6 +313,7 @@ static void service_can_receive(void)
 static bool send_can_frame(
     uint16_t identifier, const uint8_t *payload, size_t length)
 {
+    if (!gCanLinkReady) return false;
     DL_MCAN_TxBufElement message = {0};
     DL_MCAN_TxFIFOStatus fifo_status = {0};
     uint8_t dlc = bodaqs_can_length_to_dlc(length);
@@ -611,11 +615,13 @@ int main(void)
 
     normalize_retained_clocks();
     SYSCFG_DL_init();
+    gCanLinkReady = bodaqs_can_link_apply(MCAN0_INST, BODAQS_CAN_LINK_PROFILE);
 
     memset(gTransmitSlots, 0, sizeof(gTransmitSlots));
     memset(gReceiveSlots, 0, sizeof(gReceiveSlots));
     memset((void *) &gMasterRuntimeInfo, 0, sizeof(gMasterRuntimeInfo));
     gMasterRuntimeInfo.reset_cause = reset_cause;
+    gMasterRuntimeInfo.can_link_profile = gCanLinkReady ? BODAQS_CAN_LINK_PROFILE : BODAQS_CAN_LINK_UNKNOWN;
 
     identity = master_identity_read();
     bodaqs_master_service_init(&gService, &identity);

@@ -14,6 +14,7 @@
 #include "imu_acquisition.h"
 #include "bodaqs_record_queue.h"
 #include "ti_msp_dl_config.h"
+#include "bodaqs_can_link_ti.h"
 
 #define NODE_FIRMWARE_VERSION (0x00010001U)
 #define NODE_HARDWARE_TYPE BODAQS_CAN_HARDWARE_IMU_ONLY_NODE
@@ -27,6 +28,7 @@
 
 typedef struct {
     uint32_t reset_cause;
+    uint32_t can_link_profile;
     uint32_t uptime_ms;
     uint64_t hardware_uid;
     uint32_t boot_id;
@@ -99,6 +101,7 @@ static uint32_t gStatusDueMs;
 static volatile bool gCanRecoveryDue;
 static volatile uint32_t gCanRecoveryDueMs;
 static bool gCanWasBusOff;
+static bool gCanLinkReady;
 
 static const uint32_t gCanErrorInterruptMask =
     DL_MCAN_INTERRUPT_ARA |
@@ -217,7 +220,7 @@ static void update_can_state(void)
 {
     DL_MCAN_ProtocolStatus protocol_status = {0};
     uint32_t clock_status = DL_SYSCTL_getClockStatus();
-    gNodeRuntimeInfo.can_initialized =
+    gNodeRuntimeInfo.can_initialized = gCanLinkReady &&
         DL_MCAN_isMemInitDone(MCAN0_INST) &&
         (DL_MCAN_getOpMode(MCAN0_INST) == DL_MCAN_OPERATION_MODE_NORMAL);
     DL_MCAN_getProtocolStatus(MCAN0_INST, &protocol_status);
@@ -258,6 +261,7 @@ static void update_tx_queue_state(void)
 static bool send_can_frame(
     uint16_t identifier, const uint8_t *payload, size_t length)
 {
+    if (!gCanLinkReady) return false;
     DL_MCAN_TxBufElement message = {0};
     DL_MCAN_TxFIFOStatus fifo_status = {0};
     uint8_t dlc = bodaqs_can_length_to_dlc(length);
@@ -310,7 +314,7 @@ static bool send_announcement(void)
     announce.hardware_type = NODE_HARDWARE_TYPE;
     announce.endpoint_mask = NODE_ENDPOINT_MASK;
     announce.firmware_version = NODE_FIRMWARE_VERSION;
-    announce.capabilities = 0U;
+    announce.capabilities = bodaqs_can_link_capability(bodaqs_can_link_active(MCAN0_INST));
     announce.hardware_uid = gNodeRuntimeInfo.hardware_uid;
     announce.boot_id = gNodeRuntimeInfo.boot_id;
     return bodaqs_can_encode_node_announce(
@@ -464,8 +468,10 @@ int main(void)
 
     normalize_retained_clocks();
     SYSCFG_DL_init();
+    gCanLinkReady = bodaqs_can_link_apply(MCAN0_INST, BODAQS_CAN_LINK_PROFILE);
     memset((void *) &gNodeRuntimeInfo, 0, sizeof(gNodeRuntimeInfo));
     gNodeRuntimeInfo.reset_cause = reset_cause;
+    gNodeRuntimeInfo.can_link_profile = gCanLinkReady ? BODAQS_CAN_LINK_PROFILE : BODAQS_CAN_LINK_UNKNOWN;
     gNodeRuntimeInfo.hardware_uid = read_hardware_uid();
     gNodeRuntimeInfo.boot_id = read_boot_id(gNodeRuntimeInfo.hardware_uid);
     gNodeRuntimeInfo.node_address = read_node_address();
@@ -494,7 +500,8 @@ int main(void)
     gCanRecoveryDue = false;
     gCanWasBusOff = false;
 
-    DL_GPIO_clearPins(GPIO_NODE_PORT, GPIO_NODE_CAN_STANDBY_PIN);
+    if (gCanLinkReady) DL_GPIO_clearPins(GPIO_NODE_PORT, GPIO_NODE_CAN_STANDBY_PIN);
+    else DL_GPIO_setPins(GPIO_NODE_PORT, GPIO_NODE_CAN_STANDBY_PIN);
     gAnnounceTransaction = 0U;
     gAnnounceDueMs = 100U;
     gAnnounceScheduled = true;

@@ -14,6 +14,16 @@ SYSCFG_OPT_FILES := $(filter %.opt,$(SYSCFG_FILES))
 GENERATED_FILES := device.opt device.cmd.genlibs device_linker.cmd \
     ti_msp_dl_config.c ti_msp_dl_config.h Event.dot Graph.dot
 
+# Both boards must select the same explicit link; no runtime rate changes.
+CAN_LINK_PROFILE ?= bringup
+ifeq ($(CAN_LINK_PROFILE),bringup)
+CAN_LINK_DEFINE := 1
+else ifeq ($(CAN_LINK_PROFILE),acquisition)
+CAN_LINK_DEFINE := 2
+else
+$(error CAN_LINK_PROFILE must be bringup or acquisition)
+endif
+
 NAME := bodaqs_can_node
 SOURCES := ../src/main.c \
     ../src/imu_spi.c \
@@ -50,6 +60,7 @@ CFLAGS := -I../../common/network \
     -mthumb \
     -Wall \
     -Wextra \
+    -DBODAQS_CAN_LINK_PROFILE=$(CAN_LINK_DEFINE) \
     -Werror
 
 LFLAGS := -ldevice.cmd.genlibs \
@@ -103,3 +114,9 @@ main.obj bodaqs_control_snapshot.obj: ../../common/protocol/bodaqs_control_snaps
 main.obj bodaqs_control_apply.obj: ../../common/protocol/bodaqs_control_apply.h ../../common/protocol/bodaqs_imu_disabled.h
 
 main.obj bodaqs_control_acquisition.obj: ../../common/protocol/bodaqs_control_acquisition.h
+
+# Profile is a make input, not a generated-code edit. Rebuild its two consumers
+# on every invocation so switching back to a previously built profile is safe.
+.PHONY: can-link-profile
+can-link-profile:
+main.obj: can-link-profile ../../common/network/bodaqs_can_link.h ../../common/network/bodaqs_can_link_ti.h
