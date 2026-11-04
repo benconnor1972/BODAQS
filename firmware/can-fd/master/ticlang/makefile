@@ -34,6 +34,7 @@ endif
 CFLAGS := -I../include \
     -I../../common/protocol \
     -I../../common/network \
+    -I../../common/transport \
     -I. \
     $(addprefix @,$(SYSCFG_OPT_FILES)) \
     -O2 \
@@ -79,6 +80,8 @@ endef
 
 $(foreach source,$(SOURCES),$(eval $(call C_RULE,$(source))))
 $(foreach source,$(SYSCFG_C_FILES),$(eval $(call C_RULE,$(source))))
+
+main.obj: ../../common/transport/bodaqs_record_queue.h
 
 $(NAME).out: $(OBJECTS)
 	@echo Linking $@

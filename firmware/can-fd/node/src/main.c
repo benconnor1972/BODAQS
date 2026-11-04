@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "bodaqs_can_network.h"
+#include "bodaqs_record_queue.h"
 #include "ti_msp_dl_config.h"
 
 #define NODE_FIRMWARE_VERSION (0x00010001U)
@@ -22,6 +23,11 @@ typedef struct {
     uint64_t hardware_uid;
     uint32_t boot_id;
     uint32_t can_rx_frames;
+    uint32_t can_rx_dropped;
+    uint32_t can_rx_hardware_losses;
+    uint16_t can_rx_capacity;
+    uint16_t can_rx_pending;
+    uint16_t can_rx_pending_high_water;
     uint32_t can_tx_frames;
     uint32_t can_error_events;
     uint32_t can_bus_off_recovery_attempts;
@@ -44,6 +50,27 @@ typedef struct {
     bool can_bus_off_recovered;
     bool clock_fault;
 } NodeRuntimeInfo;
+
+/* Snapshot at most the configured hardware FIFO depth per interrupt. */
+#define CAN_RX_CAPACITY (4U)
+typedef struct {
+    DL_MCAN_RxBufElement message;
+    uint32_t received_ms;
+} CanReceiveRecord;
+static CanReceiveRecord gCanReceiveStorage[CAN_RX_CAPACITY];
+static BodaqsRecordQueue gCanReceiveQueue;
+static volatile bool gHealthDue;
+
+/* Queue metadata and record copies are serialized; decoding never masks IRQs. */
+static bool take_record(BodaqsRecordQueue *queue, void *record)
+{
+    uint32_t primask = __get_PRIMASK();
+    bool available;
+    __disable_irq();
+    available = bodaqs_record_queue_pop(queue, record);
+    __set_PRIMASK(primask);
+    return available;
+}
 
 volatile NodeRuntimeInfo gNodeRuntimeInfo;
 
@@ -274,7 +301,8 @@ static uint16_t can_standard_identifier(const DL_MCAN_RxBufElement *message)
     return (uint16_t) ((message->id >> 18U) & 0x7FFU);
 }
 
-static void process_can_message(const DL_MCAN_RxBufElement *message)
+static void process_can_message(
+    const DL_MCAN_RxBufElement *message, uint32_t received_ms)
 {
     BodaqsCanDiscoveryRequest request;
     BodaqsCanDecodeResult result;
@@ -305,27 +333,42 @@ static void process_can_message(const DL_MCAN_RxBufElement *message)
 
     ++gNodeRuntimeInfo.discovery_requests_received;
     gAnnounceTransaction = request.transaction;
-    gAnnounceDueMs = gUptimeMs + bodaqs_can_discovery_delay_ms(
+    gAnnounceDueMs = received_ms + bodaqs_can_discovery_delay_ms(
         gNodeRuntimeInfo.hardware_uid, request.nonce,
         gNodeRuntimeInfo.node_address, request.response_window_ms);
     gAnnounceScheduled = true;
 }
 
-static void drain_can_receive_fifo(void)
+static void capture_can_receive_fifo(void)
 {
-    DL_MCAN_RxBufElement message;
+    CanReceiveRecord record;
     DL_MCAN_RxFIFOStatus fifo_status = {0};
+    uint32_t remaining;
 
     fifo_status.num = DL_MCAN_RX_FIFO_NUM_0;
     DL_MCAN_getRxFIFOStatus(MCAN0_INST, &fifo_status);
-    while (fifo_status.fillLvl != 0U) {
+    remaining = fifo_status.fillLvl;
+    if (remaining > CAN_RX_CAPACITY) {
+        remaining = CAN_RX_CAPACITY;
+    }
+    while (remaining-- != 0U) {
         DL_MCAN_readMsgRam(MCAN0_INST, DL_MCAN_MEM_TYPE_FIFO, 0U,
-            fifo_status.num, &message);
+            fifo_status.num, &record.message);
+        record.received_ms = gUptimeMs;
         DL_MCAN_writeRxFIFOAck(
             MCAN0_INST, fifo_status.num, fifo_status.getIdx);
         ++gNodeRuntimeInfo.can_rx_frames;
-        process_can_message(&message);
+        (void) bodaqs_record_queue_push(&gCanReceiveQueue, &record);
         DL_MCAN_getRxFIFOStatus(MCAN0_INST, &fifo_status);
+    }
+}
+
+/* One record per turn leaves time for SPI, announcements and recovery. */
+static void service_can_receive(void)
+{
+    CanReceiveRecord record;
+    if (take_record(&gCanReceiveQueue, &record)) {
+        process_can_message(&record.message, record.received_ms);
     }
 }
 
@@ -341,6 +384,9 @@ int main(void)
     gNodeRuntimeInfo.boot_id = read_boot_id(gNodeRuntimeInfo.hardware_uid);
     gNodeRuntimeInfo.node_address = read_node_address();
     gUptimeMs = 0U;
+    bodaqs_record_queue_init(&gCanReceiveQueue, gCanReceiveStorage,
+        sizeof(gCanReceiveStorage[0]), CAN_RX_CAPACITY);
+    gHealthDue = true;
     gCanRecoveryDue = false;
     gCanWasBusOff = false;
 
@@ -360,6 +406,16 @@ int main(void)
 
     while (1) {
         uint32_t now = gUptimeMs;
+        service_can_receive();
+        gNodeRuntimeInfo.can_rx_capacity = gCanReceiveQueue.capacity;
+        gNodeRuntimeInfo.can_rx_pending = gCanReceiveQueue.depth;
+        gNodeRuntimeInfo.can_rx_pending_high_water = gCanReceiveQueue.high_water;
+        gNodeRuntimeInfo.can_rx_dropped = gCanReceiveQueue.dropped;
+        if (gHealthDue) {
+            gHealthDue = false;
+            update_can_state();
+            update_tx_queue_state();
+        }
 
         if (gAnnounceScheduled && time_reached(now, gAnnounceDueMs)) {
             if (send_announcement()) {
@@ -385,7 +441,9 @@ int main(void)
             DL_MCAN_setOpMode(
                 MCAN0_INST, DL_MCAN_OPERATION_MODE_NORMAL);
         }
-        __WFE();
+        if (gCanReceiveQueue.depth == 0U) {
+            __WFE();
+        }
     }
 }
 
@@ -397,19 +455,22 @@ void MCAN0_INST_IRQHandler(void)
         gNodeRuntimeInfo.can_last_interrupts = interrupt_status;
         DL_MCAN_clearIntrStatus(MCAN0_INST, interrupt_status,
             DL_MCAN_INTR_SRC_MCAN_LINE_1);
+        if ((interrupt_status & DL_MCAN_INTERRUPT_RF0L) != 0U) {
+            ++gNodeRuntimeInfo.can_rx_hardware_losses;
+        }
         if ((interrupt_status & gCanErrorInterruptMask) != 0U) {
             ++gNodeRuntimeInfo.can_error_events;
         }
         if ((interrupt_status & DL_MCAN_INTERRUPT_TC) != 0U) {
             ++gNodeRuntimeInfo.can_tx_frames;
-            update_tx_queue_state();
+            gHealthDue = true;
         }
         if ((interrupt_status & (DL_MCAN_INTERRUPT_RF0N |
                 DL_MCAN_INTERRUPT_RF0W |
                 DL_MCAN_INTERRUPT_RF0F)) != 0U) {
-            drain_can_receive_fifo();
+            capture_can_receive_fifo();
         }
-        update_can_state();
+        gHealthDue = true;
     }
 }
 
@@ -428,6 +489,6 @@ void SysTick_Handler(void)
     ++health_ticks;
     if (health_ticks >= 100U) {
         health_ticks = 0U;
-        update_can_state();
+        gHealthDue = true;
     }
 }
