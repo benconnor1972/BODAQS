@@ -2,7 +2,17 @@
 #include <stdint.h>
 #include <stddef.h>
 namespace ImuAdmission {
-enum class Reason : uint8_t { None, Unqualified, Link, CanCapacity, SpiCapacity, DrainCapacity, Coverage, Allocation, Eligibility };
+enum class Reason : uint8_t { None, Unqualified, Link, CanCapacity, SpiCapacity, DrainCapacity, Coverage, Allocation, Eligibility, SmokeScope };
+constexpr bool singleNodeSmokeBuild() {
+#if defined(BODAQS_SINGLE_NODE_IMU_SMOKE) && BODAQS_SINGLE_NODE_IMU_SMOKE == 1
+ return true;
+#else
+ return false;
+#endif
+}
+constexpr const char* buildMode() {
+ return singleNodeSmokeBuild()?"single_node_smoke_unqualified":"production";
+}
 struct Adc { uint32_t conversionsPerSecond=0, spiHz=0; };
 // Bounds include all software, CS, arbitration and non-overlapped rearm work.
 // A profile is supplied only by qualification or a deterministic host fixture.
@@ -24,11 +34,16 @@ struct Profile {
 };
 struct Demand { uint8_t nodes=0; Adc adc[2]; };
 struct Report {
- Reason reason=Reason::None; bool qualified=false, attempted=false;
+ Reason reason=Reason::None; bool qualified=false, attempted=false, benchOnly=false;
  double canOccupancy=0, spiOccupancy=0, drainRatio=0;
  size_t loggerBytes=0, masterBytes=0, nodeBytes=0;
  uint32_t nodePackets=0, masterPackets=0, loggerSamples=0, loggerEvidence=0;
 };
 Report evaluate(const Demand&,const Profile&);
+// Experimental opt-in only: no measured costs, capacity or readiness is claimed.
+Report evaluateSingleNodeSmoke(const Demand&,bool otherActiveSensors);
 const char* reasonText(Reason);
+inline const char* reportText(const Report& r) {
+ return r.benchOnly && r.reason==Reason::None ? "single-node smoke test (unqualified)" : reasonText(r.reason);
+}
 }

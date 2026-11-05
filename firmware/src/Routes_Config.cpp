@@ -12,6 +12,7 @@
 #include "SensorAssignment.h"
 #include "AnalogInputManager.h"
 #include "CanMasterManager.h"
+#include "ImuAdmission.h"
 #include "LoggingManager.h"
 #include "SensorRegistry.h"
 #include "RTCManager.h"
@@ -825,6 +826,8 @@ static void emitSensorEditor_(ChunkedHtmlResponse& html,
         html+=F("; health flags "); html+=String(bodaqs_control_get_u32(d+20)); }
       html+=CanMasterManager::configurationReconciled(address) ? F("; desired agreement verified") : F("; desired agreement unverified");
       html+=F(". Acquisition readiness: false. Timing, settling and measured performance: unknown.</p>");
+      if(ImuAdmission::singleNodeSmokeBuild())
+        html+=F("<p><strong>UNQUALIFIED SINGLE-NODE IMU SMOKE BUILD.</strong> Mute every other sensor. Multiple IMUs and ADC acquisition are not enabled by this test build.</p>");
     }
   }
   emitParamRow_(html, idx, sp, defs, defCount, "i2c_bus", "I2C bus", locked);

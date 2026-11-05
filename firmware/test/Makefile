@@ -47,6 +47,7 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_acquisition_control_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_imu_admission_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --smoke --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_remote_imu_stream_contract.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_remote_imu_recording_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_remote_imu_loss_runtime.py --compiler "$(CXX)"

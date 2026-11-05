@@ -946,10 +946,15 @@ static void addSensorJson_(JsonObject obj, uint8_t index, const SensorSpec& sp, 
     JsonObject capacity=control["recording_admission"].to<JsonObject>();
     capacity["attempted"]=admission.attempted;
     capacity["qualified"]=admission.qualified;
-    capacity["reason"]=admission.attempted?ImuAdmission::reasonText(admission.reason):"not evaluated";
-    capacity["can_occupancy"]=admission.canOccupancy;
-    capacity["shared_spi_occupancy"]=admission.spiOccupancy;
-    capacity["drain_ratio"]=admission.drainRatio;
+    capacity["mode"]=ImuAdmission::buildMode();
+    capacity["reason"]=admission.attempted?ImuAdmission::reportText(admission):"not evaluated";
+    if(ImuAdmission::singleNodeSmokeBuild()) {
+      capacity["can_occupancy"]=nullptr;capacity["shared_spi_occupancy"]=nullptr;capacity["drain_ratio"]=nullptr;
+    } else {
+      capacity["can_occupancy"]=admission.canOccupancy;
+      capacity["shared_spi_occupancy"]=admission.spiOccupancy;
+      capacity["drain_ratio"]=admission.drainRatio;
+    }
     capacity["logger_reserved_bytes"]=admission.loggerBytes;
 
     const auto assignment = sensorAssignment(sp, nullptr);

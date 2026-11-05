@@ -37,6 +37,7 @@ def fixture_source(root):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--compiler", default="g++")
+    parser.add_argument("--smoke", action="store_true", help="Exercise opt-in unqualified single-node build without installing synthetic costs")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     fixture = fixture_source(root)
@@ -47,8 +48,11 @@ def main():
     with tempfile.TemporaryDirectory(prefix="bodaqs-remote-lifecycle-") as temp:
         cpp, exe = Path(temp)/"fixture.cpp", Path(temp)/"fixture.exe"
         cpp.write_text(fixture)
-        subprocess.run([args.compiler, "-std=c++17", "-DBODAQS_QUEUE_ALLOCATION_TEST", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-I", str(root/"test/stubs"), "-I", str(root/"src"), "-I", str(protocol), "-I", str(root/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
+        flags=["-DBODAQS_SINGLE_NODE_IMU_SMOKE=1"] if args.smoke else []
+        subprocess.run([args.compiler, "-std=c++17", *flags, "-DBODAQS_QUEUE_ALLOCATION_TEST", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-I", str(root/"test/stubs"), "-I", str(root/"src"), "-I", str(protocol), "-I", str(root/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
+        if args.smoke:
+            return
         subprocess.run([str(exe), "four"], check=True)
         for scenario in ("node-reboot", "master-reboot", "bus-off", "lease-expiry", "four-bus-off"):
             subprocess.run([str(exe), scenario], check=True)

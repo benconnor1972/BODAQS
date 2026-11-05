@@ -1720,7 +1720,8 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
   const auto& admission=RemoteImuRecording::admission();
   document["remote_admission_attempted"]=admission.attempted;
   document["remote_admission_qualified"]=admission.qualified;
-  document["remote_admission_reason"]=admission.attempted?ImuAdmission::reasonText(admission.reason):"not evaluated";
+  document["remote_admission_mode"]=ImuAdmission::buildMode();
+  document["remote_admission_reason"]=admission.attempted?ImuAdmission::reportText(admission):"not evaluated";
   document["remote_reserved_bytes"]=admission.loggerBytes;
   document["remote_cleanup_complete"] = RemoteImuRecording::stopped();
   document["remote_tail_objects_discarded"] = RemoteImuRecording::discardedTailObjects();

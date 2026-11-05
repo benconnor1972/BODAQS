@@ -30,7 +30,7 @@ static void recordingSteps(unsigned duration) {
 
 int main(int argc,char** argv) {
   ImuAdmission::Profile costs;costs.maximumSourceSamplesPerSecond=3333;costs.qualified=true;costs.adcAttemptsPerConversion=1;costs.canBurstFrames=20;costs.spiBurstSlots=32;costs.sampleSlotUs=64;costs.auxiliarySlotUs=64;costs.sampleDrainSlotsPerSecond=14000;
-  assert(RemoteImuRecording::setAdmissionProfile(costs));
+  if(!ImuAdmission::singleNodeSmokeBuild()) assert(RemoteImuRecording::setAdmissionProfile(costs));
   saved.type=SensorType::LSM6DSO32XImu;std::strcpy(saved.name,"remote_imu");
   assert(savedParams.set("provider","can:0"));
   assert(savedParams.set("endpoint","imu"));
@@ -80,6 +80,10 @@ int main(int argc,char** argv) {
   DynamicSpscQueueDetail::allocationsBeforeFailure=-1;
   assert(RemoteImuRecording::configure(config));
   assert(RemoteImuRecording::configured());
+  if(ImuAdmission::singleNodeSmokeBuild()) {
+    assert(RemoteImuRecording::admission().benchOnly);
+    assert(!RemoteImuRecording::admission().qualified);
+  }
   assert(!RemoteImuRecording::prepared());
   recordingSteps(100);
   for(unsigned n=0;n<fixtureSensorCount;++n) assert(!acquisitions[n].recording && !acquisitions[n].phase);

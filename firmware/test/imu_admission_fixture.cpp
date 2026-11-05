@@ -23,5 +23,14 @@ int main() {
  p.sampleSlotUs=64;p.adcTransactionUs=-1;assert(ImuAdmission::evaluate(d,p).reason==ImuAdmission::Reason::Unqualified);
  p.adcTransactionUs=0;p.sampleDrainSlotsPerSecond=7000;assert(ImuAdmission::evaluate(d,p).reason==ImuAdmission::Reason::DrainCapacity);
  p.sampleDrainSlotsPerSecond=14000;p.canExceptionalFramesPerSecond=1000;assert(ImuAdmission::evaluate(d,p).reason==ImuAdmission::Reason::CanCapacity);
+ // An explicitly selected bench build admits no claimed timing/bandwidth bound.
+ d={};d.nodes=1;
+ r=ImuAdmission::evaluateSingleNodeSmoke(d,false);
+ assert(r.reason==ImuAdmission::Reason::None && r.benchOnly && !r.qualified);
+ assert(r.canOccupancy==0 && r.spiOccupancy==0 && r.drainRatio==0);
+ assert(ImuAdmission::evaluate(d,ImuAdmission::Profile{}).reason==ImuAdmission::Reason::Unqualified);
+ d.nodes=2;assert(ImuAdmission::evaluateSingleNodeSmoke(d,false).reason==ImuAdmission::Reason::SmokeScope);
+ d.nodes=1;assert(ImuAdmission::evaluateSingleNodeSmoke(d,true).reason==ImuAdmission::Reason::SmokeScope);
+ d.adc[0]={1,1000000};assert(ImuAdmission::evaluateSingleNodeSmoke(d,false).reason==ImuAdmission::Reason::SmokeScope);
 }
 

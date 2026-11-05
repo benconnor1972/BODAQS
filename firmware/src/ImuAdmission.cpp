@@ -75,6 +75,12 @@ Report evaluate(const Demand& d,const Profile& p) {
          p.spiBurstSlots*p.auxiliarySlotUs>p.masterServiceBlackoutUs || r.nodePackets>64 || r.masterPackets>128 || r.loggerSamples>8192 || r.loggerEvidence>512) r.reason=Reason::Coverage;
  return r;
 }
+Report evaluateSingleNodeSmoke(const Demand& d,bool otherActiveSensors) {
+ Report r;r.attempted=d.nodes!=0;r.benchOnly=true;
+ if(d.nodes!=1 || otherActiveSensors || d.adc[0].conversionsPerSecond || d.adc[1].conversionsPerSecond)
+  r.reason=Reason::SmokeScope;
+ return r;
+}
 const char* reasonText(Reason r) {
  switch(r) {
  case Reason::None:return "admitted";case Reason::Unqualified:return "unqualified scheduling costs";
@@ -82,6 +88,7 @@ const char* reasonText(Reason r) {
  case Reason::SpiCapacity:return "shared SPI capacity";case Reason::DrainCapacity:return "sample drain headroom";
  case Reason::Coverage:return "burst/backlog coverage";case Reason::Allocation:return "remote allocation failed";
  case Reason::Eligibility:return "remote configuration unavailable";
+ case Reason::SmokeScope:return "smoke build requires one CAN IMU; mute all other sensors";
  }return "unsupported";
 }
 }
