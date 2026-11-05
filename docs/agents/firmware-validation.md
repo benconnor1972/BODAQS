@@ -105,3 +105,6 @@ diagnostic; flash an explicitly selected target/port under existing authorizatio
 See `skills/firmware-build/SKILL.md` for those conditional branches. Remote PR/issue
 operations follow `docs/agents/issue-tracker.md` and the active user scope.
 Compilation and host tests never satisfy physical qualification debt.
+
+The [2026-11-05 retrospective validation record](retro-imu-validation.md) records
+the local implementation, independent review resolutions and tested candidate.
