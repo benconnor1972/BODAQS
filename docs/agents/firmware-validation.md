@@ -12,7 +12,7 @@ dependencies before host tests consume their headers, using
 [PlatformIO package installation](https://docs.platformio.org/en/latest/core/userguide/pkg/cmd_install.html).
 
 ```powershell
-# Tools and selected TI SDK only; no output, builds or downloads.
+# Tools, test dependency imports/versions and selected TI SDK; no output/builds/downloads.
 python firmware/tools/build_imu_software_candidate.py --mode preflight
 
 # All existing host/native/analysis suites; working edits are allowed, no TI SDK needed.
@@ -23,6 +23,10 @@ python firmware/tools/build_imu_software_candidate.py --output-dir ../firmware-c
 ```
 
 Host mode produces test evidence, not target firmware or a release candidate.
+Preflight imports the test/analysis dependencies listed in the runner and checks
+their installed versions against `requirements.txt`. This catches missing
+packages and broken imports before compiling; optional desktop/notebook
+applications are outside this test-environment check.
 Candidate mode requires the SDK, TI compiler and SysConfig, builds node/master
 with both CAN profiles and clean A8, then archives source only after validation
 and the source guard succeed. Preflight failure creates no output. Later failure

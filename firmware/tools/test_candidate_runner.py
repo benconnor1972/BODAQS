@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import venv
 from unittest.mock import patch
 import zipfile
 
@@ -45,7 +46,7 @@ class CandidateRunnerTests(unittest.TestCase):
                 self.assertEqual(runner.main(), 1)
             self.assertFalse(output.exists())
 
-    def run_bundle(self, exit_code, mode="candidate"):
+    def run_bundle(self, exit_code, mode="candidate", archive_failure=False, late_change=False):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "source"
             root.mkdir()
@@ -67,15 +68,26 @@ class CandidateRunnerTests(unittest.TestCase):
                 (root / "input.txt").write_bytes(b"working edits\n")
             command = {"name": "validation", "argv": [sys.executable, "-c", f"raise SystemExit({exit_code})"],
                        "cwd": str(root), "artifacts": []}
+            run = subprocess.run
+            def run_external(argv, *positional, **keywords):
+                if argv[:2] == ["git", "archive"] and archive_failure:
+                    (output / "SOURCE.zip").write_bytes(b"partial archive")
+                    raise subprocess.CalledProcessError(2, argv)
+                result = run(argv, *positional, **keywords)
+                if argv[:2] == ["git", "archive"] and late_change:
+                    (root / "input.txt").write_bytes(b"late writer\n")
+                return result
+            expected_success = exit_code == 0 and not archive_failure and not late_change
             with patch.object(runner, "ROOT", root), patch.object(runner, "arguments", return_value=args), \
                     patch.object(runner, "preflight", return_value=[]), \
                     patch.object(runner, "plan", return_value=[command]), \
+                    patch.object(runner.subprocess, "run", side_effect=run_external), \
                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                self.assertEqual(runner.main(), 0 if exit_code == 0 else 1)
+                self.assertEqual(runner.main(), 0 if expected_success else 1)
             manifest = json.loads((output / "BUILD_MANIFEST.json").read_text(encoding="utf-8"))
-            self.assertEqual(manifest["status"], "passed" if exit_code == 0 else "failed")
-            self.assertEqual((output / "SOURCE.zip").exists(), exit_code == 0 and mode == "candidate")
-            if exit_code == 0 and mode == "candidate":
+            self.assertEqual(manifest["status"], "passed" if expected_success else "failed")
+            self.assertEqual((output / "SOURCE.zip").exists(), expected_success and mode == "candidate")
+            if expected_success and mode == "candidate":
                 with zipfile.ZipFile(output / "SOURCE.zip") as archive:
                     self.assertEqual(archive.read("input.txt"), b"known source\n")
             for line in (output / "SHA256SUMS.txt").read_text().splitlines():
@@ -90,6 +102,33 @@ class CandidateRunnerTests(unittest.TestCase):
 
     def test_host_validation_allows_edits_and_needs_no_sdk_or_archive(self):
         self.run_bundle(0, mode="host")
+
+    def test_failed_archive_is_removed_but_failure_evidence_survives(self):
+        self.run_bundle(0, archive_failure=True)
+
+    def test_source_change_after_archive_removes_candidate_archive(self):
+        self.run_bundle(0, late_change=True)
+
+    def test_preflight_rejects_python_without_test_dependencies(self):
+        with tempfile.TemporaryDirectory() as temp:
+            venv.EnvBuilder(with_pip=False).create(temp)
+            python = Path(temp) / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+            args = self.arguments("host")
+            with patch.object(runner.sys, "executable", str(python)):
+                with self.assertRaisesRegex(RuntimeError, "Python dependencies"):
+                    runner.preflight(args)
+
+    def test_preflight_rejects_wrong_dependency_version_before_import(self):
+        with tempfile.TemporaryDirectory() as temp:
+            venv.EnvBuilder(with_pip=False).create(temp)
+            python = Path(temp) / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+            subprocess.run([str(python), "-c", "import sysconfig; from pathlib import Path; "
+                "p=Path(sysconfig.get_path('purelib'))/'pytest-0.0.dist-info'; p.mkdir(); "
+                "(p/'METADATA').write_text('Name: pytest\\nVersion: 0.0\\n')"], check=True)
+            args = self.arguments("host")
+            with patch.object(runner.sys, "executable", str(python)):
+                with self.assertRaisesRegex(RuntimeError, "pytest: expected.*found 0.0"):
+                    runner.preflight(args)
 
 
 if __name__ == "__main__":

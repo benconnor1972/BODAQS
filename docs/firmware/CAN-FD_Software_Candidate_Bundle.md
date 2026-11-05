@@ -27,9 +27,12 @@ installation defaults remain explicit Windows paths. `--make`, `--cxx`,
 `--cc`, `--sdk`, `--ti-compiler`, `--sysconfig`, `--pio` and `--jobs` select other
 installed tools explicitly. `--list-commands` prints the plan without creating
 files or running tools. No device-dependent `build.sh check` or `detect` runs.
-Tool/SDK preflight runs before output creation. A8 dependency bootstrap and all
+Tool/SDK and required Python test dependency preflight runs before output creation.
+A8 dependency bootstrap and all
 validation/build commands run before archiving; a failed validation retains its
 logs without paying for the large source archive.
+If archiving itself fails or the final source guard rejects the run, the owned
+complete/partial archive is removed while its failed manifest and logs remain.
 
 The runner executes the full firmware host target, common protocol/link tests,
 master timing and raw MCAN/CS-preemption adapter tests, all node adapter scenarios

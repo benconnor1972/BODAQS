@@ -26,6 +26,16 @@ DEFERRED = {
     "176": ["physical disconnect/reconnect", "CCS halt/resume",
             "node/master reset and electrical fault qualification"],
 }
+# Import names differ from distribution names for a few test dependencies.
+# Versions come from requirements.txt; optional desktop/notebook applications
+# are not required to run the firmware/analysis suites.
+TEST_IMPORTS = {
+    "pytest": "pytest", "numpy": "numpy", "pandas": "pandas", "scipy": "scipy",
+    "PyYAML": "yaml", "fastparquet": "fastparquet", "matplotlib": "matplotlib",
+    "fitparse": "fitparse", "fastapi": "fastapi", "uvicorn": "uvicorn",
+    "IPython": "IPython", "ipywidgets": "ipywidgets", "traitlets": "traitlets",
+    "anywidget": "anywidget", "ipydatagrid": "ipydatagrid", "ipyleaflet": "ipyleaflet",
+}
 
 
 def git(*args: str) -> str:
@@ -126,7 +136,26 @@ def preflight(args: argparse.Namespace) -> list[dict]:
             raise RuntimeError(f"Invalid MSPM0 SDK metadata: {metadata}") from error
         if not version:
             raise RuntimeError("MSPM0 SDK version is missing")
-    versions = [["git", "--version"], [sys.executable, "--version"],
+    dependency_probe = """
+import importlib, importlib.metadata, json, sys
+from pathlib import Path
+required = json.loads(sys.argv[2])
+pins = {}
+for line in Path(sys.argv[1]).read_text(encoding='utf-8').splitlines():
+    line = line.split('#', 1)[0].strip()
+    if '==' in line:
+        name, version = line.split('==', 1)
+        pins[name.lower()] = version
+for name, module in required.items():
+    expected = pins[name.lower()]
+    actual = importlib.metadata.version(name)
+    if actual != expected:
+        raise RuntimeError(f'{name}: expected {expected}, found {actual}')
+    importlib.import_module(module)
+print(f'Validated {len(required)} Python test dependency versions/imports')
+"""
+    versions = [[sys.executable, "-c", dependency_probe, str(ROOT / "requirements.txt"), json.dumps(TEST_IMPORTS)],
+                ["git", "--version"], [sys.executable, "--version"],
                 [sys.executable, "-c", "import importlib.metadata as m; "
                  "print('\\n'.join(sorted(str(d.metadata['Name'])+'=='+d.version for d in m.distributions())))"],
                 [args.cxx, "--version"], [args.cc, "--version"], [args.make, "--version"],
@@ -136,11 +165,12 @@ def preflight(args: argparse.Namespace) -> list[dict]:
         versions += [[str(compiler), "--version"], [str(args.sysconfig), "--version"]]
     observed = []
     env = build_environment(args)
-    for argv in versions:
+    for index, argv in enumerate(versions):
         result = subprocess.run(argv, cwd=ROOT, env=env, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, encoding="utf-8", errors="replace", check=False)
         if result.returncode:
-            raise RuntimeError(f"Tool check failed: {argv}: {result.stdout}")
+            label = "Python dependencies" if index == 0 else f"Tool {argv}"
+            raise RuntimeError(f"{label} check failed: {result.stdout}")
         observed.append({"argv": argv, "exit_code": result.returncode, "output": result.stdout})
     return observed
 
@@ -186,7 +216,7 @@ def main() -> int:
         print(error, file=sys.stderr)
         return 1
     if args.mode == "preflight":
-        print("Tool and SDK preflight passed; no output, builds or device access.")
+        print("Tool, Python dependency and SDK preflight passed; no output, builds or device access.")
         return 0
 
     output.mkdir(parents=True)
@@ -260,6 +290,10 @@ def main() -> int:
                 manifest["source"]["commit_after"] != manifest["source"]["commit"]):
             manifest["status"] = "failed"
             manifest["error"] = "Source changed during acceptance; candidate is not a fixed-source pass"
+        if manifest["status"] != "passed":
+            # Output was freshly created by this invocation. Keep diagnostics,
+            # but never retain a partial or source-rejected candidate archive.
+            (output / "SOURCE.zip").unlink(missing_ok=True)
         write_manifest(output, manifest)
         (output / "README.txt").write_text(
             ("Local IMU software candidate.\n" if args.mode == "candidate" else
