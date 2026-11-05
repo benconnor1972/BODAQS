@@ -12,7 +12,7 @@ The queue rejection path now uses the canonical TI standard-ID decoder
 (`id >> 18`, eleven bits), as the normal RX path already did. Rejected sample
 counts/ranges and essential evidence losses therefore reach stage-5 accounting.
 The adapter regression fills the actual eight-entry queue with raw MCAN IDs,
-then checks literal node-3 sample range 40?44, epoch 7, capture ordinal 9,
+then checks literal node-3 sample range 40 through 44, epoch 7, capture ordinal 9,
 node-2 snapshot loss, and essential timing-definition loss. It failed against
 the reviewed implementation before the decoder correction.
 
@@ -58,16 +58,28 @@ failure. Both turnover regressions failed before their fixes.
 ## Lifecycle phase vocabulary and validation
 
 `AcquisitionControl::Peer` now uses a private named phase enum, preserving values
-0?6 and existing transitions. The existing acquisition-control runtime regression
+0 through 6 and existing transitions. The existing acquisition-control runtime regression
 covers preparation, renewal, pending START, STOP and immutable snapshot behavior.
 The full node test target includes scenario 13. The master test target includes
 timing plus the raw MCAN/CS adapter runner; the source-pinned candidate runner
 now executes that master target alongside all prior host/analysis/target checks.
 
-Focused checks passed: complete node native test target (scenarios 1?13), master
+Focused checks passed: complete node native test target (scenarios 1 through 13), master
 native target, and acquisition-control runtime regression. Final source/artifact
 identities and full-suite/build results belong to the fresh external candidate's
 `BUILD_MANIFEST.json` and `SHA256SUMS.txt`, using the documented
 [candidate workflow](CAN-FD_Software_Candidate_Bundle.md).
 Physical qualification #175/#176 remains deferred; no probe, upload or flash is
 part of these checks.
+
+
+## Final verification
+
+The full source-pinned reviewed candidate passed from clean commit
+`d2ee18b97b108d45050a84c8a14e4f251b841376`, including all prior suites, the new master
+adapter target and node scenario 13. Both independent resolution-review axes
+report no open findings. Local merge `6128b99` exactly matches the tested tree;
+fresh merged-tree master-adapter and node scenarios 10/13 also passed. The
+[final review report](CAN-FD_Acquisition_Transport_Code_Review.md) records all
+four original findings, independent resolutions, complete tests/builds, exact
+source/artifact hashes and the remaining physical qualification debt.

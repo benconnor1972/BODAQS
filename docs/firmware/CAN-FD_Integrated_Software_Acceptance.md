@@ -1,5 +1,10 @@
 # Integrated IMU software acceptance (#174)
 
+This records the #174 candidate before final review. The superseding
+[reviewed candidate and all resolved findings](CAN-FD_Acquisition_Transport_Code_Review.md)
+use tested source `d2ee18b`, integrated at `6128b99`; its complete 71-file checksum
+inventory and updated target maps are recorded there.
+
 Software evidence, 5 November 2026. Based on verified integration
 `1067258526a343bcfc10437e217a9b6d496c31ef` (#165–#173). The approved
 [acquisition contract](CAN-FD_Acquisition_Transport_Contract.md), network Q71–Q147

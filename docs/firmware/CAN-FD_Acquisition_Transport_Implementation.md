@@ -23,7 +23,7 @@ are part of this implementation.
 | #171 bounded loss and continuity recovery | Merged and verified | `6e64f66`, merged at `bd86b0d`; [bounded loss evidence](CAN-FD_Bounded_Loss_Recovery_Implementation.md) |
 | #172 link/restart containment and cleanup | Merged and verified | `1113809`, merged at `647811a`; [link/restart evidence](CAN-FD_Link_Restart_Implementation.md) |
 | #173 four-node resource admission | Merged and verified | `0628154`, merged at `e8c5123`; [admission evidence](CAN-FD_Four_Node_Admission_Implementation.md), [link profiles](CAN-FD_Link_Profile_Implementation.md) |
-| #174 integrated software acceptance | Merged and verified; final review pending | `cbf2e67`, merged at `03ab248`; [combined acceptance and exact candidate evidence](CAN-FD_Integrated_Software_Acceptance.md), [reusable candidate runner](CAN-FD_Software_Candidate_Bundle.md) |
+| #174 integrated software acceptance | Merged and verified; final review complete | `cbf2e67`, merged at `03ab248`; [combined acceptance and exact candidate evidence](CAN-FD_Integrated_Software_Acceptance.md), [reusable candidate runner](CAN-FD_Software_Candidate_Bundle.md) |
 
 At `9c20ead`, the combined common CAN/control suite (nine binaries), full logger
 host/runtime suite, asynchronous storage-controller fixtures and explicit A8
@@ -109,9 +109,30 @@ Fresh merged-tree combined runtime and independent file/ledger/prefix checks pas
 as do all fourteen common host binaries. All 70 candidate inventory hashes and
 the recorded archive/manifest/inventory identities were rechecked. Full analysis
 and target builds were reused because only the two evidence Markdown files differ
-from the tested source. Independent Standards/Spec review remains pending;
+from the tested source. That pre-review checkpoint was followed by the final review below;
 physical qualification remains deferred and production remote admission remains
 unsupported/unqualified.
+
+## Final reviewed software candidate
+
+All ten software tickets #165 through #174 are locally implemented, merged and
+verified. The [final Standards/Spec review](CAN-FD_Acquisition_Transport_Code_Review.md)
+found two P1 standards defects, one phase-naming heuristic and one P2 spec defect.
+One fresh implementer fixed all four in `d2ee18b`; two fresh independent reviewers
+confirmed all findings resolved with no new concrete findings. Fix merge
+`6128b99` exactly matches tested tree `20e04b017c134b334addc41bb2b4184d118af93c`.
+See [resolution details](CAN-FD_IMU_Review_Resolutions.md).
+
+The superseding final candidate is
+`C:/Users/benco/dev/BODAQS-worktrees/imu-software-candidate-reviewed`, built from
+clean unchanged source `d2ee18b97b108d45050a84c8a14e4f251b841376`. All 71 checksum
+entries verified. Full firmware/common/master-adapter/node scenarios 1 through 13,
+control, integrated recording and analysis checks passed (588 analysis tests,
+one skipped), as did both TI profiles for node/master and clean A8. Final maps,
+artifact identities and qualification gates are in the review report. Fresh
+merged-tree master adapter and node exhaustion/turnover regressions also passed.
+Standards: zero open findings. Spec: zero open findings. Production remote
+admission remains explicitly unqualified; physical #175/#176 remains deferred.
 
 ## Deferred physical qualification
 
