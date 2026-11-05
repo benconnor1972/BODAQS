@@ -46,7 +46,8 @@ directories are outside that published bundle and are not installed.
 | `wait-what` | Explain an unclear message with missing context |
 | `writing-for-agents` | Write concise instructions for coding agents |
 
-Full skill directories, including templates and scripts, are vendored unchanged.
+Full skill directories, including templates and scripts, are vendored from the
+pinned source, with the local adaptations recorded below.
 BODAQS-specific policy lives in root `agents.md` and `docs/agents/`, so it can be
 reviewed independently from upstream updates. Configuration is already written;
 there is no need to run the setup skill before first use.
@@ -55,6 +56,18 @@ Triage labels are mapped in `triage-labels.md`. Installing skills does not creat
 GitHub labels or issues, start triage, commit changes, or close completed tickets.
 The existing `skills/firmware-build/` skill remains in place and is referenced from
 root instructions.
+
+## Local adaptations to preserve during updates
+
+- `implement-spec`: execution-scope handoffs, locally satisfied dependencies,
+  authorized publication and focused firmware boundary review before dependents.
+- `implement`: engineering checkpoint and explicit commit/publication scope.
+- Project-owned `skills/firmware-build`: separate offline build, device diagnostic
+  and authorized flash branches, with canonical commands in
+  `docs/agents/firmware-validation.md`.
+
+The pinned upstream commit records provenance; these files are locally adapted.
+Reconcile these adaptations during upstream updates.
 
 ## First use
 

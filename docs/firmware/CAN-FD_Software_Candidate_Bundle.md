@@ -10,16 +10,26 @@ Commit the source first, then run from the selected worktree:
 python firmware/tools/build_imu_software_candidate.py --output-dir C:/Users/benco/dev/BODAQS-worktrees/imu-software-candidate
 ```
 
+For tool/SDK checks only, use `--mode preflight` without an output directory.
+For host/native/analysis validation with working edits and no TI SDK, use
+`--mode host --output-dir ../firmware-host-evidence`. Host mode produces logs,
+scenarios and a host-validation manifest, without target images or source archive.
+The default remains the full, clean-source candidate mode below.
+
 Select a fresh output directory **outside** the source worktree. Existing output
 is never overwritten. Tracked changes and untracked files outside `.scratch/`
 prevent a run: a commit alone cannot identify uncommitted build inputs. Close
 other writers to that worktree during acceptance. The final manifest also fails
 the candidate if tracked source or HEAD changes during execution.
 
-The default tools match the project Windows installation. `--make`, `--cxx`,
+Default host tools are discovered on PATH, with local Windows fallbacks. TI
+installation defaults remain explicit Windows paths. `--make`, `--cxx`,
 `--cc`, `--sdk`, `--ti-compiler`, `--sysconfig`, `--pio` and `--jobs` select other
 installed tools explicitly. `--list-commands` prints the plan without creating
 files or running tools. No device-dependent `build.sh check` or `detect` runs.
+Tool/SDK preflight runs before output creation. A8 dependency bootstrap and all
+validation/build commands run before archiving; a failed validation retains its
+logs without paying for the large source archive.
 
 The runner executes the full firmware host target, common protocol/link tests,
 master timing and raw MCAN/CS-preemption adapter tests, all node adapter scenarios
@@ -48,9 +58,8 @@ Outputs include:
 
 A nonzero command stops the run, leaves its log and a **failed** manifest, and
 returns nonzero. Inspect `status`; the presence of artifacts alone never implies
-success. Existing generated test outputs are not source identity. The runner
-restores the historical tracked logger test executable after its own test run;
-other generated outputs remain for ordinary worktree cleanup.
+success. Host executables live in ignored `.build/` directories or temporary
+directories; no tracked executable is rewritten or restored by validation.
 
 This is a software candidate only. Production remote admission remains explicitly
 unqualified until real scheduling bounds are supplied. Synthetic host profiles

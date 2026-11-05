@@ -39,6 +39,11 @@ A passing host test or compile is not evidence that physical timing works.
 Record manual device checks still needed, including board and firmware versions.
 Do not flash a device merely because a design or review skill is running.
 
+Use [firmware validation](firmware-validation.md) for canonical offline commands,
+CI coverage and candidate packaging. Changes crossing ISR/task ownership, raw
+hardware/wire representations or finite identifier lifetimes reach its boundary
+review checkpoint before dependents or final packaging.
+
 ## Hardware
 
 Use clarification and specification skills for requirements, interface contracts,

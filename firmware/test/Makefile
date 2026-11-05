@@ -24,13 +24,14 @@ STUB_SRCS = stubs/mocks.cpp stubs/HttpFileSender_stub.cpp
 TEST_SRCS = $(wildcard test_*.cpp)
 
 # Test binary
-TEST_BIN = test_runner
+BUILD_DIR ?= .build
+TEST_BIN = $(BUILD_DIR)/test_runner.exe
 
 .PHONY: test clean
 
 test: $(TEST_BIN)
 	@echo "Running tests..."
-	./$(TEST_BIN)
+	"$(TEST_BIN)"
 	$(PYTHON) ../tools/test_i2c_schedule_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_i2c_startup_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_startup_log_runtime.py --compiler "$(CXX)"
@@ -53,9 +54,12 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_integrated_imu_recording_runtime.py --compiler "$(CXX)"
 	@echo "All tests passed."
 
-$(TEST_BIN): $(PROD_SRCS) $(STUB_SRCS) $(TEST_SRCS)
+$(TEST_BIN): $(PROD_SRCS) $(STUB_SRCS) $(TEST_SRCS) | $(BUILD_DIR)
 	@echo "Compiling test binary..."
 	$(CXX) $(CXXFLAGS) -o $@ $(PROD_SRCS) $(STUB_SRCS) $(TEST_SRCS)
 
 clean:
-	rm -f $(TEST_BIN)
+	$(PYTHON) -c "from pathlib import Path; Path('$(TEST_BIN)').unlink(missing_ok=True)"
+
+$(BUILD_DIR):
+	$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_DIR)').mkdir(parents=True, exist_ok=True)"

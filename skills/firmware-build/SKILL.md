@@ -1,108 +1,52 @@
 ---
 name: firmware-build
-description: "Build, merge, and flash BODAQS ESP32-S3 firmware using the firmware/build.sh script. Use when the user wants to compile firmware, create a flashable .bin file, flash firmware to a device, change the default build environment or serial port, list available firmware environments, clean build artifacts, or configure build settings. Triggers on: build firmware, flash firmware, make a .bin, upload firmware, esptool, platformio, build.sh, change build config, which environment, serial port."
+description: "Build firmware artifacts, diagnose an authorized device connection, or flash an explicitly authorized target."
 ---
 
-# Firmware Build
+# Firmware build and device work
 
-Build, merge, and flash BODAQS ESP32-S3 firmware via `firmware/build.sh`.
+Read `docs/agents/firmware-validation.md` for offline validation, CI and candidate
+commands, and `firmware/platformio.ini` for environments. Preserve the active
+handoff's worktree, target, publication scope and physical debt. Select the branch
+below from the user's requested action; a build ends at local artifacts.
 
-## Prerequisites
+## Build or validate locally
 
-The script requires two tools. If either is missing, the script prints install instructions and exits:
+1. Select the explicit environment/board from the request, handoff or repository
+   configuration. Reuse an existing selection without asking again.
+2. Check tools/SDK with offline candidate preflight for target builds, or use
+   host mode for validation without a TI SDK.
+3. Build the selected target, for example
+   `pio run -d firmware -e bodaqs_s3_mini_n4r2`. TI node/master builds use their
+   `ticlang/makefile`, SDK and explicit `CAN_LINK_PROFILE`. The candidate runner
+   builds both profiles and preserves separate artifact identities.
+4. Run relevant checks and report exact source, environment, artifacts and
+   remaining qualification. Stop at local artifacts for build-only work.
 
-- **PlatformIO CLI** (`pio`) — install with `pipx install platformio`
-- **esptool** — install with `pipx install esptool` or `brew install esptool`
+For `firmware/build.sh`, `list`, `build [env]` and `merge [env]` are local
+operations. Its generic `bodaqs-firmware.bin` is overwritten by another target;
+retain per-target names/identities. `check` and `detect` access devices and belong
+to the diagnostic branch below, rather than offline preflight.
 
-## Quick Reference
+## Diagnose a device connection
 
-All commands run from `firmware/`:
+Reach this branch only for an authorized device diagnostic. Reuse a selected
+port. `build.sh check` probes the chip and `detect` scans/probes ports; use them
+only within the authorized device scope. Report observed board/port/identity and
+diagnosis. A diagnostic does not authorize upload.
 
-| Command | Purpose |
-|---|---|
-| `./build.sh` | Build + merge (default env) |
-| `./build.sh build [env]` | Build + merge for a specific env |
-| `./build.sh merge [env]` | Merge only (skip build, reuse existing artifacts) |
-| `./build.sh flash [env]` | Build + merge + flash to device |
-| `./build.sh clean [env]` | Clean build directory |
-| `./build.sh check` | Verify tools, project, port, and device |
-| `./build.sh detect` | Scan /dev for connected ESP32-S3 devices |
-| `./build.sh list` | List all environments from platformio.ini |
+## Flash
 
-Options: `--port PORT` (or `auto`), `--no-build`, `--env ENV`, `-h`/`--help`.
+Reach this branch only when flashing is authorized. Resolve the explicit target
+environment, board and port from the session; clarify only missing information.
+Build and verify that target, then use `build.sh flash [env] --port PORT` or its
+explicit upload command. Report the uploaded image/source and result. Software
+checks do not qualify physical operation.
 
-## Configuration
+## Build configuration
 
-All defaults are inline at the top of `firmware/build.sh` under the "Configuration" section. An optional `firmware/build.conf` file can override any value if it exists.
-
-When the user asks to change build configuration (default environment, serial port, baud rate, flash offsets, output filename), read [references/configuration.md](references/configuration.md) for the full list of settings, what each controls, and what to prompt the user about.
-
-## Workflow
-
-1. **Run a system check.** Execute `./build.sh check` to verify tools, project files, environment, serial port, connected device, and build state. This catches problems before a build or flash attempt.
-2. **Determine the target environment.** If the user doesn't specify, use the default (`DEFAULT_ENV` in build.sh). Run `./build.sh list` to see all options. Ask the user which board they're targeting if unclear.
-3. **Build + merge.** Run `./build.sh build [env]`. Produces `bodaqs-firmware.bin` in `firmware/`.
-4. **Flash.** Run `./build.sh flash [env]` (builds + merges + flashes in one step), or `./build.sh flash --no-build` to reflash an existing binary.
-5. **If flashing fails**, run `./build.sh check` to diagnose, then verify the serial port with `--port` and that the device is connected and in bootloader mode.
-
-## Environments
-
-Environments are defined in `firmware/platformio.ini`. Each maps to a board + set of build flags. Key environments:
-
-- `thingplus_s3_usb_cdcserial_bodaqs_4f` — SparkFun Thing Plus, BODAQS 4F board profile (default)
-- `bodaqs_s3_mini_n4r2` — BODAQS V1RC3 custom board (A8)
-- `*_as5048_probe` / `*_gps_uart_probe` — diagnostic variants for sensor bringup
-- `*_bringup` — minimal diagnostics build
-
-Run `./build.sh list` for the current full list.
-
-## Multi-Board Workflows
-
-When building for multiple boards (e.g., Prototype F and A8/RC3), both environments produce the same output file (`bodaqs-firmware.bin`). Each build overwrites the previous binary — the filename gives no indication of which board it targets.
-
-To avoid confusion:
-
-- **Set per-env `OUTPUT_BIN`** in `build.conf` to keep separate binaries (e.g., `bodaqs-4f.bin` vs `bodaqs-v1rc3.bin`).
-- **Flash baud differs by board** — V1RC3 flashes at 460800, Thing Plus at 921600. The script auto-selects based on environment. Override with `FLASH_BAUD` in build.conf if needed.
-- **Always specify the env** when flashing: `./build.sh flash bodaqs_s3_mini_n4r2` rather than relying on the default.
-
-## System Check
-
-`./build.sh check` runs a full diagnostic of the build environment. It does not require tools to be installed — it reports what's missing rather than exiting. Use it:
-
-- **Before building** — catches missing tools, bad env names, missing project files
-- **Before flashing** — verifies serial port exists and device is connected
-- **When troubleshooting** — isolates whether a failure is tools, config, port, or device
-
-The check reports six categories with ✓/✗/! markers:
-
-| Category | What it verifies |
-|---|---|
-| Tools | PlatformIO CLI and esptool installed with versions |
-| Project | platformio.ini, src/, boards/, variants/ directories present |
-| Environment | DEFAULT_ENV exists in platformio.ini; build.conf status |
-| Serial Port | Configured port exists in /dev |
-| Device | ESP32 chip type and MAC (probes via esptool chip-id) |
-| Build State | Previous build artifacts and merged binary present |
-
-Exits with code 1 if any check fails, 0 if all pass. Warnings (build.conf missing, no previous build) do not cause a failure.
-
-## Port Detection
-
-Auto-detection is enabled by default (`DEFAULT_PORT="auto"` in build.sh). The script scans `/dev/cu.*` and probes each port with esptool to find a connected ESP32-S3.
-
-**Standalone:** `./build.sh detect` — scans and reports all ESP32-S3 devices found.
-
-**With flash:** Auto-detection runs automatically before flashing. To override with a specific port:
-```
-./build.sh flash --port /dev/cu.usbmodem1101
-```
-
-**How it works:**
-1. Lists all `/dev/cu.*` ports (filters out Bluetooth and debug ports)
-2. Probes each with `esptool --chip esp32s3 --port <port> chip-id`
-3. If exactly one ESP32-S3 responds, uses it automatically
-4. If multiple respond, lists them all and uses the first (user can override with `--port`)
-5. If none respond, reports failure with a hint to check the connection
-
-To disable auto-detection, set `DEFAULT_PORT` to a specific port (e.g. `/dev/cu.usbmodem1101`) in build.sh or build.conf.
+For requested changes to environment, port, baud, offsets or output names, read
+[configuration reference](references/configuration.md). Inspect actual
+`firmware/build.sh`, `firmware/build.conf` when present, and `platformio.ini`
+rather than caching defaults here. Configuration changes do not authorize device
+access or remote publication.

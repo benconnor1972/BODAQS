@@ -1,9 +1,9 @@
-"""Build a local, source-pinned IMU software candidate without accessing devices.
+"""Validate firmware or build a source-pinned candidate without accessing devices.
 
-Run after committing the candidate source. Outputs must be outside this worktree.
-The bundle contains source, command logs, both TI link profiles, the explicit A8
-image, independently verified scenario files, and a SHA-256 inventory. It makes
-no physical qualification claim. A failed command leaves a failed manifest.
+Host mode validates working edits without a TI SDK. Full candidate mode requires
+committed source and includes both TI link profiles, A8, logs, scenario evidence,
+checksums and a source archive created after validation. Outputs are external.
+Preflight only observes tools/SDK. No mode makes a physical qualification claim.
 """
 from __future__ import annotations
 
@@ -34,16 +34,19 @@ def git(*args: str) -> str:
 
 def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--make", default="C:/ti/ccs2101/ccs/utils/bin/gmake.exe")
-    parser.add_argument("--cxx", default="C:/msys64/ucrt64/bin/g++.exe")
-    parser.add_argument("--cc", default="C:/msys64/ucrt64/bin/gcc.exe")
+    parser.add_argument("--mode", choices=("preflight", "host", "candidate"), default="candidate",
+                        help="Tool checks only, host validation, or full target candidate (default)")
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--make", default=shutil.which("make") or "C:/ti/ccs2101/ccs/utils/bin/gmake.exe")
+    parser.add_argument("--cxx", default=shutil.which("g++") or "C:/msys64/ucrt64/bin/g++.exe")
+    parser.add_argument("--cc", default=shutil.which("gcc") or "C:/msys64/ucrt64/bin/gcc.exe")
     parser.add_argument("--sdk", type=Path, default=Path("C:/ti/mspm0_sdk_2_11_00_07"))
     parser.add_argument("--ti-compiler", type=Path, default=Path(
         "C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS"))
     parser.add_argument("--sysconfig", type=Path, default=Path(
         "C:/ti/ccs2101/ccs/utils/sysconfig_1.28.1/sysconfig_cli.bat"))
-    parser.add_argument("--pio", default="C:/Users/benco/.platformio/penv/Scripts/pio.exe")
+    parser.add_argument("--pio", default=shutil.which("pio") or str(
+        Path.home() / ".platformio/penv" / ("Scripts/pio.exe" if os.name == "nt" else "bin/pio")))
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--list-commands", action="store_true",
                         help="Print command plan without running or creating files")
@@ -76,6 +79,8 @@ def plan(args: argparse.Namespace, output: Path) -> list[dict]:
              "--output-dir", str(output / "scenarios")]),
         step("analysis", [sys.executable, "-m", "pytest", "-q"], cwd=ROOT / "analysis"),
     ]
+    if args.mode == "host":
+        return commands
     for profile in ("bringup", "acquisition"):
         for target in ("node", "master"):
             folder = f"firmware/can-fd/{target}/ticlang"
@@ -111,74 +116,106 @@ def write_manifest(output: Path, manifest: dict) -> None:
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
+def preflight(args: argparse.Namespace) -> list[dict]:
+    """Observe tools and target SDK before creating output or running a build."""
+    if args.mode != "host":
+        metadata = args.sdk / ".metadata/product.json"
+        try:
+            version = json.loads(metadata.read_text(encoding="utf-8"))["version"]
+        except (OSError, ValueError, KeyError) as error:
+            raise RuntimeError(f"Invalid MSPM0 SDK metadata: {metadata}") from error
+        if not version:
+            raise RuntimeError("MSPM0 SDK version is missing")
+    versions = [["git", "--version"], [sys.executable, "--version"],
+                [sys.executable, "-c", "import importlib.metadata as m; "
+                 "print('\\n'.join(sorted(str(d.metadata['Name'])+'=='+d.version for d in m.distributions())))"],
+                [args.cxx, "--version"], [args.cc, "--version"], [args.make, "--version"],
+                [args.pio, "--version"]]
+    if args.mode != "host":
+        compiler = args.ti_compiler / "bin" / ("tiarmclang.exe" if os.name == "nt" else "tiarmclang")
+        versions += [[str(compiler), "--version"], [str(args.sysconfig), "--version"]]
+    observed = []
+    env = build_environment(args)
+    for argv in versions:
+        result = subprocess.run(argv, cwd=ROOT, env=env, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, encoding="utf-8", errors="replace", check=False)
+        if result.returncode:
+            raise RuntimeError(f"Tool check failed: {argv}: {result.stdout}")
+        observed.append({"argv": argv, "exit_code": result.returncode, "output": result.stdout})
+    return observed
+
+
+def build_environment(args: argparse.Namespace) -> dict[str, str]:
+    env = os.environ.copy()
+    compiler = shutil.which(args.cxx) or args.cxx
+    env["PATH"] = str(Path(compiler).resolve().parent) + os.pathsep + env.get("PATH", "")
+    env["PYTHONPATH"] = str(ROOT / "analysis")
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
 def main() -> int:
     args = arguments()
-    output = args.output_dir.resolve()
     if args.jobs < 1:
         raise SystemExit("--jobs must be positive")
     if sys.flags.optimize or os.environ.get("PYTHONOPTIMIZE"):
         raise SystemExit("Run acceptance with Python assertions enabled (no PYTHONOPTIMIZE or -O)")
-    if output == ROOT or ROOT in output.parents:
+    if args.mode != "preflight" and args.output_dir is None:
+        raise SystemExit("--output-dir is required for host validation and candidates")
+    output = args.output_dir.resolve() if args.output_dir else ROOT.parent / "candidate-plan"
+    if args.mode != "preflight" and (output == ROOT or ROOT in output.parents):
         raise SystemExit("Candidate output must be outside the source worktree")
-    commands = plan(args, output)
+    commands = [] if args.mode == "preflight" else plan(args, output)
     if args.list_commands:
         print(json.dumps(commands, indent=2))
         return 0
-    if output.exists():
+    if args.mode != "preflight" and output.exists():
         raise SystemExit("Output already exists; select a fresh candidate directory")
     dirty = git("status", "--porcelain", "--untracked-files=no")
-    if dirty:
+    if dirty and args.mode == "candidate":
         raise SystemExit("Commit or preserve tracked changes before building a source-pinned candidate")
     untracked = git("ls-files", "--others", "--exclude-standard").splitlines()
     # Integration-local handoff/evidence is deliberately outside committed code.
     unexpected = [name for name in untracked if not name.startswith(".scratch/")]
-    if unexpected:
+    if unexpected and args.mode == "candidate":
         raise SystemExit("Untracked files could affect the build: " + ", ".join(unexpected))
+    try:
+        tools = preflight(args)
+    except (OSError, RuntimeError) as error:
+        print(error, file=sys.stderr)
+        return 1
+    if args.mode == "preflight":
+        print("Tool and SDK preflight passed; no output, builds or device access.")
+        return 0
 
     output.mkdir(parents=True)
     (output / "logs").mkdir()
-    env = os.environ.copy()
-    env["PATH"] = str(Path(args.cxx).resolve().parent) + os.pathsep + env.get("PATH", "")
-    env["PYTHONPATH"] = str(ROOT / "analysis")
+    env = build_environment(args)
     manifest = {
-        "kind": "local-software-candidate", "status": "running",
+        "kind": "local-software-candidate" if args.mode == "candidate" else "host-validation", "status": "running",
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "source": {"commit": git("rev-parse", "HEAD"), "tree": git("rev-parse", "HEAD^{tree}"),
-                   "tracked_dirty_before": False, "untracked_before": untracked},
+                   "tracked_dirty_before": bool(dirty), "untracked_before": untracked},
         "targets": {"node": "MSPM0G3507", "master": "MSPM0G3518",
                     "logger": "bodaqs_s3_mini_n4r2"},
         "link_profiles": {"bringup": [500000, 2000000], "acquisition": [1000000, 4000000]},
-        "sdk": str(args.sdk.resolve()), "qualification": "physical qualification deferred",
+        "sdk": str(args.sdk.resolve()) if args.mode == "candidate" else None,
+        "validation_mode": args.mode, "qualification": "physical qualification deferred",
         "build_environment": {key: env.get(key) for key in (
             "PATH", "PYTHONPATH", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "MAKEFLAGS",
             "PLATFORMIO_BUILD_FLAGS", "PLATFORMIO_BUILD_SRC_FLAGS")},
         "production_remote_admission": "unqualified/unsupported until measured bounds supplied",
         "deferred": DEFERRED, "commands": [], "artifacts": [],
     }
-    # These are observations, not inferred versions from installation folder names.
-    versions = [["git", "--version"], [sys.executable, "--version"],
-                [sys.executable, "-c", "import importlib.metadata as m; "
-                 "print('\\n'.join(sorted(str(d.metadata['Name'])+'=='+d.version for d in m.distributions())))"],
-                [args.cxx, "--version"], [args.cc, "--version"], [args.make, "--version"],
-                [args.pio, "--version"],
-                [str(args.ti_compiler / "bin/tiarmclang.exe"), "--version"],
-                [str(args.sysconfig), "--version"]]
-    runner_path = ROOT / "firmware/test/test_runner.exe"
-    runner_bytes = runner_path.read_bytes() if runner_path.exists() else None
     try:
-        subprocess.run(["git", "archive", "--format=zip", "--output", str(output / "SOURCE.zip"),
-                        manifest["source"]["commit"]], cwd=ROOT, check=True)
-        sdk_metadata = args.sdk / ".metadata/product.json"
-        shutil.copyfile(sdk_metadata, output / "MSPM0_SDK_PRODUCT.json")
-        for index, argv in enumerate(versions):
+        if args.mode == "candidate":
+            shutil.copyfile(args.sdk / ".metadata/product.json", output / "MSPM0_SDK_PRODUCT.json")
+        for index, tool in enumerate(tools):
             log = output / "logs" / f"tool-{index}.txt"
-            with log.open("wb") as stream:
-                result = subprocess.run(argv, cwd=ROOT, env=env, stdout=stream,
-                                        stderr=subprocess.STDOUT, check=False)
+            log.write_text(tool["output"], encoding="utf-8")
             manifest.setdefault("tools", []).append(
-                {"argv": argv, "exit_code": result.returncode, "log": log.relative_to(output).as_posix()})
-            if result.returncode:
-                raise RuntimeError(f"Tool identity command failed: {argv}")
+                {"argv": tool["argv"], "exit_code": tool["exit_code"], "log": log.relative_to(output).as_posix()})
         write_manifest(output, manifest)
         for command in commands:
             print(f"Running {command['name']} (log: {output / 'logs'})", flush=True)
@@ -204,31 +241,34 @@ def main() -> int:
         a8_folder = ROOT / "firmware/.pio/build/bodaqs_s3_mini_n4r2"
         for optional in ("firmware.map", "idedata.json"):
             source = a8_folder / optional
-            if source.exists():
+            if args.mode == "candidate" and source.exists():
                 shutil.copyfile(source, output / "artifacts/a8-bodaqs_s3_mini_n4r2" / optional)
+        if args.mode == "candidate":
+            if git("status", "--porcelain", "--untracked-files=no") or git("rev-parse", "HEAD") != manifest["source"]["commit"]:
+                raise RuntimeError("Source changed during validation; refusing to archive")
+            subprocess.run(["git", "archive", "--format=zip", "--output", str(output / "SOURCE.zip"),
+                            manifest["source"]["commit"]], cwd=ROOT, check=True)
         manifest["status"] = "passed"
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         manifest["status"] = "failed"
         manifest["error"] = str(error)
         print(error, file=sys.stderr)
     finally:
-        # This tracked historical executable is a test output, never source input.
-        if runner_bytes is not None:
-            runner_path.write_bytes(runner_bytes)
-        elif runner_path.exists():
-            runner_path.unlink()
         manifest["source"]["tracked_changes_after"] = git("status", "--porcelain", "--untracked-files=no")
         manifest["source"]["commit_after"] = git("rev-parse", "HEAD")
-        if (manifest["source"]["tracked_changes_after"] or
+        if args.mode == "candidate" and (manifest["source"]["tracked_changes_after"] or
                 manifest["source"]["commit_after"] != manifest["source"]["commit"]):
             manifest["status"] = "failed"
             manifest["error"] = "Source changed during acceptance; candidate is not a fixed-source pass"
         write_manifest(output, manifest)
         (output / "README.txt").write_text(
-            "Local IMU software candidate. No devices were accessed.\n"
-            "Inspect BUILD_MANIFEST.json status and logs before using artifacts.\n"
-            "Both TI profiles are separate artifacts; both endpoints must match.\n"
-            "A8 images are separate bootloader/partition/application outputs, not a merged flash image.\n"
+            ("Local IMU software candidate.\n" if args.mode == "candidate" else
+             "Host validation only; no target images or source archive were produced.\n") +
+            "No devices were accessed.\n"
+            "Inspect BUILD_MANIFEST.json status and logs before using artifacts.\n" +
+            ("Both TI profiles are separate artifacts; both endpoints must match.\n"
+             "A8 images are separate bootloader/partition/application outputs, not a merged flash image.\n"
+             if args.mode == "candidate" else "Only host test evidence is included; target builds were not run.\n") +
             "Host results do not qualify electrical behavior, timing, throughput, or stack/heap headroom.\n"
             "Physical tickets #175 and #176 remain deferred; production remote admission is unqualified.\n",
             encoding="utf-8")

@@ -1,0 +1,124 @@
+name: Firmware validation
+
+on:
+  pull_request:
+    paths:
+      - 'firmware/**'
+      - 'analysis/**'
+      - 'Configs/**'
+      - 'requirements.txt'
+      - 'tools/*Utf8.ps1'
+      - '.github/workflows/firmware-ci.yml'
+      - '.github/actionlint.yaml'
+  push:
+    branches: [main]
+    paths:
+      - 'firmware/**'
+      - 'analysis/**'
+      - 'Configs/**'
+      - 'requirements.txt'
+      - 'tools/*Utf8.ps1'
+      - '.github/workflows/firmware-ci.yml'
+      - '.github/actionlint.yaml'
+  workflow_dispatch:
+    inputs:
+      target_builds:
+        description: Also build both TI profiles and A8 on the configured SDK runner
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Check firmware workflow syntax
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+        run: |
+          release="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          checksums="actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+          curl -fsSL "$release/$archive" -o "$RUNNER_TEMP/$archive"
+          curl -fsSL "$release/$checksums" -o "$RUNNER_TEMP/$checksums"
+          (cd "$RUNNER_TEMP" && sha256sum --check --ignore-missing "$checksums")
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" .github/workflows/firmware-ci.yml
+      - name: Install validation dependencies
+        run: python -m pip install -r requirements.txt platformio==6.2.0
+      - name: Check candidate runner boundaries
+        run: python -m unittest discover -s firmware/tools -p test_candidate_runner.py
+      - name: Run firmware, native adapters and analysis suites
+        env:
+          MPLBACKEND: Agg
+        run: >-
+          python firmware/tools/build_imu_software_candidate.py --mode host
+          --output-dir "${{ runner.temp }}/firmware-host"
+          --make make --cxx g++ --cc gcc --pio pio
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: firmware-host-evidence
+          path: ${{ runner.temp }}/firmware-host
+          if-no-files-found: ignore
+
+  windows-text:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Exercise Windows PowerShell 5.1 native UTF-8 bridge
+        shell: powershell
+        run: ./tools/Test-Utf8.ps1
+
+  targets:
+    if: github.event_name == 'workflow_dispatch' && inputs.target_builds
+    runs-on: [self-hosted, Windows, X64, bodaqs-firmware]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Install validation dependencies
+        run: python -m pip install -r requirements.txt platformio==6.2.0
+      - name: Build source-pinned software candidate without device access
+        shell: pwsh
+        env:
+          BODAQS_MSPM0_SDK: ${{ vars.BODAQS_MSPM0_SDK }}
+          BODAQS_TI_COMPILER: ${{ vars.BODAQS_TI_COMPILER }}
+          BODAQS_SYSCONFIG: ${{ vars.BODAQS_SYSCONFIG }}
+          BODAQS_MAKE: ${{ vars.BODAQS_MAKE }}
+        run: |
+          $candidateArgs = @('--output-dir', "$env:RUNNER_TEMP/firmware-candidate")
+          foreach ($setting in @(@('--sdk', $env:BODAQS_MSPM0_SDK),
+                                 @('--ti-compiler', $env:BODAQS_TI_COMPILER),
+                                 @('--sysconfig', $env:BODAQS_SYSCONFIG),
+                                 @('--make', $env:BODAQS_MAKE))) {
+            if ($setting[1]) { $candidateArgs += $setting }
+          }
+          python firmware/tools/build_imu_software_candidate.py @candidateArgs
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: firmware-target-candidate
+          path: ${{ runner.temp }}/firmware-candidate
+          if-no-files-found: ignore

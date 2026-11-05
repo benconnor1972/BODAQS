@@ -11,6 +11,9 @@ Agents should follow the collaboration rules and project conventions below.
 4. **Preserve public interfaces unless requested.** If you must change an interface (function signature, config fields, file format), call it out explicitly and update all call sites.
 5. **Keep behavior stable by default.** If you change behavior, document the change (and any migration steps).
 
+For Windows native text pipelines, use the UTF-8 bridge and roundtrip check in
+`docs/agents/firmware-validation.md`. Prefer `apply_patch` for Unicode file edits.
+
 ## 2) Repository layout (current)
 
 Top-level folders in this repo include:
@@ -50,7 +53,7 @@ Top-level folders in this repo include:
 - `Configs/`  
   Configuration files used by firmware and/or analysis (treat as canonical sources of configuration where applicable).
 
-- `Tools/`  
+- `tools/`
   Developer tooling, scripts, or supporting utilities.
 
 - `Examples/logs/`  
@@ -144,10 +147,10 @@ When making changes:
 ## 7) Commands (adjust to what exists in this repo)
 
 ### Firmware
-- Primary workflow: **Arduino IDE build/upload** (manual).
-- If a CLI build is later added (e.g., PlatformIO), prefer:
-  - `pio run`
-  - `pio run -t upload`
+- Offline host tests, explicit PlatformIO/TI builds, CI and candidate commands:
+  `docs/agents/firmware-validation.md`.
+- Device probing and flashing are separate branches of
+  `skills/firmware-build/SKILL.md`, reached only for authorized device work.
 
 ### Analysis
 - If tests exist: `pytest -q`
