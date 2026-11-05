@@ -31,7 +31,7 @@ DEFERRED = {
 # are not required to run the firmware/analysis suites.
 TEST_IMPORTS = {
     "pytest": "pytest", "numpy": "numpy", "pandas": "pandas", "scipy": "scipy",
-    "PyYAML": "yaml", "fastparquet": "fastparquet", "matplotlib": "matplotlib",
+    "PyYAML": "yaml", "fastparquet": "fastparquet", "matplotlib": "matplotlib", "plotly": "plotly",
     "fitparse": "fitparse", "fastapi": "fastapi", "uvicorn": "uvicorn",
     "IPython": "IPython", "ipywidgets": "ipywidgets", "traitlets": "traitlets",
     "anywidget": "anywidget", "ipydatagrid": "ipydatagrid", "ipyleaflet": "ipyleaflet",

@@ -1,5 +1,7 @@
 """Check validation/packaging boundaries without compilers or devices."""
 import contextlib
+import ast
+import importlib.metadata
 import hashlib
 import io
 import json
@@ -16,6 +18,21 @@ import build_imu_software_candidate as runner
 
 
 class CandidateRunnerTests(unittest.TestCase):
+    def test_preflight_covers_pinned_direct_analysis_imports(self):
+        roots = set()
+        for folder in (runner.ROOT / "analysis/bodaqs_analysis", runner.ROOT / "analysis/tests"):
+            for path in folder.rglob("*.py"):
+                for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
+                    if isinstance(node, ast.Import):
+                        roots.update(name.name.split(".")[0] for name in node.names)
+                    elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                        roots.add(node.module.split(".")[0])
+        distributions = importlib.metadata.packages_distributions()
+        imported = {dist.lower() for name in roots for dist in distributions.get(name, [])}
+        pinned = {line.split("==")[0].lower() for line in
+                  (runner.ROOT / "requirements.txt").read_text().splitlines() if "==" in line}
+        self.assertFalse((imported & pinned) - {name.lower() for name in runner.TEST_IMPORTS})
+
     def arguments(self, mode, output=None):
         argv = ["candidate", "--mode", mode]
         if output:
