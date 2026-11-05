@@ -22,7 +22,9 @@ installed tools explicitly. `--list-commands` prints the plan without creating
 files or running tools. No device-dependent `build.sh check` or `detect` runs.
 
 The runner executes the full firmware host target, common protocol/link tests,
-all node adapter scenarios, the control-apply regression, combined recording
+master timing and raw MCAN/CS-preemption adapter tests, all node adapter scenarios
+(including recording turnover beyond 255 and within-recording exhaustion), the
+control-apply regression, combined recording
 acceptance with retained BDQ scenarios, and the full analysis suite. Host targets
 are forced to rebuild. It builds node G3507 and master G3518 separately for both
 `bringup` (500 kbit/s / 2 Mbit/s) and `acquisition` (1 Mbit/s / 4 Mbit/s), copying

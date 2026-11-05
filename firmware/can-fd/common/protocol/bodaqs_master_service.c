@@ -413,6 +413,8 @@ static void acquisition_result(BodaqsMasterService *s,uint8_t node,
         s->ingress[node].head=s->ingress[node].count=0;
         batch->count=0;memset(&batch->object,0,sizeof(batch->object));
         s->anchor_boot[node]=0;s->acquisition_fenced |= (uint8_t)(1U<<node);
+        if(s->acquisition_retirement_generation!=UINT32_MAX)
+            ++s->acquisition_retirement_generation;
         s->acquisition_retirement_pending=true;
         s->measurement.fenced=false;
     }

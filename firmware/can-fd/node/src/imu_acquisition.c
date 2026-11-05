@@ -10,7 +10,8 @@ static struct {
     BodaqsImuDisabled *stopped;
     BodaqsNodeCanSend send;
     bool (*transmit_idle)(void);
-    bool fencing, failure_after_first;
+    bool fencing, failure_after_first, epoch_reusable;
+    uint64_t recording;
     uint32_t boot, generation, prepared, last_poll, sequence, slot, gyro, accel, sensor_epoch;
     uint32_t settle_tick, first_record_tick, reset_tick, ticks[33];
     uint32_t start_tick, last_tick, last_sensor, model_seq;
@@ -645,10 +646,15 @@ void bodaqs_node_acquisition_service(uint32_t now) {
 void bodaqs_node_acquisition_backend(void *context, uint8_t command, uint32_t generation,
                                      uint64_t recording, uint32_t now, BodaqsAcquisitionEvent *e) {
     (void)context;
-    (void)recording;
     if (command != BODAQS_ACQ_POLL)
         a.generation = generation;
     if (command == BODAQS_ACQ_PREPARE) {
+        /* Reuse is scoped to a new recording after both verified stop and the
+         * hardware transmit fence. PREPARE alone cannot erase exhaustion. */
+        if (a.epoch_reusable && recording != a.recording) a.epoch = 0;
+        a.epoch_reusable = false;
+        a.recording = recording;
+        a.recovery_count = 0;
         bodaqs_node_imu_cancel(0);
         a.phase = CONFIG;
         a.index = a.step = a.mask = a.count = a.drain_phase = 0;
@@ -683,6 +689,7 @@ void bodaqs_node_acquisition_backend(void *context, uint8_t command, uint32_t ge
     bodaqs_node_acquisition_service(now);
     if (a.fencing && !tx_depth && a.transmit_idle && a.transmit_idle()) {
         a.fencing = false;
+        a.epoch_reusable = a.phase == IDLE;
         a.pending_event = BODAQS_ACQ_FENCED;
     }
     e->generation = a.generation;
