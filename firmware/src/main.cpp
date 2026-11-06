@@ -33,6 +33,9 @@
 #include "IndicatorManager.h"
 #include "PowerManager.h"
 #include "BoardProfile.h"
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+#include "SpiMeasurementProbe.h"
+#endif
 #if defined(BODAQS_BMI270_I2C_PROBE)
 #include "BMI270I2CProbe.h"
 #endif
@@ -226,6 +229,10 @@ void setup() {
       while (true) delay(1000);
     }
     PowerManager::begin(*gBoard);
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+    SpiMeasurementProbe::begin(*gBoard);
+    return;
+#endif
     configureBoardAnalogInputs_();
     DumpActiveBoardProfile();
     DumpActiveBoardButtons();
@@ -448,6 +455,10 @@ void setup() {
 }
 
 void loop() {
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+  SpiMeasurementProbe::loop();
+  return;
+#endif
 #if defined(BODAQS_AS5048_LIBRARY_PROBE) || defined(BODAQS_GPS_UART_PROBE)
   delay(1000);
   return;

@@ -11,6 +11,21 @@
 #include <cstdarg>
 #if TEST_CASE_RUNNER
 #include "SpiMeasurementProbe.h"
+#include "SpiProbeTransport.h"
+#include "../can-fd/common/protocol/bodaqs_spi_probe.h"
+#include <array>
+#include <deque>
+static BodaqsSpiProbeEngine master;
+static bool masterEnabled=false,masterSilent=false,corruptPayload=false;
+static std::deque<std::array<uint8_t,256>> replies(2);
+static uint64_t bulkLastHigh=0;
+// Rail fault signal boundary only; target build retains real PowerManager.
+static bool railFault=false;
+namespace PowerManager {
+bool analogRailFaultActive() {return railFault;}
+bool analogRailFaultLatched() {return railFault;}
+bool analogRailEnabled() {return true;}
+}
 #endif
 // CONFIG_SUPPORT
 
@@ -34,7 +49,16 @@ static std::atomic<bool> injectBeforeStart[2];
 static std::atomic<bool> delayReadLock[2],failReadLock[2];
 static std::atomic<unsigned long> readCsUs[2],edgeUs[2];
 static void complete(int adc,int count=1);
-void digitalWrite(uint8_t pin,uint8_t level) { if (level==LOW) { assert(selected.exchange(pin)==-1); if(workerAdc>=0 && workerLockCalls==3)readCsUs[workerAdc]=micros(); } else if(selected==pin) selected=-1; }
+void digitalWrite(uint8_t pin,uint8_t level) { if (level==LOW) { assert(selected.exchange(pin)==-1); if(workerAdc>=0 && workerLockCalls==3)readCsUs[workerAdc]=micros();
+#if TEST_CASE_RUNNER
+  if(pin==40 && masterEnabled && bulkLastHigh)assert(esp_timer_get_time()-bulkLastHigh>=25);
+#endif
+  } else if(selected==pin) {
+#if TEST_CASE_RUNNER
+    if(pin==40 && masterEnabled)bulkLastHigh=esp_timer_get_time();
+#endif
+    selected=-1;
+  } }
 int digitalRead(uint8_t pin) { std::lock_guard<std::mutex> lock(gpioMutex); return gpio[pin].level; }
 void attachInterruptArg(uint8_t pin,void (*fn)(void*),void* arg,int) { std::lock_guard<std::mutex> lock(gpioMutex); gpio[pin].isr=fn; gpio[pin].arg=arg; }
 void detachInterrupt(uint8_t pin) { std::lock_guard<std::mutex> lock(gpioMutex); gpio[pin].isr=nullptr; }
@@ -50,6 +74,18 @@ void SPIClass::transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
   const int adc=selected==47?0:selected==21?1:-1;
   if(adc>=0)assert(settings.hz==1000000 && settings.mode==SPI_MODE1);
   if(selected==40)assert((settings.hz==16000000 || settings.hz==8000000) && settings.mode==SPI_MODE0);
+#if TEST_CASE_RUNNER
+  if(selected==40 && masterEnabled) {
+    if(rx)memcpy(rx,replies.front().data(),length);replies.pop_front();
+    std::array<uint8_t,256> prepared{};
+    if(!masterSilent)bodaqs_spi_probe_process(&master,tx,length,prepared.data(),prepared.size());
+    BodaqsSpiProbeFrame response;
+    if(corruptPayload && bodaqs_spi_probe_decode(prepared.data(),length,&response) && response.opcode==(BODAQS_PROBE_POLL|BODAQS_PROBE_RESPONSE) && response.fragment==2) {
+      response.payload[0]^=1;assert(bodaqs_spi_probe_encode(&response,prepared.data(),length));corruptPayload=false;
+    }
+    replies.push_back(prepared);return;
+  }
+#endif
   if(adc>=0 && tx && tx[0]==8) {
     { std::lock_guard<std::mutex> lock(gpioMutex); gpio[adc?18:36].level=workerAdc>=0?HIGH:LOW; }
     if(workerAdc>=0)workerStartTransfer=true;
@@ -75,6 +111,7 @@ static thread_local FakeTask* current=nullptr;
 static std::vector<FakeTask*> tasks;
 static int failTask=-1;
 static std::atomic<bool> holdWorkers=false;
+static std::atomic<bool> releaseWaiters=false;
 static std::atomic<bool> holdTaskEntry=false;
 static std::mutex entryMutex;
 static std::condition_variable entryCv;
@@ -90,8 +127,11 @@ void vTaskNotifyGiveFromISR(TaskHandle_t task,BaseType_t*) { std::lock_guard<std
 uint32_t ulTaskNotifyTake(BaseType_t,TickType_t timeout) {
   if(!current) return 0;
   std::unique_lock<std::mutex> lock(current->mutex);
-  if(timeout) current->cv.wait_for(lock,std::chrono::milliseconds(timeout),[&]{return current->notifications>0 && !holdWorkers;});
+  if(timeout) current->cv.wait(lock,[&]{return (current->notifications>0 && !holdWorkers) || releaseWaiters;});
   if(holdWorkers && timeout) current->cv.wait(lock,[&]{return !holdWorkers;});
+  if(timeout && releaseWaiters && !current->notifications) {
+    lock.unlock();delay(timeout);lock.lock();
+  }
   unsigned n=current->notifications; current->notifications=0; return n;
 }
 static void complete(int adc, int count) {
@@ -100,7 +140,14 @@ static void complete(int adc, int count) {
   assert(fn);edgeUs[adc]=micros(); for(int i=0;i<count;++i) fn(arg);
 }
 template<class F> static void await(F pred) { auto until=millis()+1000; while(!pred() && millis()<until) delay(1); assert(pred()); }
-static void joinTasks() { for(auto* t:tasks) {t->thread.join(); delete t;} tasks.clear(); }
+static void joinTasks() { for(auto* t:tasks) {t->thread.join(); delete t;} tasks.clear();releaseWaiters=false; }
+static void stopAdc_() {
+  // Advance simulated missing-DRDY time only when the fixture asks to stop.
+  // Normal conversion schedules are notification-driven, independent of host CPU
+  // load/timer granularity. Timed public runner cases opt into timeout progress.
+  releaseWaiters=true;for(auto* t:tasks)t->cv.notify_all();
+  AnalogInputManager::onLoggingStop();
+}
 static board::BoardProfile adcBoard() {
   return board::GetBoardProfile(board::BoardID::BODAQS_A8);
 }
@@ -137,7 +184,7 @@ int main() {
   unsigned r0=reads[0];complete(0,2);await([&]{return reads[0]>r0;});await([]{return starts[0]>=2;});
   row();assert(AnalogInputManager::probeLastRow(0).fresh && AnalogInputManager::probeLastRow(0).sequence==2);
   assert(!AnalogInputManager::probeLastRow(4).fresh && AnalogInputManager::probeLastRow(4).sequence==1);
-  AnalogInputManager::onLoggingStop();assert(AnalogInputManager::probeWorkersStopped());joinTasks();
+  stopAdc_();assert(AnalogInputManager::probeWorkersStopped());joinTasks();
   auto adc=AnalogInputManager::probeTimingSnapshot();
   assert(adc.adc[0].channel[0].rowFresh==2 && adc.adc[0].channel[0].rowReused==1);
   assert(adc.adc[1].channel[0].rowFresh==1 && adc.adc[1].channel[0].rowReused==2);
@@ -158,7 +205,7 @@ int main() {
   r0=reads[0];complete(0);await([&]{return reads[0]>r0;});await([]{return starts[0]>=2;});
   AnalogInputManager::beginSample();assert(AnalogInputManager::readCounts(0,value));AnalogInputManager::endSample();
   assert(AnalogInputManager::probeLastRow(0).sequence==1);
-  AnalogInputManager::onLoggingStop();assert(AnalogInputManager::probeWorkersStopped());joinTasks();
+  stopAdc_();assert(AnalogInputManager::probeWorkersStopped());joinTasks();
   assert(AnalogInputManager::probeTimingSnapshot().adc[0].channel[0].rowNoSample==1);
   assert(AnalogInputManager::probeTimingSnapshot().adc[0].waitTimeouts>=1);
   puts("real ADC: failed warmup, no sample, timeout without sequence advance, clean second entry passed");
@@ -166,12 +213,12 @@ int main() {
   AnalogInputManager::configureFromConfig(cfg,500);
   failTask=1;AnalogInputManager::onLoggingStart();delay(2);
   assert(!AnalogInputManager::probeWorkersRunning());
-  AnalogInputManager::onLoggingStop();assert(AnalogInputManager::probeWorkersStopped());joinTasks();failTask=-1;
+  stopAdc_();assert(AnalogInputManager::probeWorkersStopped());joinTasks();failTask=-1;
   AnalogInputManager::configureFromConfig(cfg,500);
   for(auto& n:starts) n=0;
   holdWorkers=true;AnalogInputManager::onLoggingStart();
   await([]{return starts[0]>=1 && starts[1]>=1;});delay(2);
-  AnalogInputManager::onLoggingStop();assert(!AnalogInputManager::probeWorkersStopped());
+  stopAdc_();assert(!AnalogInputManager::probeWorkersStopped());
   assert(AnalogInputManager::probeTimingSnapshot().adc[0].channel[0].acquireOk==0);
   holdWorkers=false; for(auto* t:tasks) t->cv.notify_all();
   await([]{return AnalogInputManager::probeWorkersStopped();});joinTasks();
@@ -186,7 +233,7 @@ int main() {
   // after stopped reset. It must neither write old counters nor target a new task.
   void (*oldIsr)(void*);void* oldArg;
   {std::lock_guard<std::mutex> lock(gpioMutex);oldIsr=gpio[36].isr;oldArg=gpio[36].arg;}
-  AnalogInputManager::onLoggingStop();assert(AnalogInputManager::probeWorkersStopped());joinTasks();
+  stopAdc_();assert(AnalogInputManager::probeWorkersStopped());joinTasks();
   drdy=AnalogInputManager::probeDrdySnapshot();
   assert(drdy.adc[0].preStart==1 && drdy.adc[0].paired==1);
   AnalogInputManager::configureFromConfig(cfg,500);
@@ -194,7 +241,7 @@ int main() {
   assert(AnalogInputManager::probeDrdySnapshot().adc[0].observed==0);
   holdTaskEntry=true;AnalogInputManager::onLoggingStart();
   assert(!AnalogInputManager::probeWorkersRunning() && !AnalogInputManager::probeWorkersStopped());
-  AnalogInputManager::onLoggingStop();assert(!AnalogInputManager::probeWorkersStopped());
+  stopAdc_();assert(!AnalogInputManager::probeWorkersStopped());
   oldIsr(oldArg);
   holdTaskEntry=false;entryCv.notify_all();await([]{return AnalogInputManager::probeWorkersStopped();});joinTasks();
   assert(AnalogInputManager::probeDrdySnapshot().adc[0].observed==0);
@@ -203,19 +250,23 @@ int main() {
   AnalogInputManager::configureFromConfig(cfg,500);for(auto& n:starts)n=0;
   delayReadLock[0]=true;AnalogInputManager::onLoggingStart();await([]{return starts[0]>=1 && starts[1]>=1;});
   complete(0);const uint32_t observed=edgeUs[0];await([]{return starts[0]>=2;});
-  AnalogInputManager::onLoggingStop();assert(AnalogInputManager::probeWorkersStopped());joinTasks();
+  stopAdc_();assert(AnalogInputManager::probeWorkersStopped());joinTasks();
   drdy=AnalogInputManager::probeDrdySnapshot();
   const uint32_t actualService=static_cast<uint32_t>(readCsUs[0]-observed);
   assert(actualService>=5000 && drdy.adc[0].toReadAttempt.maxUs<actualService);
-  assert(drdy.adc[0].toReadEnd.count==1 && drdy.adc[0].toReadEnd.maxUs>=actualService);
+  // The GPIO injection time precedes observed ISR entry. Do not impose their
+  // equality: the independently scripted 5ms lock hold is the lower bound that
+  // must be present in successful-return latency and absent from attempt time.
+  assert(drdy.adc[0].toReadEnd.count==1 && drdy.adc[0].toReadEnd.maxUs>=5000);
   AnalogInputManager::configureFromConfig(cfg,500);for(auto& n:starts)n=0;
   failReadLock[0]=true;AnalogInputManager::onLoggingStart();await([]{return starts[0]>=1 && starts[1]>=1;});
   row();complete(0);await([]{return starts[0]>=2;});row();
   assert(AnalogInputManager::probeLastRow(0).sequence==1 && !AnalogInputManager::probeLastRow(0).fresh);
-  AnalogInputManager::onLoggingStop();assert(AnalogInputManager::probeWorkersStopped());joinTasks();
+  stopAdc_();assert(AnalogInputManager::probeWorkersStopped());joinTasks();
   drdy=AnalogInputManager::probeDrdySnapshot();assert(drdy.adc[0].toReadAttempt.count==1 && drdy.adc[0].toReadEnd.count==0);
   puts("real ADC: contended RDATA attempt versus actual CS service, failed read lock without identity advance passed");
 #if TEST_CASE_RUNNER
+  releaseWaiters=true;
   SpiMeasurementProbe::begin(board);Serial.output.clear();
   SpiMeasurementProbe::command("case 5 adc 128 16000000 2 100");
   assert(Serial.output.empty());
@@ -233,5 +284,32 @@ int main() {
   SpiMeasurementProbe::command("case -1 adc 64 8000000 1 100");
   assert(Serial.output.find("invalid_profile")!=std::string::npos);
   puts("public probe command/result: fixed profile, suppressed timed serial, missed deadlines, one bounded summary passed");
+  Serial.output.clear();railFault=true;
+  SpiMeasurementProbe::command("case 6 mixed 64 8000000 4 100");railFault=false;
+  assert(Serial.output.find("analog_rail_fault")!=std::string::npos && Serial.output.find("\"slots\":0")!=std::string::npos);
+  Serial.output.clear();failTask=1;releaseWaiters=true;
+  SpiMeasurementProbe::command("case 7 adc 64 8000000 1 100");failTask=-1;joinTasks();
+  assert(Serial.output.find("async_start_failed")!=std::string::npos && Serial.output.find("\"workers_stopped\":true")!=std::string::npos);
+  Serial.output.clear();releaseWaiters=true;
+  SpiMeasurementProbe::command("case 8 adc 64 8000000 1 1000");delay(11);SpiMeasurementProbe::command("stop");joinTasks();
+  assert(Serial.output.find("\"outcome\":\"stopped\"")!=std::string::npos && Serial.output.find("\"rows\":0,\"missed_rows\":0")==std::string::npos);
+  puts("public probe: rail fault and async startup failures, stopped workers before new case, early STOP records missed deadlines passed");
+  masterEnabled=true;bodaqs_spi_probe_init(&master);
+  uint32_t caseId=10;
+  for(uint16_t frame: {64,128,256})for(uint32_t hz: {8000000U,16000000U}) {
+    assert(SpiProbeTransport::begin(board,caseId++,frame,hz,4));
+    for(unsigned attempts=0;attempts<3000 && SpiProbeTransport::stats().retiredObjects<4;++attempts)SpiProbeTransport::tick();
+    assert(SpiProbeTransport::stats().uniqueObjects==4 && SpiProbeTransport::stats().acceptedBytes==4032 && SpiProbeTransport::stats().retiredObjects==4);
+    assert(SpiProbeTransport::stop());
+    assert(SpiProbeTransport::stats().masterMeasured);
+  }
+  puts("real SPI/client/engine: all six profiles, delayed replies, exact unique1008-byte objects, RAM ACK retirement, confirmed STOP passed");
+  assert(SpiProbeTransport::begin(board,caseId++,256,16000000,1));corruptPayload=true;
+  for(unsigned attempts=0;attempts<100 && !SpiProbeTransport::stats().acceptErrors;++attempts)SpiProbeTransport::tick();
+  assert(SpiProbeTransport::stats().acceptErrors==1 && SpiProbeTransport::stats().acceptedBytes==0 && SpiProbeTransport::stats().retiredObjects==0);
+  assert(SpiProbeTransport::stop());
+  assert(SpiProbeTransport::begin(board,caseId++,128,8000000,1));masterSilent=true;
+  assert(!SpiProbeTransport::stop());assert(!SpiProbeTransport::begin(board,caseId++,64,8000000,1));
+  puts("real client: valid-wire corrupted logical bytes never accepted/ACKed; unconfirmed STOP blocks profile changes passed");
 #endif
 }
