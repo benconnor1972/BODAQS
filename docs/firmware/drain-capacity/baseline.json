@@ -1,0 +1,149 @@
+{
+  "source_worktree": "C:\\Users\\benco\\dev\\BODAQS-worktrees\\can-control-integration",
+  "original_head": "f200b91a94dbc4d0785d5c753498d6ae6c6d14de",
+  "integration_worktree": "C:\\Users\\benco\\dev\\BODAQS-worktrees\\drain-capacity-integration",
+  "integration_branch": "integration/drain-capacity-redesign",
+  "snapshot_commit": "1b6caad970ef734b25c361dce4a3dbb6b4ee6b46",
+  "files": {
+    "GLOSSARY.md": "7665103de70842eeefbddf557c3dc49559de6d4299578e61193e9824ba5d09ad",
+    "docs/adr/0002-drain-capacity-redesign-boundaries.md": "78b45b57b39939159a25435df1f3daa1e5baa7f10e020325ee9cfb0fdac6a6f6",
+    "docs/adr/0003-record-observations-reconstruct-timing-offline.md": "8727f172f8d43368787751d867806b5c311e1987ef5945b0fd616f46e7e064c9",
+    "docs/firmware/CAN-FD_Drain_Capacity_Redesign.md": "0be962cd18a119348415e5f88ee043755b1e200676467e6717a245b4788ed78f",
+    "docs/firmware/CAN-FD_Single_Node_IMU_Smoke_Test.md": "859545718a6fb452cdcca2fae8b2448f7ab602055a5f50cd2e4fa6e8e367748a",
+    "docs/firmware/CAN-FD_Single_Node_IMU_Smoke_Test_Handover_2026-11-05.md": "40364f188bc5369993d8be090c1a19ed8d8a187e7b4b040d676055f446b826b0",
+    "firmware/can-fd/common/protocol/bodaqs_fragment_transport.h": "e5092a1fce59e8416f4cb40cfc5443780c7a619366702bfcf6b7bd74bf35d80b",
+    "firmware/can-fd/common/protocol/bodaqs_measurement.h": "f478e384ae7a7fe31bef91c5bbc2b5884579f3afeea0b9e764770ecc18bc5651",
+    "firmware/can-fd/common/test/Makefile": "a777bafb18d54ffcf54292fc79483b23a9b34660c1010aa362ba36aec8f9723d",
+    "firmware/can-fd/master/src/main.c": "d0ddead5d17bc4b5350cf363d83932e4b18d12bc4d438cf75e7f1bca3aae1306",
+    "firmware/can-fd/master/test/Makefile": "f9c2e292a3cc165675d858c3558a7a53f218eb316389638a5be634bb97f8e942",
+    "firmware/can-fd/master/test/adapter_fixture.c": "28cf7ea85ec3e81565ebf0e731339722748ae4d0654df5e02103b7adfced4bbe",
+    "firmware/can-fd/master/test/inventory_fixture.c": "cdd2be8ae9211fc0446bd0383bb41e9c547700e17cc8a4411a394d42ce858384",
+    "firmware/can-fd/master/test/test_adapter_runtime.py": "ad8ec1ac07bbc39759f60c1d22d89e38fe44fb475e6f41ca939e84d5a990f9a4",
+    "firmware/can-fd/master/test/test_inventory_runtime.py": "1a6a9de39f04c6013bd6ad26a92bc9151cb49d46d36887acc3c2ca55ddea2d59",
+    "firmware/can-fd/node/src/imu_acquisition.c": "59ad0fcdcf40f1da9211bb93f704aa13f3e1f0344a0347fea31b3cc0a5702b46",
+    "firmware/can-fd/node/src/imu_capture.c": "3846f055d8e665f6ac711236f3e62639ab045410a21224b05fe34b24530be884",
+    "firmware/can-fd/node/src/imu_capture.h": "88de2ce1cec774decdd91d99fd4faa215d97575d4a96e64456802297cb470405",
+    "firmware/can-fd/node/test/Makefile": "36bc930e94ffba46d77a26857c2ba9eaf3614e78d8075a4b4851989a144370f4",
+    "firmware/can-fd/node/test/test_acquisition.c": "c6069cfcc805c610e925b06daa40a67eab019c823116eb074d65e9531c238001",
+    "firmware/can-fd/node/test/test_capture.c": "1a4f862d862a1b2028ac462745695c380feee6625d81d3c50dfd2c2f65108a2f",
+    "firmware/can-fd/node/test/test_spi.c": "4a8e5ad862c633b1354b3ecc3e473185242f4119edd1e0ec53699f721a489628",
+    "firmware/can-fd/node/test/ti_msp_dl_config.h": "ec1c258286ab988f7d4e852a29215a68259451122d68f165d5ceb8f2b40c39a3",
+    "firmware/src/AcquisitionControl.cpp": "b9bf7172619c0a00b1954b729be992a2a65c069df0fa39c10e60563b3d0b3754",
+    "firmware/src/ButtonActions.cpp": "6f6ab3836feafed4189d7468344c9e0aff4ce2c7d6fbbb2f90bd3142a9f71df9",
+    "firmware/src/CanMasterManager.cpp": "5fac5687202c5ad2afc4a2ad496ef19990f1caf5c9997dd3af38f0c2e84dcedd",
+    "firmware/src/CanMasterManager.h": "d900301fcb1081b41a417f634236eeb59a5c0471d12538c2b354abdd81d64232",
+    "firmware/src/RemoteImuRecording.cpp": "f65a4d49720ab591976906eb1a304608b8621473e59b12c709976f24e7ae66a3",
+    "firmware/src/RemoteImuRecording.h": "0220f6ba184f930fd0356be2bbe7617712c4ecd344f8488f2bff8e4f5983feb6",
+    "firmware/src/Routes_Api.cpp": "9a1d60cea3e7c6e3d015ed758063b5e25e18cf4023f6fdf5be3ce3e611653632",
+    "firmware/src/SensorManager.cpp": "f3e513eae479bb6427d292ca0a1d1bf195857b41cfd9989b3ea19623ee0e5baa",
+    "firmware/src/SensorManager.h": "a68537458f00c0fe01c6bb62167adb169e07952facc8b607f8d42356d678a25f",
+    "firmware/src/StorageManager.cpp": "3ae33706846965d334bb84a242b4ebe29e8f4163680be6f31cf88749da249b80",
+    "firmware/test/measurement_runtime_fixture.cpp": "0aa9ff3223efb0ddcfbb9f5085cc8219da7dd4363c9e734816ea2f930fdb2233",
+    "firmware/test/remote_imu_lifecycle_runtime_fixture.cpp": "700390d494bae4139041050bca6a342788add38e8416e95125ec28bb5b8116b5",
+    "firmware/tools/build_imu_software_candidate.py": "ef6b1c1365eb898a6a33cff5e2f7fb30684621a6faf1bb83b5a8af7a16a5de9b",
+    "firmware/tools/test_candidate_runner.py": "aab3eafc77978e68f3cca7ab220cfd7fbaa394531dceb0ca290804eb28fd392d",
+    "firmware/tools/test_master_irq_vector.py": "6f243f967e72f153629be82a774a384e35bdbf54e63fd21acccd5a7e1c425e63",
+    "firmware/tools/test_measurement_crc_runtime.py": "da819f857a2dc60fd9ef7c5e48adad817e3f93a7124f42e12b39224efa14c15f",
+    "firmware/tools/test_remote_imu_lifecycle_runtime.py": "4820b2ccdfa082c5b9567c24a4005577778fc35aa20a80b210d73e5d0176b3ff",
+    "firmware/tools/test_remote_mute_runtime.py": "8adf04994a94d981a1606e49dce137401492d45decc0e19cf7505d74008951ec",
+    "firmware/src/AnalogInputManager.cpp": "1e6478d1ace5d9e393b8165fe22951bd68a98980b39c4f1f1d0eb883570d7df3",
+    "firmware/src/ImuAdmission.cpp": "15086a01d12b174b92655c1d2e12b1198459ad7959626cb1bec0cdf8b3362bbc",
+    "firmware/src/ImuAdmission.h": "f0fca770aac167a6325e04d072b8acb30ef120d104714a62fea762237a9547eb",
+    "firmware/src/SharedSpiBus.cpp": "6069ad4c87d1a954544e93be170fa754bd4cbf36113566566cc94c2b68ab9581",
+    "firmware/can-fd/common/protocol/bodaqs_master_service.h": "4e31ce0a6146f26217321b55b6d0230b9fea4fedbe48ab97e38cfdea87dbcc59",
+    "firmware/can-fd/master/ticlang/makefile": "5ff2c1de932dedec2118633ceb3653e5973a449b1543574e9e4eae7477d0cd2d",
+    "firmware/can-fd/node/ticlang/makefile": "dd5ce8e0ca3f7c4ce519b16204d90feca8f75653769003ff49af2da6e4a347e4"
+  },
+  "qualification": "Source snapshot only; inherited bench fixes are not newly qualified redesign work.",
+  "allow_crlf_to_lf": true,
+  "source_hash_policy": "Accept raw SHA256 or CRLF-to-LF source SHA256 only; external artifact hashes always raw bytes.",
+  "inherited_changes": [
+    "GPIO vector and CS-based physical SPI retirement fixes",
+    "One-slot request ownership, admission-before-RAM-ACK and cleanup fencing",
+    "Master CRC table and inventory-generation/status refresh fixes",
+    "Logger missing-fragment request sweeps",
+    "Node FIFO association/order and SYNC-scope fixes",
+    "Master first-loss service and distinct/prepared/retired drain diagnostics"
+  ],
+  "build_configuration": {
+    "master": "MSPM0G3518, acquisition CAN profile2 (1M/4M),80MHz CPU,-O2,TI ARM Clang5.1.1,2048-byte stack",
+    "node": "MSPM0G3507SRHBR, acquisition CAN profile2 (1M/4M),TI ARM Clang5.1.1,2048-byte stack",
+    "logger": "ESP32-S3 Mini N4R2,bodaqs_s3_mini_n4r2_imu_smoke,isolated fragment-window bundle with BITWISE CRC",
+    "important_difference": "Canonical snapshot uses LUT CRC; installed logger bundle retains BITWISE CRC.147us cannot qualify canonical/new logger costs."
+  },
+  "external_artifacts": {
+    "master-bench": {
+      "bodaqs_can_master.out": {
+        "sha256": "8ffd3c0c9966fc2968eb05ecd7334eb01f2966b60947be4ffee4d5825ea012db",
+        "bytes": 484408
+      },
+      "bodaqs_can_master.map": {
+        "sha256": "43f3df390d9550d3316618c94ba9bcbe73626915e3e83269d6715b88b24068f3",
+        "bytes": 51954
+      },
+      "manifest.json": {
+        "sha256": "033d14127af4d6c6ce64dd3bd142474e3c72a6111dae5820f1d71a97469a977e",
+        "bytes": 22845
+      },
+      "master-source.zip": {
+        "sha256": "2d70e562d1723ba7d96e50150232124b0166d91e9ffff5974744a4eadb10fe57",
+        "bytes": 171681
+      }
+    },
+    "node-bench": {
+      "bodaqs_can_node.out": {
+        "sha256": "7c64a69068a788ac6b70204de1065364a2cf5e502f51f70d43afccaa7ac0d7bc",
+        "bytes": 423520
+      },
+      "bodaqs_can_node.map": {
+        "sha256": "ce99505f79d320b0f9045b98e0491a6bfaab6459bf60ed7884770d82de2982e9",
+        "bytes": 51232
+      },
+      "BUILD_MANIFEST.json": {
+        "sha256": "4613ec8057774eef0dc7678fd49c08ec3d3f7d7d34becd08c23c170c7de3ae1e",
+        "bytes": 3508
+      }
+    },
+    "logger-bench": {
+      "firmware.bin": {
+        "sha256": "16baab0dc5497977bb467a39c29c89eca9af5265684ebbfdea7cd3fc04b8fe14",
+        "bytes": 2047648
+      },
+      "firmware.elf": {
+        "sha256": "c99075274721efd902ef3efc107ed5756df75e2bc45a6fbf91a8f557e868be5d",
+        "bytes": 35107464
+      },
+      "firmware.map": {
+        "sha256": "f58397f601601ce0946c4a14e96c2e93bc6bf9bbe23ab6165304d634c0ceb41c",
+        "bytes": 17456888
+      },
+      "BUILD_MANIFEST.json": {
+        "sha256": "9b28f32d91008d6b8fd2ed732694c7d2f70c06d4f9fa654d75b74ddbb1d90994",
+        "bytes": 73725
+      },
+      "logger-source.zip": {
+        "sha256": "05dd8b845856fabd803c6d739185a9899842319978ce16515fd8a98bc9d83a37",
+        "bytes": 989869
+      }
+    },
+    "latest-recording": {
+      "261106_080610.bdq": {
+        "sha256": "418c924a6b7f50ec9dd1898bcc9cd56e314f81c6fca6f5cf235ca93d536918df",
+        "bytes": 271923
+      },
+      "serial.txt": {
+        "sha256": "d999b2c1ea335376c66992b88d34245e8909fe045b6362fe4e1c63d96f62afaa",
+        "bytes": 7878
+      },
+      "debugger-snapshot.json": {
+        "sha256": "8c3661a80acb99231af951150670ee9a38e10ecc415c7d42d2b4bf8cb27e12b6",
+        "bytes": 2104
+      },
+      "analysis.json": {
+        "sha256": "620b91c31330973d4efe9422912d6b3b619ebb8d5d6d9083b1824dc40952b5ee",
+        "bytes": 1587
+      }
+    }
+  },
+  "external_artifact_scope": "Hashes read offline from retained bundles; not device readback, reflash or new qualification."
+}
