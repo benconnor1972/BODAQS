@@ -13,7 +13,9 @@ SCHEMA_V3 = "bodaqs.spi-probe.v3"
 SCHEMA_V4 = "bodaqs.spi-probe.v4"
 SCHEMA_V5 = "bodaqs.spi-probe.v5"
 SCHEMA_V6 = "bodaqs.spi-probe.v6"
-ROW_SCHEMAS = (SCHEMA_V5, SCHEMA_V6)
+SCHEMA_V7 = "bodaqs.spi-probe.v7"
+WINDOW_SCHEMAS = (SCHEMA_V6, SCHEMA_V7)
+ROW_SCHEMAS = (SCHEMA_V5, *WINDOW_SCHEMAS)
 EXECUTION_SCHEMAS = (SCHEMA_V4, *ROW_SCHEMAS)
 ROW_OWNER_MODES = ("owner_adc", "owner_rows", "owner_pipe")
 ADC_ONLY_MODES = ("adc", "owner_adc")
@@ -207,7 +209,7 @@ def validate(case):
             100 <= p["duration_ms"] <= 3600000 and p["row_hz"] == 500 and
             p["ain"] == [0, 4] and p["configured_sps"] == [1000, 1000],
             "unsupported profile")
-    require(p["mode"] != "owner_pipe" or case["schema"] == SCHEMA_V6, "pipeline requires v6")
+    require(p["mode"] != "owner_pipe" or case["schema"] in WINDOW_SCHEMAS, "pipeline requires v6")
     if v2:
         counts(p, "start_interval_us")
         require(p["crc_mode"] in ("legacy", "cached") and p["start_interval_us"] <= 5000,
@@ -271,6 +273,12 @@ def validate(case):
                 require(isinstance(master[name], list) and len(master[name]) == 10 and
                         all(type(v) is int and 0 <= v <= 4294967295 for v in master[name]),
                         "invalid master counter page")
+        if case["schema"] == SCHEMA_V7:
+            require(type(master["processing_measured"]) is bool,"invalid processing measured flag")
+            for name in ("processing_before","processing_after","processing_meta_before","processing_meta_after"):
+                require(isinstance(master[name],list) and len(master[name])==10 and all(type(v) is int and 0<=v<=4294967295 for v in master[name]),"invalid processing page")
+            if p["mode"] in ADC_ONLY_MODES:
+                require(not master["processing_measured"] and all(not any(master[n]) for n in ("processing_before","processing_after","processing_meta_before","processing_meta_after")),"ADC-only case has processing observations")
         if v2:
             require(type(master["diagnostic_measured"]) is bool, "invalid diagnostic measured flag")
             for name in ("diagnostic_before", "diagnostic_after"):
@@ -297,7 +305,7 @@ def validate(case):
             execution_counts(case)
         if case["schema"] in ROW_SCHEMAS:
             row_counts(case)
-        if case["schema"] == SCHEMA_V6:
+        if case["schema"] in WINDOW_SCHEMAS:
             window_counts(case)
 
 
@@ -477,6 +485,36 @@ def master_diagnostics(case):
     return status, engine, adapter, states
 
 
+def processing_report(case):
+    result={"status":"unknown","crc_algorithm":None,"counter_deltas":None,"phases":None,
+            "metadata_before":None,"metadata_after":None,
+            "scope":"boot counter deltas span control snapshots, wider than the timed run; frame_crc nests in decode/encode and object_crc in command; software intervals include instrumentation/interrupts, not pure CPU or physical bounds"}
+    if case["profile"]["mode"] in ADC_ONLY_MODES:
+        result["status"]="not_applicable";return result
+    m=case.get("master")
+    if m is None or not m["processing_measured"]:return result
+    a,b=m["processing_meta_before"],m["processing_meta_after"]
+    result.update(metadata_before=a,metadata_after=b)
+    if a[0]!=1 or b[0]!=1 or a[1] not in (0,1) or b[1] not in (0,1) or a[4]!=1 or b[4]!=1:return result
+    if any(a[5:]) or any(b[5:]):return result
+    if a[1]!=b[1] or not a[2] or a[2]!=b[2] or a[3] or b[3]:
+        result["status"]="invalid";return result
+    result["crc_algorithm"]=("bitwise","table")[a[1]]
+    delta=[(y-x)&4294967295 for x,y in zip(m["processing_before"],m["processing_after"])]
+    names=("decode","command","encode","frame_crc","object_crc")
+    phases={name:{"calls":delta[2*i],"total_us":delta[2*i+1],
+                  "mean_us":delta[2*i+1]/delta[2*i] if delta[2*i] else None} for i,name in enumerate(names)}
+    result.update(counter_deltas=dict(zip((f"{n}_{suffix}" for n in names for suffix in ("calls","total_us")),delta)),phases=phases)
+    result["status"]="observed" if all(phases[n]["calls"] for n in names[:4]) else "unknown"
+    if any(not p["calls"] and p["total_us"] for p in phases.values()):result["status"]="invalid"
+    if (phases["frame_crc"]["total_us"]>phases["decode"]["total_us"]+phases["encode"]["total_us"] or
+        phases["frame_crc"]["calls"]>phases["decode"]["calls"]+phases["encode"]["calls"] or
+        phases["object_crc"]["total_us"]>phases["command"]["total_us"] or
+        phases["object_crc"]["calls"]>phases["command"]["calls"]):result["status"]="invalid"
+    if result["status"]=="invalid":result["phases"]=None
+    return result
+
+
 def component_timing(case):
     master = case.get("master")
     result = {"status": "unknown", "scope": "software observations; process, retirement and publication wait may overlap; not a physical rearm bound",
@@ -616,6 +654,9 @@ def analyze(data, manifest=None):
         adc = adc_status(case)
         master, engine_delta, adapter_delta, adapter_states = master_diagnostics(case)
         components = component_timing(case)
+        processing=processing_report(case) if case["schema"] == SCHEMA_V7 else None
+        if processing and processing["status"] == "invalid":master="failed"
+        elif processing and processing["status"] == "unknown" and master=="clean":master="unknown"
         observations = diagnostic_observations(case)
         if case["schema"] in DIAGNOSTIC_SCHEMAS and p["mode"] not in ADC_ONLY_MODES:
             if components["status"] == "invalid":
@@ -651,7 +692,8 @@ def analyze(data, manifest=None):
                 "owner_adc_timing_scope": "config/start/wait/read/total summaries cover synchronous warmup only; acquire_ok includes timed reads; use traffic window/read_gap/cache_age/row_lag for active run" if p["mode"] in ROW_OWNER_MODES else "not_applicable",
                 "master_receive_pressure": "not_applicable" if p["mode"] in ADC_ONLY_MODES else
                     "unknown" if adapter_delta is None else "drops_observed" if adapter_delta[1] else "no_spi_drops_observed"} if case["schema"] in ROW_SCHEMAS else {}),
-            **({"request_window": case["request_window"]} if case["schema"] == SCHEMA_V6 else {}),
+            **({"master_processing_components":processing} if processing is not None else {}),
+            **({"request_window": case["request_window"]} if case["schema"] in WINDOW_SCHEMAS else {}),
             **({"execution_control": execution_report(case)} if case["schema"] in EXECUTION_SCHEMAS else {}),
             "profile": p, "outcome": case["outcome"], "reason": case["reason"],
             "duration_status": duration_status,
@@ -692,7 +734,7 @@ def analyze(data, manifest=None):
             "pipeline_diagnostics": {k: case["errors"][k] for k in ("stale", "duplicate")},
             "candidate_evidence": "failed" if failed else "diagnostic_control" if control else "clean_measurement_candidate" if clean_candidate else "unknown",
             "raw_measurements": case})
-    return {"schema": "bodaqs.spi-probe-report.v6" if any(c["schema"] == SCHEMA_V6 for c in cases) else "bodaqs.spi-probe-report.v5" if any(c["schema"] == SCHEMA_V5 for c in cases) else "bodaqs.spi-probe-report.v4" if any(c["schema"] in EXECUTION_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v3" if any(c["schema"] in INTEGRITY_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v2" if any(c["schema"] in DIAGNOSTIC_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v1",
+    return {"schema": "bodaqs.spi-probe-report.v7" if any(c["schema"] == SCHEMA_V7 for c in cases) else "bodaqs.spi-probe-report.v6" if any(c["schema"] == SCHEMA_V6 for c in cases) else "bodaqs.spi-probe-report.v5" if any(c["schema"] == SCHEMA_V5 for c in cases) else "bodaqs.spi-probe-report.v4" if any(c["schema"] in EXECUTION_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v3" if any(c["schema"] in INTEGRITY_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v2" if any(c["schema"] in DIAGNOSTIC_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v1",
             "capture_sha256": digest,
             "run_identity": "declared_paired" if manifest else "unknown_without_manifest",
             "manifest": manifest, "serial_events": events,

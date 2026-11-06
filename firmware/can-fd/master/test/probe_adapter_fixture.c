@@ -114,6 +114,7 @@ int main(void) {
     memset(guarded_rx.before,0xa5,sizeof guarded_rx.before);
     memset(guarded_rx.after,0xa5,sizeof guarded_rx.after);
     bodaqs_spi_probe_init(&gSpiProbe);
+    bodaqs_spi_probe_set_clock(&gSpiProbe,bodaqs_master_timing_clock,NULL);
     bodaqs_record_queue_init(&gSpiReceiveQueue,storage,256,1);
     uint8_t qwire[272]={0};BodaqsSpiProbeFrame q={0},r;
     /* Zero clocks and low CS do not retire; queue capacity stays256. */
@@ -161,6 +162,7 @@ int main(void) {
      * fragment, then ACK retirement is interrupted on both publication sides. */
     for(unsigned bytes=64;bytes<=256;bytes*=2) {
         bodaqs_spi_probe_init(&gSpiProbe);gSpiTransmitReady=false;
+        bodaqs_spi_probe_set_clock(&gSpiProbe,bodaqs_master_timing_clock,NULL);
         memset(gTransmitSlots,0,sizeof gTransmitSlots);
         bodaqs_record_queue_init(&gSpiReceiveQueue,storage,256,1);
         q=(BodaqsSpiProbeFrame){.opcode=BODAQS_PROBE_BEGIN,.case_id=1,
@@ -208,6 +210,11 @@ int main(void) {
         assert(value(&r,5)>0 && value(&r,6)>0 && value(&r,7)>=value(&r,6));
         assert(value(&r,8)>0 && value(&r,9)==0);
         uint32_t process_max=value(&r,2),retire_max=value(&r,5),wait_max=value(&r,8);
+        q.fragment=3;r=wire_reply(q,133,0);
+        assert(value(&r,0)>0 && value(&r,2)>0 && value(&r,4)>0 && value(&r,6)>0 && value(&r,8)>0);
+        q.fragment=4;r=wire_reply(q,133,0);
+        assert(value(&r,0)==1 && value(&r,1)==BODAQS_SPI_PROBE_CRC_TABLE && value(&r,2)==1 && value(&r,3)==0 && value(&r,4)==1);
+        q.fragment=2;
         /* Epoch0 invalidates samples, never turns clock state into a counter
          * delta or resets boot maxima/calls, even across STOP/new case. */
         if(bytes==256) {

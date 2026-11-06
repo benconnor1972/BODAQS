@@ -91,7 +91,7 @@ def main():
                 assert case['workers_stopped'] and case['profile']['actual_sck_hz'] is None
                 assert case['accepted_bytes'] == case['unique_objects'] * 1008
                 assert case['valid_responses'] <= case['slots']
-                assert case['schema'] == 'bodaqs.spi-probe.v6'
+                assert case['schema'] == 'bodaqs.spi-probe.v7'
                 d = case['diagnostics']
                 assert sum(d['decode_counts']) + case['errors']['transfer'] == case['slots']
                 assert sum(d['decode_counts'][1:]) == case['errors']['wire']

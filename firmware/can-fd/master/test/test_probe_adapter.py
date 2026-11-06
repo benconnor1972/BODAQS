@@ -29,7 +29,8 @@ with tempfile.TemporaryDirectory() as tmp:
     c=Path(tmp)/'adapter.c';exe=Path(tmp)/'adapter.exe'
     c.write_text(fixture.replace('/* ACTUAL_ADAPTER */',state+'\n'+functions))
     common=root/'firmware/can-fd/common'
-    subprocess.run([a.cc,'-std=c11','-Wall','-Wextra','-Werror','-O2','-DBODAQS_SPI_PROBE=1',
-        '-Wno-pointer-to-int-cast','-I'+str(common/'protocol'),'-I'+str(common/'transport'),str(c),
-        str(common/'protocol/bodaqs_spi_probe.c'),'-o',str(exe)],check=True)
-    subprocess.run([str(exe)],check=True)
+    for mode in (0,1):
+        subprocess.run([a.cc,'-std=c11','-Wall','-Wextra','-Werror','-O2','-DBODAQS_SPI_PROBE=1',
+            f'-DBODAQS_SPI_PROBE_CRC_TABLE={mode}','-Wno-pointer-to-int-cast','-I'+str(common/'protocol'),'-I'+str(common/'transport'),str(c),
+            str(common/'protocol/bodaqs_spi_probe.c'),'-o',str(exe)],check=True)
+        subprocess.run([str(exe)],check=True)

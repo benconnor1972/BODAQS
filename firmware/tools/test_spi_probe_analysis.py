@@ -16,6 +16,75 @@ EMITTED_SWITCH = FIXTURE.with_name("round2-emitted-switch.jsonl")
 
 
 class ProbeAnalysisTests(unittest.TestCase):
+    def round7_sample(self,name="pipeline"):
+        return json.loads(FIXTURE.with_name(f"round7-{name}.jsonl").read_text(encoding="utf-8"))
+
+    def test_round7_component_costs_are_nested_and_nonqualifying(self):
+        c=self.round7_sample();baseline=self.round7_sample("baseline")
+        run=self.invoke(json.dumps(baseline)+"\n"+json.dumps(c))
+        self.assertEqual(run.returncode,0,run.stderr)
+        report=json.loads(run.stdout);result=report["cases"][1]
+        self.assertEqual(report["schema"],"bodaqs.spi-probe-report.v7")
+        costs=result["master_processing_components"]
+        self.assertEqual(costs["status"],"observed")
+        self.assertEqual(costs["crc_algorithm"],"bitwise")
+        self.assertEqual(set(costs["phases"]),{"decode","command","encode","frame_crc","object_crc"})
+        self.assertIn("nests",costs["scope"])
+        self.assertEqual(result["row_freshness_status"],"healthy")
+        self.assertNotEqual(result["candidate_evidence"],"clean_measurement_candidate")
+        self.assertFalse(report["production_qualified"])
+
+    def test_round7_invalid_epoch_algorithm_or_sticky_flag_never_passes(self):
+        for mutation in range(5):
+            c=self.round7_sample();m=c["master"]
+            if mutation==0:m["processing_meta_after"][2]+=1
+            elif mutation==1:m["processing_meta_after"][1]=1
+            elif mutation==2:m["processing_meta_before"][3]=1
+            elif mutation==3:m["processing_meta_after"][3]=1
+            else:m["processing_meta_before"][2]=0
+            run=self.invoke(json.dumps(c));self.assertEqual(run.returncode,0,run.stderr)
+            result=json.loads(run.stdout)["cases"][0]
+            self.assertEqual(result["master_processing_components"]["status"],"invalid")
+            self.assertEqual(result["candidate_evidence"],"failed")
+
+    def test_round7_missing_unsupported_and_uninstrumented_are_unknown(self):
+        for mutation in range(5):
+            c=self.round7_sample();m=c["master"]
+            if mutation==0:m["processing_measured"]=False
+            elif mutation==1:m["processing_meta_after"][0]=2
+            elif mutation==2:m["processing_meta_after"][4]=0
+            elif mutation==3:m["processing_meta_after"][1]=2
+            else:m["processing_meta_after"][5]=1
+            run=self.invoke(json.dumps(c));self.assertEqual(run.returncode,0,run.stderr)
+            p=json.loads(run.stdout)["cases"][0]["master_processing_components"]
+            self.assertEqual(p["status"],"unknown");self.assertIsNone(p["phases"])
+
+    def test_round7_counters_wrap_but_metadata_does_not(self):
+        c=self.round7_sample();m=c["master"]
+        expected=(m["processing_after"][0]-m["processing_before"][0])&4294967295
+        m["processing_before"][0]=4294967294;m["processing_after"][0]=(4294967294+expected)&4294967295
+        run=self.invoke(json.dumps(c));self.assertEqual(run.returncode,0,run.stderr)
+        p=json.loads(run.stdout)["cases"][0]["master_processing_components"]
+        self.assertEqual(p["phases"]["decode"]["calls"],expected)
+        self.assertEqual(p["metadata_before"][2],p["metadata_after"][2])
+
+    def test_round7_rejects_malformed_pages_and_adc_observations(self):
+        for mutation in range(3):
+            c=self.round7_sample("baseline" if mutation==2 else "pipeline");m=c["master"]
+            if mutation==0:m["processing_after"]=[0]*9
+            elif mutation==1:m["processing_meta_before"][1]=True
+            else:m["processing_measured"]=True
+            self.assertEqual(self.invoke(json.dumps(c)).returncode,2)
+
+    def test_round7_rejects_impossible_nested_costs(self):
+        for index in (6,7,8,9):
+            c=self.round7_sample();m=c["master"]
+            m["processing_after"][index]=(m["processing_before"][index]+100000000)&4294967295
+            run=self.invoke(json.dumps(c));self.assertEqual(run.returncode,0,run.stderr)
+            result=json.loads(run.stdout)["cases"][0]
+            self.assertEqual(result["master_processing_components"]["status"],"invalid")
+            self.assertEqual(result["candidate_evidence"],"failed")
+
     def round6_sample(self,name="pipeline"):
         return json.loads(FIXTURE.with_name(f"round6-{name}.jsonl").read_text(encoding="utf-8"))
 

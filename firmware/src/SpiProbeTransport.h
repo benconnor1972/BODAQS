@@ -44,6 +44,9 @@ struct Stats {
   // STATS2 endpoints: counters wrap; boot maxima/sticky invalid state are not deltas.
   bool diagnosticMeasured=false;
   uint32_t diagnosticBefore[10]={},diagnosticAfter[10]={};
+  bool processingMeasured=false;
+  uint32_t processingBefore[10]={},processingAfter[10]={};
+  uint32_t processingMetaBefore[10]={},processingMetaAfter[10]={};
   bool masterMeasured=false,adapterMeasured=false;
   uint32_t masterBefore[10]={},masterAfter[10]={};
   uint32_t adapterBefore[10]={},adapterAfter[10]={};

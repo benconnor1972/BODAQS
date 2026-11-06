@@ -60,6 +60,12 @@ typedef struct {
     /* Main-owned coherent adapter snapshot: additive STATS page2.
      * Process/counter totals wrap uint32; maxima and invalid are boot state. */
     uint32_t diagnostic_stats[10];
+    /* Optional single-main-owner instrumentation. Totals/counts wrap uint32;
+     * frame/object CRC costs are nested inside decode/command/encode. */
+    uint32_t component_stats[10];
+    uint32_t (*component_clock)(void *,uint32_t *epoch);
+    void *component_clock_arg;
+    uint32_t component_epoch,component_invalid;
 } BodaqsSpiProbeEngine;
 /* profile: size code 0/1/2 =>64/128/256; bit2 0/1 =>8/16MHz;
  * bits3..4 => node_count-1; all other bits zero. Guard fixed at25us. */
@@ -78,6 +84,10 @@ BodaqsSpiProbeDecodeResult bodaqs_spi_probe_decode_result(const uint8_t *wire,
     size_t length, BodaqsSpiProbeFrame *frame);
 bool bodaqs_spi_probe_decode(const uint8_t *wire, size_t length, BodaqsSpiProbeFrame *frame);
 void bodaqs_spi_probe_init(BodaqsSpiProbeEngine *engine);
+/* Install before processing requests; no ISR/reentrant use or live switching.
+ * NULL leaves timings unmeasured. BEGIN/STOP do not reset boot counters. */
+void bodaqs_spi_probe_set_clock(BodaqsSpiProbeEngine *engine,
+    uint32_t (*clock)(void *,uint32_t *epoch),void *arg);
 /* Main owner only. Selected bytes are regenerated from immutable case/node/ID,
  * not copied from a CAN ring or retained in a1008-byte RAM array. This measures
  * synthetic generation/encode work, not real CAN acquisition or batch copying.

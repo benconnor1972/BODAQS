@@ -830,6 +830,9 @@ int main(void)
     bodaqs_spi_probe_init(&gSpiProbe);
 #endif
     bodaqs_master_timing_init();
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+    bodaqs_spi_probe_set_clock(&gSpiProbe,bodaqs_master_timing_clock,NULL);
+#endif
     gService.native_clock=bodaqs_master_timing_clock;
     bodaqs_control_exchange_init(&gService.control, master_control_boot_id_read());
     bodaqs_node_inventory_init(&gNodeInventory);

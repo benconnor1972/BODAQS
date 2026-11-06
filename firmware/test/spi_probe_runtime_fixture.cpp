@@ -439,7 +439,7 @@ int main() {
   puts("real ADC: same-microsecond ISR entry before START marker is ambiguous, later distinct-tick completion paired passed");
 #if TEST_CASE_RUNNER
   releaseWaiters=true;
-  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v6-")!=std::string::npos);
+  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v7-")!=std::string::npos);
   puts(Serial.output.c_str());Serial.output.clear();SpiMeasurementProbe::command("status");
   assert(Serial.output.find("\"logger_build\":")!=std::string::npos);puts(Serial.output.c_str());Serial.output.clear();
   // Public runner, deterministic clock boundary: 10 seconds has 5000 midpoints
@@ -513,6 +513,7 @@ int main() {
   assert(Serial.output.find("non_increasing_case_id")!=std::string::npos);
   puts("public probe: reused and older IDs including prior failed starts rejected before hardware work passed");
   masterEnabled=true;bodaqs_spi_probe_init(&master);
+  bodaqs_spi_probe_set_clock(&master,[](void*,uint32_t* epoch)->uint32_t{*epoch=1;return static_cast<uint32_t>(esp_timer_get_time());},nullptr);
   Serial.output.clear();SpiMeasurementProbe::command("case 9 bulk 256 16000000 4 100");
   while(Serial.output.empty())SpiMeasurementProbe::loop();
   assert(Serial.output.find("\"mode\":\"bulk\"")!=std::string::npos && Serial.output.find("\"rows\":0")!=std::string::npos);

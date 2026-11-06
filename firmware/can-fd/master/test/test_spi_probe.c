@@ -11,7 +11,40 @@ static BodaqsSpiProbeFrame exchange(BodaqsSpiProbeEngine *e,BodaqsSpiProbeFrame 
     for(size_t i=size;i<sizeof rx;++i) assert(rx[i]==0);
     return r;
 }
+static uint32_t fake_tick=1,fake_epoch=1;
+static unsigned fake_reads,change_epoch_at;
+static uint32_t test_clock(void *arg,uint32_t *epoch) {
+    if(++fake_reads==change_epoch_at)++fake_epoch;
+    (void)arg;*epoch=fake_epoch;return fake_tick++;
+}
 int main(void) {
+    BodaqsSpiProbeEngine timed;bodaqs_spi_probe_init(&timed);
+    bodaqs_spi_probe_set_clock(&timed,test_clock,NULL);
+    BodaqsSpiProbeFrame cq={.opcode=BODAQS_PROBE_BEGIN,.case_id=99,.profile=0};
+    fake_tick=UINT32_MAX-1;exchange(&timed,&cq);
+    assert(!timed.component_invalid && timed.component_epoch==1);
+    assert(timed.component_stats[0]==1 && timed.component_stats[2]==1 && timed.component_stats[4]==1);
+    assert(timed.component_stats[6]==2 && timed.component_stats[8]==0);
+    assert(timed.component_stats[1]==3 && timed.component_stats[7]==2); // both nested and parent span tick wrap
+    cq.opcode=BODAQS_PROBE_POLL;exchange(&timed,&cq);exchange(&timed,&cq);
+    assert(timed.component_stats[8]==1); // immutable object CRC computed once
+    cq.opcode=BODAQS_PROBE_STATS;cq.fragment=3;
+    BodaqsSpiProbeFrame cr=exchange(&timed,&cq);assert(cr.payload_length==40 && cr.fragment==3);
+    cq.fragment=4;cr=exchange(&timed,&cq);
+    assert(cr.payload[0]==1 && cr.payload[4]==BODAQS_SPI_PROBE_CRC_TABLE && cr.payload[8]==1 && cr.payload[12]==0 && cr.payload[16]==1);
+    fake_epoch=0;exchange(&timed,&cq);assert(timed.component_invalid);
+    fake_epoch=1;exchange(&timed,&cq);assert(timed.component_invalid); // sticky across restoration
+    bodaqs_spi_probe_init(&timed);assert(!timed.component_clock && !timed.component_invalid && !timed.component_stats[0]);
+    bodaqs_spi_probe_set_clock(&timed,test_clock,NULL);fake_epoch=1;fake_tick=100;
+    cq=(BodaqsSpiProbeFrame){.opcode=BODAQS_PROBE_BEGIN,.case_id=99,.profile=0};exchange(&timed,&cq);
+    uint32_t decode_before=timed.component_stats[1],crc_before=timed.component_stats[7];
+    change_epoch_at=fake_reads+3;cq.opcode=BODAQS_PROBE_STATS;cq.fragment=4;exchange(&timed,&cq);
+    assert(timed.component_invalid && timed.component_epoch==2);
+    assert(timed.component_stats[1]==decode_before && timed.component_stats[7]==crc_before+1);
+    cq.opcode=BODAQS_PROBE_STOP;cq.fragment=0;exchange(&timed,&cq);
+    cq.opcode=BODAQS_PROBE_BEGIN;cq.case_id=100;exchange(&timed,&cq);
+    assert(timed.component_invalid); // no clearing on STOP/new recording
+    puts("component phases: nested frame/object CRC, u32 tick wrap, metadata and sticky invalid clock: PASS");
     /* Independent IEEE/zlib fixtures: BEGIN case7, profile0, no payload.
      * Mutations combine faults to pin the historical first-rejection order. */
     uint8_t literal[64]={0x53,0x50,1,1,7,[60]=0xdc,0x6b,0x9d,0x5e};
@@ -73,7 +106,7 @@ int main(void) {
             assert(r.payload[4*i]==i && r.payload[4*i+1]==0x56 &&
                 r.payload[4*i+2]==0x34 && r.payload[4*i+3]==0x12);
         }
-        q.fragment=3;r=exchange(&e,&q);
+        q.fragment=5;r=exchange(&e,&q);
         assert(r.opcode==255 && r.payload[0]==BODAQS_PROBE_ARGUMENT);
         q.opcode=BODAQS_PROBE_BEGIN;q.fragment=0;
         q.case_id=2;r=exchange(&e,&q);assert(r.opcode==255 && r.payload[0]==BODAQS_PROBE_BUSY);q.case_id=1;
