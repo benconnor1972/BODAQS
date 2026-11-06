@@ -49,7 +49,10 @@ namespace AnalogInputManager {
   bool probeWorkerProfile(uint8_t mask, uint8_t core, uint32_t cycleUs);
   // Bench-only single-owner WREG(5), START(1), RDATA(4) steps. No workers,
   // cache publication, row reads, or implicit waits; caller owns DRDY timeout.
-  bool probeTransferStep(uint8_t adc, uint8_t step, bool selectDevice);
+  bool probeTransferStep(uint8_t adc, uint8_t step, bool selectDevice, bool publish=false);
+  // Owner-only cache publication; warmup uses real conversions, no workers.
+  bool probeOwnerBegin();
+  void probeOwnerEnd();
   bool probeDataReady(uint8_t adc);
   // Last readCounts cache observation, without consuming the conversion again.
   ProbeRow probeLastRow(uint8_t ain);

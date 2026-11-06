@@ -99,6 +99,7 @@ AdsDevice s_ads[board::BOARD_MAX_EXTERNAL_ADCS];
 uintptr_t s_probeIsrGeneration = 0;
 uint8_t s_probeWorkerMask=3,s_probeWorkerCore=0;
 uint32_t s_probeCycleUs=0;
+bool s_probeOwnerCache=false;
 #endif
 
 #if defined(ESP32)
@@ -898,13 +899,17 @@ bool readCounts(uint8_t ain, int32_t& outCounts) {
     const uint8_t channel = input->external_channel;
     if (!validAdcIndex_(adc) || !validChannel_(s_ads[adc], channel)) return false;
 
-    if (s_asyncLoggingActive &&
+    if (
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+        s_probeOwnerCache ||
+#endif
+        (s_asyncLoggingActive &&
 #if defined(ESP32)
         (s_ads[adc].asyncTask || s_ads[adc].asyncRunning)
 #else
         false
 #endif
-        ) {
+        )) {
       CachedAdcSample sample;
       const bool have = copyCachedSample_(adc, channel, sample);
       bool fresh = false;
@@ -1162,6 +1167,9 @@ void onLoggingStop() {
 
 void beginSample() {
   s_inSample = false;
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+  if(s_probeOwnerCache) {s_inSample=true;return;}
+#endif
 
   if (s_asyncLoggingActive) {
     s_inSample = true;
@@ -1294,12 +1302,30 @@ bool probeWorkerProfile(uint8_t mask,uint8_t core,uint32_t cycleUs) {
   if(!probeWorkersStopped() || mask<1 || mask>3 || core>1 || cycleUs>20000)return false;
   s_probeWorkerMask=mask;s_probeWorkerCore=core;s_probeCycleUs=cycleUs;return true;
 }
-bool probeTransferStep(uint8_t adc, uint8_t step, bool selectDevice) {
+bool probeOwnerBegin() {
+  if(!probeWorkersStopped() || s_probeOwnerCache)return false;
+  clearCachedSamples_();s_probeOwnerCache=true;
+  for(uint8_t adc=0;adc<2;++adc)if(!acquireAndPublishChannel_(adc,0)) {
+    s_probeOwnerCache=false;return false;
+  }
+  return true;
+}
+void probeOwnerEnd() {s_probeOwnerCache=false;}
+bool probeTransferStep(uint8_t adc, uint8_t step, bool selectDevice, bool publish) {
   if (!probeWorkersStopped() || !validAdcIndex_(adc) || !s_ads[adc].initialized) return false;
+  if(publish && (!s_probeOwnerCache || !selectDevice))return false;
   auto& dev = s_ads[adc];
   if (step == 0) return configureAdsChannel_(dev, 0, selectDevice);
   if (step == 1) return adsCommand_(dev, ADS1220_CMD_START, selectDevice);
-  if (step == 2) { int32_t ignored; return adsReadData_(dev, ignored, selectDevice); }
+  if (step == 2) {
+    int32_t counts=0;const bool ok=adsReadData_(dev,counts,selectDevice);
+    if(publish && s_probeOwnerCache) {
+      publishCachedSample_(adc,0,scaleRaw24ToEffectiveBits_(counts,dev.cfg.effective_bits),ok);
+      if(ok)++s_timingStats.adc[adc].channel[0].acquireOk;
+      else ++s_timingStats.adc[adc].channel[0].acquireFail;
+    }
+    return ok;
+  }
   return false;
 }
 bool probeDataReady(uint8_t adc) {

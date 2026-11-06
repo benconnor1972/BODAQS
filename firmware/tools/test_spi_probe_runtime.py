@@ -81,7 +81,7 @@ def main():
             cases = [event for event in events if event['type'] == 'case']
             if args.capture:
                 args.capture.write_text('\n'.join(json.dumps(event) for event in events) + '\n', encoding='utf-8')
-            assert [case['case_id'] for case in cases] == [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+            assert [case['case_id'] for case in cases] == [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, *range(33,45)]
             assert (cases[0]['rows'], cases[0]['missed_rows']) == (5000, 0)
             assert (cases[1]['rows'], cases[1]['missed_rows']) == (49, 1)
             assert (cases[2]['rows'], cases[2]['missed_rows']) == (1, 1)
@@ -91,7 +91,7 @@ def main():
                 assert case['workers_stopped'] and case['profile']['actual_sck_hz'] is None
                 assert case['accepted_bytes'] == case['unique_objects'] * 1008
                 assert case['valid_responses'] <= case['slots']
-                assert case['schema'] == 'bodaqs.spi-probe.v4'
+                assert case['schema'] == 'bodaqs.spi-probe.v5'
                 d = case['diagnostics']
                 assert sum(d['decode_counts']) + case['errors']['transfer'] == case['slots']
                 assert sum(d['decode_counts'][1:]) == case['errors']['wire']
@@ -152,6 +152,24 @@ def main():
             assert next(c for c in cases if c['case_id']==32)['outcome']=='stopped'
             reset=next(c for c in cases if c['case_id']==31)['execution']
             assert (reset['adc_mask'],reset['adc_core'],reset['cycle_us'])==(3,0,0)
+            for cid in (33,34,35,40):
+                case=next(c for c in cases if c['case_id']==cid)
+                publication=case['row_publication']
+                assert case['rows']==50 and case['missed_rows']==0
+                assert publication['published']==publication['valid_both']==publication['fresh_both']==50
+                assert all(sample['counts']==[0,319] for sample in publication['samples'])
+                assert all(sample['fresh_mask']==3 for sample in publication['samples'])
+                assert all(a['fresh']==50 and a['reused']==a['no_sample']==0 for a in case['adc'])
+                for adc,cs in enumerate((47,21)):
+                    t=next(t for t in case['execution']['traffic'] if t['cs']==cs)
+                    assert t['operations']==case['diagnostics']['sequence']['operations'][adc] # row consumption clocks no extra conversions
+                if cid in (34,35):assert publication['master_deferrals']>0
+                if cid==35:assert case['diagnostics']['timing']['request_interval']['min_us']>=1000
+            slow=next(c for c in report['cases'] if c['case_id']==36)
+            assert slow['row_freshness_status']=='failed' and slow['raw_measurements']['row_publication']['fresh_both']<50
+            assert next(c for c in cases if c['case_id']==37)['reason']=='adc_ready_timeout'
+            assert next(c for c in cases if c['case_id']==38)['outcome']=='stopped'
+            print('Public owner row publication:500Hz fresh signed samples, reuse rejection, timeout, STOP and no implicit row SPI passed')
             print('Public execution controls: requested core/mask agrees with timed observations, pacing limits, worker-free owner, timeout and STOP passed')
             print('Public sequential controls: raw fault provenance, readiness timeout, lock failure, STOP in wait and empty-window failure passed')
 

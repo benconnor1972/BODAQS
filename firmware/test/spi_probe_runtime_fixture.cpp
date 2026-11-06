@@ -47,6 +47,9 @@ int analogRead(uint8_t) { return 0; }
 static std::atomic<int> selected{-1};
 static std::atomic<uint8_t> pinLevel[64];
 static std::atomic<bool> forceReadyPin=false;
+static std::atomic<uint32_t> rowReadyDelayUs=0;
+static std::atomic<uint32_t> rowStartedUs[2];
+static std::atomic<bool> rowValueFixture=false;
 static std::mutex gpioMutex;
 struct Gpio { int level=LOW; void (*isr)(void*)=nullptr; void* arg=nullptr; } gpio[64];
 static std::atomic<unsigned> starts[2], reads[2];
@@ -81,7 +84,9 @@ void digitalWrite(uint8_t pin,uint8_t level) { pinLevel[pin]=level; if (level==L
 #endif
     selected=-1;
   } }
-int digitalRead(uint8_t pin) { std::lock_guard<std::mutex> lock(gpioMutex); return forceReadyPin && (pin==18 || pin==36)?LOW:gpio[pin].level; }
+int digitalRead(uint8_t pin) { std::lock_guard<std::mutex> lock(gpioMutex);
+  if(rowReadyDelayUs && (pin==18 || pin==36))return static_cast<uint32_t>(micros()-rowStartedUs[pin==18?1:0])>=rowReadyDelayUs?LOW:HIGH;
+  return forceReadyPin && (pin==18 || pin==36)?LOW:gpio[pin].level; }
 void attachInterruptArg(uint8_t pin,void (*fn)(void*),void* arg,int) { std::lock_guard<std::mutex> lock(gpioMutex); gpio[pin].isr=fn; gpio[pin].arg=arg; }
 void detachInterrupt(uint8_t pin) { std::lock_guard<std::mutex> lock(gpioMutex); gpio[pin].isr=nullptr; }
 SPIClass SPI;
@@ -141,6 +146,7 @@ void SPIClass::transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
   }
 #endif
   if(adc>=0 && tx && tx[0]==8) {
+    rowStartedUs[adc]=micros();
     if(workerAdc==0 && holdStartTransfer) {
       std::unique_lock<std::mutex> lock(tieMutex);
       startTransferReached=true;tieCv.notify_all();tieCv.wait(lock,[]{return !holdStartTransfer;});
@@ -152,7 +158,13 @@ void SPIClass::transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
         )?HIGH:LOW; }
     if(workerAdc>=0)workerStartTransfer=true;
   }
-  if(adc>=0 && tx && tx[0]==16) ++reads[adc];
+  if(adc>=0 && tx && tx[0]==16) {
+    ++reads[adc];
+    if(rowValueFixture && rx && length==4) {
+      const int32_t value=adc?654321:-123456;
+      rx[1]=static_cast<uint32_t>(value)>>16;rx[2]=static_cast<uint32_t>(value)>>8;rx[3]=value;
+    }
+  }
 }
 static SemaphoreHandle_t sharedSpiLock=nullptr;
 static thread_local bool holdContextAcquisition=false;
@@ -413,7 +425,7 @@ int main() {
   puts("real ADC: same-microsecond ISR entry before START marker is ambiguous, later distinct-tick completion paired passed");
 #if TEST_CASE_RUNNER
   releaseWaiters=true;
-  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v4-")!=std::string::npos);
+  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v5-")!=std::string::npos);
   puts(Serial.output.c_str());Serial.output.clear();SpiMeasurementProbe::command("status");
   assert(Serial.output.find("\"logger_build\":")!=std::string::npos);puts(Serial.output.c_str());Serial.output.clear();
   // Public runner, deterministic clock boundary: 10 seconds has 5000 midpoints
@@ -651,7 +663,65 @@ int main() {
   assert(AnalogInputManager::probeWorkersStopped() && Serial.output.find("\"outcome\":\"stopped\"")!=std::string::npos);
   puts(Serial.output.c_str());Serial.output.clear();
   puts("Public execution controls: actual worker core/mask/pacing, independent owner conversions, continuing master service, timeout, STOP and default reset PASS");
-  uint32_t caseId=33;
+  // Actual owner publication path with nonzero signed ADC wire values.
+  steppedUs=static_cast<int64_t>(micros())+10000;bulkLastHigh=0;
+  rowValueFixture=true;rowReadyDelayUs=1000;forceReadyPin=false;
+  for(const char* command:{
+      "case 33 owner_adc 128 8000000 4 100 cached 0 3 1 0",
+      "case 34 owner_rows 128 8000000 4 100 cached 500 3 1 0",
+      "case 35 owner_rows 128 8000000 4 100 cached 1000 3 1 0"}) {
+    SpiMeasurementProbe::command(command);
+    while(Serial.output.empty()){delayMicroseconds(10);SpiMeasurementProbe::loop();}
+    assert(tasks.empty() && AnalogInputManager::probeWorkersStopped());
+    assert(Serial.output.find("\"outcome\":\"complete\"")!=std::string::npos);
+    assert(Serial.output.find("\"counts\":[0,319]")!=std::string::npos);
+    puts(Serial.output.c_str());Serial.output.clear();
+  }
+  SpiMeasurementProbe::command("case 36 owner_rows 128 8000000 4 100 cached 500 3 1 0");
+  rowReadyDelayUs=3500; // warmup is real/valid; later conversions miss row freshness
+  while(Serial.output.empty()){delayMicroseconds(10);SpiMeasurementProbe::loop();}
+  puts(Serial.output.c_str());Serial.output.clear();rowReadyDelayUs=1000;
+  SpiMeasurementProbe::command("case 37 owner_rows 128 8000000 4 100 cached 500 3 1 0");
+  rowReadyDelayUs=1000000;
+  while(Serial.output.empty()){delayMicroseconds(10);SpiMeasurementProbe::loop();}
+  assert(Serial.output.find("adc_ready_timeout")!=std::string::npos);
+  puts(Serial.output.c_str());Serial.output.clear();rowReadyDelayUs=1000;
+  SpiMeasurementProbe::command("case 38 owner_rows 128 8000000 4 100 cached 500 3 1 0");
+  rowReadyDelayUs=1000000;
+  for(unsigned i=0;i<120;++i){delayMicroseconds(10);SpiMeasurementProbe::loop();if(!Serial.output.empty())break;}
+  assert(Serial.output.empty());SpiMeasurementProbe::command("stop");
+  assert(Serial.output.find("\"outcome\":\"stopped\"")!=std::string::npos);
+  puts(Serial.output.c_str());Serial.output.clear();rowReadyDelayUs=1000;
+  SpiMeasurementProbe::command("case 39 owner_rows 128 8000000 4 100 cached 500 3 1 0");
+  failNextSpiLock=true;SpiMeasurementProbe::loop();
+  assert(Serial.output.find("adc_step_failed")!=std::string::npos);
+  puts(Serial.output.c_str());Serial.output.clear();
+  SpiMeasurementProbe::command("case 40 owner_adc 128 8000000 4 100 cached 0 3 1 0");
+  while(Serial.output.empty()){delayMicroseconds(10);SpiMeasurementProbe::loop();}
+  assert(Serial.output.find("\"outcome\":\"complete\"")!=std::string::npos);
+  puts(Serial.output.c_str());Serial.output.clear();
+  SpiMeasurementProbe::command("case 41 owner_adc 128 8000000 4 100 cached 0 3 1 0");
+  delay(101);SpiMeasurementProbe::loop();
+  assert(Serial.output.find("adc_sequence_incomplete")!=std::string::npos);
+  puts(Serial.output.c_str());Serial.output.clear();
+  SpiMeasurementProbe::command("case 42 owner_adc 128 8000000 4 100 cached 0 3 1 0");
+  railFault=true;SpiMeasurementProbe::loop();railFault=false;
+  assert(Serial.output.find("analog_rail_fault")!=std::string::npos);
+  puts(Serial.output.c_str());Serial.output.clear();
+  railFault=true;SpiMeasurementProbe::command("case 43 owner_rows 128 8000000 4 100 cached 500 3 1 0");railFault=false;
+  assert(Serial.output.find("analog_rail_fault")!=std::string::npos);
+  puts(Serial.output.c_str());Serial.output.clear();
+  for(const char* command:{
+      "case 44 owner_rows 128 8000000 4 100 cached 500 1 1 0",
+      "case 44 owner_adc 128 8000000 4 100 cached 0 3 1 5000"}) {
+    SpiMeasurementProbe::command(command);assert(Serial.output.find("invalid_profile")!=std::string::npos);Serial.output.clear();
+  }
+  rowValueFixture=false;rowReadyDelayUs=0;forceReadyPin=true;
+  SpiMeasurementProbe::command("case 44 bulk 128 8000000 4 100 cached 500");
+  while(Serial.output.empty()){delayMicroseconds(10);SpiMeasurementProbe::loop();}
+  puts(Serial.output.c_str());Serial.output.clear();steppedUs=-1;bulkLastHigh=0;
+  puts("Public owner row publication: signed wire samples, independent conversions, real cache reads, fresh/reused identities, STOP/timeout/rail/late-window and restart PASS");
+  uint32_t caseId=45;
   for(uint16_t frame: {64,128,256})for(uint32_t hz: {8000000U,16000000U}) {
     assert(SpiProbeTransport::begin(board,caseId++,frame,hz,4));
     for(unsigned attempts=0;attempts<1000000 && SpiProbeTransport::stats().retiredObjects<4;++attempts)SpiProbeTransport::tick();

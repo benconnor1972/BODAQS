@@ -16,6 +16,50 @@ EMITTED_SWITCH = FIXTURE.with_name("round2-emitted-switch.jsonl")
 
 
 class ProbeAnalysisTests(unittest.TestCase):
+    def round5_sample(self,name="rows"):
+        return json.loads(FIXTURE.with_name(f"round5-{name}.jsonl").read_text(encoding="utf-8"))
+
+    def test_round5_real_row_publication_and_owner_baseline(self):
+        baseline=self.round5_sample("baseline")
+        case=self.round5_sample()
+        run=self.invoke(json.dumps(baseline)+"\n"+json.dumps(case))
+        self.assertEqual(run.returncode,0,run.stderr)
+        report=json.loads(run.stdout)
+        self.assertEqual(report["schema"],"bodaqs.spi-probe-report.v5")
+        result=report["cases"][1]
+        self.assertEqual(result["baseline_case_ids"],[baseline["case_id"]])
+        self.assertEqual(result["row_freshness_status"],"healthy")
+        self.assertEqual(result["row_publication"]["fresh_both"],50)
+        self.assertEqual(result["row_publication"]["samples"][0]["counts"],[0,319])
+        self.assertEqual(result["master_receive_pressure"],"no_spi_drops_observed")
+        self.assertNotEqual(result["candidate_evidence"],"clean_measurement_candidate")
+        self.assertFalse(report["admission_authorized"])
+
+    def test_round5_reuse_timeout_and_stop_cannot_report_freshness_success(self):
+        for name in ("reuse","timeout","stop"):
+            with self.subTest(name=name):
+                run=self.invoke(json.dumps(self.round5_sample(name)))
+                self.assertEqual(run.returncode,0,run.stderr)
+                c=json.loads(run.stdout)["cases"][0]
+                self.assertNotEqual(c["row_freshness_status"],"healthy")
+                self.assertEqual(c["candidate_evidence"],"failed")
+
+    def test_round5_rejects_false_row_provenance(self):
+        for mutation in range(10):
+            with self.subTest(mutation=mutation):
+                c=self.round5_sample();p=c["row_publication"]
+                if mutation==0:p["published"]+=1
+                elif mutation==1:p["last"]["conversion"]=p["samples"][0]["conversion"][:]
+                elif mutation==2:p["last"]["scheduled_us"]+=1
+                elif mutation==3:p["samples"][1]["conversion"]=p["samples"][0]["conversion"][:]
+                elif mutation==4:p["samples"][0]["acquired_us"][0]=p["samples"][0]["published_us"]+1
+                elif mutation==5:p["last"]["fresh_mask"]=0
+                elif mutation==6:p["samples"][0]["valid_mask"]=0
+                elif mutation==7:p["active"]=False
+                elif mutation==8:p["deadline_guard_us"]=0
+                else:p["samples"][0]["counts"][0]=True
+                self.assertEqual(self.invoke(json.dumps(c)).returncode,2)
+
     def round4_sample(self, name="workers"):
         return json.loads(FIXTURE.with_name(f"round4-{name}.jsonl").read_text(encoding="utf-8"))
 
