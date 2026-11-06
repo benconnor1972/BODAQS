@@ -10,6 +10,13 @@
 #include "master_identity.h"
 #include "ti_msp_dl_config.h"
 #include "bodaqs_can_link_ti.h"
+#include "bodaqs_spi_probe.h"
+
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+#define BODAQS_SPI_ADAPTER_CAPACITY BODAQS_SPI_PROBE_CAPACITY
+#else
+#define BODAQS_SPI_ADAPTER_CAPACITY BODAQS_MASTER_SLOT_BYTES
+#endif
 
 #define NODE_STALE_AFTER_MS (3000U)
 #define DISCOVERY_INTERVAL_MS (5000U)
@@ -80,6 +87,18 @@ typedef struct {
     bool front_power_fault;
     bool rear_power_fault;
 } MasterRuntimeInfo;
+
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+static BodaqsSpiProbeEngine gSpiProbe;
+/* Observed software costs; never pad timing or physical delivery evidence. */
+typedef struct {
+    uint32_t boundaries,prepared,malformed,queue_dropped,queue_high_water;
+    uint32_t process_calls,process_max_us,process_total_us;
+    uint32_t clock_epoch,timing_invalid;
+    BodaqsSpiProbeStats engine;
+} MasterSpiProbeInfo;
+volatile MasterSpiProbeInfo gMasterSpiProbeInfo;
+#endif
 
 /* Active drain diagnostic state. */
 /* Main-loop writer only; debugger observation, never protocol/authority state.
@@ -153,12 +172,12 @@ BodaqsNodeInventory gNodeInventory;
 static BodaqsMasterService gService;
 static BodaqsMasterDiscoveryRecord
     gDiscoveryRecords[BODAQS_MASTER_DISCOVERY_NODE_COUNT];
-static uint8_t gTransmitSlots[2][BODAQS_MASTER_SLOT_BYTES];
-static uint8_t gReceiveSlots[2][BODAQS_MASTER_SLOT_BYTES];
+static uint8_t gTransmitSlots[2][BODAQS_SPI_ADAPTER_CAPACITY];
+static uint8_t gReceiveSlots[2][BODAQS_SPI_ADAPTER_CAPACITY];
 static uint8_t gTransmitIndex;
 static uint8_t gReceiveIndex;
-/* DMA stays unarmed until this completed slot has been serviced. */
-static uint8_t gSpiReceiveStorage[1][BODAQS_MASTER_SLOT_BYTES];
+/* DMA rearms immediately; one queued request may await main-loop ownership. */
+static uint8_t gSpiReceiveStorage[1][BODAQS_SPI_ADAPTER_CAPACITY];
 static BodaqsRecordQueue gSpiReceiveQueue;
 /* Main publishes requests and consumes proof under a short IRQ fence. Only
  * the ISR adapter touches hardware; it never mutates the protocol service. */
@@ -566,14 +585,14 @@ static void arm_spi_slot(void)
     DL_DMA_setDestAddr(DMA, DMA_SPI_TX_CHAN_ID,
         (uint32_t) &SPI_A8_INST->TXDATA);
     DL_DMA_setTransferSize(
-        DMA, DMA_SPI_TX_CHAN_ID, BODAQS_MASTER_SLOT_BYTES);
+        DMA, DMA_SPI_TX_CHAN_ID, BODAQS_SPI_ADAPTER_CAPACITY);
 
     DL_DMA_setSrcAddr(DMA, DMA_SPI_RX_CHAN_ID,
         (uint32_t) &SPI_A8_INST->RXDATA);
     DL_DMA_setDestAddr(DMA, DMA_SPI_RX_CHAN_ID,
         (uint32_t) &gReceiveSlots[gReceiveIndex][0]);
     DL_DMA_setTransferSize(
-        DMA, DMA_SPI_RX_CHAN_ID, BODAQS_MASTER_SLOT_BYTES);
+        DMA, DMA_SPI_RX_CHAN_ID, BODAQS_SPI_ADAPTER_CAPACITY);
 
     DL_DMA_enableChannel(DMA, DMA_SPI_RX_CHAN_ID);
     DL_DMA_enableChannel(DMA, DMA_SPI_TX_CHAN_ID);
@@ -750,6 +769,7 @@ static void update_service_status(void)
         BODAQS_MASTER_DISCOVERY_NODE_COUNT);
 }
 
+#if !defined(BODAQS_SPI_PROBE) || !BODAQS_SPI_PROBE
 static void service_sync(void) {
     static uint32_t sequence, edge, evidence_sequence, evidence_edge;
     static bool marker_pending, evidence_pending;
@@ -773,10 +793,13 @@ static void service_sync(void) {
             evidence_pending=false;
     }
 }
+#endif
 
 static void service_spi_receive(void);
 static void retire_spi_boundary(void);
+#if !defined(BODAQS_SPI_PROBE) || !BODAQS_SPI_PROBE
 static void service_spi_retirement(void);
+#endif
 
 int main(void)
 {
@@ -795,6 +818,9 @@ int main(void)
 
     identity = master_identity_read();
     bodaqs_master_service_init(&gService, &identity);
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+    bodaqs_spi_probe_init(&gSpiProbe);
+#endif
     bodaqs_master_timing_init();
     gService.native_clock=bodaqs_master_timing_clock;
     bodaqs_control_exchange_init(&gService.control, master_control_boot_id_read());
@@ -806,7 +832,7 @@ int main(void)
         sizeof(gCanReceiveStorage[0]), CAN_RX_CAPACITY);
     gHealthDue = true;
     bodaqs_record_queue_init(&gSpiReceiveQueue, gSpiReceiveStorage,
-        BODAQS_MASTER_SLOT_BYTES, 1U);
+        BODAQS_SPI_ADAPTER_CAPACITY, 1U);
     gDiscoveryTransaction = 0U;
     gDiscoveryNonce = (uint32_t) identity.hardware_uid ^
         (uint32_t) (identity.hardware_uid >> 32);
@@ -841,15 +867,23 @@ int main(void)
 
     while (1) {
         bodaqs_master_timing_supervise(gUptimeMs);
+#if !defined(BODAQS_SPI_PROBE) || !BODAQS_SPI_PROBE
         service_sync();
         bodaqs_control_exchange_tick(&gService.control, gUptimeMs);
         service_spi_retirement();
+#endif
         retire_spi_boundary();
+#if !defined(BODAQS_SPI_PROBE) || !BODAQS_SPI_PROBE
         service_spi_retirement();
+#endif
         service_spi_receive();
         gMasterRuntimeInfo.spi_rx_capacity = gSpiReceiveQueue.capacity;
         gMasterRuntimeInfo.spi_rx_high_water = gSpiReceiveQueue.high_water;
         gMasterRuntimeInfo.spi_rx_dropped = gSpiReceiveQueue.dropped;
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+        /* Known synthetic objects substitute acquisition/CAN processing. */
+        continue;
+#endif
         service_can_receive();
         /* A newly received conflicting UID must fence this very dispatch,
          * including retries admitted before the duplicate was observed. */
@@ -919,6 +953,7 @@ void MCAN0_INST_IRQHandler(void)
 }
 
 /* Observe only main-owned request/reply state before publication. */
+#if !defined(BODAQS_SPI_PROBE) || !BODAQS_SPI_PROBE
 static void drain_transfer(const uint8_t *request,size_t length,const uint8_t *reply,
     uint32_t acked_before,uint16_t ack_records)
 {
@@ -957,6 +992,7 @@ static void drain_transfer(const uint8_t *request,size_t length,const uint8_t *r
         ++gMasterDrainInfo.data_unique_fragments[cls];
     }
 }
+#endif
 
 /* Called only for a DMA-owned buffer or by its main-loop writer before
  * publication. Control replies are retained. */
@@ -970,6 +1006,7 @@ static void retire_measurement_slot(uint8_t *bytes,uint64_t context)
     }
 }
 
+#if !defined(BODAQS_SPI_PROBE) || !BODAQS_SPI_PROBE
 static void service_spi_retirement(void)
 {
     SpiRetirement proof;
@@ -990,6 +1027,7 @@ static void service_spi_retirement(void)
        gService.acquisition_retirement_generation!=UINT32_MAX)
         bodaqs_master_service_measurement_fence(&gService,true,true);
 }
+#endif
 
 /* Retire from the CS boundary and remaining RX DMA count, not DMA completion.
  * Keeping the 84-byte capacity permits observational legacy MODE_INFO while
@@ -1010,7 +1048,7 @@ static void retire_spi_boundary(void)
      * also includes unsent TX FIFO bytes: a 64-byte measurement slot leaves
      * prefetched bytes from the 84-byte DMA capacity, so waiting for !BUSY
      * would prevent the reset below from ever retiring that short slot. */
-    if (remaining == BODAQS_MASTER_SLOT_BYTES ||
+    if (remaining == BODAQS_SPI_ADAPTER_CAPACITY ||
         DL_GPIO_readPins(GPIO_SPI_A8_CS_PORT, GPIO_SPI_A8_CS_PIN) == 0U) {
         gSpiRetiring=false; return;
     }
@@ -1025,10 +1063,10 @@ static void retire_spi_boundary(void)
             retire_measurement_slot(gTransmitSlots[gTransmitIndex^1U],retirement.context);
     }
     remaining = DL_DMA_getTransferSize(DMA, DMA_SPI_RX_CHAN_ID);
-    length = BODAQS_MASTER_SLOT_BYTES - remaining;
+    length = BODAQS_SPI_ADAPTER_CAPACITY - remaining;
     length += DL_SPI_drainRXFIFO8(SPI_A8_INST,
         &gReceiveSlots[gReceiveIndex][length], (uint32_t)remaining);
-    if (DL_SPI_drainRXFIFO8(SPI_A8_INST, &excess, 1U)) length = 85U;
+    if (DL_SPI_drainRXFIFO8(SPI_A8_INST, &excess, 1U)) length = BODAQS_SPI_ADAPTER_CAPACITY+1U;
     if (gSpiReceiveQueue.depth == 0U) {
         gSpiReceiveLength = (uint16_t)length;
         (void)bodaqs_record_queue_push(&gSpiReceiveQueue,gReceiveSlots[gReceiveIndex]);
@@ -1056,20 +1094,25 @@ static void retire_spi_boundary(void)
     }
     gReceiveIndex ^= 1U;
     arm_spi_slot();
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+    ++gMasterSpiProbeInfo.boundaries;
+#endif
     gSpiRetiring = false;
 }
 
 static void service_spi_receive(void)
 {
-    uint8_t received[84];
+    uint8_t received[BODAQS_SPI_ADAPTER_CAPACITY];
     uint16_t length;
     uint8_t next_index;
     uint32_t primask;
+#if !defined(BODAQS_SPI_PROBE) || !BODAQS_SPI_PROBE
     uint32_t started;
     uint8_t reply_kind=0;
     uint32_t acked_before;
     uint16_t ack_records=0;
     BodaqsMasterSlotResult result;
+#endif
     if (gSpiTransmitReady) return;
     primask=__get_PRIMASK();
     __disable_irq();
@@ -1079,6 +1122,44 @@ static void service_spi_receive(void)
     }
     __set_PRIMASK(primask);
     next_index=gTransmitIndex^1U;
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+    {
+        uint32_t epoch,finished_epoch;
+        uint32_t started=bodaqs_master_timing_clock(NULL,&epoch);
+        ++gMasterRuntimeInfo.slots_received;
+        {
+            uint32_t mask=__get_PRIMASK();
+            __disable_irq();
+            gSpiProbe.adapter_stats[0]=gMasterRuntimeInfo.slots_received;
+            gSpiProbe.adapter_stats[1]=gSpiReceiveQueue.dropped;
+            gSpiProbe.adapter_stats[2]=gMasterSpiProbeInfo.malformed;
+            gSpiProbe.adapter_stats[3]=gMasterRuntimeInfo.spi_recoveries;
+            gSpiProbe.adapter_stats[4]=gMasterRuntimeInfo.cs_release_timeouts;
+            gSpiProbe.adapter_stats[5]=gMasterRuntimeInfo.can_rx_frames;
+            gSpiProbe.adapter_stats[6]=gCanReceiveQueue.dropped;
+            gSpiProbe.adapter_stats[7]=gMasterRuntimeInfo.can_rx_hardware_losses;
+            gSpiProbe.adapter_stats[8]=epoch;
+            gSpiProbe.adapter_stats[9]=gMasterSpiProbeInfo.timing_invalid || !epoch;
+            __set_PRIMASK(mask);
+        }
+        bool prepared=bodaqs_spi_probe_process(&gSpiProbe,received,length,
+            gTransmitSlots[next_index],BODAQS_SPI_ADAPTER_CAPACITY);
+        uint32_t elapsed=bodaqs_master_timing_clock(NULL,&finished_epoch)-started;
+        if(!epoch || epoch!=finished_epoch) gMasterSpiProbeInfo.timing_invalid=1;
+        gMasterSpiProbeInfo.clock_epoch=epoch;
+        ++gMasterSpiProbeInfo.process_calls;
+        gMasterSpiProbeInfo.process_total_us+=elapsed;
+        if(elapsed>gMasterSpiProbeInfo.process_max_us) gMasterSpiProbeInfo.process_max_us=elapsed;
+        gMasterSpiProbeInfo.engine=gSpiProbe.stats;
+        gMasterSpiProbeInfo.queue_dropped=gSpiReceiveQueue.dropped;
+        gMasterSpiProbeInfo.queue_high_water=gSpiReceiveQueue.high_water;
+        if(prepared) {
+            ++gMasterSpiProbeInfo.prepared;
+            __DMB();
+            gSpiTransmitReady=true;
+        } else {++gMasterSpiProbeInfo.malformed;++gMasterRuntimeInfo.spi_recoveries;}
+    }
+#else
     drain_check();
     started=gMasterDrainInfo.state==1?drain_clock():0;
     update_service_status();
@@ -1121,6 +1202,7 @@ static void service_spi_receive(void)
         gLoggerCommunicationEstablished=true;
         DL_GPIO_setPins(GPIO_BOARD_PORT,GPIO_BOARD_FRONT_ENABLE_PIN);
     }
+#endif
 }
 
 /* GPIOA IRQ 1 is dispatched through GROUP1 in the MSPM0G3518 vector table. */
