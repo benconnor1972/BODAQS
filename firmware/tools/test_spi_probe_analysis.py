@@ -12,9 +12,31 @@ TOOL = Path(__file__).with_name("analyze_spi_probe.py")
 FIXTURE = Path(__file__).with_name("spi_probe_fixtures") / "mixed.jsonl"
 ROUND2 = FIXTURE.with_name("round2-mixed.jsonl")
 FAILURES = FIXTURE.with_name("round2-failures.jsonl")
+EMITTED_SWITCH = FIXTURE.with_name("round2-emitted-switch.jsonl")
 
 
 class ProbeAnalysisTests(unittest.TestCase):
+    def test_emitted_round2_switch_accepts_only_declared_synthetic_spi_participant(self):
+        capture = EMITTED_SWITCH.read_text(encoding="utf-8")
+        run = self.invoke(capture)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        report = json.loads(run.stdout)
+        self.assertEqual(report["cases"][0]["profile"]["mode"], "switch")
+        self.assertEqual(report["cases"][0]["adc_status"], "not_applicable")
+        self.assertNotEqual(report["cases"][0]["candidate_evidence"], "clean_measurement_candidate")
+        self.assertIn(-2, [s["cs"] for s in report["cases"][0]["raw_measurements"]["spi"]])
+        for schema, cs in (("bodaqs.spi-probe.v1", -2), ("bodaqs.spi-probe.v2", -1),
+                           ("bodaqs.spi-probe.v2", -3), ("bodaqs.spi-probe.v2", False)):
+            with self.subTest(schema=schema, cs=cs):
+                case = self.sample() if schema.endswith("v1") else json.loads(capture)
+                if schema.endswith("v1"):
+                    case["spi"] = [{"cs": cs, "transfers": 0, "bytes": 0, "lock_failures": 0,
+                                    "lock_wait": {"count": 0, "min_us": 0, "max_us": 0, "total_us": 0},
+                                    "ownership": {"count": 0, "min_us": 0, "max_us": 0, "total_us": 0}}]
+                else:
+                    next(s for s in case["spi"] if s["cs"] == -2)["cs"] = cs
+                self.assertEqual(self.invoke(json.dumps(case)).returncode, 2)
+
     def sample(self):
         return json.loads(FIXTURE.read_text())
 

@@ -155,7 +155,9 @@ def validate(case):
     require(isinstance(case["spi"], list), "invalid SPI diagnostics")
     seen = set()
     for spi in case["spi"]:
-        counts(spi, "cs transfers bytes lock_failures")
+        counts(spi, "transfers bytes lock_failures")
+        require(type(spi["cs"]) is int and (spi["cs"] >= 0 or (v2 and spi["cs"] == -2)),
+                "invalid SPI participant")
         require(spi["cs"] not in seen, "duplicate CS diagnostics")
         seen.add(spi["cs"])
         timing(spi["lock_wait"])
