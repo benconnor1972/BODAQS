@@ -145,6 +145,8 @@ void SPIClass::transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
   if(adc>=0 && tx && tx[0]==16) ++reads[adc];
 }
 static SemaphoreHandle_t sharedSpiLock=nullptr;
+static thread_local bool holdContextAcquisition=false;
+static std::atomic<bool> contextAcquisitionReached=false,releaseContextAcquisition=false;
 SemaphoreHandle_t xSemaphoreCreateMutex() {
   auto* mutex=new std::timed_mutex;
   if(!sharedSpiLock)sharedSpiLock=mutex;
@@ -152,6 +154,10 @@ SemaphoreHandle_t xSemaphoreCreateMutex() {
 }
 static std::atomic<bool> failLock=false,failWarmup=false,failInterruptRegistration=false;
 BaseType_t xSemaphoreTake(SemaphoreHandle_t m,TickType_t timeout) {
+  if(m==sharedSpiLock && holdContextAcquisition) {
+    contextAcquisitionReached=true;
+    while(!releaseContextAcquisition)std::this_thread::yield();
+  }
   // Faults and lock-call ordinals below describe SPI contention, not the
   // independent ADC interrupt-registration mutex.
   if(m!=sharedSpiLock)return !failInterruptRegistration && m->try_lock_for(std::chrono::milliseconds(timeout));
@@ -256,12 +262,16 @@ int main() {
   frozenUs=-1;
   // Block at the actual RTOS mutex, then retire another participant before the
   // waiting transfer acquires it. Context must describe that committed predecessor.
-  sharedSpiLock->lock();std::atomic<bool> started=false,finished=false;
+  sharedSpiLock->lock();std::atomic<bool> finished=false;
   SharedSpiBus::ProbeContext waited;
-  std::thread waiter([&]{started=true;assert(SharedSpiBus::transfer(40,SPISettings(8000000),tx,rx,4,50,nullptr,nullptr,&waited));finished=true;});
-  while(!started)std::this_thread::yield();delay(2);assert(!finished);
-  sharedSpiLock->unlock();waiter.join();
-  assert(waited.previousValid && waited.previousCs==40 && waited.sequence==nextContext.sequence+1);
+  std::thread waiter([&]{holdContextAcquisition=true;assert(SharedSpiBus::transfer(40,SPISettings(8000000),tx,rx,4,50,nullptr,nullptr,&waited));finished=true;});
+  while(!contextAcquisitionReached)std::this_thread::yield();assert(!finished);
+  sharedSpiLock->unlock();
+  // The ADC operation commits after the master requested the lock, before the
+  // delayed acquisition. Reading predecessor state before lock would miss it.
+  assert(SharedSpiBus::transfer(47,SPISettings(1000000,MSBFIRST,SPI_MODE1),tx,rx,4));
+  releaseContextAcquisition=true;waiter.join();
+  assert(waited.previousValid && waited.previousCs==47 && waited.sequence==nextContext.sequence+2);
   puts("shared bus context: zero and wrapped timestamps, actual unselected mode1 clocks passed");
   AnalogInputManager::begin(board);
   LoggerConfig cfg;cfg.sensorN=2;cfg.sampleRateHz=500;
