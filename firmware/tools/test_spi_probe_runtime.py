@@ -81,7 +81,7 @@ def main():
             cases = [event for event in events if event['type'] == 'case']
             if args.capture:
                 args.capture.write_text('\n'.join(json.dumps(event) for event in events) + '\n', encoding='utf-8')
-            assert [case['case_id'] for case in cases] == [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14]
+            assert [case['case_id'] for case in cases] == [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15]
             assert (cases[0]['rows'], cases[0]['missed_rows']) == (5000, 0)
             assert (cases[1]['rows'], cases[1]['missed_rows']) == (49, 1)
             assert (cases[2]['rows'], cases[2]['missed_rows']) == (1, 1)
@@ -119,6 +119,13 @@ def main():
             assert rail_fault['reason'] == 'analog_rail_fault' and rail_fault['raw_measurements']['elapsed_us'] == 0
             assert rail_fault['adc_status'] == 'failed' and rail_fault['candidate_evidence'] == 'failed'
             print('Public rail-fault capture through analyzer CLI: no observed ADC rows cannot report healthy passed')
+            report = json.loads(analyzed.stdout)
+            switch_failure = next(case for case in report['cases'] if case['case_id'] == 15)
+            assert switch_failure['candidate_evidence'] == 'failed'
+            diagnostic = switch_failure['raw_measurements']['diagnostics']
+            assert diagnostic['switch_transfers'] == 0 and diagnostic['switch_failures'] == 1
+            assert not any(report[key] for key in ('production_qualified', 't01_go', 'admission_authorized'))
+            print('Public first switch lock failure through analyzer CLI: independent counts retained as failed passed')
 
 
 if __name__ == '__main__':

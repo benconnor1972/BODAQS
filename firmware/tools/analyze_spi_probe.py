@@ -61,9 +61,9 @@ def diagnostic_counts(case):
     require(isinstance(samples, list) and len(samples) <= 4 and
             len(samples) + d["failure_samples_omitted"] == sum(decoded[1:]),
             "inconsistent failure sample accounting")
-    require(d["switch_failures"] <= d["switch_transfers"] and
-            (case["profile"]["mode"] == "switch" or
-             d["switch_transfers"] == d["switch_failures"] == 0), "inconsistent switch control counts")
+    # Successful bursts and failed attempts are independent counters.
+    require(case["profile"]["mode"] == "switch" or
+            d["switch_transfers"] == d["switch_failures"] == 0, "inconsistent switch control counts")
     slots = set()
     reasons = [0] * 9
     previous = {}

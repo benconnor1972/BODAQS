@@ -155,6 +155,7 @@ SemaphoreHandle_t xSemaphoreCreateMutex() {
   return mutex;
 }
 static std::atomic<bool> failLock=false,failWarmup=false,failInterruptRegistration=false;
+static std::atomic<bool> failNextSpiLock=false;
 BaseType_t xSemaphoreTake(SemaphoreHandle_t m,TickType_t timeout) {
   if(m==sharedSpiLock && holdContextAcquisition) {
     contextAcquisitionReached=true;
@@ -163,6 +164,7 @@ BaseType_t xSemaphoreTake(SemaphoreHandle_t m,TickType_t timeout) {
   // Faults and lock-call ordinals below describe SPI contention, not the
   // independent ADC interrupt-registration mutex.
   if(m!=sharedSpiLock)return !failInterruptRegistration && m->try_lock_for(std::chrono::milliseconds(timeout));
+  if(failNextSpiLock.exchange(false))return pdFALSE;
   if(workerAdc>=0 && ++workerLockCalls==2 && injectBeforeStart[workerAdc].exchange(false)) {
     // An older conversion's ISR dispatch while START waits behind another CS.
     std::lock_guard<std::timed_mutex> owner(*m); complete(workerAdc);delay(2);
@@ -512,7 +514,17 @@ int main() {
   SpiMeasurementProbe::command("case 14 adc 128 8000000 1 100 cached 0");
   assert(Serial.output.find("non_increasing_case_id")!=std::string::npos);Serial.output.clear();
   puts("public extended controls: immutable switch/cached/paced profiles, ADC row budget while deferred, bounded raw failure JSON passed");
-  uint32_t caseId=15;
+  // Fail the first synthetic burst at the RTOS mutex boundary. The one-shot
+  // fault leaves the real snapshot/STOP transactions available to finish.
+  SpiMeasurementProbe::command("case 15 switch 128 8000000 1 100 cached 5000");
+  while(!SpiProbeTransport::stats().slots)SpiMeasurementProbe::loop();
+  assert(Serial.output.empty() && SpiProbeTransport::stats().switchTransfers==0);
+  delay(6);failNextSpiLock=true;SpiMeasurementProbe::loop();
+  assert(!failNextSpiLock && SpiProbeTransport::stats().switchTransfers==0 && SpiProbeTransport::stats().switchFailures==1);
+  assert(Serial.output.find("\"outcome\":\"failed\"")!=std::string::npos && Serial.output.find("bulk_fault_or_stalled")!=std::string::npos);
+  puts(Serial.output.c_str());Serial.output.clear();
+  puts("public first synthetic lock failure: zero successful switch transfers, one failure, real bounded STOP passed");
+  uint32_t caseId=16;
   for(uint16_t frame: {64,128,256})for(uint32_t hz: {8000000U,16000000U}) {
     assert(SpiProbeTransport::begin(board,caseId++,frame,hz,4));
     for(unsigned attempts=0;attempts<1000000 && SpiProbeTransport::stats().retiredObjects<4;++attempts)SpiProbeTransport::tick();

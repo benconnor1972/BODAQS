@@ -251,10 +251,25 @@ class ProbeAnalysisTests(unittest.TestCase):
         case["rows"] = 0
         for adc in case["adc"]:
             adc.update(fresh=0, uses=0)
-        case["diagnostics"].update(switch_transfers=10, switch_failures=1)
-        run = self.invoke(json.dumps(case))
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(json.loads(run.stdout)["cases"][0]["candidate_evidence"], "failed")
+        # A failed first clock burst has no successful switch transfer.
+        for successes in (0, 10):
+            with self.subTest(successes=successes):
+                case["diagnostics"].update(switch_transfers=successes, switch_failures=1)
+                run = self.invoke(json.dumps(case))
+                self.assertEqual(run.returncode, 0, run.stderr)
+                report = json.loads(run.stdout)
+                self.assertEqual(report["cases"][0]["candidate_evidence"], "failed")
+                self.assertFalse(report["production_qualified"])
+                self.assertFalse(report["t01_go"])
+                self.assertFalse(report["admission_authorized"])
+
+    def test_round2_switch_counts_reject_malformed_values(self):
+        for field in ("switch_transfers", "switch_failures"):
+            for value in (-1, False, 1.5, "1"):
+                with self.subTest(field=field, value=value):
+                    case = json.loads(EMITTED_SWITCH.read_text(encoding="utf-8"))
+                    case["diagnostics"][field] = value
+                    self.assertEqual(self.invoke(json.dumps(case)).returncode, 2)
 
     def test_round2_ready_and_status_retain_required_source_identity(self):
         for kind in ("ready", "status"):
