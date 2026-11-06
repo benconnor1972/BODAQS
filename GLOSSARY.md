@@ -24,6 +24,14 @@ sample timing or cross-sensor alignment.
 An interval of missing readings within a sensor stream. Its extent may be known
 exactly or explicitly uncertain.
 
+**Fresh analog reading**:
+An analog reading from a conversion not previously used for that channel's logged
+rows. Equal numeric values can come from different conversions.
+
+**SPI measurement profile**:
+The operating configuration agreed for the logger-to-CAN-master SPI link over a
+recording. Its qualification applies to a specified board and workload combination.
+
 **Source continuity segment**:
 An interval of a sensor stream with a common source-sequence origin. Starting
 another segment does not by itself mean that the source clock reset.
