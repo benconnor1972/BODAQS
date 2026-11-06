@@ -30,6 +30,7 @@ static void DL_MCAN_writeRxFIFOAck(int d,unsigned num,unsigned idx) {(void)d;(vo
 static uint32_t test_tick=12345,test_epoch=1;
 static uint32_t bodaqs_master_timing_clock(void *c,uint32_t *epoch) {(void)c;*epoch=test_epoch;return test_tick;}
 #define DMA 0
+#define BODAQS_SPI_ADAPTER_CAPACITY BODAQS_MASTER_SLOT_BYTES
 #define DMA_SPI_RX_CHAN_ID 0
 #define DMA_SPI_TX_CHAN_ID 1
 #define GPIO_SPI_A8_CS_PORT 0
