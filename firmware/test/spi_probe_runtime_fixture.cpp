@@ -19,6 +19,7 @@
 static BodaqsSpiProbeEngine master;
 static bool masterEnabled=false,masterSilent=false,corruptPayload=false;
 static unsigned rawFault=0,rawFaultsLeft=0;
+static std::vector<std::array<uint8_t,256>> injectedRx;
 static bool stats2Unsupported=false;
 static unsigned syntheticSwitchCount=0;
 static std::deque<std::array<uint8_t,256>> replies(2);
@@ -120,6 +121,7 @@ void SPIClass::transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
         for(size_t i=0;i<length-4;++i){crc^=rx[i];for(unsigned b=0;b<8;++b)crc=(crc&1)?(crc>>1)^0xedb88320U:crc>>1;}
         crc^=0xffffffffU;for(unsigned b=0;b<4;++b)rx[length-4+b]=crc>>(8*b);
       }
+      std::array<uint8_t,256> observed{};memcpy(observed.data(),rx,length);injectedRx.push_back(observed);
     }
     std::array<uint8_t,256> prepared{};
     if(!masterSilent)bodaqs_spi_probe_process(&master,tx,length,prepared.data(),prepared.size());
@@ -533,7 +535,7 @@ int main() {
   // transfer failures never invoke decoding, and a new case clears all samples.
   for(unsigned reason=3;reason<=8;++reason) {
     assert(SpiProbeTransport::begin(board,caseId++,128,8000000,1));
-    rawFault=reason;rawFaultsLeft=8;
+    injectedRx.clear();rawFault=reason;rawFaultsLeft=8;
     for(unsigned attempts=0;attempts<100000 && rawFaultsLeft;++attempts)SpiProbeTransport::tick();
     const auto& d=SpiProbeTransport::stats();
     assert(rawFaultsLeft==0 && d.wireErrors==8 && d.decodeCounts[reason]==8);
@@ -542,6 +544,7 @@ int main() {
       const auto& f=d.failures[i];assert(f.reason==reason && f.slot==i+1 && f.frameBytes==128);
       assert(f.caseId==caseId-1 && f.objectId==1 && f.opcode==BODAQS_PROBE_POLL);
       assert(f.bus.cs==40 && f.bus.previousValid && f.bus.previousCs==40);
+      assert(memcmp(f.rx,injectedRx[i].data(),128)==0);
       if(reason==3)assert(f.rx[0]==0);
     }
     assert(d.byPreviousCs[0].responses==0 && d.byPreviousCs[0].decodeFailures==8);
@@ -589,6 +592,8 @@ int main() {
   SpiProbeTransport::tick();
   assert(SpiProbeTransport::stats().slots==slots+1 && SpiProbeTransport::stats().requestInterval.minUs>=5000);
   assert(SpiProbeTransport::stats().byPreviousCs[1].cs==-2);
+  frozenUs+=5000;failLock=true;SpiProbeTransport::tick();failLock=false;
+  assert(SpiProbeTransport::stats().switchFailures==1 && !SpiProbeTransport::healthy());
   frozenUs=-1;bulkLastHigh=0;assert(SpiProbeTransport::stop());
   puts("nonblocking pacing: deferred iterations, synthetic all-CS-high clocks, actual interval and preceding -2 context passed");
 
