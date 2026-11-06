@@ -1,0 +1,208 @@
+"""Independent worked captures at the public offline command/result seam."""
+import json
+import hashlib
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+
+TOOL = Path(__file__).with_name("analyze_spi_probe.py")
+FIXTURE = Path(__file__).with_name("spi_probe_fixtures") / "mixed.jsonl"
+
+
+class ProbeAnalysisTests(unittest.TestCase):
+    def sample(self):
+        return json.loads(FIXTURE.read_text())
+
+    def baseline(self):
+        baseline = self.sample()
+        baseline["case_id"] = 100
+        baseline["profile"]["mode"] = "adc"
+        for name in ("slots", "valid_responses", "unique_objects", "accepted_bytes", "retired_objects"):
+            baseline[name] = 0
+        return baseline
+
+    def invoke(self, capture, manifest=None):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "capture.txt"
+            path.write_bytes(capture.encode("utf-8"))
+            command = [sys.executable, str(TOOL), str(path)]
+            if manifest:
+                manifest_path = Path(folder) / "manifest.json"
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                command += ["--manifest", str(manifest_path)]
+            return subprocess.run(command,
+                                  capture_output=True, text=True)
+
+    def test_worked_capture_has_unique_useful_rate_and_honest_limits(self):
+        run = self.invoke("ESP-ROM boot\n[SPI] ordinary boot diagnostic\n" + FIXTURE.read_text())
+        self.assertEqual(run.returncode, 0, run.stderr)
+        report = json.loads(run.stdout)
+        case = report["cases"][0]
+        self.assertEqual(case["accepted_bytes_per_second"], 2016)
+        self.assertEqual(case["retired_bytes_per_second"], 1512)
+        self.assertEqual(case["pending_ack_objects"], 1)
+        self.assertEqual(case["actual_sck_hz"], None)
+        self.assertEqual(case["adc_status"], "healthy")
+        self.assertEqual(case["transport_status"], "clean")
+        self.assertEqual(case["candidate_evidence"], "unknown")
+        self.assertEqual(report["production_qualified"], False)
+        self.assertNotIn("acquisition_hz", case)
+        self.assertEqual(report["baseline_status"], "unknown")
+
+    def test_inconsistent_case_results_are_rejected(self):
+        changes = [
+            ("schema", "future"), ("case_id", 0), ("rows", -1),
+            ("rows", True), ("accepted_bytes", 4033), ("retired_objects", 5),
+            ("elapsed_us", 0), ("outcome", "pass"),
+            ("profile.frame_bytes", 512), ("profile.requested_sck_hz", 20000000),
+            ("profile.nodes", 0), ("profile.guard_us", 0),
+            ("profile.configured_sps", [500, 500]),
+            ("profile.configured_sps", [1000.0, 1000]), ("profile.ain", [False, 4]),
+            ("profile.actual_sck_hz", 16000000),
+            ("adc.0.fresh", 999), ("adc.1.uses", 999),
+            ("adc.1.index", 0), ("errors.wire", -1),
+            ("timing.slot.count", -1), ("master.after", [0]),
+        ]
+        for name, value in changes:
+            with self.subTest(field=name):
+                sample = self.sample()
+                target = sample
+                parts = name.split(".")
+                for part in parts[:-1]:
+                    target = target[int(part)] if isinstance(target, list) else target[part]
+                target[parts[-1]] = value
+                self.assertEqual(self.invoke(json.dumps(sample)).returncode, 2)
+        for text in [FIXTURE.read_text() * 2, '{"schema":', "[]", "boot only"]:
+            with self.subTest(capture=text[:30]):
+                self.assertEqual(self.invoke(text).returncode, 2)
+
+    def test_baseline_failure_is_separate_from_mixed_transport_and_pipeline_diagnostics(self):
+        baseline = self.baseline()
+        baseline["adc"][0].update(fresh=999, reused=1)
+        run = self.invoke(json.dumps(baseline) + "\n" + FIXTURE.read_text())
+        self.assertEqual(run.returncode, 0, run.stderr)
+        report = json.loads(run.stdout)
+        self.assertEqual(report["baseline_status"], "failed")
+        mixed = report["cases"][1]
+        self.assertEqual(mixed["transport_status"], "clean")
+        self.assertEqual(mixed["adc_status"], "healthy")
+        self.assertEqual(mixed["baseline_status"], "failed")
+        self.assertEqual(mixed["candidate_evidence"], "failed")
+        self.assertEqual(mixed["pipeline_diagnostics"], {"stale": 8, "duplicate": 2})
+
+    def test_error_and_missing_master_evidence_never_pass(self):
+        for field in ("transfer", "wire", "accept", "commands"):
+            with self.subTest(error=field):
+                sample = self.sample()
+                sample["errors"][field] = 1
+                case = json.loads(self.invoke(json.dumps(sample)).stdout)["cases"][0]
+                self.assertEqual(case["transport_status"], "failed")
+                self.assertEqual(case["candidate_evidence"], "failed")
+        sample = self.sample()
+        del sample["master"]
+        case = json.loads(self.invoke(json.dumps(sample)).stdout)["cases"][0]
+        self.assertEqual(case["master_diagnostics_status"], "unknown")
+        self.assertEqual(case["candidate_evidence"], "unknown")
+        sample = self.sample()
+        sample["master"]["adapter_after"][1] = 1
+        case = json.loads(self.invoke(json.dumps(sample)).stdout)["cases"][0]
+        self.assertEqual(case["master_diagnostics_status"], "failed")
+        self.assertEqual(case["candidate_evidence"], "failed")
+
+    def test_row_rate_allows_only_one_row_quantization_and_never_acquisition_rate(self):
+        for rows, status in ((999, "healthy"), (998, "failed"), (1001, "healthy"), (1002, "failed")):
+            with self.subTest(rows=rows):
+                sample = self.sample()
+                sample["rows"] = rows
+                for adc in sample["adc"]:
+                    adc.update(fresh=rows, uses=rows)
+                run = self.invoke(json.dumps(sample))
+                if status == "failed":
+                    self.assertEqual(run.returncode, 2)
+                    continue
+                case = json.loads(run.stdout)["cases"][0]
+                self.assertEqual(case["adc_status"], status)
+                self.assertNotIn("acquisition_hz", case)
+        sample = self.sample()
+        sample.update(rows=999, missed_rows=1)
+        for adc in sample["adc"]:
+            adc.update(fresh=999, uses=999)
+        case = json.loads(self.invoke(json.dumps(sample)).stdout)["cases"][0]
+        self.assertEqual(case["adc_status"], "failed")
+
+    def test_paired_manifest_and_comparison_are_reproducible_measurement_evidence(self):
+        mixed = self.sample()
+        bulk = self.sample()
+        bulk["case_id"] = 102
+        bulk["profile"]["mode"] = "bulk"
+        bulk["rows"] = 0
+        for adc in bulk["adc"]:
+            adc.update(fresh=0, uses=0)
+        capture = "\n".join(json.dumps(c) for c in (self.baseline(), bulk, mixed))
+        manifest = {"schema": "bodaqs.spi-probe-manifest.v1",
+                    "capture_sha256": hashlib.sha256(capture.encode()).hexdigest(),
+                    "capture_path": "external/capture.txt", "protocol": 1,
+                    "logger": {"board": "A8-ESP32-S3MiniN4R2", "source_revision": "a" * 40,
+                               "artifact_sha256": "b" * 64, "build": "literal-fixture"},
+                    "master": {"board": "MSPM0G3518", "source_revision": "c" * 40,
+                               "artifact_sha256": "d" * 64},
+                    "wiring": "unchanged shared SPI", "instrumentation": "SCK unmeasured"}
+        first = self.invoke(capture, manifest)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(first.stdout, self.invoke(capture, manifest).stdout)
+        report = json.loads(first.stdout)
+        self.assertEqual(report["cases"][2]["candidate_evidence"], "clean_measurement_candidate")
+        self.assertFalse(report["t01_go"])
+        self.assertEqual(len(report["comparison"]), 6)
+        self.assertEqual(report["comparison"][0]["bulk_case_ids"], [102])
+        self.assertEqual(report["comparison"][0]["mixed_case_ids"], [101])
+        self.assertEqual(report["comparison"][0]["mixed_to_bulk_rate_ratios"], [1])
+        self.assertEqual(report["comparison"][1]["coverage"], "missing")
+        manifest["capture_sha256"] = "0" * 64
+        self.assertEqual(self.invoke(capture, manifest).returncode, 2)
+
+    def test_startup_failure_and_unmeasured_pages_are_preserved_without_false_rates(self):
+        sample = self.baseline()
+        sample.update(outcome="failed", reason="analog_rail_fault", elapsed_us=0, rows=0)
+        for adc in sample["adc"]:
+            adc.update(fresh=0, uses=0)
+        run = self.invoke(json.dumps(sample))
+        self.assertEqual(run.returncode, 0, run.stderr)
+        case = json.loads(run.stdout)["cases"][0]
+        self.assertEqual(case["candidate_evidence"], "failed")
+        self.assertIsNone(case["rows_per_second"])
+        sample = self.sample()
+        sample["master"].update(measured=False, adapter_measured=False)
+        case = json.loads(self.invoke(json.dumps(sample)).stdout)["cases"][0]
+        self.assertEqual(case["master_diagnostics_status"], "unknown")
+        self.assertIsNone(case["master_engine_deltas"])
+        sample = self.sample()
+        sample["master"]["adapter_before"][1] = 4294967295
+        sample["master"]["adapter_after"][1] = 1
+        case = json.loads(self.invoke(json.dumps(sample)).stdout)["cases"][0]
+        self.assertEqual(case["master_adapter_deltas"]["spi_rx_dropped"], 2)
+        self.assertEqual(case["master_diagnostics_status"], "failed")
+
+    def test_late_completion_and_early_stop_keep_nominal_scheduled_window(self):
+        late = self.sample()
+        late["elapsed_us"] = 2011000
+        run = self.invoke(json.dumps(late))
+        self.assertEqual(run.returncode, 0, run.stderr)
+        case = json.loads(run.stdout)["cases"][0]
+        self.assertEqual(case["candidate_evidence"], "failed")
+        self.assertEqual(case["duration_status"], "late")
+        self.assertEqual(case["scheduled_rows_target"], 1000)
+        stopped = self.sample()
+        stopped.update(outcome="stopped", elapsed_us=1000000, rows=500)
+        for adc in stopped["adc"]:
+            adc.update(fresh=500, uses=500)
+        run = self.invoke(json.dumps(stopped))
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(json.loads(run.stdout)["cases"][0]["scheduled_rows_target"], 500)
+
+
+if __name__ == "__main__":
+    unittest.main()
