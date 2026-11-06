@@ -1111,7 +1111,14 @@ bool gpsStatus(SensorGpsStatus& out) {
 
 uint8_t activeCount() {
   uint8_t active = 0;
-  for (uint8_t i = 0; i < MAX_SENSORS; ++i) if (participates_(i)) ++active;
+  for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
+    if (participates_(i)) { ++active; continue; }
+    // Remote endpoints have no local Sensor instance. Count their unmuted
+    // assignments for the HUD; this count is not proof of sample delivery.
+    SensorSpec spec; RemoteMuteOverride* overlay = nullptr;
+    if (remoteMuteSpec_(i, spec, overlay) &&
+        !(overlay->valid ? overlay->muted : spec.mutedDefault)) ++active;
+  }
   return active;
 }
 

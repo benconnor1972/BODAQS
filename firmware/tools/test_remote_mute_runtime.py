@@ -28,6 +28,7 @@ namespace LoggingManager { bool configurationLocked(){return locked;} }
 namespace CanMasterManager { void scheduleConfigurationReconciliation(){++reconcile;} }
 struct Sensor { bool mute=false; bool muted()const{return mute;} void setMuted(bool v){mute=v;} } local;
 static Sensor* s_list[MAX_SENSORS]={};
+static bool s_sessionPlanActive=false,s_sessionParticipating[MAX_SENSORS]={};
 // OVERLAY
 namespace SensorManager {
 // METHODS
@@ -38,12 +39,15 @@ int main(){
  specs[0].type=SensorType::LSM6DSO32XImu;strcpy(specs[0].name,"remote");specs[0].params.bind(&remote);
  specs[1].type=SensorType::AnalogPot;strcpy(specs[1].name,"local");specs[1].params.bind(&localParams);n=2;s_list[1]=&local;
  bool muted=true;assert(SensorManager::getMuted(0,muted)&&!muted);
+ assert(SensorManager::activeCount()==2); // local plus remote endpoint
  assert(SensorManager::setMuted(0,true));assert(reconcile==1);
  assert(SensorManager::getMuted(0,muted)&&muted);assert(!specs[0].mutedDefault);
+ assert(SensorManager::activeCount()==1);
  locked=true;assert(!SensorManager::setMuted(0,false));assert(reconcile==1);
  assert(SensorManager::getMuted(0,muted)&&muted);
  assert(SensorManager::setMuted(1,true)&&local.muted());assert(reconcile==1);
  locked=false;assert(SensorManager::setMuted(0,false));assert(reconcile==2);
+ assert(SensorManager::activeCount()==1); // remote-only setup used on bench
  // Unrelated metadata does not lose the runtime override. Assignment/default edits do.
  assert(SensorManager::setMuted(0,true));remote.set("mount_point","fork");
  assert(SensorManager::getMuted(0,muted)&&muted);
@@ -57,7 +61,8 @@ int main(){
 '''
     overlay=source[source.index("  struct RemoteMuteOverride"):source.index("  int firstFree()")] if "  struct RemoteMuteOverride" in source else ""
     fixture=fixture.replace("// OVERLAY",overlay)
-    fixture=fixture.replace("// METHODS",definition(source,"bool getMuted(")+"\n"+definition(source,"bool setMuted("))
+    fixture=fixture.replace("// METHODS","\n".join(definition(source, signature) for signature in (
+        "bool participates_(", "bool getMuted(", "bool setMuted(", "uint8_t activeCount(")))
     with tempfile.TemporaryDirectory(prefix="bodaqs-mute-") as temp:
         cpp,exe=Path(temp)/"runtime.cpp",Path(temp)/"runtime.exe"
         cpp.write_text(fixture)

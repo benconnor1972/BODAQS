@@ -8,6 +8,22 @@ Shared language for the logger, sensor nodes and recorded sensor data.
 An associated set of three acceleration and three angular-rate values.
 Association does not by itself imply simultaneous physical measurement.
 
+**Native sample timing**:
+The placement and spacing of a sensor's samples in its own time reference.
+It does not by itself establish their alignment with another sensor.
+
+**Cross-sensor alignment**:
+The temporal relationship between samples from different sensors, including the
+uncertainty in that relationship.
+
+**Timing observation**:
+A recorded clock or acquisition observation used as evidence for reconstructing
+sample timing or cross-sensor alignment.
+
+**Sample gap**:
+An interval of missing readings within a sensor stream. Its extent may be known
+exactly or explicitly uncertain.
+
 **Source continuity segment**:
 An interval of a sensor stream with a common source-sequence origin. Starting
 another segment does not by itself mean that the source clock reset.

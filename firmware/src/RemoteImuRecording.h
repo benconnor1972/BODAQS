@@ -1,9 +1,25 @@
 #pragma once
 #include <stdint.h>
 #include "ImuAdmission.h"
+#include "CanMasterManager.h"
 struct LoggerConfig;
 struct BdqV2StreamDescriptor;
 namespace RemoteImuRecording {
+// First observed failure is retained through cleanup and file finalization.
+// Phase: Idle=0 through Done=12 in the coordinator; action/result use
+// AcquisitionControl enums. Cause: control=1, startup timeout=2, stream=3,
+// other local failure=4. All observations are made by the main-loop owner.
+struct Failure {
+  uint32_t observedMs=0;
+  uint8_t phase=0,action=0,result=0,reason=0,cause=0;
+  uint8_t measurementPhase=0,measurementReason=0;
+  bool measurementUnavailable=false;
+  uint32_t objectsReceived=0,transferErrors=0;
+  uint32_t transferErrorMask=0;
+    CanMasterManager::MeasurementTiming timing;
+};
+bool failure(uint8_t node,Failure& out);
+void logDiagnostics(); // Explicit user-requested snapshot; never a fast-path log.
 // Allocation, reconciliation and lifecycle startup run while local acquisition
 // is stopped. All selected remote resources precede PREPARE.
 bool configure(const LoggerConfig&);

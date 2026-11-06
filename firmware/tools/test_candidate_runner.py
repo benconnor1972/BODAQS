@@ -53,6 +53,13 @@ class CandidateRunnerTests(unittest.TestCase):
         self.assertNotIn("a8-build", names)
         self.assertNotIn("node-acquisition", names)
 
+    def test_common_host_uses_selected_c_compiler_and_python(self):
+        args = self.arguments("host", Path("unused"))
+        args.cc = "selected/path/gcc"
+        common = next(step for step in runner.plan(args, Path("unused")) if step["name"] == "common-host")
+        self.assertIn("CC=selected/path/gcc", common["argv"])
+        self.assertIn(f"PYTHON={Path(sys.executable).as_posix()}", common["argv"])
+
     def test_failed_preflight_creates_no_bundle(self):
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "bundle"

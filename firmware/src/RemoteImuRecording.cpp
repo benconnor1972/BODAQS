@@ -12,6 +12,7 @@
 #include <cstring>
 #include "ImuAdmission.h"
 #include "AnalogInputManager.h"
+#include "DebugLog.h"
 #include <new>
 
 namespace RemoteImuRecording {
@@ -29,6 +30,7 @@ std::atomic<bool> fault{false};
 bool stopIntent=false,startIntent=false;
 uint32_t nextCleanupAttempt=0;
 bool cleanupQueued=false;
+Failure firstFailure;
 // Bit0 closes admission, bit1 marks an active producer callback. The main
 // owner closes without waiting; storage finalization starts only after bit1
 // retires. A late object is ACKed as discarded, never queued into a closing file.
@@ -115,6 +117,7 @@ bool configure(const SensorSpec& chosen,uint64_t sharedRecord,uint64_t sharedCon
   // IDs are finalized before catalog generation; sources do not yet contain data.
   if(!stream.configure(b,uint16_t(34+2*node),uint16_t(35+2*node)) ) {stream.release();fault=true;return true;}
   fault=false;stopIntent=startIntent=false;cleanupQueued=false;phase=Allocated;began=millis();serial=0;
+  firstFailure={};
   std::memset(objectProgress,0,sizeof objectProgress);std::memset(recordProgress,0,sizeof recordProgress);
   tailDiscards.store(0);dataGate.store(0,std::memory_order_release);
   return true;
@@ -141,7 +144,32 @@ void service() {
   AcquisitionControl::Outcome out;AcquisitionControl::outcome(node,out);
   const bool fresh=out.serial!=serial;
   const bool success=fresh && out.result==AcquisitionControl::Result::Succeeded;
-  if(((phase==Prepare || phase==PreparedSnapshot || phase==Starting) && uint32_t(now-began)>=10000) || stream.failed()) {fault=true;stop();}
+  const bool startupTimeout=(phase==Prepare || phase==PreparedSnapshot || phase==Starting) && uint32_t(now-began)>=10000;
+  const bool controlFailed=fresh && (out.result==AcquisitionControl::Result::Rejected || out.result==AcquisitionControl::Result::Uncertain || out.result==AcquisitionControl::Result::Unavailable);
+  if(!firstFailure.cause && (fault.load() || startupTimeout || stream.failed() || controlFailed)) {
+    const auto& d=CanMasterManager::diagnostics();
+    firstFailure.observedMs=now;firstFailure.phase=phase;
+    firstFailure.action=static_cast<uint8_t>(out.action);firstFailure.result=static_cast<uint8_t>(out.result);firstFailure.reason=out.reason;
+    firstFailure.cause=controlFailed?1:startupTimeout?2:stream.failed()?3:4;
+    firstFailure.measurementPhase=d.measurement.phase;firstFailure.measurementReason=d.measurement.reason;
+    firstFailure.measurementUnavailable=d.measurementUnavailable;
+    firstFailure.objectsReceived=d.measurementObjectsReceived;firstFailure.transferErrors=d.measurementTransferErrors;
+    firstFailure.transferErrorMask=d.measurementTransferErrorMask;
+    firstFailure.timing=d.measurementTiming;
+    LOGW_TAG("REMOTEIMU","first failure node=%u phase=%u cause=%u action=%u result=%u reason=%u mode=%u modeReason=%u unavailable=%u objects=%lu errors=%lu\n",
+      node,firstFailure.phase,firstFailure.cause,firstFailure.action,firstFailure.result,firstFailure.reason,
+      firstFailure.measurementPhase,firstFailure.measurementReason,firstFailure.measurementUnavailable,
+      static_cast<unsigned long>(firstFailure.objectsReceived),static_cast<unsigned long>(firstFailure.transferErrors));
+    [[maybe_unused]] const auto& t=firstFailure.timing;
+    LOGW_TAG("DRAIN","window_us=%lu slots=%lu failed=%lu empty=%lu exchange_us=%llu max_exchange_us=%lu max_idle_us=%lu\n",
+      (unsigned long)t.elapsedUs,(unsigned long)t.slots,(unsigned long)t.failedSlots,(unsigned long)t.emptySlots,
+      (unsigned long long)t.exchangeUs,(unsigned long)t.maxExchangeUs,(unsigned long)t.maxIdleUs);
+    LOGW_TAG("DRAIN","polls sample=%lu evidence=%lu control=%lu protected=%lu shared=%lu fragments=%lu,%lu,%lu,%lu,%lu deferred=%lu,%lu\n",
+      (unsigned long)t.polls[0],(unsigned long)t.polls[1],(unsigned long)t.polls[2],(unsigned long)t.polls[3],(unsigned long)t.polls[4],
+      (unsigned long)t.fragments[0],(unsigned long)t.fragments[1],(unsigned long)t.fragments[2],(unsigned long)t.fragments[3],(unsigned long)t.fragments[4],
+      (unsigned long)t.deferrals[0],(unsigned long)t.deferrals[1]);
+  }
+  if(startupTimeout || stream.failed()) {fault=true;stop();}
   if(fault.load() && phase<Stop) stop();
   if(fresh && (out.result==AcquisitionControl::Result::Rejected || out.result==AcquisitionControl::Result::Uncertain || out.result==AcquisitionControl::Result::Unavailable)) {
     fault=true;if(phase<Stop) stop();
@@ -205,6 +233,21 @@ bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint
 void discardAllocated() {for(auto& peer:peers) {peer.stream.release();peer.phase=Idle;peer.fault=false;}selected=0;}
 }
 const ImuAdmission::Report& admission() {return report;}
+bool failure(uint8_t node,Failure& out) {
+ if(node>=4 || !(selected&(1u<<node)) || !peers[node].firstFailure.cause) return false;
+ out=peers[node].firstFailure;return true;
+}
+void logDiagnostics() {
+ [[maybe_unused]] const auto& d=CanMasterManager::diagnostics();
+ LOGW_TAG("REMOTEIMU","cleanup active=%u selected=0x%x mode=%u modeReason=%u unavailable=%u objects=%lu errors=%lu\n",
+   AcquisitionControl::active(),selected,d.measurement.phase,d.measurement.reason,d.measurementUnavailable,
+   static_cast<unsigned long>(d.measurementObjectsReceived),static_cast<unsigned long>(d.measurementTransferErrors));
+ for(uint8_t n=0;n<4;++n) if(selected&(1u<<n)) {
+   AcquisitionControl::Outcome out;AcquisitionControl::outcome(n,out);
+   LOGW_TAG("REMOTEIMU","node=%u cleanupPhase=%u action=%u result=%u reason=%u excluded=%u localFence=%u\n",
+     n,peers[n].phase,static_cast<unsigned>(out.action),static_cast<unsigned>(out.result),out.reason,out.excluded,out.localFenceComplete);
+ }
+}
 bool setAdmissionProfile(const ImuAdmission::Profile& p) {
  if(selected || AcquisitionControl::active()) return false;
  profile=p;return true;

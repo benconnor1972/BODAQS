@@ -14,9 +14,10 @@
 #define DL_TIMER_CC_3_INDEX 3
 #define DL_TIMER_DEBUG_RES_RESUME 0
 extern uint32_t raw, count, cc[4];
-static inline uint32_t __get_PRIMASK(void) { return 0; }
-static inline void __disable_irq(void) {}
-static inline void __set_PRIMASK(uint32_t x) { (void)x; }
+extern uint32_t test_irq_mask,test_last_clear_irq_mask;
+static inline uint32_t __get_PRIMASK(void) { return test_irq_mask; }
+static inline void __disable_irq(void) { test_irq_mask=1; }
+static inline void __set_PRIMASK(uint32_t x) { test_irq_mask=x; }
 static inline uint32_t DL_TimerA_getRawInterruptStatus(int x, uint32_t m) {
     (void)x;
     return raw & m;
@@ -31,6 +32,7 @@ static inline uint32_t DL_TimerA_getCaptureCompareValue(int x, int i) {
 }
 static inline void DL_TimerA_clearInterruptStatus(int x, uint32_t m) {
     (void)x;
+    test_last_clear_irq_mask=test_irq_mask;
     raw &= ~m;
 }
 static inline void DL_TimerA_setTimerCount(int x, uint32_t y) {

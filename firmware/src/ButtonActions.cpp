@@ -14,6 +14,7 @@
 #include "DebugLog.h"
 #include "HomeRestartGesture.h"
 #include "DeviceRestart.h"
+#include "RemoteImuRecording.h"
 
 #define BLOG(...) LOGD_TAG("BTN", __VA_ARGS__)
 
@@ -372,6 +373,7 @@ void ButtonActions::onWebServerToggle(ButtonEvent event) {
 
   // If we can't start (e.g. logging active), don't touch WiFi.
   if (!WebServerManager::canStart()) {
+    RemoteImuRecording::logDiagnostics();
     UI::println("Cannot start server while logging active.", "Busy", UI::TARGET_BOTH, UI::LVL_WARN, 2000, 2);
     return;
   }

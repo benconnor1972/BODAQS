@@ -63,7 +63,7 @@ namespace SensorManager {
   // registry / access
   void    registerSensor(Sensor* s);
   uint8_t count();
-  uint8_t activeCount();
+  uint8_t activeCount(); // Local participants plus unmuted remote endpoint assignments.
   Sensor* at(uint8_t i);     // alias to get(i)
   Sensor* get(uint8_t i);
 

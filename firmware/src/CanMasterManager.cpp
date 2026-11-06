@@ -28,7 +28,10 @@ namespace {
 
 constexpr uint32_t kAbsentProbeIntervalMs = 5000;
 constexpr uint32_t kPresentProbeIntervalMs = 30000;
-constexpr uint8_t kFetchAttempts = 3;
+// Include four fetches so a failed exchange spans five physical slots. An
+// even-length exchange can repeatedly lose its command to alternating RX
+// queue overruns while only its fetches reach the master.
+constexpr uint8_t kFetchAttempts = 4;
 constexpr uint8_t kInventorySnapshotAttempts = 3;
 constexpr uint32_t kSpiLockTimeoutMs = 10;
 constexpr uint32_t kInterSlotGuardUs = 1000;
@@ -39,6 +42,10 @@ const board::BoardProfile* s_board = nullptr;
 board::CanFdMasterProfile s_profile;
 CanMasterManager::Diagnostics s_diagnostics;
 uint32_t s_nextSequence = 1;
+struct ModeInspection {
+  uint32_t token=0,startedMs=0;
+  uint64_t boot=0,context=0;
+} s_modeInspection;
 uint32_t s_nextProbeMs = 0;
 bool s_started = false;
 bool s_probeRequested = false;
@@ -683,6 +690,7 @@ void retainMeasurementAllocators(uint32_t read,const uint32_t mutations[4],uint6
   s_diagnostics.apply.next_transfer=transfer;
 }
 
+static uint32_t measurementTimingStartUs,measurementTimingEndUs;
 bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
                              BodaqsMeasurementSlot& response) {
   if (!measurementAccess_()) return false;
@@ -691,7 +699,27 @@ bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
   uint8_t tx[64], rx[64];
   if (!bodaqs_measurement_encode(&request, tx, sizeof tx)) return false;
   const SPISettings settings(BODAQS_MEASUREMENT_HZ, MSBFIRST, spiDataMode_(s_profile.spi_mode));
-  return transferSlot_(settings,tx,rx,64,25) && bodaqs_measurement_decode(rx,64,&response);
+  const uint32_t started=micros();
+  auto& timing=s_diagnostics.measurementTiming;
+  if(!timing.slots) measurementTimingStartUs=started;
+  else {
+    const uint32_t idle=started-measurementTimingEndUs;
+    if(idle>timing.maxIdleUs) timing.maxIdleUs=idle;
+  }
+  const bool valid=transferSlot_(settings,tx,rx,64,25) && bodaqs_measurement_decode(rx,64,&response);
+  measurementTimingEndUs=micros();
+  const uint32_t duration=measurementTimingEndUs-started;
+  ++timing.slots;timing.exchangeUs+=duration;
+  timing.elapsedUs=measurementTimingEndUs-measurementTimingStartUs;
+  if(duration>timing.maxExchangeUs) timing.maxExchangeUs=duration;
+  if(request.kind==1 && request.body[0]>=1 && request.body[0]<=5) ++timing.polls[request.body[0]-1];
+  if(!valid) ++timing.failedSlots;
+  else {
+    if(response.kind==0) ++timing.emptySlots;
+    const uint8_t cls=bodaqs_fragment_class(response.kind);
+    if(cls>=1 && cls<=5) ++timing.fragments[cls-1];
+  }
+  return valid;
 }
 
 
@@ -729,6 +757,16 @@ static uint64_t loggerClockUs_() {
   return micros();
 #endif
 }
+static void measurementError_(uint8_t reason,uint8_t cls,uint8_t node,uint32_t object,const char* source) {
+  ++s_diagnostics.measurementTransferErrors;
+  const uint32_t bit=reason<32?(1UL<<reason):1U;
+  if(!(s_diagnostics.measurementTransferErrorMask&bit)) {
+    s_diagnostics.measurementTransferErrorMask|=bit;
+    CANMASTER_LOGW("measurement error source=%s code=%u class=%u node=%u object=%lu\n",
+      source,reason,cls,node,static_cast<unsigned long>(object));
+  }
+  (void)source;(void)cls;(void)node;(void)object;
+}
 static int unavailableTransport_(MeasurementTransport& transport) {
   transport.failed=true;s_diagnostics.measurementConfirmed=false;
   s_diagnostics.measurementUnavailable=true;return -14;
@@ -747,6 +785,9 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
     transport.bridgeExpired=true;transport.bridgeReady=true;
   }
   if(transport.recovering) {
+    transport.previousPollClass=0;
+    for(uint8_t dataClass=0;dataClass<2;++dataClass) for(uint8_t n=0;n<4;++n)
+      transport.inboxes[dataClass][n].requestedFragments=0;
     if(static_cast<uint32_t>(millis()-transport.recoveryStarted)>=300) {
       return unavailableTransport_(transport);
     }
@@ -768,13 +809,21 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
     }
     transport.recovering=false;return 0;
   }
+  // The master retains one ordered sample/evidence head per node. Continue
+  // its partial object instead of spending data turns on the other class.
+  if(cls<3 && node<4) {
+    const auto& chosen=transport.inboxes[cls-1][node].state;
+    const auto& other=transport.inboxes[2-cls][node].state;
+    if((!chosen.object || chosen.complete) && other.object && !other.complete) cls=3-cls;
+  }
   BodaqsMeasurementSlot request={},response={};MeasurementInbox* acked=nullptr;
   MeasurementOutbox* outgoing=nullptr;
   for(int lane=1;lane>=0;--lane) for(uint8_t i=0;i<4;++i) {
     uint8_t n=(transport.nextControlNode[lane]+i)%4;
     auto& candidate=transport.controls[lane][n];
     if(candidate.state.complete && static_cast<uint32_t>(millis()-candidate.startedMs)>=300) {
-      candidate.state.complete=0;candidate.error=12;++s_diagnostics.measurementTransferErrors;return -12;
+      candidate.state.complete=0;candidate.error=12;
+      measurementError_(12,static_cast<uint8_t>(lane+3),n,candidate.state.object,"outbox_timeout");return -12;
     }
     const auto& retained=transport.inboxes[lane+2][n];
     // Retire the previous immutable result before sending the successor on
@@ -784,8 +833,12 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
         !(lane==1 && candidate.bytes[12]==0x25);
     if(!outgoing && candidate.state.complete && !retireFirst) {
       outgoing=&candidate;
-      (void)bodaqs_fragment_emit(&candidate.state,candidate.bytes,candidate.nextFragment,&request);
-      candidate.nextFragment=(candidate.nextFragment+1)%2;
+      // Reverse the two-fragment order on each retry round (0,1,1,0).
+      // A fixed 0,1 pattern can starve one fragment forever if the master's
+      // saturated RX queue accepts only alternating physical slots.
+      const uint8_t fragment=candidate.nextFragment==1 || candidate.nextFragment==2?1:0;
+      (void)bodaqs_fragment_emit(&candidate.state,candidate.bytes,fragment,&request);
+      candidate.nextFragment=(candidate.nextFragment+1)%4;
       transport.nextControlNode[lane]=(n+1)%4;
     }
   }
@@ -802,14 +855,29 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
     if(partial && partial->state.object && !partial->state.complete) {
       request.object=partial->state.object;request.node=partial->state.node;
       for(uint8_t i=0;i<26;++i) if(!(partial->state.mask&(1UL<<i))) {request.index=i;break;}
+      // Publication can take several physical slots. Request each missing
+      // fragment once before repeating gaps, rather than tracking only the
+      // immediately preceding poll. This hint never marks a fragment received;
+      // a new sweep retries every still-missing fragment, including a lost tail.
+      if(cls<3) {
+        bool unrequested=false;
+        for(uint8_t i=0;i<(partial->state.total+39)/40;++i)
+          if(!(partial->state.mask&(1UL<<i)) && !(partial->requestedFragments&(1UL<<i))) {
+            request.index=i;unrequested=true;break;
+          }
+        if(!unrequested) partial->requestedFragments=0;
+        partial->requestedFragments|=1UL<<request.index;
+      }
       if(cls==4 && node<4 && (transport.terminalNodes&(1u<<node)) && !(partial->state.mask&1u)) {
         request.object=0;request.index=0;
       }
     }
     if(cls<3 && !request.object) {
       uint8_t budgetNode=node==255?4:node;
-      if(static_cast<int32_t>(millis()-transport.nextHeadPollMs[budgetNode])<0) return 0;
-      transport.nextHeadPollMs[budgetNode]=millis()+20;
+      if(static_cast<int32_t>(millis()-transport.nextHeadPollMs[cls-1][budgetNode])<0) {
+        ++s_diagnostics.measurementTiming.deferrals[cls-1];return 0;
+      }
+      transport.nextHeadPollMs[cls-1][budgetNode]=millis()+20;
     }
   }
   if(transport.timingEnabled && !outgoing && !acked && !transport.bridgeReady &&
@@ -825,12 +893,16 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
     }
   }
   if(!exchangeMeasurementSlot(request,response)) {
+    transport.previousPollClass=0;
     transport.recovering=true;transport.recoveryStarted=millis();
     transport.recoveryBinding=s_diagnostics.measurement;
     transport.recoveryToken=nextSequence_();
     if(!transport.recoveryToken) return unavailableTransport_(transport);
     return 0;
   }
+  transport.previousPollClass=request.kind==1?request.body[0]:0;
+  transport.previousPollNode=request.node;transport.previousPollObject=request.object;
+  transport.previousPollIndex=request.index;
   if(response.context!=s_diagnostics.measurement.context) {
     transport.recovering=true;transport.recoveryStarted=millis();
     transport.recoveryBinding=s_diagnostics.measurement;transport.recoveryToken=nextSequence_();
@@ -864,18 +936,29 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
     }
     if(response.node<4 && (response.body[0]==3 || response.body[0]==4)) {
       auto& failed=transport.controls[response.body[0]-3][response.node];
-      if(failed.state.object==response.object) {failed.state.complete=0;failed.error=response.body[1];}
+      if(failed.state.object==response.object) {
+        if(response.body[1]==8 && failed.state.complete) {
+          // BUSY can mean our previous result is still pinned because its RAM
+          // ACK was lost. Replay only an ACK for an actually admitted result;
+          // preserve this immutable outgoing request and its original deadline.
+          auto& retained=transport.inboxes[response.body[0]-1][response.node];
+          if(retained.admitted && retained.state.complete && retained.state.context==transport.context) {
+            bodaqs_fragment_ack(&retained.state,1,&retained.pendingAck);
+            retained.ackPending=true;
+          }
+        } else {failed.state.complete=0;failed.error=response.body[1];}
+      }
     }
-    ++s_diagnostics.measurementTransferErrors;return -response.body[1];
+    measurementError_(response.body[1],response.body[0],response.node,response.object,"master_reply");return -response.body[1];
   }
   const uint8_t responseClass=bodaqs_fragment_class(response.kind);
   if(responseClass==4 && response.node<4 && (transport.terminalNodes&(1u<<response.node)) &&
      response.index==0 && (response.body[12]==0x26 || response.body[12]==0x27)) return 0;
-  // Only empty-head probing is limited to 50Hz/node. A validated fragment is
+  // Only empty-head probing is limited to 50Hz per class/node. A validated fragment is
   // evidence of active backlog, so its successor can be selected immediately
   // after the RAM ACK instead of imposing a 20ms cap on full data batches.
   if(responseClass<3 && responseClass && response.node<4)
-    transport.nextHeadPollMs[response.node]=millis();
+    transport.nextHeadPollMs[responseClass-1][response.node]=millis();
   auto* inbox=transportInbox_(transport,responseClass,response.node);
   if(!inbox) return 0;
   if(responseClass==4 && (transport.terminalNodes&(1u<<response.node)) &&
@@ -890,7 +973,9 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
     state.accepted_checksum=checksum;state.accepted_total=total;
   }
   BodaqsMeasurementSlot ack={};
+  const uint32_t previousObject=inbox->state.object;
   int result=bodaqs_fragment_accept(&inbox->state,inbox->bytes,sizeof(inbox->bytes),&response,1,&ack);
+  if(inbox->state.object!=previousObject) inbox->requestedFragments=0;
   if(result==1) {
     inbox->admitted=false;inbox->ackPending=false;completed=inbox;
     ++s_diagnostics.measurementObjectsReceived;
@@ -898,7 +983,7 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
     ++s_diagnostics.measurementDuplicates;
     if(inbox->admitted) {inbox->ackPending=true;inbox->pendingAck=ack;}
   } else if(result<0) {
-    ++s_diagnostics.measurementTransferErrors;
+    measurementError_(static_cast<uint8_t>(-result),responseClass,response.node,response.object,"fragment_decode");
     if(result!=-6) return unavailableTransport_(transport);
   }
   s_diagnostics.measurementAssemblyBytes=inbox->state.complete?0:inbox->state.total;
@@ -1033,16 +1118,30 @@ static bool modeObservation_(const BodaqsMeasurementSlot& response, uint32_t tok
 bool inspectMeasurementMode() {
   if (!measurementAccess_()) return false;
   if (!s_nextSequence || s_nextSequence==UINT32_MAX) return false;
-  const uint32_t token=nextSequence_();
   if (s_diagnostics.measurementUnavailable || s_diagnostics.measurement.phase!=0) {
+    // Keep one inspection identity across bounded service calls. Replacing it
+    // every four slots can discard every delayed reply under RX overruns,
+    // even after the master has completed its physical retirement fence.
+    if(!s_modeInspection.token || s_modeInspection.boot!=s_diagnostics.measurement.boot ||
+       s_modeInspection.context!=s_diagnostics.measurement.context ||
+       static_cast<uint32_t>(millis()-s_modeInspection.startedMs)>=300) {
+      s_modeInspection.token=nextSequence_();s_modeInspection.startedMs=millis();
+      s_modeInspection.boot=s_diagnostics.measurement.boot;
+      s_modeInspection.context=s_diagnostics.measurement.context;
+    }
+    const uint32_t token=s_modeInspection.token;
     BodaqsMeasurementSlot query = {}, response = {};
     query.kind=6; query.node=255; query.object=token; query.context=s_diagnostics.measurement.context;
     (void)exchangeMeasurementSlot(query,response); // Preloaded data is never fresh evidence.
     for(uint8_t attempt=0;attempt<3;++attempt) {
-      if(exchangeMeasurementSlot(query,response) && modeObservation_(response,token,query.context,nullptr)) return true;
+      if(exchangeMeasurementSlot(query,response) && modeObservation_(response,token,query.context,nullptr)) {
+        s_modeInspection={};return true;
+      }
     }
     return false;
   }
+  s_modeInspection={};
+  const uint32_t token=nextSequence_();
   if (LoggingManager::isRunning()) return false; // No legacy probing during local recording.
   CanMasterProtocol::Frame request, response;
   request.type=static_cast<CanMasterProtocol::MessageType>(10); request.sequence=token; request.payloadLength=16;
@@ -1062,6 +1161,7 @@ bool inspectMeasurementMode() {
 }
 
 static bool transitionMode_(BodaqsMeasurementMode requested, bool exitMode) {
+  s_modeInspection={};
   const uint32_t started=millis();
   if(!s_nextSequence || s_nextSequence==UINT32_MAX) return false;
   const uint32_t sequence=nextSequence_();
@@ -1104,6 +1204,8 @@ bool enterMeasurementMode(uint64_t recording, uint64_t context) {
      s_diagnostics.measurement.phase!=0 ||
      !(s_diagnostics.capabilities&BODAQS_MEASUREMENT_CAPABILITY)) return false;
   BodaqsMeasurementMode requested = {};
+  s_diagnostics.measurementTransferErrorMask=0;
+  s_diagnostics.measurementTiming={};
   requested.boot=s_diagnostics.control.master_boot_id; requested.session=s_diagnostics.authority.session;
   requested.caller=requested.session; requested.recording=recording; requested.context=context;
   requested.version=1; requested.maximum=1024; requested.physical=64; requested.hz=8000000; requested.gap=25;
@@ -1240,6 +1342,7 @@ void begin(const board::BoardProfile& profile, const LoggerConfig& cfg) {
   s_board = &profile;
   s_profile = profile.can_fd_master;
   s_diagnostics = Diagnostics{};
+  s_modeInspection={};
   s_restartCleanupNeeded=false;
   s_diagnostics.mode = cfg.canMasterMode;
   s_diagnostics.profileSupported = s_profile.supported;

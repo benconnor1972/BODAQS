@@ -21,6 +21,12 @@ enum class State : uint8_t {
   TransportFault,
 };
 
+struct MeasurementTiming {
+  uint32_t slots=0,failedSlots=0,emptySlots=0,elapsedUs=0;
+  uint64_t exchangeUs=0;
+  uint32_t maxExchangeUs=0,maxIdleUs=0;
+  uint32_t polls[5]={},fragments[5]={},deferrals[2]={};
+};
 struct Diagnostics {
   State state = State::Unsupported;
   CanMasterMode mode = CanMasterMode::Auto;
@@ -60,6 +66,8 @@ struct Diagnostics {
   uint16_t spiTxQueueHighWater = 0;
   uint32_t measurementObjectsReceived = 0, measurementDuplicates = 0;
   uint32_t measurementTransferErrors = 0, measurementControlSubmitted = 0;
+  uint32_t measurementTransferErrorMask = 0; // Bit N: transport error N seen in this context.
+  MeasurementTiming measurementTiming;
   uint16_t measurementAssemblyBytes = 0;
   uint8_t measurementLastClass = 0, measurementLastNode = 255;
   uint32_t measurementLastObject = 0;
@@ -114,6 +122,8 @@ struct MeasurementInbox {
   uint8_t bytes[1024] = {};
   bool ackPending = false;
   bool admitted = false;
+  // Scheduling hint only: fragments requested in this sweep, never receipt.
+  uint32_t requestedFragments = 0;
   BodaqsMeasurementSlot pendingAck = {};
 };
 // Caller allocates this bank persistently (not on a task stack). It demultiplexes
@@ -133,7 +143,11 @@ struct MeasurementTransport {
   uint32_t bridgeToken = 0, bridgeNext = 0, bridgeStarted = 0, bridgeRetry = 0, bridgeTick = 0, bridgeEpoch = 0;
   bool bridgePending = false, bridgeReady = false, bridgeExpired = false, timingEnabled = false;
   uint8_t nextControlNode[2] = {};
-  uint32_t nextHeadPollMs[5] = {};
+  // Empty sample/evidence probes must not suppress each other at one node.
+  uint32_t nextHeadPollMs[2][5] = {};
+  // Last MOSI poll observation, never received/accepted data.
+  uint32_t previousPollObject = 0;
+  uint8_t previousPollClass = 0,previousPollNode = 255,previousPollIndex = 0;
   uint8_t terminalNodes = 0;
   // Link recovery never resets this bank: accepted IDs, partial objects and
   // outstanding ACKs remain owned until an explicit recording fence.

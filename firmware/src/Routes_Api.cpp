@@ -305,6 +305,7 @@ static void handleStatus_(WebServer& srv) {
   measurement["objects_received"] = masterDiagnostics.measurementObjectsReceived;
   measurement["duplicates"] = masterDiagnostics.measurementDuplicates;
   measurement["transfer_errors"] = masterDiagnostics.measurementTransferErrors;
+  measurement["transfer_error_mask"] = masterDiagnostics.measurementTransferErrorMask;
   measurement["control_submitted"] = masterDiagnostics.measurementControlSubmitted;
   measurement["assembly_bytes"] = masterDiagnostics.measurementAssemblyBytes;
   measurement["last_class"] = masterDiagnostics.measurementLastClass;

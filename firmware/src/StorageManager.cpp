@@ -1724,6 +1724,30 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
   document["remote_admission_reason"]=admission.attempted?ImuAdmission::reportText(admission):"not evaluated";
   document["remote_reserved_bytes"]=admission.loggerBytes;
   document["remote_cleanup_complete"] = RemoteImuRecording::stopped();
+  JsonArray remoteFailures=document["remote_failures"].to<JsonArray>();
+  for(uint8_t node=0;node<4;++node) {
+    RemoteImuRecording::Failure failure;
+    if(!RemoteImuRecording::failure(node,failure)) continue;
+    JsonObject entry=remoteFailures.add<JsonObject>();
+    entry["node"]=node;entry["observed_ms"]=failure.observedMs;
+    entry["phase"]=failure.phase;entry["cause"]=failure.cause;
+    entry["action"]=failure.action;entry["result"]=failure.result;entry["reason"]=failure.reason;
+    entry["measurement_phase"]=failure.measurementPhase;entry["measurement_reason"]=failure.measurementReason;
+    entry["measurement_unavailable"]=failure.measurementUnavailable;
+    entry["objects_received"]=failure.objectsReceived;entry["transfer_errors"]=failure.transferErrors;
+    entry["transfer_error_mask"]=failure.transferErrorMask;
+      auto timing=entry["transport_timing"].to<JsonObject>();
+      const auto& t=failure.timing;
+      timing["window_us"]=t.elapsedUs;timing["slots"]=t.slots;
+      timing["failed_slots"]=t.failedSlots;timing["empty_slots"]=t.emptySlots;
+      timing["exchange_us"]=t.exchangeUs;timing["max_exchange_us"]=t.maxExchangeUs;
+      timing["max_idle_us"]=t.maxIdleUs;
+      auto polls=timing["polls"].to<JsonArray>();
+      auto fragments=timing["fragments"].to<JsonArray>();
+      for(unsigned i=0;i<5;++i) {polls.add(t.polls[i]);fragments.add(t.fragments[i]);}
+      auto deferred=timing["deferrals"].to<JsonArray>();
+      for(unsigned i=0;i<2;++i) deferred.add(t.deferrals[i]);
+  }
   document["remote_tail_objects_discarded"] = RemoteImuRecording::discardedTailObjects();
   // Storage finalization and membership cleanup do not prove complete source
   // tails. Preserve unknown coverage until explicit final/accepted boundaries

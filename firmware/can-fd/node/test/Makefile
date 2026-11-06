@@ -21,6 +21,9 @@ test: $(BUILD_DIR)/test_capture.exe $(BUILD_DIR)/test_spi.exe $(BUILD_DIR)/test_
 	$(BUILD_DIR)/test_acquisition.exe 11
 	$(BUILD_DIR)/test_acquisition.exe 12
 	$(BUILD_DIR)/test_acquisition.exe 13
+	$(BUILD_DIR)/test_acquisition.exe 14
+	$(BUILD_DIR)/test_acquisition.exe 15
+	$(BUILD_DIR)/test_acquisition.exe 16
 $(BUILD_DIR)/test_capture.exe: test_capture.c ../src/imu_capture.c
 	$(CC) $(CFLAGS) $^ -o $@
 $(BUILD_DIR)/test_spi.exe: test_spi.c ../src/imu_spi.c

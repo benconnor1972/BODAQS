@@ -23,7 +23,7 @@ def fixture_source(root):
     fixture += '\nint64_t esp_timer_get_time() { return int64_t(clockMs)*1000; }\nnamespace board { const BoardProfile* gBoard=&profile; }\n'
     fixture += (root / "src/AcquisitionControl.cpp").read_text().replace('#include <Arduino.h>', '')
     coordinator = (root / "src/RemoteImuRecording.cpp").read_text()
-    for header in ('#include <Arduino.h>', '#include <esp_timer.h>', '#include <esp_system.h>', '#include "SensorManager.h"'):
+    for header in ('#include <Arduino.h>', '#include <esp_timer.h>', '#include <esp_system.h>', '#include "SensorManager.h"', '#include "DebugLog.h"'):
         coordinator = coordinator.replace(header, '')
     fixture += '\nnamespace AnalogInputManager { uint8_t activeChannelCount(uint8_t) {return 0;} uint16_t configuredDataRateSps(uint8_t) {return 0;} }\n'
     fixture = fixture.replace('static SensorSpec saved;', 'static SensorSpec saved; static unsigned fixtureSensorCount=1; static SensorSpec extra[3]; static ParamStore extraParams[3];')
@@ -51,6 +51,14 @@ def main():
         flags=["-DBODAQS_SINGLE_NODE_IMU_SMOKE=1"] if args.smoke else []
         subprocess.run([args.compiler, "-std=c++17", *flags, "-DBODAQS_QUEUE_ALLOCATION_TEST", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-I", str(root/"test/stubs"), "-I", str(root/"src"), "-I", str(protocol), "-I", str(root/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
+        subprocess.run([str(exe), "start-clock-boundary"], check=True)
+        subprocess.run([str(exe), "lost-control-ack"], check=True)
+        subprocess.run([str(exe), "rx-overrun"], check=True)
+        subprocess.run([str(exe), "rx-overrun-odd"], check=True)
+        subprocess.run([str(exe), "legacy-rx-overrun"], check=True)
+        subprocess.run([str(exe), "delayed-cleanup-status"], check=True)
+        subprocess.run([str(exe), "entry-timeout"], check=True)
+        subprocess.run([str(exe), "entry-offline"], check=True)
         if args.smoke:
             return
         subprocess.run([str(exe), "four"], check=True)

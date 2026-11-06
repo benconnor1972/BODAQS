@@ -76,7 +76,7 @@ def plan(args: argparse.Namespace, output: Path) -> list[dict]:
         step("firmware-host", [*make, "-C", "firmware/test", "test",
              f"CXX={args.cxx}", f"PYTHON={Path(sys.executable).as_posix()}"]),
         step("common-host", [*make, "-C", "firmware/can-fd/common/test", "test",
-             f"CXX={args.cxx}"]),
+             f"CC={args.cc}", f"CXX={args.cxx}", f"PYTHON={Path(sys.executable).as_posix()}"]),
         step("master-host", [*make, "-C", "firmware/can-fd/master/test", "test",
              f"CC={args.cc}", f"PYTHON={Path(sys.executable).as_posix()}"]),
         step("node-host", [*make, "-C", "firmware/can-fd/node/test", "test",

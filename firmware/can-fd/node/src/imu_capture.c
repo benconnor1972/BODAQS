@@ -172,3 +172,10 @@ uint32_t bodaqs_node_capture_sync_loss_take(void) {
     uint32_t mask=__get_PRIMASK(),value;__disable_irq();
     value=sync_dropped;sync_dropped=0;__set_PRIMASK(mask);return value;
 }
+void bodaqs_node_capture_sync_discard(void) {
+    uint32_t mask=__get_PRIMASK();__disable_irq();
+    sync_tail=sync_head;sync_dropped=0;sync_pending=false;
+    /* A pre-boundary capture still waiting for its ISR is stale too. */
+    DL_TimerA_clearInterruptStatus(ACQ_CAPTURE_INST,DL_TIMER_INTERRUPT_CC3_UP_EVENT);
+    __set_PRIMASK(mask);
+}

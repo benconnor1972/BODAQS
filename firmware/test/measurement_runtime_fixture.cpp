@@ -12,14 +12,19 @@
 #include "test_apply.cpp"
 #undef main
 static uint32_t clockMs=100, randomWord=100;
+static unsigned millisReadsToAdvance;
 static bool spiAvailable=true, recording=false, muted=false;
 static bool starting=false;
 // Synthetic clock option for sustained acquisition/control fixtures. This is
 // an injected service-cost example, never a physical timing qualification.
 static bool fastMeasurementClock=false;
+static bool fixedMeasurementClock=false;
 static uint32_t measurementSlots=0;
 static std::vector<uint8_t> submitted;
-uint32_t millis() { return clockMs; }
+uint32_t millis() {
+ if(millisReadsToAdvance && --millisReadsToAdvance==0) ++clockMs;
+ return clockMs;
+}
 uint32_t micros() { return clockMs*1000; }
 uint32_t esp_random() { return ++randomWord; }
 void delayMicroseconds(uint32_t) {}
@@ -48,7 +53,20 @@ bool setRemoteProviderObservation(const SensorProviderObservation&) { return tru
 bool setRemoteEndpointObservation(const SensorEndpointObservation&) { return true; }
 }
 static uint8_t preloaded[84];
+// Model saturation of the real one-slot RX queue: every other physical slot
+// arrives before the main-loop owner has freed its previous queue entry.
+static bool alternateRxLoss=false;
+static unsigned physicalSlots;
+static bool dropOrdinaryControlAck=false;
+static unsigned droppedControlAcks;
+static bool delayStatusResponses=false;
+static unsigned delayedResponseDepth=8;
+struct DelayedSpiSlot {uint8_t bytes[84];};
+static std::vector<DelayedSpiSlot> delayedSpiSlots;
 static bool loseMeasurementReplies=false;
+static bool dropDataFragmentOnce=false;
+static unsigned droppedDataFragments;
+static uint8_t droppedFragmentIndex=1;
 static bool loseBridgeReplies=false;
 static bool allowMalformedMeasurement=false;
 static uint32_t dropBindReplyUntil=0;
@@ -56,17 +74,34 @@ namespace SharedSpiBus {
 bool begin(const board::SPIProfile&) { return spiAvailable; }
 bool transfer(int8_t,const SPISettings& settings,const uint8_t*tx,uint8_t*rx,size_t length,uint32_t) {
  if(!spiAvailable) return false;
- if(length!=64 || !fastMeasurementClock || ++measurementSlots%10==0) ++clockMs;
+ if(!fixedMeasurementClock && (length!=64 || !fastMeasurementClock || ++measurementSlots%10==0)) ++clockMs;
  assert(length==64 || length==84);
  if(length==64) assert(settings.hz==8000000);
  memcpy(rx,preloaded,length);
+ uint8_t lostAckReplacement[64];BodaqsMeasurementSlot ackSlot={};
+ if(length==64 && dropOrdinaryControlAck && bodaqs_measurement_decode(tx,64,&ackSlot) &&
+    ackSlot.kind==5 && ackSlot.node==0 && ackSlot.body[0]==3) {
+  dropOrdinaryControlAck=false;++droppedControlAcks;
+  ackSlot={};ackSlot.node=255;ackSlot.context=master.measurement.mode.context;
+  assert(bodaqs_measurement_encode(&ackSlot,lostAckReplacement,64));
+  tx=lostAckReplacement;
+  // Another lane's empty response can occupy MISO when this ACK is lost.
+  // Do not hand the host an immediate duplicate that would repair the ACK.
+  memcpy(rx,lostAckReplacement,64);
+ }
+ if(alternateRxLoss && (++physicalSlots%2)==0) return true;
  uint8_t next[84];
  const auto slotResult=bodaqs_master_service_process_transfer(&master,tx,length,clockMs,next);
  if(slotResult!=BODAQS_MASTER_SLOT_PROCESSED && !allowMalformedMeasurement)
   std::fprintf(stderr,"malformed at%u length%u kind%u phase%u context%llu\n",clockMs,unsigned(length),tx[3],master.measurement.mode.phase,(unsigned long long)master.measurement.mode.context);
  assert(slotResult==BODAQS_MASTER_SLOT_PROCESSED ||
    (allowMalformedMeasurement && length==64 && slotResult==BODAQS_MASTER_SLOT_MALFORMED));
- memcpy(preloaded,next,84);
+ if(delayStatusResponses && length==64) {
+  DelayedSpiSlot queued={};memcpy(queued.bytes,next,84);delayedSpiSlots.push_back(queued);
+  if(delayedSpiSlots.size()>delayedResponseDepth) {
+   memcpy(preloaded,delayedSpiSlots.front().bytes,84);delayedSpiSlots.erase(delayedSpiSlots.begin());
+  }
+ } else memcpy(preloaded,next,84);
  uint8_t address,payload[64]; uint16_t transaction;
  if(bodaqs_master_service_control_transmit(&master,clockMs,&address,&transaction,payload)) {
   BodaqsControlRecord request,reply;uint16_t decoded;
@@ -75,6 +110,14 @@ bool transfer(int8_t,const SPISettings& settings,const uint8_t*tx,uint8_t*rx,siz
   assert(bodaqs_master_service_control_receive(&master,address,transaction,&reply));
  }
  if(length==64 && loseMeasurementReplies) memset(rx,0,length);
+ if(length==64 && dropDataFragmentOnce) {
+  BodaqsMeasurementSlot fragment={};
+  if(bodaqs_measurement_decode(rx,64,&fragment) && fragment.kind==2 && fragment.index==droppedFragmentIndex) {
+   dropDataFragmentOnce=false;++droppedDataFragments;
+   const uint64_t context=fragment.context;fragment={};fragment.context=context;fragment.node=255;
+   assert(bodaqs_measurement_encode(&fragment,rx,64));
+  }
+ }
  if(length==64 && loseBridgeReplies) {
   BodaqsMeasurementSlot bridge={};
   if(bodaqs_measurement_decode(rx,64,&bridge) && bridge.kind==11) {
@@ -125,16 +168,103 @@ static void reset() {
 }
 static unsigned bridgeObservations;
 static uint32_t bridgeClock(void*,uint32_t* epoch) {++bridgeObservations;*epoch=7;return 987654;}
+static void mixedReceptionDrain(unsigned turns,bool loseFragment=false,unsigned evidenceBurst=1,unsigned responseLag=1,uint8_t lostIndex=1) {
+ // Controlled host schedule, not a physical throughput qualification: bounded SPI
+ // turns/ms, 2 five-sample CAN packets/3ms and an evidence event/100ms.
+ // Probe evidence first so a shared empty-probe timer starves the sample head.
+ reset();assert(CanMasterManager::enterMeasurementMode(123,456));
+ master.acquisition_record[0]=123;master.acquisition_boot[0]=node.view.boot_id;
+ master.acquisition_fenced=0;master.anchor_boot[0]=node.view.boot_id;master.anchor_epoch[0]=1;
+ static CanMasterManager::MeasurementTransport drain;
+ drain={};
+ CanMasterManager::MeasurementInbox* initial=nullptr;
+ for(unsigned i=0;i<2;++i) (void)CanMasterManager::serviceMeasurementTransport(drain,4,0,initial);
+ const uint32_t initialFailedSlots=CanMasterManager::diagnostics().measurementTiming.failedSlots;
+ master.anchor_boot[0]=node.view.boot_id;master.anchor_epoch[0]=1;
+ fixedMeasurementClock=true;
+ assert(responseLag>=1 && responseLag<=8);
+ delayStatusResponses=responseLag>1;delayedResponseDepth=responseLag-1;delayedSpiSlots.clear();
+ dropDataFragmentOnce=loseFragment;droppedDataFragments=0;droppedFragmentIndex=lostIndex;
+ unsigned sequence=0,received=0,produced=0;
+ auto drainTurn=[&](unsigned slot) {
+  CanMasterManager::MeasurementInbox* completed=nullptr;
+  (void)CanMasterManager::serviceMeasurementTransport(drain,slot%4==0?2:slot%4==3?4:1,0,completed);
+  if(completed && completed->state.cls<=2) {
+   received+=bodaqs_measurement_get(completed->bytes+12,2);
+   CanMasterManager::releaseMeasurementObject(*completed);
+  }
+ };
+ for(unsigned ms=0;ms<(evidenceBurst>1?10000:1000);++ms) {
+  ++clockMs;
+  if(ms%3==0) for(unsigned i=0;i<2;++i) {
+   uint8_t sample[64]={};bodaqs_measurement_put(sample,sequence,2);sample[2]=1;sample[3]=5;sequence+=5;
+   (void)bodaqs_master_service_receive_can(&master,0,1,0x100,sample,64,0,clockMs*1000,clockMs);
+   ++produced;
+  }
+  if(ms%100==0) for(unsigned eventIndex=0;eventIndex<evidenceBurst;++eventIndex) {
+   const uint8_t event[8]={1,4,1,0,0,0,0,0};
+   (void)bodaqs_master_service_receive_can(&master,0,2,0x60,event,8,0,clockMs*1000,clockMs);
+   ++produced;
+  }
+  for(unsigned turn=0;turn<turns;++turn) {
+   drainTurn(ms*turns+turn);
+  }
+ }
+ std::fprintf(stderr,"mixed drain (%u turns/ms, evidence burst %u, response lag %u): received=%u retained=%u high_water=%u dropped=%lu\n",turns,evidenceBurst,responseLag,received,master.ingress[0].count,master.ingress[0].high_water,(unsigned long)master.ingress[0].dropped);
+ assert(master.ingress[0].dropped==0 && !master.loss[0].failed);
+ assert(received>600);
+ const auto& timing=CanMasterManager::diagnostics().measurementTiming;
+ std::fprintf(stderr,"drain budget: slots=%lu duplicates=%lu deferred=%lu,%lu lost_fragment=%u\n",
+  (unsigned long)timing.slots,(unsigned long)CanMasterManager::diagnostics().measurementDuplicates,
+  (unsigned long)timing.deferrals[0],(unsigned long)timing.deferrals[1],droppedDataFragments);
+ assert(timing.slots>600 && timing.elapsedUs>=1000000);
+ assert(timing.polls[0] && timing.polls[1] && timing.fragments[0] && timing.fragments[1]);
+ assert(timing.failedSlots==initialFailedSlots);
+ assert(droppedDataFragments==unsigned(loseFragment));
+ // Finish every retained record, then prove idle probes return to 50Hz/class.
+ for(unsigned ms=0;ms<300;++ms) {
+  ++clockMs;for(unsigned turn=0;turn<turns;++turn) drainTurn(ms*turns+turn);
+ }
+ assert(received==produced && !master.ingress[0].count && !master.receptions[0].object.complete);
+ const uint32_t idlePolls[2]={timing.polls[0],timing.polls[1]};
+ for(unsigned ms=0;ms<200;++ms) {
+  ++clockMs;for(unsigned turn=0;turn<turns;++turn) drainTurn(ms*turns+turn);
+ }
+ for(unsigned cls=0;cls<2;++cls) assert(timing.polls[cls]-idlePolls[cls]<=11);
+ fixedMeasurementClock=false;
+ delayStatusResponses=false;delayedResponseDepth=8;delayedSpiSlots.clear();
+}
 int main() {
+ mixedReceptionDrain(8);
+ mixedReceptionDrain(4);
+ mixedReceptionDrain(4,true);
+ mixedReceptionDrain(4,false,4);
+ mixedReceptionDrain(4,true,4);
+ mixedReceptionDrain(4,false,4,2);
+ mixedReceptionDrain(4,true,4,2);
+ mixedReceptionDrain(4,true,4,2,25); // Lost final fragment of a maximum-sized batch.
  reset();
  assert(CanMasterManager::inspectMeasurementMode());
  assert(CanMasterManager::diagnostics().measurement.phase==0);
  assert(!CanMasterManager::measurementReady());
  assert(CanMasterManager::enterMeasurementMode(123,456));
  assert(CanMasterManager::measurementReady());
+ assert(CanMasterManager::diagnostics().measurementTiming.slots<10); // New context resets old counts.
  assert(master.measurement.mode.phase==2 && master.measurement.mode.context==456);
  assert(CanMasterManager::inspectMeasurementMode());
  assert(CanMasterManager::measurementReady());
+ // A fenced master may reply after the inspector's four-slot call budget.
+ // Repeated calls must eventually accept that fresh correlated observation.
+ assert(master.measurement.quiescent && master.measurement.fenced);
+ delayStatusResponses=true;
+ assert(!CanMasterManager::inspectMeasurementMode()); // Preloaded status is not fresh proof.
+ clockMs+=301;
+ assert(!CanMasterManager::inspectMeasurementMode()); // Expired token must be replaced.
+ bool inspected=false;
+ for(unsigned attempt=0;attempt<8 && !inspected;++attempt)
+  inspected=CanMasterManager::inspectMeasurementMode();
+ assert(inspected && CanMasterManager::measurementReady());
+ delayStatusResponses=false;delayedSpiSlots.clear();
  BodaqsControlWrapped observed={};
  assert(CanMasterManager::queryMeasurementNodeState(0,node.view.boot_id,77,observed));
  assert(observed.record.opcode==BODAQS_CONTROL_GET_NODE_STATE && observed.record.data_length==24);
@@ -216,8 +346,14 @@ int main() {
  // data. A short same-boot outage preserves the immutable caller bank.
  loseMeasurementReplies=true;
  CanMasterManager::MeasurementInbox* resumed=nullptr;
+ transport.inboxes[0][0].requestedFragments=0x3ffffff;
+ transport.inboxes[1][3].requestedFragments=0x3ffffff;
+ const uint32_t retainedMask=transport.inboxes[1][3].state.mask;
  assert(CanMasterManager::serviceMeasurementTransport(transport,1,0,resumed)==0);
  clockMs+=40;loseMeasurementReplies=false;
+ assert(CanMasterManager::serviceMeasurementTransport(transport,1,0,resumed)>=0);
+ assert(!transport.inboxes[0][0].requestedFragments && !transport.inboxes[1][3].requestedFragments);
+ assert(transport.inboxes[1][3].state.mask==retainedMask);
  for(unsigned i=0;i<6;++i)
   assert(CanMasterManager::serviceMeasurementTransport(transport,1,0,resumed)>=0);
  assert(!transport.recovering && !transport.failed);

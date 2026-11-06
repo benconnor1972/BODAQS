@@ -30,6 +30,7 @@ static struct {
     uint16_t model_denominator;
     uint32_t recovery_capture;
     bool gap, recovered, evidence_gap;
+    uint32_t slot_timestamp;
 } a;
 /* FIFO drains decode up to 32 slots in one turn. Keep CAN backpressure out of
  * that deadline: immutable frames retain evidence/data order until hardware
@@ -305,11 +306,14 @@ static bool word(const uint8_t *w, uint32_t now) {
     if (sensor == 2) {
         memcpy(a.axes, w + 1, 6);
     }
+    if (sensor == 4) {
+        a.slot_timestamp = bodaqs_control_get_u32(w + 1);
+    }
     if (a.mask != 7)
         return true;
-    uint32_t ts = bodaqs_control_get_u32(w + 1);
-    if (sensor != 4)
-        return false; /* timestamp closes the validated slot */
+    /* Tags and TAG_CNT identify a complete slot; timestamp need not be last.
+     * Retain its value until both axis words from that same counter arrive. */
+    uint32_t ts = a.slot_timestamp;
     if (!bodaqs_node_capture_take(&a.capture))
         return false;
     uint32_t tick = a.capture.tick;
@@ -670,6 +674,8 @@ void bodaqs_node_acquisition_backend(void *context, uint8_t command, uint32_t ge
         a.recovered=a.gap=a.evidence_gap=false; a.loss_count=a.loss_evidence=0;
         bodaqs_node_capture_discard();
     } else if (command == BODAQS_ACQ_START) {
+        bodaqs_node_capture_sync_discard();
+        a.sync_present=false;
         a.start_tick = clock_tick();
         a.phase = STARTING;
     } else if (command == BODAQS_ACQ_STOP) {

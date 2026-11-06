@@ -2,6 +2,7 @@
 #include "ti_msp_dl_config.h"
 #include <assert.h>
 uint32_t raw, count, cc[4];
+uint32_t test_irq_mask,test_last_clear_irq_mask;
 int main(void) {
     BodaqsNodeCapture c;
     uint32_t e;
@@ -78,5 +79,26 @@ int main(void) {
     for(unsigned i=0;i<10;++i) {raw=8;count=i;cc[3]=i;bodaqs_node_capture_irq();}
     assert(bodaqs_node_capture_sync_loss_take()==3 && bodaqs_node_capture_sync_loss_take()==0);
     assert(!bodaqs_node_capture_fault() && bodaqs_node_capture_clock_trusted());
+    bodaqs_node_capture_init();
+    for(unsigned i=0;i<243;++i) {raw=8;count=i;cc[3]=i;bodaqs_node_capture_irq();}
+    raw=4;count=300;cc[2]=300;bodaqs_node_capture_irq();
+    raw=12;count=303;cc[2]=302;cc[3]=301; /* Pending DRDY and stale SYNC. */
+    const uint32_t before=bodaqs_node_capture_clock(0,&e);
+    bodaqs_node_capture_sync_discard();
+    assert(test_last_clear_irq_mask==1 && test_irq_mask==0);
+    assert(raw==4 && bodaqs_node_capture_clock(0,&e)==before && e==1);
+    assert(!bodaqs_node_capture_sync_observation(&c) && !bodaqs_node_capture_sync_take(&c));
+    assert(bodaqs_node_capture_sync_loss_take()==0);
+    assert(bodaqs_node_capture_take(&c) && c.tick==300 && c.ordinal==1);
+    bodaqs_node_capture_irq();
+    assert(bodaqs_node_capture_take(&c) && c.tick==302 && c.ordinal==2);
+    raw=8;count=304;cc[3]=304;bodaqs_node_capture_irq();
+    assert(bodaqs_node_capture_sync_observation(&c) && c.tick==304 && c.ordinal==244);
+    for(unsigned i=0;i<10;++i) {raw=8;count=310+i;cc[3]=count;bodaqs_node_capture_irq();}
+    assert(bodaqs_node_capture_sync_loss_take()==3); /* Live losses still counted. */
+    bodaqs_node_capture_supervise(100);assert(!bodaqs_node_capture_clock_trusted());
+    bodaqs_node_capture_sync_discard();assert(!bodaqs_node_capture_clock_trusted());
+    test_irq_mask=1;bodaqs_node_capture_sync_discard();
+    assert(test_irq_mask==1 && test_last_clear_irq_mask==1);test_irq_mask=0;
     return 0;
 }

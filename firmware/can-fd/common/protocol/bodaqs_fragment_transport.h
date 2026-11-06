@@ -17,13 +17,12 @@ static inline uint8_t bodaqs_fragment_class(uint8_t kind) {
     switch(kind) { case 2:return 1; case 3:return 2; case 4:return 3; case 12:return 4; case 13:return 5; default:return 0; }
 }
 static inline uint32_t bodaqs_fragment_checksum(const BodaqsFragmentState *s,const uint8_t *data) {
-    uint8_t prefix[20]={0}; uint32_t c=0xffffffffU; unsigned i,b;
+    uint8_t prefix[20]={0}; uint32_t c=0xffffffffU; unsigned i;
     bodaqs_measurement_put(prefix,s->context,8); bodaqs_measurement_put(prefix+8,s->object,4);
     prefix[12]=s->node; prefix[13]=s->cls; prefix[14]=s->direction;
     bodaqs_measurement_put(prefix+16,s->total,2);
     for(i=0;i<(unsigned)(20+s->total-4);++i) {
-        c^=i<20?prefix[i]:data[i-20];
-        for(b=0;b<8;++b) c=(c>>1)^(0xedb88320U & (0U-(c&1U)));
+        c=bodaqs_measurement_crc_step(c,i<20?prefix[i]:data[i-20]);
     }
     return ~c;
 }

@@ -20,6 +20,9 @@ bool bodaqs_node_capture_seed_end(void);
 bool bodaqs_node_capture_sync_take(BodaqsNodeCapture *);
 uint32_t bodaqs_node_capture_sync_loss_take(void);
 bool bodaqs_node_capture_sync_observation(BodaqsNodeCapture *);
+/* START boundary for SYNC observations/loss only. Preserve clocks, ordinals,
+ * DRDY captures and faults; subsequent observation loss remains accountable. */
+void bodaqs_node_capture_sync_discard(void);
 void bodaqs_node_sync_marker(uint32_t sequence,uint32_t master_tick);
 bool bodaqs_node_sync_latest(uint32_t *sequence,uint32_t *node_tick);
 bool bodaqs_node_watermark_take(void);

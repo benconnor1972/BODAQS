@@ -9,6 +9,7 @@
 #include <string.h>
 struct TestSpi test_spi;
 uint32_t raw, count, cc[4];
+uint32_t test_irq_mask,test_last_clear_irq_mask;
 static uintptr_t src[2], dst[2];
 static uint32_t sizes[2];
 static bool enabled[2], cs, busy, irq;
@@ -19,11 +20,20 @@ static unsigned used;
 static uint32_t sim_tick, next_slot, slots, frames, samples, first_tick;
 static uint8_t saved_sample[64];
 static unsigned fault_mode;
+static unsigned fifo_order;
+/* First two FIFO slots captured from the failing node, byte-for-byte. */
+static const uint8_t captured_timestamp_first[] = {
+    0x21,0x0a,0x00,0x00,0x00,0x00,0x99, 0x09,0x1d,0x00,0xff,0xff,0xec,0xff,
+    0x11,0x72,0xff,0x4a,0x03,0x94,0xfd, 0x22,0x16,0x00,0x00,0x00,0x00,0x99,
+    0x0a,0x15,0x00,0x0c,0x00,0x16,0x00, 0x12,0x74,0xff,0x43,0x03,0x95,0xfd
+};
 static bool fifo_drained;
 static FILE *wire;
 static uint32_t next_tx_tick, tx_blocked_until;
 static bool seen_boundary, seen_model, seen_anchor, seen_snapshot;
 static unsigned recovery_events, raw_sync_events;
+static bool sync_scope_checks;
+static uint32_t sync_scope_start;
 static uint32_t reported_loss, previous_end;
 static unsigned detected_loss;
 static bool gap_seen, silence_after_overrun;
@@ -37,7 +47,10 @@ static bool sent(uint16_t id, const uint8_t *p, size_t n) {
             assert(n==24 && bodaqs_control_get_u32(p+8)==0 && p[20]==0 && p[21]==0);
             assert(bodaqs_control_get_u32(p+12)>0 && bodaqs_control_get_u32(p+16)==17);
             ++raw_sync_events;
+            if(sync_scope_checks) assert(bodaqs_control_get_u32(p+12)>=sync_scope_start);
         }
+        if(sync_scope_checks && p[1]==0x23 && (p[59]&32))
+            assert(bodaqs_control_get_u32(p+48)>=sync_scope_start);
         if(p[1]==0x25 && p[14]==3 && p[15]==4) reported_loss+=bodaqs_control_get_u32(p+40);
         if (p[1] == 0x25 && p[14] == 5) {
             assert(p[13] > 1 && !(p[54] & 0x1c)); /* unknown loss counts */
@@ -124,8 +137,18 @@ static void advance(uint32_t target) {
             fifo[used + 7] = 0x38 | c;
         fifo[used + 14] = 0x20 | c;
         bodaqs_control_put_u32(fifo + used + 15,
+                               fifo_order ? 10U+(slots-1)*12U :
                                0xfffffff0U + t / 25 + (fault_mode == 3 ? 100 : 0));
         fifo[used + 19] = fifo[used + 20] = 0;
+        if(fifo_order) {
+            uint8_t timestamp[7];memcpy(timestamp,fifo+used+14,7);
+            if(fifo_order==1) {
+                memmove(fifo+used+7,fifo+used,14);memcpy(fifo+used,timestamp,7);
+                if(slots<=2) memcpy(fifo+used,captured_timestamp_first+21*(slots-1),21);
+            } else {
+                memcpy(fifo+used+14,fifo+used+7,7);memcpy(fifo+used+7,timestamp,7);
+            }
+        }
         used += 21;
         next_slot += 300;
     }
@@ -265,6 +288,7 @@ static void completed_recording_turnovers(unsigned recordings) {
             }
             assert(done);
             memset(&e, 0, sizeof e);
+            if(sync_scope_checks) sync_scope_start=sim_tick;
             bodaqs_node_acquisition_backend(0, BODAQS_ACQ_START, 6, recording+1, sim_tick/1000, &e);
             done = false; deadline = sim_tick + 20000;
             while (sim_tick < deadline) {
@@ -278,6 +302,8 @@ static void completed_recording_turnovers(unsigned recordings) {
 }
 int main(int argc, char **argv) {
     unsigned selected_fault = argc > 1 ? (unsigned)strtoul(argv[1], 0, 10) : 1;
+    sync_scope_checks=selected_fault==16;
+    fifo_order=selected_fault==14?1:selected_fault==15?2:0;
     const char *out = getenv("BODAQS_NODE_FIXTURE_OUT");
     if (out) {
         wire = fopen(out, "w");
@@ -313,7 +339,15 @@ int main(int argc, char **argv) {
     }
     assert(ready && samples == 0);
     uint32_t start = sim_tick;
+    if(selected_fault==16) {
+        /* Captures accumulated while IDLE/PREPARED must not burst into the
+         * next recording or charge its loss ledger (7 retained, 236 lost). */
+        uint32_t saved_count=count;
+        for(unsigned i=0;i<243;++i) {raw=8;count=100+i;cc[3]=count;bodaqs_node_capture_irq();}
+        count=saved_count;raw=0;
+    }
     tx_blocked_until = start + 6000;
+    if(sync_scope_checks) sync_scope_start=start;
     memset(&e, 0, sizeof(e));
     bodaqs_node_acquisition_backend(0, BODAQS_ACQ_START, 2, 1, sim_tick / 1000, &e);
     for (uint32_t us = sim_tick + 100; us < start + 20000; us += 100) {
@@ -332,6 +366,11 @@ int main(int argc, char **argv) {
     }
     assert(raw_sync_events==1);
     assert(first && samples >= 5 && saved_sample[4] == 0 && saved_sample[5] == 0x80 && frames > 4);
+    if(fifo_order || selected_fault==16) {
+        completed_recording_turnovers(2);
+        puts(selected_fault==16?"START-scoped sync capture: idle backlog discarded, fresh capture retained, turnover passed":"nonfinal timestamp FIFO ordering: PREPARE/START/samples/STOP/FENCE passed");
+        return 0;
+    }
     if (selected_fault == 13) {
         completed_recording_turnovers(260);
         return 0;

@@ -358,6 +358,11 @@ void service() {
     servicing=false;return;
   }
   if(enter && !CanMasterManager::enterMeasurementMode(recordingId,contextId)) {
+    // Entry can fail after the master changed mode but before confirmation.
+    // No trustworthy transport exists for PREPARE or normal Fence commands.
+    // Route the eventual fence through explicit unavailable-context cleanup;
+    // retain ownership until it verifies node and master retirement/release.
+    transport.failed=true;
     for(uint8_t n=0;n<4;++n) publish(n,Result::Unavailable,26);
   }
   if(exit) {
@@ -381,7 +386,8 @@ void service() {
     if(have) beginRequest(n,intent);
     for(Exchange* x:{&p.ordinary,&p.protectedLane}) {
       const uint32_t deadline=x==&p.protectedLane?300:3500;
-      if(x->pending && static_cast<uint32_t>(now-x->started)>=deadline) {
+      // A request may have been queued after the service-level 'now' snapshot.
+      if(x->pending && static_cast<uint32_t>(millis()-x->started)>=deadline) {
         x->pending=false;if(x==&p.protectedLane) p.leased=false;
         if(x==&p.protectedLane) {exclude(n,26);continue;}
         if(x==&p.ordinary && p.observing) {p.observing=false;p.phase=Phase::Idle;continue;}
@@ -424,7 +430,9 @@ void service() {
     beginRequest(peer,observation,true);break;
   }
   MeasurementInbox* inbox=nullptr;
-  uint8_t n=cursor%4,cls=(cursor/4)%2?3:4;
+  // Repeat each idle control selection before rotating, so alternating lost
+  // SPI requests cannot permanently skip a node's only response poll.
+  uint8_t n=(cursor/2)%4,cls=(cursor/8)%2?3:4;
   bool urgent=false;
   uint32_t oldest=0;
   for(uint8_t candidate=0;candidate<4;++candidate) {
@@ -439,7 +447,7 @@ void service() {
       n=dataCursor++%4;if(dataMask&(1u<<n)) break;
     }
     cls=(serviceCursor%4)==1?2:1;
-  } else if(!urgent) cursor=(cursor+1)%8;
+  } else if(!urgent) cursor=(cursor+1)%16;
   transport.timingEnabled=dataConsumer && dataMask;
   if(!urgent && transport.timingEnabled && (serviceCursor%20)==0) {cls=5;n=255;}
   const int result=CanMasterManager::serviceMeasurementTransport(transport,cls,n,inbox);

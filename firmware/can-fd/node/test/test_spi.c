@@ -4,6 +4,7 @@
 #include <string.h>
 struct TestSpi test_spi;
 uint32_t raw, count, cc[4];
+uint32_t test_irq_mask,test_last_clear_irq_mask;
 static uintptr_t src[2], dst[2];
 static uint32_t sizes[2];
 static bool enabled[2], cs, busy, irq;

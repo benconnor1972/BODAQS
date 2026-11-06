@@ -81,6 +81,38 @@ typedef struct {
     bool rear_power_fault;
 } MasterRuntimeInfo;
 
+/* Active drain diagnostic state. */
+/* Main-loop writer only; debugger observation, never protocol/authority state.
+ * Scope begins when START is admitted to the CAN control exchange, not when
+ * the node physically starts. Freeze after the first observed retention loss
+ * (including sample-only loss), STOP admission or identity change. */
+typedef struct {
+    uint32_t version, state, finish_reason; /* 0 idle, 1 active, 2 frozen; reasons 1 loss, 2 STOP, 3 identity */
+    uint64_t context, recording;
+    uint32_t started_tick, elapsed_us, clock_epoch, timing_invalid;
+    uint32_t nodes_seen;
+    uint32_t spi_dropped_base, can_dropped_base, can_hardware_base, retained_base;
+    uint32_t spi_dropped, can_dropped, can_hardware_losses, retained_frames;
+    uint32_t polls[5], acks[5], fragments[5], empty_replies, malformed_slots;
+    uint32_t ingress_dropped_base[4], ingress_dropped[4];
+    uint16_t ingress_depth[4], ingress_sampled_high_water[4], can_queue_sampled_high_water;
+    /* Lanes: update_service_status, process_transfer, CAN work from its first
+     * copied loss/record through bounded drain completion (excludes first pop).
+     * Histograms: <=50, <=100, <=250, <=1000, >1000 us; IRQ time included. */
+    uint32_t calls[3], max_us[3], histogram[3][5];
+    uint64_t total_us[3];
+    /* Version 2: prepared replies, NOT physical MISO delivery or logger receipt.
+     * Data lanes: sample, evidence. Batch sizes count CAN records, not samples.
+     * Batch histogram index is the record count (1..13; index 0 is unused). */
+    uint32_t data_objects[2], data_records[2], data_unique_fragments[2], data_repeat_fragments[2];
+    uint32_t data_acked_objects[2], data_acked_records[2], data_head_polls[2], data_empty_polls[2];
+    uint32_t data_batch_records[2][14];
+    /* Main-owned bookkeeping, reset with the START scope. */
+    uint32_t data_last_object[2][4], data_fragment_mask[2][4];
+} MasterDrainInfo;
+volatile MasterDrainInfo gMasterDrainInfo;
+/* End drain diagnostic state. */
+
 /* Snapshot at most the configured hardware FIFO depth per interrupt. */
 #define CAN_RX_CAPACITY (8U)
 typedef struct {
@@ -144,6 +176,74 @@ static volatile uint32_t gCanRecoveryDueMs;
 static bool gCanWasBusOff;
 static bool gCanLinkReady;
 static bool gLoggerCommunicationEstablished;
+
+static uint32_t drain_clock(void)
+{
+    uint32_t epoch;
+    uint32_t tick=bodaqs_master_timing_clock(NULL,&epoch);
+    if(gMasterDrainInfo.state==1 && (!epoch || epoch!=gMasterDrainInfo.clock_epoch))
+        gMasterDrainInfo.timing_invalid=1;
+    return tick;
+}
+
+static void drain_cost(unsigned lane,uint32_t started)
+{
+    uint32_t duration;
+    unsigned bucket;
+    if(gMasterDrainInfo.state!=1) return;
+    duration=drain_clock()-started;
+    bucket=duration<=50?0:duration<=100?1:duration<=250?2:duration<=1000?3:4;
+    ++gMasterDrainInfo.calls[lane];
+    gMasterDrainInfo.total_us[lane]+=duration;
+    if(duration>gMasterDrainInfo.max_us[lane]) gMasterDrainInfo.max_us[lane]=duration;
+    ++gMasterDrainInfo.histogram[lane][bucket];
+}
+
+static void drain_check(void)
+{
+    unsigned node;
+    uint32_t reason=0,epoch;
+    const uint64_t context=gService.measurement.mode.context;
+    const uint64_t recording=gService.measurement.mode.recording;
+    if(gMasterDrainInfo.state==1 &&
+       (gMasterDrainInfo.context!=context || gMasterDrainInfo.recording!=recording)) {
+        /* New-context counters may have reset: never subtract old baselines. */
+        gMasterDrainInfo.finish_reason=3;__DMB();gMasterDrainInfo.state=2;return;
+    }
+    if(gMasterDrainInfo.state!=1) {
+        if(!gService.acquisition_started || (gMasterDrainInfo.state==2 &&
+           gMasterDrainInfo.context==context && gMasterDrainInfo.recording==recording)) return;
+        memset((void *)&gMasterDrainInfo,0,sizeof gMasterDrainInfo);
+        gMasterDrainInfo.version=2;
+        gMasterDrainInfo.context=context;gMasterDrainInfo.recording=recording;
+        gMasterDrainInfo.started_tick=bodaqs_master_timing_clock(NULL,&epoch);
+        gMasterDrainInfo.clock_epoch=epoch;
+        gMasterDrainInfo.timing_invalid=!gMasterDrainInfo.clock_epoch;
+        gMasterDrainInfo.spi_dropped_base=gSpiReceiveQueue.dropped;
+        gMasterDrainInfo.can_dropped_base=gCanReceiveQueue.dropped;
+        gMasterDrainInfo.can_hardware_base=gMasterRuntimeInfo.can_rx_hardware_losses;
+        gMasterDrainInfo.retained_base=gService.retained_frames;
+        for(node=0;node<4;++node) gMasterDrainInfo.ingress_dropped_base[node]=gService.ingress[node].dropped;
+        gMasterDrainInfo.state=1;
+    }
+    gMasterDrainInfo.elapsed_us=drain_clock()-gMasterDrainInfo.started_tick;
+    gMasterDrainInfo.nodes_seen|=gService.acquisition_started;
+    gMasterDrainInfo.spi_dropped=gSpiReceiveQueue.dropped-gMasterDrainInfo.spi_dropped_base;
+    gMasterDrainInfo.can_dropped=gCanReceiveQueue.dropped-gMasterDrainInfo.can_dropped_base;
+    gMasterDrainInfo.can_hardware_losses=gMasterRuntimeInfo.can_rx_hardware_losses-gMasterDrainInfo.can_hardware_base;
+    gMasterDrainInfo.retained_frames=gService.retained_frames-gMasterDrainInfo.retained_base;
+    if(gCanReceiveQueue.depth>gMasterDrainInfo.can_queue_sampled_high_water)
+        gMasterDrainInfo.can_queue_sampled_high_water=gCanReceiveQueue.depth;
+    for(node=0;node<4;++node) {
+        gMasterDrainInfo.ingress_depth[node]=gService.ingress[node].count;
+        if(gService.ingress[node].count>gMasterDrainInfo.ingress_sampled_high_water[node])
+            gMasterDrainInfo.ingress_sampled_high_water[node]=gService.ingress[node].count;
+        gMasterDrainInfo.ingress_dropped[node]=gService.ingress[node].dropped-gMasterDrainInfo.ingress_dropped_base[node];
+        if(gMasterDrainInfo.ingress_dropped[node]) reason=1;
+    }
+    if(!reason && !gService.acquisition_started) reason=2;
+    if(reason) {gMasterDrainInfo.finish_reason=reason;__DMB();gMasterDrainInfo.state=2;}
+}
 
 static const uint32_t gCanErrorInterruptMask =
     DL_MCAN_INTERRUPT_ARA |
@@ -341,22 +441,37 @@ static void capture_can_receive_fifo(void)
     }
 }
 
-/* One record per turn leaves time for SPI, announcements and recovery. */
+/* Retire a bounded CAN batch before the next main-loop turn. A single pop
+ * leaves a nearly full capture queue vulnerable to the next metadata burst.
+ * The fixed budget still returns to SPI/control if an ISR refills the queue. */
 static void service_can_receive(void)
 {
     CanReceiveRecord record;
     unsigned node;
+    unsigned remaining = CAN_RX_CAPACITY;
+    bool timed=false;
+    uint32_t started=0;
+    bool losses=false;
+    if(gMasterDrainInfo.state==1 && gCanReceiveQueue.depth>gMasterDrainInfo.can_queue_sampled_high_water)
+        gMasterDrainInfo.can_queue_sampled_high_water=gCanReceiveQueue.depth;
     for(node=0;node<4;++node) {
         RejectedCan lost;
         uint32_t primask=__get_PRIMASK();
         __disable_irq();lost=gRejectedCan[node];memset(&gRejectedCan[node],0,sizeof lost);__set_PRIMASK(primask);
-        if(lost.source || lost.evidence || lost.essential)
+        if(lost.source || lost.evidence || lost.essential) {
+            losses=true;
+            if(!timed && gMasterDrainInfo.state==1) {started=drain_clock();timed=true;}
             bodaqs_master_service_loss_counts(&gService,(uint8_t)node,5,lost.epoch,
                 lost.first,lost.last,lost.source,lost.evidence,lost.essential,lost.tick,lost.ordinal);
+        }
     }
-    if (take_record(&gCanReceiveQueue, &record)) {
+    while (remaining-- != 0U && take_record(&gCanReceiveQueue, &record)) {
+        /* An ISR can enqueue after an initially empty depth observation. */
+        if(!timed && gMasterDrainInfo.state==1) {started=drain_clock();timed=true;}
         process_can_message(&record.message, record.received_ms, record.received_tick, record.ordinal, record.received_flags);
     }
+    if(timed) drain_cost(2,started);
+    if(timed || losses) drain_check();
 }
 
 static bool send_can_frame(
@@ -582,6 +697,11 @@ static void update_service_status(void)
         status.spi_tx_queue_high_water=status.spi_tx_queue_depth;
     bodaqs_master_service_set_status(&gService, &status);
 
+    /* Inventory is main-owned; accepted observations and stale/duplicate/boot
+     * changes advance its generation. Keep live status above fresh, but avoid
+     * recopying all four unchanged records on every measurement poll/ACK. */
+    if (gService.discovery_generation == gNodeInventory.generation) return;
+
     do {
         generation = gNodeInventory.generation;
         for (node = 0U; node < BODAQS_CAN_NODE_COUNT; ++node) {
@@ -798,6 +918,46 @@ void MCAN0_INST_IRQHandler(void)
     }
 }
 
+/* Observe only main-owned request/reply state before publication. */
+static void drain_transfer(const uint8_t *request,size_t length,const uint8_t *reply,
+    uint32_t acked_before,uint16_t ack_records)
+{
+    uint8_t cls,node,index;
+    uint32_t object,bit;
+    if(gMasterDrainInfo.state!=1 || length!=64) return;
+    /* Caller has completed protocol validation; never repeat a wire CRC here.
+     * Both byte arrays are still owned by main, before response publication. */
+    cls=request[20];
+    if(cls>=1 && cls<=2) {
+        if(request[3]==1) {
+            if(!bodaqs_measurement_get(request+12,4)) ++gMasterDrainInfo.data_head_polls[cls-1];
+            if(!reply[3]) ++gMasterDrainInfo.data_empty_polls[cls-1];
+        } else if(request[3]==5 && gService.objects_acked!=acked_before) {
+            ++gMasterDrainInfo.data_acked_objects[cls-1];
+            gMasterDrainInfo.data_acked_records[cls-1]+=ack_records;
+        }
+    }
+    cls=bodaqs_fragment_class(reply[3]);node=reply[16];index=reply[17];
+    if(cls<1 || cls>2 || node>3 || index>=26) return;
+    --cls;
+    object=(uint32_t)bodaqs_measurement_get(reply+12,4);
+    if(gMasterDrainInfo.data_last_object[cls][node]!=object) {
+        const uint16_t records=gService.receptions[node].count;
+        gMasterDrainInfo.data_last_object[cls][node]=object;
+        gMasterDrainInfo.data_fragment_mask[cls][node]=0;
+        ++gMasterDrainInfo.data_objects[cls];
+        gMasterDrainInfo.data_records[cls]+=records;
+        if(records>=1 && records<=13) ++gMasterDrainInfo.data_batch_records[cls][records];
+    }
+    bit=1UL<<index;
+    if(gMasterDrainInfo.data_fragment_mask[cls][node]&bit)
+        ++gMasterDrainInfo.data_repeat_fragments[cls];
+    else {
+        gMasterDrainInfo.data_fragment_mask[cls][node]|=bit;
+        ++gMasterDrainInfo.data_unique_fragments[cls];
+    }
+}
+
 /* Called only for a DMA-owned buffer or by its main-loop writer before
  * publication. Control replies are retained. */
 static void retire_measurement_slot(uint8_t *bytes,uint64_t context)
@@ -846,9 +1006,14 @@ static void retire_spi_boundary(void)
     gSpiRetiring = true;
     __set_PRIMASK(primask);
     remaining = DL_DMA_getTransferSize(DMA, DMA_SPI_RX_CHAN_ID);
+    /* In peripheral mode CS high ends the physical transaction. STAT.BUSY
+     * also includes unsent TX FIFO bytes: a 64-byte measurement slot leaves
+     * prefetched bytes from the 84-byte DMA capacity, so waiting for !BUSY
+     * would prevent the reset below from ever retiring that short slot. */
     if (remaining == BODAQS_MASTER_SLOT_BYTES ||
-        DL_GPIO_readPins(GPIO_SPI_A8_CS_PORT, GPIO_SPI_A8_CS_PIN) == 0U ||
-        DL_SPI_isBusy(SPI_A8_INST)) { gSpiRetiring=false; return; }
+        DL_GPIO_readPins(GPIO_SPI_A8_CS_PORT, GPIO_SPI_A8_CS_PIN) == 0U) {
+        gSpiRetiring=false; return;
+    }
     DL_DMA_disableChannel(DMA, DMA_SPI_RX_CHAN_ID);
     DL_DMA_disableChannel(DMA, DMA_SPI_TX_CHAN_ID);
     /* Snapshot the owner-published identity, never partially updated service
@@ -900,6 +1065,11 @@ static void service_spi_receive(void)
     uint16_t length;
     uint8_t next_index;
     uint32_t primask;
+    uint32_t started;
+    uint8_t reply_kind=0;
+    uint32_t acked_before;
+    uint16_t ack_records=0;
+    BodaqsMasterSlotResult result;
     if (gSpiTransmitReady) return;
     primask=__get_PRIMASK();
     __disable_irq();
@@ -909,16 +1079,42 @@ static void service_spi_receive(void)
     }
     __set_PRIMASK(primask);
     next_index=gTransmitIndex^1U;
+    drain_check();
+    started=gMasterDrainInfo.state==1?drain_clock():0;
     update_service_status();
-    if (bodaqs_master_service_process_transfer(&gService,received,length,
-        gUptimeMs,gTransmitSlots[next_index])==BODAQS_MASTER_SLOT_PROCESSED) {
+    drain_cost(0,started);
+    started=gMasterDrainInfo.state==1?drain_clock():0;
+    acked_before=gService.objects_acked;
+    if(length==64 && received[3]==5 && received[16]<4 &&
+       (received[20]==1 || received[20]==2))
+        ack_records=gService.receptions[received[16]].count;
+    result=bodaqs_master_service_process_transfer(&gService,received,length,
+        gUptimeMs,gTransmitSlots[next_index]);
+    if (result==BODAQS_MASTER_SLOT_PROCESSED) {
         if(gService.acquisition_retirement_pending)
             retire_measurement_slot(gTransmitSlots[next_index],gService.measurement.mode.context);
+        reply_kind=gTransmitSlots[next_index][3];
+        drain_transfer(received,length,gTransmitSlots[next_index],acked_before,ack_records);
         __DMB();
         gSpiTransmitReady=true;
     } else {
         ++gMasterRuntimeInfo.spi_recoveries;
     }
+    drain_cost(1,started);
+    /* Count only the already validated slot; do not run another wire CRC. */
+    if(gMasterDrainInfo.state==1) {
+        if(result!=BODAQS_MASTER_SLOT_PROCESSED) ++gMasterDrainInfo.malformed_slots;
+        else if(length==64) {
+            uint8_t cls=bodaqs_fragment_class(reply_kind);
+            if(received[3]==1 && received[20]>=1 && received[20]<=5)
+                ++gMasterDrainInfo.polls[received[20]-1];
+            if(received[3]==5 && received[20]>=1 && received[20]<=5)
+                ++gMasterDrainInfo.acks[received[20]-1];
+            if(cls) ++gMasterDrainInfo.fragments[cls-1];
+            if(!reply_kind) ++gMasterDrainInfo.empty_replies;
+        }
+    }
+    drain_check();
     if (BODAQS_ENABLE_BUCK && BODAQS_ENABLE_FRONT_BRANCH &&
         !gLoggerCommunicationEstablished &&
         ((gService.probes_received != 0U) || (gService.status_requests_received != 0U))) {
@@ -927,7 +1123,8 @@ static void service_spi_receive(void)
     }
 }
 
-void GPIOA_IRQHandler(void)
+/* GPIOA IRQ 1 is dispatched through GROUP1 in the MSPM0G3518 vector table. */
+void GROUP1_IRQHandler(void)
 {
     if (DL_GPIO_getEnabledInterruptStatus(GPIO_SPI_A8_CS_PORT, GPIO_SPI_A8_CS_PIN)) {
         DL_GPIO_clearInterruptStatus(GPIO_SPI_A8_CS_PORT, GPIO_SPI_A8_CS_PIN);

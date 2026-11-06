@@ -71,6 +71,14 @@ int main(int argc,char** argv) {
   // pinned effective snapshot makes the next acquisition snapshot reject BUSY.
   CanMasterManager::beginRecordingHandoff();advance(4000);
   assert(CanMasterManager::recordingHandoffReady());
+  if(argc>1 && !std::strcmp(argv[1],"legacy-rx-overrun")) {
+    alternateRxLoss=true;physicalSlots=1; // First command is lost, fetches continue.
+    bool observed=false;
+    for(unsigned attempt=0;attempt<8 && !observed;++attempt)
+      observed=CanMasterManager::inspectMeasurementMode();
+    assert(observed && CanMasterManager::diagnostics().measurement.phase==0);
+    puts("legacy polling escapes alternating physical RX loss: PASS");return 0;
+  }
   // Fail a real queue/model allocation, before any control owner is entered.
   DynamicSpscQueueDetail::allocationsBeforeFailure=fixtureSensorCount==4?7:2;
   assert(RemoteImuRecording::configure(config));
@@ -89,6 +97,85 @@ int main(int argc,char** argv) {
   for(unsigned n=0;n<fixtureSensorCount;++n) assert(!acquisitions[n].recording && !acquisitions[n].phase);
   assert(!AcquisitionControl::active()); // no PREPARE before storage allocation
   assert(RemoteImuRecording::resourcesReady());
+  if(argc>1 && !std::strcmp(argv[1],"start-clock-boundary")) {
+    recordingSteps(8000);
+    assert(!RemoteImuRecording::failed() && RemoteImuRecording::prepared());
+    RemoteImuRecording::start();RemoteImuRecording::service();
+    // The owner samples now, then the clock advances while START is queued.
+    millisReadsToAdvance=2;AcquisitionControl::service();
+    AcquisitionControl::Outcome outcome;AcquisitionControl::outcome(0,outcome);
+    assert(outcome.action==AcquisitionControl::Action::Start);
+    assert(outcome.result==AcquisitionControl::Result::Pending);
+    recordingSteps(1000);
+    assert(!RemoteImuRecording::failed() && RemoteImuRecording::recording());
+    RemoteImuRecording::stop();
+    for(unsigned i=0;i<30000 && !RemoteImuRecording::stopped();++i) recordingSteps(1);
+    assert(RemoteImuRecording::stopped() && !AcquisitionControl::active());
+    puts("START queued across a millisecond boundary does not time out: PASS");return 0;
+  }
+  if(argc>1 && !std::strcmp(argv[1],"lost-control-ack")) {
+    dropOrdinaryControlAck=true;
+    recordingSteps(8000);
+    assert(droppedControlAcks==1);
+    assert(CanMasterManager::diagnostics().measurementTransferErrorMask&(1U<<8));
+    assert(!RemoteImuRecording::failed() && RemoteImuRecording::prepared());
+    RemoteImuRecording::stop();
+    for(unsigned i=0;i<30000 && !RemoteImuRecording::stopped();++i) recordingSteps(1);
+    assert(RemoteImuRecording::stopped() && !AcquisitionControl::active());
+    puts("lost ordinary control RAM ACK: PREPARE and cleanup passed");return 0;
+  }
+  if(argc>1 && !std::strcmp(argv[1],"delayed-cleanup-status")) {
+    recordingSteps(8000);
+    assert(!RemoteImuRecording::failed() && RemoteImuRecording::prepared());
+    loseMeasurementReplies=true;recordingSteps(330);loseMeasurementReplies=false;
+    assert(RemoteImuRecording::failed());
+    RemoteImuRecording::stop();
+    bool observedReleasedFence=false;
+    for(unsigned i=0;i<30000 && !RemoteImuRecording::stopped();++i) {
+      const auto& slot=master.control.slots[0];
+      if(slot.request.opcode==0x29 && slot.state==2 && master.measurement.quiescent && master.measurement.fenced) {
+        observedReleasedFence=true;delayStatusResponses=true;
+      }
+      recordingSteps(1);
+    }
+    assert(observedReleasedFence && RemoteImuRecording::stopped() && !AcquisitionControl::active());
+    assert(master.measurement.mode.phase==0);
+    simulatedStorage.clear();RemoteImuRecording::release();CanMasterManager::endRecordingHandoff();
+    puts("completed RELEASE and physical fence exit despite delayed mode status: PASS");return 0;
+  }
+  if(argc>1 && (!std::strcmp(argv[1],"rx-overrun") || !std::strcmp(argv[1],"rx-overrun-odd"))) {
+    // The second phase targets measurement polling, after legacy mode entry.
+    // Entry loss/failure has its own cleanup regressions below.
+    if(!std::strcmp(argv[1],"rx-overrun-odd")) {
+      AcquisitionControl::service();assert(CanMasterManager::measurementReady());
+    }
+    alternateRxLoss=true;physicalSlots=!std::strcmp(argv[1],"rx-overrun-odd")?1:0;
+    recordingSteps(8000);
+    assert(!RemoteImuRecording::failed() && RemoteImuRecording::prepared());
+    RemoteImuRecording::stop();
+    for(unsigned i=0;i<30000 && !RemoteImuRecording::stopped();++i) recordingSteps(1);
+    assert(RemoteImuRecording::stopped() && !AcquisitionControl::active());
+    simulatedStorage.clear();RemoteImuRecording::release();CanMasterManager::endRecordingHandoff();
+    puts("alternating physical RX loss: PREPARE and verified cleanup passed");return 0;
+  }
+  const bool entryOffline=argc>1 && !std::strcmp(argv[1],"entry-offline");
+  if(entryOffline || (argc>1 && !std::strcmp(argv[1],"entry-timeout"))) {
+    // The master may have accepted the mode change while every confirming
+    // reply was lost. No PREPARE has run, and no remote lease exists.
+    loseMeasurementReplies=!entryOffline;spiAvailable=!entryOffline;
+    recordingSteps(1300);
+    loseMeasurementReplies=false;spiAvailable=true;
+    assert(RemoteImuRecording::failed());
+    assert(CanMasterManager::diagnostics().measurementUnavailable);
+    assert(!acquisitions[0].recording && !acquisitions[0].lease_valid);
+    RemoteImuRecording::stop();
+    for(unsigned i=0;i<30000 && !RemoteImuRecording::stopped();++i) recordingSteps(1);
+    assert(RemoteImuRecording::stopped() && !AcquisitionControl::active());
+    assert(!master.measurement.mode.phase);
+    simulatedStorage.clear();RemoteImuRecording::release();CanMasterManager::endRecordingHandoff();
+    puts("failed measurement entry reaches verified cleanup without a remote lease: PASS");
+    return 0;
+  }
   recordingSteps(8000);
   if(RemoteImuRecording::failed()) {
     AcquisitionControl::Outcome o;AcquisitionControl::outcome(0,o);
@@ -241,6 +328,10 @@ int main(int argc,char** argv) {
   assert(excluded.excluded && !excluded.leaseAcknowledged);
   assert(!CanMasterManager::measurementReady());
   assert(RemoteImuRecording::failed() && recording); // Healthy locals remain running.
+  RemoteImuRecording::Failure originalFailure;
+  assert(RemoteImuRecording::failure(0,originalFailure));
+  assert(originalFailure.result==unsigned(AcquisitionControl::Result::Unavailable));
+  assert(originalFailure.reason==26);
   const uint32_t oldRenewal=acquisitions[0].renewal_sequence;
   recordingSteps(6000);
   assert(acquisitions[0].renewal_sequence==oldRenewal);
@@ -249,6 +340,14 @@ int main(int argc,char** argv) {
   recording=false;
   for(unsigned i=0;i<20000 && !RemoteImuRecording::stopped();++i) recordingSteps(1);
   assert(RemoteImuRecording::stopped() && !AcquisitionControl::active());
+  RemoteImuRecording::Failure retainedFailure;
+  assert(RemoteImuRecording::failure(0,retainedFailure));
+  assert(retainedFailure.observedMs==originalFailure.observedMs &&
+         retainedFailure.action==originalFailure.action &&
+         retainedFailure.reason==originalFailure.reason);
+  assert(originalFailure.timing.slots && originalFailure.timing.failedSlots);
+  assert(retainedFailure.timing.slots==originalFailure.timing.slots &&
+         retainedFailure.timing.exchangeUs==originalFailure.timing.exchangeUs);
   assert(!acquisitions[0].recording && acquisitions[0].fenced);
   simulatedStorage.clear();RemoteImuRecording::release();CanMasterManager::endRecordingHandoff();
   // A configured but unavailable remote sensor must not silently become ready.
