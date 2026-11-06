@@ -40,6 +40,7 @@ void delayMicroseconds(unsigned int us) { std::this_thread::sleep_for(std::chron
 void pinMode(uint8_t, uint8_t) {}
 int analogRead(uint8_t) { return 0; }
 static std::atomic<int> selected{-1};
+static std::atomic<bool> forceReadyPin=false;
 static std::mutex gpioMutex;
 struct Gpio { int level=LOW; void (*isr)(void*)=nullptr; void* arg=nullptr; } gpio[64];
 static std::atomic<unsigned> starts[2], reads[2];
@@ -72,7 +73,7 @@ void digitalWrite(uint8_t pin,uint8_t level) { if (level==LOW) { assert(selected
 #endif
     selected=-1;
   } }
-int digitalRead(uint8_t pin) { std::lock_guard<std::mutex> lock(gpioMutex); return gpio[pin].level; }
+int digitalRead(uint8_t pin) { std::lock_guard<std::mutex> lock(gpioMutex); return forceReadyPin && (pin==18 || pin==36)?LOW:gpio[pin].level; }
 void attachInterruptArg(uint8_t pin,void (*fn)(void*),void* arg,int) { std::lock_guard<std::mutex> lock(gpioMutex); gpio[pin].isr=fn; gpio[pin].arg=arg; }
 void detachInterrupt(uint8_t pin) { std::lock_guard<std::mutex> lock(gpioMutex); gpio[pin].isr=nullptr; }
 SPIClass SPI;
@@ -315,6 +316,44 @@ int main() {
 #if TEST_CASE_RUNNER
   releaseWaiters=true;
   SpiMeasurementProbe::begin(board);Serial.output.clear();
+  // Public runner, deterministic clock boundary: 10 seconds has 5000 midpoints
+  // in [start,end). ADC samples remain synthetic; this checks row scheduling,
+  // not physical ADC performance or freshness qualification.
+  // Hold DRDY low at the GPIO boundary so frozen time cannot strand a real
+  // worker in an unexpired conversion wait during STOP. DRDY evidence tests
+  // above use real notifications and do not enable this scheduler-only fixture.
+  forceReadyPin=true;
+  frozenUs=1000000;
+  SpiMeasurementProbe::command("case 1 adc 128 8000000 1 10000");
+  assert(Serial.output.empty());
+  for(unsigned row=0;row<5000;++row) {
+    frozenUs=1001000+row*2000;SpiMeasurementProbe::loop();
+  }
+  assert(Serial.output.empty());
+  frozenUs=11000000;SpiMeasurementProbe::loop();joinTasks();
+  assert(Serial.output.find("\"rows\":5000,\"missed_rows\":0")!=std::string::npos);
+  puts(Serial.output.c_str());Serial.output.clear();
+  releaseWaiters=true;frozenUs=12000000;
+  SpiMeasurementProbe::command("case 2 adc 128 8000000 1 100");
+  for(unsigned row=0;row<50;++row) {
+    if(row==10)continue; // An actual skipped midpoint must remain a miss.
+    frozenUs=12001000+row*2000;SpiMeasurementProbe::loop();
+  }
+  frozenUs=12100000;SpiMeasurementProbe::loop();joinTasks();
+  assert(Serial.output.find("\"rows\":49,\"missed_rows\":1")!=std::string::npos);
+  puts(Serial.output.c_str());Serial.output.clear();
+  releaseWaiters=true;frozenUs=13000000;
+  SpiMeasurementProbe::command("case 3 adc 128 8000000 1 100");
+  frozenUs=13001000;SpiMeasurementProbe::loop();
+  frozenUs=13004500;SpiMeasurementProbe::command("stop");joinTasks();
+  assert(Serial.output.find("\"rows\":1,\"missed_rows\":1")!=std::string::npos);
+  puts(Serial.output.c_str());Serial.output.clear();
+  releaseWaiters=true;frozenUs=14000000;
+  SpiMeasurementProbe::command("case 4 adc 128 8000000 1 100");
+  frozenUs=14110000;SpiMeasurementProbe::loop();joinTasks();frozenUs=-1;forceReadyPin=false;
+  assert(Serial.output.find("\"rows\":0,\"missed_rows\":50")!=std::string::npos);
+  puts(Serial.output.c_str());Serial.output.clear();releaseWaiters=true;
+  puts("public runner: 5000 midpoint rows without endpoint miss, genuine skip, finite early STOP and late completion passed");
   SpiMeasurementProbe::command("case 5 adc 128 16000000 2 100");
   assert(Serial.output.empty());
   SpiMeasurementProbe::command("case 6 adc 256 16000000 4 100");assert(Serial.output.empty());
@@ -334,6 +373,7 @@ int main() {
   Serial.output.clear();railFault=true;
   SpiMeasurementProbe::command("case 6 mixed 64 8000000 4 100");railFault=false;
   assert(Serial.output.find("analog_rail_fault")!=std::string::npos && Serial.output.find("\"slots\":0")!=std::string::npos);
+  puts(Serial.output.c_str());
   Serial.output.clear();failTask=1;releaseWaiters=true;
   SpiMeasurementProbe::command("case 7 adc 64 8000000 1 100");failTask=-1;joinTasks();
   assert(Serial.output.find("async_start_failed")!=std::string::npos && Serial.output.find("\"workers_stopped\":true")!=std::string::npos);

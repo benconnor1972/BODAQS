@@ -143,6 +143,13 @@ deterministic for the same capture and manifest.
   combinations stay missing. It shows mixed/bulk useful-rate ratios without
   choosing a production winner. Artifact provenance is the paired manifest.
 - ADC modes require `fresh + reused + no_sample = uses = rows` per channel.
+  Rows use the midpoints of consecutive 2 ms intervals: START+1000 us,
+  START+3000 us, through START+9999000 us for a 10 s case. Startup finishes
+  before this grid begins. The observation window is half-open `[start,end)`;
+  no row is scheduled at the end itself. Late loops read at most one row and
+  count skipped midpoints as misses, without catch-up cache reads. STOP counts
+  remaining midpoints strictly before the actual stop; late completion counts
+  only midpoints before the requested end.
   Scheduled `rows + missed_rows` is checked against the nominal duration,
   capped by actual elapsed time for early stops, within one row. Late completion
   does not extend the scheduled window; rates still use actual elapsed time.
@@ -150,6 +157,8 @@ deterministic for the same capture and manifest.
   reused readings, no-sample rows, acquisition failures and wait timeouts; only
   one row of duration quantization is tolerated. A 10 s run targets 5000 rows
   per channel. Freshness comes from conversion identity, not changing values.
+  Zero elapsed time or zero observed rows cannot establish healthy ADC evidence
+  and is reported as failed, including a rail/start fault before acquisition.
   Baseline failures and missing baselines are reported separately.
 - `elapsed_us`, rows and transport cover the timed window. Acquisition counters
   include warm-up/startup/shutdown; dividing `acquire_ok` by `elapsed_us` would
@@ -164,8 +173,14 @@ deterministic for the same capture and manifest.
   Master processing/rearm timing remains unmeasured.
 - Transfer, wire-integrity and object-acceptance errors fail a clean candidate.
   Stale/duplicate pipeline replies remain diagnostics and do not automatically
-  imply a CRC failure. Master engine/adapter pages are boot-cumulative and their
-  modulo-uint32 deltas cover a wider window than useful drain. Missing/unsupported
+  imply a CRC failure. Master engine counters and the first eight adapter fields
+  are boot-cumulative; their modulo-uint32 deltas cover a wider window than
+  useful drain. Adapter `clock_epoch` and `timing_invalid` are endpoint states,
+  not counters. The report preserves their before/after values separately in
+  `master_adapter_states`; `master_adapter_deltas` contains only counters.
+  Clean diagnostics require the same nonzero epoch and zero invalid flag at
+  both endpoints. Epoch zero/change or any invalid flag fails the check,
+  including sticky invalidity present before the case. Missing/unsupported
   pages are unknown, even when their arrays contain zeros. Queue drops/recovery
   and CAN losses fail a clean candidate but are distinct from electrical errors;
   RX queue drops alone do not prove 16 MHz electrically unreliable.

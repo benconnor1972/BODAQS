@@ -3,6 +3,7 @@ import argparse
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 
@@ -49,19 +50,33 @@ def main():
             run.check_returncode()
         if args.case_runner:
             cases = [json.loads(line) for line in run.stdout.splitlines() if line.startswith('{"schema"')]
-            assert [case['profile']['mode'] for case in cases] == ['adc', 'bulk', 'mixed', 'bulk']
+            assert [case['case_id'] for case in cases] == [1, 2, 3, 4, 5, 6, 9, 10, 11]
+            assert (cases[0]['rows'], cases[0]['missed_rows']) == (5000, 0)
+            assert (cases[1]['rows'], cases[1]['missed_rows']) == (49, 1)
+            assert (cases[2]['rows'], cases[2]['missed_rows']) == (1, 1)
+            assert (cases[3]['rows'], cases[3]['missed_rows']) == (0, 50)
             assert cases[-1]['outcome'] == 'failed' and cases[-1]['elapsed_us'] < 100000
             for case in cases:
                 assert case['workers_stopped'] and case['profile']['actual_sck_hz'] is None
                 assert case['accepted_bytes'] == case['unique_objects'] * 1008
                 assert case['valid_responses'] <= case['slots']
                 if case['profile']['mode'] != 'bulk':
-                    assert case['rows'] + case['missed_rows'] == 50
+                    expected = {1: 5000, 3: 2, 6: 0}.get(case['case_id'], 50)
+                    assert case['rows'] + case['missed_rows'] == expected
                     for adc in case['adc']:
                         assert adc['uses'] == case['rows']
                         assert adc['fresh'] + adc['reused'] + adc['no_sample'] == adc['uses']
                         assert 'drdy_to_read_attempt' in adc and 'drdy_pre_start' in adc
             print('JSON public results: parseable, balanced identities/rows, explicit unknown SCK passed')
+            capture = temp / 'public-cases.jsonl'
+            capture.write_text('\n'.join(json.dumps(case) for case in cases), encoding='utf-8')
+            analyzed = subprocess.run([sys.executable, str(root / 'tools/analyze_spi_probe.py'), str(capture)],
+                                      capture_output=True, text=True)
+            assert analyzed.returncode == 0, analyzed.stderr
+            rail_fault = next(case for case in json.loads(analyzed.stdout)['cases'] if case['case_id'] == 6)
+            assert rail_fault['reason'] == 'analog_rail_fault' and rail_fault['raw_measurements']['elapsed_us'] == 0
+            assert rail_fault['adc_status'] == 'failed' and rail_fault['candidate_evidence'] == 'failed'
+            print('Public rail-fault capture through analyzer CLI: no observed ADC rows cannot report healthy passed')
 
 
 if __name__ == '__main__':

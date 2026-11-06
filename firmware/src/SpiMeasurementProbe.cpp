@@ -96,7 +96,9 @@ void finish_(const char* outcome,const char* reason) {
     const uint64_t requestedEnd=s_case.startUs+static_cast<uint64_t>(s_case.durationMs)*1000;
     const uint64_t actualEnd=s_case.startUs+s_case.elapsedUs;
     const uint64_t end=actualEnd<requestedEnd?actualEnd:requestedEnd;
-    if(s_case.nextRowUs<=end)s_case.missedRows+=(end-s_case.nextRowUs)/2000+1;
+    // Midpoints strictly inside the finite [start,end) observation window.
+    // STOP at a midpoint has not observed that instant and counts no new row.
+    if(s_case.nextRowUs<end)s_case.missedRows+=(end-1-s_case.nextRowUs)/2000+1;
   }
   s_case.active=false;
   if(s_case.adc)AnalogInputManager::onLoggingStop();
@@ -169,7 +171,9 @@ void command(const char* line) {
     while(!AnalogInputManager::probeWorkersRunning() && now_()<timeout)delay(1);
     if(!AnalogInputManager::probeWorkersRunning()) {finish_("failed","async_start_failed");return;}
   }
-  s_case.startUs=now_();s_case.nextRowUs=s_case.startUs+2000;s_case.active=true;
+  // Phase rows at the midpoint of each 2 ms interval. Startup finishes before
+  // the first row, and a 10 s half-open window has 5000 serviceable deadlines.
+  s_case.startUs=now_();s_case.nextRowUs=s_case.startUs+1000;s_case.active=true;
 }
 void loop() {
   // Bound serial work per iteration so a sender cannot starve row scheduling.
@@ -186,8 +190,8 @@ void loop() {
   if(!s_case.active) {delay(1);return;}
   const uint64_t now=now_();
   if(now-s_case.startUs>=static_cast<uint64_t>(s_case.durationMs)*1000) {
-    // Account every scheduled row through the finite window, including its last
-    // deadline. Do not invent catch-up reads after the timed window ended.
+    // Account remaining midpoints inside the finite window. Do not invent
+    // catch-up reads after the timed window ended.
     finish_("complete","duration");return;
   }
   if(s_case.adc) {

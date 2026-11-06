@@ -9,7 +9,8 @@ import sys
 
 SCHEMA = "bodaqs.spi-probe.v1"
 ENGINE_NAMES = "requests malformed rejected prepared_fragments repeat_fragments selected_objects retired_objects duplicate_acks bad_acks cases".split()
-ADAPTER_NAMES = "slots_received spi_rx_dropped malformed_slots spi_recoveries cs_release_timeouts can_rx_frames can_rx_dropped can_rx_hardware_losses clock_epoch timing_invalid".split()
+ADAPTER_COUNTER_NAMES = "slots_received spi_rx_dropped malformed_slots spi_recoveries cs_release_timeouts can_rx_frames can_rx_dropped can_rx_hardware_losses".split()
+ADAPTER_STATE_NAMES = ("clock_epoch", "timing_invalid")
 
 
 def require(condition, message):
@@ -125,7 +126,7 @@ def adc_status(case):
     if case["profile"]["mode"] == "bulk":
         return "not_applicable"
     target = min(case["elapsed_us"], case["profile"]["duration_ms"] * 1000) * 500 / 1000000
-    healthy = abs(case["rows"] - target) <= 1 and case["missed_rows"] == 0
+    healthy = case["elapsed_us"] > 0 and case["rows"] > 0 and abs(case["rows"] - target) <= 1 and case["missed_rows"] == 0
     if case["outcome"] == "complete":
         healthy = healthy and abs(case["elapsed_us"] - case["profile"]["duration_ms"] * 1000) <= 2000
     healthy = healthy and all(a["fresh"] == case["rows"] and
@@ -137,14 +138,21 @@ def adc_status(case):
 def master_diagnostics(case):
     m = case.get("master")
     if not m:
-        return "unknown", None, None
+        return "unknown", None, None, None
     engine = [(end - start) % 4294967296 for start, end in zip(m["before"], m["after"])] if m["measured"] else None
-    adapter = [(end - start) % 4294967296 for start, end in zip(m["adapter_before"], m["adapter_after"])] if m["adapter_measured"] else None
+    adapter = [(end - start) % 4294967296 for start, end in zip(m["adapter_before"][:8], m["adapter_after"][:8])] if m["adapter_measured"] else None
+    states = {name: {"before": m["adapter_before"][i], "after": m["adapter_after"][i]}
+              for i, name in enumerate(ADAPTER_STATE_NAMES, 8)} if m["adapter_measured"] else None
+    # Epoch and sticky invalidity are endpoint states, never modulo counters.
+    clock_bad = states is not None and (
+        states["clock_epoch"]["before"] == 0 or
+        states["clock_epoch"]["before"] != states["clock_epoch"]["after"] or
+        any(states["timing_invalid"].values()))
     # Repeat fragments and duplicate ACKs are normal pipeline/retry diagnostics.
     bad = (engine is not None and any(engine[i] for i in (1, 2, 8))) or (
-        adapter is not None and any(adapter[i] for i in (1, 2, 3, 4, 6, 7, 9)))
+        adapter is not None and any(adapter[i] for i in (1, 2, 3, 4, 6, 7))) or clock_bad
     status = "failed" if bad else "clean" if engine is not None and adapter is not None else "unknown"
-    return status, engine, adapter
+    return status, engine, adapter, states
 
 
 def baseline_status(cases):
@@ -228,7 +236,7 @@ def analyze(data, manifest=None):
         seconds = case["elapsed_us"] / 1000000
         p = case["profile"]
         adc = adc_status(case)
-        master, engine_delta, adapter_delta = master_diagnostics(case)
+        master, engine_delta, adapter_delta, adapter_states = master_diagnostics(case)
         transport = "failed" if any(case["errors"][k] for k in ("transfer", "wire", "accept", "commands")) else "clean"
         baselines = [c for c in cases if c["profile"]["mode"] == "adc" and
                      c["artifacts"] == case["artifacts"] and
@@ -257,7 +265,8 @@ def analyze(data, manifest=None):
             "baseline_case_ids": [c["case_id"] for c in baselines], "baseline_status": baseline,
             "master_diagnostics_status": master,
             "master_engine_deltas": dict(zip(ENGINE_NAMES, engine_delta)) if engine_delta is not None else None,
-            "master_adapter_deltas": dict(zip(ADAPTER_NAMES, adapter_delta)) if adapter_delta is not None else None,
+            "master_adapter_deltas": dict(zip(ADAPTER_COUNTER_NAMES, adapter_delta)) if adapter_delta is not None else None,
+            "master_adapter_states": adapter_states,
             "transport_error_counts": case["errors"],
             "pipeline_diagnostics": {k: case["errors"][k] for k in ("stale", "duplicate")},
             "candidate_evidence": "failed" if failed else "clean_measurement_candidate" if clean_candidate else "unknown",
@@ -275,7 +284,8 @@ def analyze(data, manifest=None):
                       "timing": "software observations; maxima are not certified bounds; cache age begins after RDATA publication",
                       "drdy": "observed ISR entry to read attempt before RDATA mutex; read end includes mutex wait and read",
                       "ownership": "mutex acquisition to immediately before give; excludes give/publication overhead and is not a physical blocking bound",
-                      "master_deltas": "modulo uint32; wider than timed window; not useful-byte measurements",
+                      "master_deltas": "counters only, modulo uint32; wider than timed window; not useful-byte measurements",
+                      "master_adapter_states": "raw endpoint states; clock_epoch must be stable and nonzero, timing_invalid zero at both endpoints",
                       "rx_drops": "software queue/acceptance pressure; does not establish electrical failure at the requested clock",
                       "physical_can_native_imu": "unqualified synthetic known-data SPI workload"},
             "cases": result}

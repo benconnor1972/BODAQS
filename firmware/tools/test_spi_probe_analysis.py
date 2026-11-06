@@ -112,6 +112,36 @@ class ProbeAnalysisTests(unittest.TestCase):
         self.assertEqual(case["master_diagnostics_status"], "failed")
         self.assertEqual(case["candidate_evidence"], "failed")
 
+    def test_adapter_clock_health_preserves_states_instead_of_subtracting_them(self):
+        for before, after, invalid_before, invalid_after, measured, status in (
+                (3, 3, 1, 1, True, "failed"),
+                (3, 4, 0, 0, True, "failed"),
+                (0, 0, 0, 0, True, "failed"),
+                (3, 3, 0, 0, False, "unknown"),
+                (3, 3, 0, 0, True, "clean")):
+            with self.subTest(epoch=(before, after), invalid=(invalid_before, invalid_after), measured=measured):
+                sample = self.sample()
+                master = sample["master"]
+                master["adapter_before"][8:] = [before, invalid_before]
+                master["adapter_after"][8:] = [after, invalid_after]
+                master["adapter_measured"] = measured
+                run = self.invoke(json.dumps(sample))
+                self.assertEqual(run.returncode, 0, run.stderr)
+                case = json.loads(run.stdout)["cases"][0]
+                self.assertEqual(case["master_diagnostics_status"], status)
+                self.assertEqual(case["candidate_evidence"], "failed" if status == "failed" else "unknown")
+                self.assertEqual(case["raw_measurements"]["master"], master)
+                if measured:
+                    self.assertEqual(case["master_adapter_states"], {
+                        "clock_epoch": {"before": before, "after": after},
+                        "timing_invalid": {"before": invalid_before, "after": invalid_after}})
+                    self.assertEqual(set(case["master_adapter_deltas"]), {
+                        "slots_received", "spi_rx_dropped", "malformed_slots", "spi_recoveries",
+                        "cs_release_timeouts", "can_rx_frames", "can_rx_dropped", "can_rx_hardware_losses"})
+                else:
+                    self.assertIsNone(case["master_adapter_states"])
+                    self.assertIsNone(case["master_adapter_deltas"])
+
     def test_row_rate_allows_only_one_row_quantization_and_never_acquisition_rate(self):
         for rows, status in ((999, "healthy"), (998, "failed"), (1001, "healthy"), (1002, "failed")):
             with self.subTest(rows=rows):
@@ -173,6 +203,7 @@ class ProbeAnalysisTests(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stderr)
         case = json.loads(run.stdout)["cases"][0]
         self.assertEqual(case["candidate_evidence"], "failed")
+        self.assertEqual(case["adc_status"], "failed")
         self.assertIsNone(case["rows_per_second"])
         sample = self.sample()
         sample["master"].update(measured=False, adapter_measured=False)
