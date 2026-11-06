@@ -28,10 +28,16 @@ static struct {uint32_t boundaries,prepared,malformed,queue_dropped,queue_high_w
     uint32_t process_calls,process_max_us,process_total_us;
     uint32_t clock_epoch,timing_invalid;BodaqsSpiProbeStats engine;} gMasterSpiProbeInfo;
 static unsigned remaining=256,cs_high=1,disabled,prefetched,arms,resets,fifo_count;
-static uint8_t fifo[16];static uint32_t irq_mask,tick=1;
+static uint8_t fifo[16];static uint32_t irq_mask,tick=1,clock_epoch=1,clock_calls;
+static bool snapshot_irq_pending,snapshot_delivered;
+static unsigned snapshot_boundary_count;
+static void snapshot_irq(void);
 static uint32_t __get_PRIMASK(void) {return irq_mask;}
 static void __disable_irq(void) {irq_mask=1;}
-static void __set_PRIMASK(uint32_t v) {irq_mask=v;}
+static void __set_PRIMASK(uint32_t v) {
+    irq_mask=v;
+    if(!v && snapshot_irq_pending) {snapshot_irq_pending=false;snapshot_irq();}
+}
 static void __DMB(void) {}
 static unsigned DL_DMA_getTransferSize(int d,int c) {(void)d;(void)c;return remaining;}
 static unsigned DL_GPIO_readPins(int p,int m) {(void)p;(void)m;return cs_high;}
@@ -54,7 +60,9 @@ static void DL_DMA_enableChannel(int d,int c) {
     (void)d;assert(disabled==3 && dma_sizes[c]==256);
     if(c==DMA_SPI_TX_CHAN_ID) {disabled=0;remaining=dma_sizes[DMA_SPI_RX_CHAN_ID];++arms;}
 }
-static uint32_t bodaqs_master_timing_clock(void *p,uint32_t *epoch) {(void)p;*epoch=1;return tick++;}
+static uint32_t bodaqs_master_timing_clock(void *p,uint32_t *epoch) {
+    (void)p;*epoch=clock_epoch;++clock_calls;return tick++;
+}
 static void retire_measurement_slot(uint8_t *p,uint64_t c) {(void)p;(void)c;assert(false);}
 static void retire_spi_boundary(void);
 static unsigned inject_stage;
@@ -65,7 +73,14 @@ static void inject_boundary(unsigned stage) {
     inject_stage=0;unsigned before=gTransmitIndex;
     memcpy(gReceiveSlots[gReceiveIndex],inject_wire,inject_length);
     remaining=256-inject_length;retire_spi_boundary();
-    assert(gTransmitIndex==(stage==1?before:(before^1U)));
+    assert(gTransmitIndex==(stage==2?(before^1U):before));
+}
+static void snapshot_irq(void) {snapshot_delivered=true;inject_boundary(3);}
+static void request_snapshot_irq(void) {
+    if(inject_stage!=3) return;
+    snapshot_boundary_count=arms;
+    if(irq_mask) snapshot_irq_pending=true;
+    else snapshot_irq();
 }
 /* ACTUAL_ADAPTER */
 static void physical(const uint8_t *request,unsigned length,unsigned tail) {
@@ -91,6 +106,10 @@ static BodaqsSpiProbeFrame wire_reply(BodaqsSpiProbeFrame q,uint8_t opcode,uint3
     }
     assert(!"no validated asynchronous reply");return (BodaqsSpiProbeFrame){0};
 }
+static uint32_t value(const BodaqsSpiProbeFrame *r,unsigned index) {
+    const uint8_t *p=r->payload+4*index;
+    return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);
+}
 int main(void) {
     memset(guarded_rx.before,0xa5,sizeof guarded_rx.before);
     memset(guarded_rx.after,0xa5,sizeof guarded_rx.after);
@@ -98,8 +117,9 @@ int main(void) {
     bodaqs_record_queue_init(&gSpiReceiveQueue,storage,256,1);
     uint8_t qwire[272]={0};BodaqsSpiProbeFrame q={0},r;
     /* Zero clocks and low CS do not retire; queue capacity stays256. */
-    retire_spi_boundary();assert(!arms);
-    remaining=192;cs_high=0;retire_spi_boundary();assert(!arms);cs_high=1;
+    unsigned calls_before=clock_calls;
+    retire_spi_boundary();assert(!arms && clock_calls==calls_before);
+    remaining=192;cs_high=0;retire_spi_boundary();assert(!arms && clock_calls==calls_before);cs_high=1;
     unsigned lengths[]={1,63,65,127,129,255,257};
     for(unsigned i=0;i<sizeof lengths/sizeof lengths[0];++i) {
         physical(qwire,lengths[i],lengths[i]==257?1:0);
@@ -166,10 +186,51 @@ int main(void) {
         }
         q=(BodaqsSpiProbeFrame){.opcode=BODAQS_PROBE_STATS,.case_id=1,.profile=q.profile,.fragment=1};
         r=wire_reply(q,133,0);assert(r.payload_length==40 && r.payload[32]==1);
+        if(bytes==64) {
+            /* Discard any published page1 reply, enqueue page2, and interrupt
+             * between boundary count and total snapshot reads. The fake NVIC
+             * honors PRIMASK, so the IRQ may run only after the whole copy. */
+            q.fragment=2;assert(bodaqs_spi_probe_encode(&q,qwire,bytes));
+            if(gSpiTransmitReady) physical(qwire,bytes,0);
+            if(gSpiReceiveQueue.depth) service_spi_receive();
+            if(gSpiTransmitReady) physical(qwire,bytes,0);
+            inject_stage=3;service_spi_receive();
+            assert(snapshot_delivered && !snapshot_irq_pending && !inject_stage);
+            physical(qwire,bytes,0);
+            assert(bodaqs_spi_probe_decode(gTransmitSlots[gTransmitIndex],bytes,&r));
+            assert(r.opcode==133 && r.fragment==2 && value(&r,3)==snapshot_boundary_count);
+            assert(value(&r,4)==snapshot_boundary_count && value(&r,5)==1);
+            assert(arms>snapshot_boundary_count);
+        }
+        q.fragment=2;r=wire_reply(q,133,0);
+        assert(r.payload_length==40 && value(&r,0)>0 && value(&r,1)>=value(&r,0));
+        assert(value(&r,2)>0 && value(&r,3)>0 && value(&r,4)>=value(&r,3));
+        assert(value(&r,5)>0 && value(&r,6)>0 && value(&r,7)>=value(&r,6));
+        assert(value(&r,8)>0 && value(&r,9)==0);
+        uint32_t process_max=value(&r,2),retire_max=value(&r,5),wait_max=value(&r,8);
+        /* Epoch0 invalidates samples, never turns clock state into a counter
+         * delta or resets boot maxima/calls, even across STOP/new case. */
+        if(bytes==256) {
+            clock_epoch=0;
+            /* Same-identity asynchronous replies may be from the previous
+             * query. Retire those before inspecting the changed clock state. */
+            (void)wire_reply(q,133,0);(void)wire_reply(q,133,0);
+            r=wire_reply(q,133,0);
+            assert(value(&r,9)==1 && value(&r,2)>=process_max &&
+                value(&r,5)>=retire_max && value(&r,8)>=wait_max);
+            BodaqsSpiProbeFrame invalid=r;
+            (void)wire_reply(q,133,0);r=wire_reply(q,133,0);
+            assert(value(&r,0)>value(&invalid,0) && value(&r,3)>value(&invalid,3) &&
+                value(&r,6)>value(&invalid,6));
+            for(unsigned i=0;i<9;++i) if(i%3)
+                assert(value(&r,i)==value(&invalid,i));
+            clock_epoch=1;
+        }
         q.opcode=BODAQS_PROBE_STOP;q.fragment=0;(void)wire_reply(q,134,0);
         assert(!gSpiProbe.active && gSpiProbe.stats.retired_objects==4);
     }
     puts("actual probe adapter: CS lengths/FIFO/overflow/queue/publication/entry/exit PASS");
     puts("actual probe adapter: complete RAM objects, wrong/lost/repeated ACK and ACK publication preemption PASS");
+    puts("actual probe adapter: coherent IRQ-fenced STATS2, boot maxima and sticky invalid timing PASS");
     return 0;
 }

@@ -98,6 +98,14 @@ typedef struct {
     BodaqsSpiProbeStats engine;
 } MasterSpiProbeInfo;
 volatile MasterSpiProbeInfo gMasterSpiProbeInfo;
+/* Boundary-owner fields are never written by main. Publication tick/epoch are
+ * main-owned and become readable together with gSpiTransmitReady. */
+typedef struct {
+    uint32_t boundaries,retire_total_us,retire_max_us;
+    uint32_t publish_calls,publish_wait_total_us,publish_wait_max_us,timing_invalid;
+} MasterSpiProbeBoundaryInfo;
+static volatile MasterSpiProbeBoundaryInfo gSpiProbeBoundaryInfo;
+static uint32_t gSpiProbePublishedTick,gSpiProbePublishedEpoch;
 #endif
 
 /* Active drain diagnostic state. */
@@ -1052,6 +1060,13 @@ static void retire_spi_boundary(void)
         DL_GPIO_readPins(GPIO_SPI_A8_CS_PORT, GPIO_SPI_A8_CS_PIN) == 0U) {
         gSpiRetiring=false; return;
     }
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+    /* TIMA0 native 1MHz clock preserves PRIMASK and accounts for a pending
+     * rollover, so this call is also safe from the CS ISR. Software entry,
+     * not a timestamp of the CS pad edge. */
+    uint32_t boundary_epoch,boundary_finished_epoch;
+    uint32_t boundary_started=bodaqs_master_timing_clock(NULL,&boundary_epoch);
+#endif
     DL_DMA_disableChannel(DMA, DMA_SPI_RX_CHAN_ID);
     DL_DMA_disableChannel(DMA, DMA_SPI_TX_CHAN_ID);
     /* Snapshot the owner-published identity, never partially updated service
@@ -1076,6 +1091,17 @@ static void retire_spi_boundary(void)
     /* Publish only a fully prepared response at a physical boundary. Parsing,
      * control dispatch and all ownership changes remain in the main loop. */
     if (gSpiTransmitReady) {
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+        ++gSpiProbeBoundaryInfo.publish_calls;
+        if(!boundary_epoch || boundary_epoch!=gSpiProbePublishedEpoch)
+            gSpiProbeBoundaryInfo.timing_invalid=1;
+        else {
+            uint32_t wait=boundary_started-gSpiProbePublishedTick;
+            gSpiProbeBoundaryInfo.publish_wait_total_us+=wait;
+            if(wait>gSpiProbeBoundaryInfo.publish_wait_max_us)
+                gSpiProbeBoundaryInfo.publish_wait_max_us=wait;
+        }
+#endif
         gTransmitIndex ^= 1U;
         gSpiTransmitReady = false;
     }
@@ -1095,7 +1121,15 @@ static void retire_spi_boundary(void)
     gReceiveIndex ^= 1U;
     arm_spi_slot();
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
-    ++gMasterSpiProbeInfo.boundaries;
+    uint32_t retire_elapsed=bodaqs_master_timing_clock(NULL,&boundary_finished_epoch)-boundary_started;
+    ++gSpiProbeBoundaryInfo.boundaries;
+    if(!boundary_epoch || boundary_epoch!=boundary_finished_epoch)
+        gSpiProbeBoundaryInfo.timing_invalid=1;
+    else {
+        gSpiProbeBoundaryInfo.retire_total_us+=retire_elapsed;
+        if(retire_elapsed>gSpiProbeBoundaryInfo.retire_max_us)
+            gSpiProbeBoundaryInfo.retire_max_us=retire_elapsed;
+    }
 #endif
     gSpiRetiring = false;
 }
@@ -1139,24 +1173,48 @@ static void service_spi_receive(void)
             gSpiProbe.adapter_stats[6]=gCanReceiveQueue.dropped;
             gSpiProbe.adapter_stats[7]=gMasterRuntimeInfo.can_rx_hardware_losses;
             gSpiProbe.adapter_stats[8]=epoch;
-            gSpiProbe.adapter_stats[9]=gMasterSpiProbeInfo.timing_invalid || !epoch;
+            uint32_t invalid=gMasterSpiProbeInfo.timing_invalid ||
+                gSpiProbeBoundaryInfo.timing_invalid || !epoch;
+            gSpiProbe.adapter_stats[9]=invalid;
+            /* Completed calls only: this STATS request is included in the
+             * following snapshot. Both owners are frozen during this copy. */
+            gSpiProbe.diagnostic_stats[0]=gMasterSpiProbeInfo.process_calls;
+            gSpiProbe.diagnostic_stats[1]=gMasterSpiProbeInfo.process_total_us;
+            gSpiProbe.diagnostic_stats[2]=gMasterSpiProbeInfo.process_max_us;
+            gSpiProbe.diagnostic_stats[3]=gSpiProbeBoundaryInfo.boundaries;
+            gSpiProbe.diagnostic_stats[4]=gSpiProbeBoundaryInfo.retire_total_us;
+            gSpiProbe.diagnostic_stats[5]=gSpiProbeBoundaryInfo.retire_max_us;
+            gSpiProbe.diagnostic_stats[6]=gSpiProbeBoundaryInfo.publish_calls;
+            gSpiProbe.diagnostic_stats[7]=gSpiProbeBoundaryInfo.publish_wait_total_us;
+            gSpiProbe.diagnostic_stats[8]=gSpiProbeBoundaryInfo.publish_wait_max_us;
+            gSpiProbe.diagnostic_stats[9]=invalid;
+            gMasterSpiProbeInfo.boundaries=gSpiProbeBoundaryInfo.boundaries;
             __set_PRIMASK(mask);
         }
         bool prepared=bodaqs_spi_probe_process(&gSpiProbe,received,length,
             gTransmitSlots[next_index],BODAQS_SPI_ADAPTER_CAPACITY);
         uint32_t elapsed=bodaqs_master_timing_clock(NULL,&finished_epoch)-started;
         if(!epoch || epoch!=finished_epoch) gMasterSpiProbeInfo.timing_invalid=1;
+        else {
+            gMasterSpiProbeInfo.process_total_us+=elapsed;
+            if(elapsed>gMasterSpiProbeInfo.process_max_us) gMasterSpiProbeInfo.process_max_us=elapsed;
+        }
         gMasterSpiProbeInfo.clock_epoch=epoch;
         ++gMasterSpiProbeInfo.process_calls;
-        gMasterSpiProbeInfo.process_total_us+=elapsed;
-        if(elapsed>gMasterSpiProbeInfo.process_max_us) gMasterSpiProbeInfo.process_max_us=elapsed;
         gMasterSpiProbeInfo.engine=gSpiProbe.stats;
         gMasterSpiProbeInfo.queue_dropped=gSpiReceiveQueue.dropped;
         gMasterSpiProbeInfo.queue_high_water=gSpiReceiveQueue.high_water;
         if(prepared) {
             ++gMasterSpiProbeInfo.prepared;
+            /* Timestamp and fully prepared bytes belong to this publication.
+             * A boundary before this fence keeps the old reply; one after it
+             * sees the complete timestamp/epoch/ready tuple. */
+            uint32_t publish_mask=__get_PRIMASK();
+            __disable_irq();
+            gSpiProbePublishedTick=bodaqs_master_timing_clock(NULL,&gSpiProbePublishedEpoch);
             __DMB();
             gSpiTransmitReady=true;
+            __set_PRIMASK(publish_mask);
         } else {++gMasterSpiProbeInfo.malformed;++gMasterRuntimeInfo.spi_recoveries;}
     }
 #else
