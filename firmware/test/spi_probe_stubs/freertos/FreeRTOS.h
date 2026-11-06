@@ -7,7 +7,8 @@ using portMUX_TYPE = std::recursive_mutex;
 #define portMUX_INITIALIZER_UNLOCKED {}
 #define portENTER_CRITICAL(p) (p)->lock()
 #define portEXIT_CRITICAL(p) (p)->unlock()
-#define portENTER_CRITICAL_ISR(p) (p)->lock()
+void probeEnterCriticalIsr(portMUX_TYPE* mux);
+#define portENTER_CRITICAL_ISR(p) probeEnterCriticalIsr(p)
 #define portEXIT_CRITICAL_ISR(p) (p)->unlock()
 #define portYIELD_FROM_ISR() ((void)0)
 #define pdTRUE 1

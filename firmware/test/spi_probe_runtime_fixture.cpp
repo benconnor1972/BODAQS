@@ -30,7 +30,8 @@ bool analogRailEnabled() {return true;}
 // CONFIG_SUPPORT
 
 static const auto epoch = std::chrono::steady_clock::now();
-unsigned long micros() { return (unsigned long)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-epoch).count(); }
+static std::atomic<int64_t> frozenUs{-1};
+unsigned long micros() { if(frozenUs>=0)return (unsigned long)frozenUs.load();return (unsigned long)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-epoch).count(); }
 unsigned long millis() { return micros()/1000; }
 int64_t esp_timer_get_time() { return micros(); }
 void delay(unsigned long ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
@@ -49,6 +50,17 @@ static std::atomic<bool> injectBeforeStart[2];
 static std::atomic<bool> delayReadLock[2],failReadLock[2];
 static std::atomic<unsigned long> readCsUs[2],edgeUs[2];
 static void complete(int adc,int count=1);
+static std::atomic<bool> holdStartTransfer=false,startTransferReached=false,holdTieIsr=false,tieIsrReached=false;
+static std::mutex tieMutex;
+static std::condition_variable tieCv;
+static thread_local bool injectedTieIsr=false;
+void probeEnterCriticalIsr(portMUX_TYPE* mux) {
+  if(injectedTieIsr && holdTieIsr) {
+    tieIsrReached=true;tieCv.notify_all();
+    std::unique_lock<std::mutex> lock(tieMutex);tieCv.wait(lock,[]{return !holdTieIsr;});
+  }
+  mux->lock();
+}
 void digitalWrite(uint8_t pin,uint8_t level) { if (level==LOW) { assert(selected.exchange(pin)==-1); if(workerAdc>=0 && workerLockCalls==3)readCsUs[workerAdc]=micros();
 #if TEST_CASE_RUNNER
   if(pin==40 && masterEnabled && bulkLastHigh)assert(esp_timer_get_time()-bulkLastHigh>=25);
@@ -87,6 +99,10 @@ void SPIClass::transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
   }
 #endif
   if(adc>=0 && tx && tx[0]==8) {
+    if(workerAdc==0 && holdStartTransfer) {
+      startTransferReached=true;tieCv.notify_all();
+      std::unique_lock<std::mutex> lock(tieMutex);tieCv.wait(lock,[]{return !holdStartTransfer;});
+    }
     { std::lock_guard<std::mutex> lock(gpioMutex); gpio[adc?18:36].level=workerAdc>=0?HIGH:LOW; }
     if(workerAdc>=0)workerStartTransfer=true;
   }
@@ -265,6 +281,25 @@ int main() {
   stopAdc_();assert(AnalogInputManager::probeWorkersStopped());joinTasks();
   drdy=AnalogInputManager::probeDrdySnapshot();assert(drdy.adc[0].toReadAttempt.count==1 && drdy.adc[0].toReadEnd.count==0);
   puts("real ADC: contended RDATA attempt versus actual CS service, failed read lock without identity advance passed");
+
+  AnalogInputManager::configureFromConfig(cfg,500);for(auto& n:starts)n=0;
+  holdStartTransfer=true;startTransferReached=false;holdTieIsr=true;tieIsrReached=false;
+  const int64_t tiedUs=micros();frozenUs=tiedUs;
+  AnalogInputManager::onLoggingStart();
+  // Wait on hardware-boundary barriers rather than source-private state. ISR
+  // entry occurs before START CS high but both observations have the same tick.
+  {std::unique_lock<std::mutex> lock(tieMutex);tieCv.wait(lock,[]{return startTransferReached.load();});}
+  std::thread oldCallback([]{injectedTieIsr=true;complete(0);});
+  {std::unique_lock<std::mutex> lock(tieMutex);tieCv.wait(lock,[]{return tieIsrReached.load();});}
+  holdStartTransfer=false;tieCv.notify_all();
+  while(starts[0]<1)std::this_thread::yield();
+  holdTieIsr=false;tieCv.notify_all();oldCallback.join();
+  frozenUs=tiedUs+1000;r0=reads[0];complete(0);
+  while(starts[0]<2 || reads[0]<=r0)std::this_thread::yield();
+  frozenUs=-1;stopAdc_();assert(AnalogInputManager::probeWorkersStopped());joinTasks();
+  drdy=AnalogInputManager::probeDrdySnapshot();
+  assert(drdy.adc[0].preStart==1 && drdy.adc[0].paired==1 && drdy.adc[0].extra==0);
+  puts("real ADC: same-microsecond ISR entry before START marker is ambiguous, later distinct-tick completion paired passed");
 #if TEST_CASE_RUNNER
   releaseWaiters=true;
   SpiMeasurementProbe::begin(board);Serial.output.clear();

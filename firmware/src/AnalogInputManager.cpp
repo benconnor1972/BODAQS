@@ -119,7 +119,7 @@ void ARDUINO_ISR_ATTR adsReadyIsr_(void* arg) {
   }
   ++dev.probeDrdy.observed;
   if (dev.probeDrdyArmed) {
-    if (!dev.probeStartReleased || static_cast<int32_t>(enteredUs - dev.probeStartReleasedUs) < 0) {
+    if (!dev.probeStartReleased || static_cast<int32_t>(enteredUs - dev.probeStartReleasedUs) <= 0) {
       ++dev.probeDrdy.preStart;
     } else if (dev.probeDrdyEvents++ == 0) dev.probeDrdyUs = enteredUs;
     else ++dev.probeDrdy.extra;
