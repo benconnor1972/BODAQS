@@ -42,11 +42,15 @@ def main():
         if args.case_runner:
             sources += [root / 'src' / name for name in ('SpiMeasurementProbe.cpp', 'SpiProbeTransport.cpp', 'SpiProbeCodec.cpp')]
         subprocess.run([args.compiler, '-std=gnu++2a', '-pthread', '-DESP32=1', '-DBODAQS_SPI_PROBE=1', '-DLOG_COMPILED=0', '-Wno-unused', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-I', str(temp), '-I', str(root / 'test/stubs'), '-I', str(root / 'src'), str(cpp), *map(str, sources), '-o', str(exe)], check=True)
-        run = subprocess.run([str(exe)], check=True, timeout=15, capture_output=True, text=True)
+        run = subprocess.run([str(exe)], timeout=15, capture_output=True, text=True)
         print(run.stdout, end="")
+        if run.returncode:
+            print(run.stderr, end="")
+            run.check_returncode()
         if args.case_runner:
             cases = [json.loads(line) for line in run.stdout.splitlines() if line.startswith('{"schema"')]
-            assert [case['profile']['mode'] for case in cases] == ['adc', 'bulk', 'mixed']
+            assert [case['profile']['mode'] for case in cases] == ['adc', 'bulk', 'mixed', 'bulk']
+            assert cases[-1]['outcome'] == 'failed' and cases[-1]['elapsed_us'] < 100000
             for case in cases:
                 assert case['workers_stopped'] and case['profile']['actual_sck_hz'] is None
                 assert case['accepted_bytes'] == case['unique_objects'] * 1008

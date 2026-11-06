@@ -27,6 +27,7 @@ struct Case {
   uint32_t rows=0,missedRows=0,commandErrors=0;
 } s_case;
 bool s_ready=false,s_blocked=false;
+uint32_t s_lastCaseId=0;
 char s_line[96];
 uint8_t s_lineLength=0;
 bool s_lineOverflow=false;
@@ -150,6 +151,9 @@ void command(const char* line) {
       !decimal_(tokens[5],nodes) || nodes<1 || nodes>4 ||
       !decimal_(tokens[6],duration) || duration<100 || duration>3600000 ||
       (strcmp(tokens[2],"adc") && strcmp(tokens[2],"bulk") && strcmp(tokens[2],"mixed"))) {error_("invalid_profile");return;}
+  if(id<=s_lastCaseId) {error_("non_increasing_case_id");return;}
+  // A valid start attempt owns its ID even when rail/worker/peer startup fails.
+  s_lastCaseId=id;
   s_case=Case{};s_case.id=id;s_case.frame=frame;s_case.hz=hz;s_case.nodes=nodes;s_case.durationMs=duration;
   s_case.adc=strcmp(tokens[2],"bulk")!=0;s_case.bulk=strcmp(tokens[2],"adc")!=0;
   AnalogInputManager::configureFromConfig(s_cfg,500);

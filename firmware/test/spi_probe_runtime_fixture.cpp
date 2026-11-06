@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <thread>
 #include <vector>
+#include <algorithm>
 #include <cstdarg>
 #if TEST_CASE_RUNNER
 #include "SpiMeasurementProbe.h"
@@ -56,8 +57,8 @@ static std::condition_variable tieCv;
 static thread_local bool injectedTieIsr=false;
 void probeEnterCriticalIsr(portMUX_TYPE* mux) {
   if(injectedTieIsr && holdTieIsr) {
-    tieIsrReached=true;tieCv.notify_all();
-    std::unique_lock<std::mutex> lock(tieMutex);tieCv.wait(lock,[]{return !holdTieIsr;});
+    std::unique_lock<std::mutex> lock(tieMutex);
+    tieIsrReached=true;tieCv.notify_all();tieCv.wait(lock,[]{return !holdTieIsr;});
   }
   mux->lock();
 }
@@ -100,8 +101,8 @@ void SPIClass::transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
 #endif
   if(adc>=0 && tx && tx[0]==8) {
     if(workerAdc==0 && holdStartTransfer) {
-      startTransferReached=true;tieCv.notify_all();
-      std::unique_lock<std::mutex> lock(tieMutex);tieCv.wait(lock,[]{return !holdStartTransfer;});
+      std::unique_lock<std::mutex> lock(tieMutex);
+      startTransferReached=true;tieCv.notify_all();tieCv.wait(lock,[]{return !holdStartTransfer;});
     }
     { std::lock_guard<std::mutex> lock(gpioMutex); gpio[adc?18:36].level=workerAdc>=0?HIGH:LOW; }
     if(workerAdc>=0)workerStartTransfer=true;
@@ -122,7 +123,7 @@ BaseType_t xSemaphoreTake(SemaphoreHandle_t m,TickType_t timeout) {
   return !failLock && !(workerAdc<0 && failWarmup) && !(workerAdc>=0 && failRead[workerAdc]) && m->try_lock_for(std::chrono::milliseconds(timeout));
 }
 void xSemaphoreGive(SemaphoreHandle_t m) { m->unlock();if(workerStartTransfer) {workerStartTransfer=false;++starts[workerAdc];} }
-struct FakeTask { std::thread thread; std::mutex mutex; std::condition_variable cv; unsigned notifications=0; };
+struct FakeTask { std::thread thread; std::mutex mutex; std::condition_variable cv; unsigned notifications=0;std::atomic<bool> exited=false; };
 static thread_local FakeTask* current=nullptr;
 static std::vector<FakeTask*> tasks;
 static int failTask=-1;
@@ -131,14 +132,25 @@ static std::atomic<bool> releaseWaiters=false;
 static std::atomic<bool> holdTaskEntry=false;
 static std::mutex entryMutex;
 static std::condition_variable entryCv;
+static std::mutex exitMutex;
+static std::condition_variable exitCv;
 BaseType_t xTaskCreatePinnedToCore(void (*fn)(void*),const char*,uint32_t,void* arg,int,TaskHandle_t* out,int) {
   int adc=(int)(uintptr_t)arg; if(adc==failTask) return 0;
   auto* t=new FakeTask; *out=t; tasks.push_back(t);
   t->thread=std::thread([=] {current=t; workerAdc=adc; {std::unique_lock<std::mutex> lock(entryMutex);entryCv.wait(lock,[]{return !holdTaskEntry;});} fn(arg);}); return pdPASS;
 }
 TaskHandle_t xTaskGetCurrentTaskHandle() { return current; }
-void vTaskDelay(TickType_t ticks) { delay(ticks); }
-void vTaskDelete(TaskHandle_t) {}
+void vTaskDelay(TickType_t ticks) {
+  if(!current && releaseWaiters && !holdWorkers && !holdTaskEntry) {
+    // A clean stop explicitly schedules both real worker functions through
+    // their RTOS deletion boundary before delivering the next simulated tick.
+    // Held-worker/pending-entry cases bypass this and exercise the100ms bound.
+    std::unique_lock<std::mutex> lock(exitMutex);
+    exitCv.wait(lock,[]{return std::all_of(tasks.begin(),tasks.end(),[](FakeTask* t){return t->exited.load();});});
+  }
+  delay(ticks);
+}
+void vTaskDelete(TaskHandle_t) {if(current) {{std::lock_guard<std::mutex> lock(exitMutex);current->exited=true;}exitCv.notify_all();} }
 void vTaskNotifyGiveFromISR(TaskHandle_t task,BaseType_t*) { std::lock_guard<std::mutex> lock(task->mutex); ++task->notifications; task->cv.notify_one(); }
 uint32_t ulTaskNotifyTake(BaseType_t,TickType_t timeout) {
   if(!current) return 0;
@@ -161,7 +173,7 @@ static void stopAdc_() {
   // Advance simulated missing-DRDY time only when the fixture asks to stop.
   // Normal conversion schedules are notification-driven, independent of host CPU
   // load/timer granularity. Timed public runner cases opt into timeout progress.
-  releaseWaiters=true;for(auto* t:tasks)t->cv.notify_all();
+  releaseWaiters=true;for(auto* t:tasks){std::lock_guard<std::mutex> lock(t->mutex);t->cv.notify_all();}
   AnalogInputManager::onLoggingStop();
 }
 static board::BoardProfile adcBoard() {
@@ -236,7 +248,7 @@ int main() {
   await([]{return starts[0]>=1 && starts[1]>=1;});delay(2);
   stopAdc_();assert(!AnalogInputManager::probeWorkersStopped());
   assert(AnalogInputManager::probeTimingSnapshot().adc[0].channel[0].acquireOk==0);
-  holdWorkers=false; for(auto* t:tasks) t->cv.notify_all();
+  holdWorkers=false; for(auto* t:tasks) {std::lock_guard<std::mutex> lock(t->mutex);t->cv.notify_all();}
   await([]{return AnalogInputManager::probeWorkersStopped();});joinTasks();
   puts("real ADC: partial async startup rejection, bounded unfinished stop, no unsafe live snapshot passed");
 
@@ -259,7 +271,7 @@ int main() {
   assert(!AnalogInputManager::probeWorkersRunning() && !AnalogInputManager::probeWorkersStopped());
   stopAdc_();assert(!AnalogInputManager::probeWorkersStopped());
   oldIsr(oldArg);
-  holdTaskEntry=false;entryCv.notify_all();await([]{return AnalogInputManager::probeWorkersStopped();});joinTasks();
+  {std::lock_guard<std::mutex> lock(entryMutex);holdTaskEntry=false;}entryCv.notify_all();await([]{return AnalogInputManager::probeWorkersStopped();});joinTasks();
   assert(AnalogInputManager::probeDrdySnapshot().adc[0].observed==0);
   puts("real ADC: pre-START lock contention, dispatched ISR after detach/reset, pending-before-entry bounded stop passed");
 
@@ -291,9 +303,9 @@ int main() {
   {std::unique_lock<std::mutex> lock(tieMutex);tieCv.wait(lock,[]{return startTransferReached.load();});}
   std::thread oldCallback([]{injectedTieIsr=true;complete(0);});
   {std::unique_lock<std::mutex> lock(tieMutex);tieCv.wait(lock,[]{return tieIsrReached.load();});}
-  holdStartTransfer=false;tieCv.notify_all();
+  {std::lock_guard<std::mutex> lock(tieMutex);holdStartTransfer=false;}tieCv.notify_all();
   while(starts[0]<1)std::this_thread::yield();
-  holdTieIsr=false;tieCv.notify_all();oldCallback.join();
+  {std::lock_guard<std::mutex> lock(tieMutex);holdTieIsr=false;}tieCv.notify_all();oldCallback.join();
   frozenUs=tiedUs+1000;r0=reads[0];complete(0);
   while(starts[0]<2 || reads[0]<=r0)std::this_thread::yield();
   frozenUs=-1;stopAdc_();assert(AnalogInputManager::probeWorkersStopped());joinTasks();
@@ -329,6 +341,11 @@ int main() {
   SpiMeasurementProbe::command("case 8 adc 64 8000000 1 1000");delay(11);SpiMeasurementProbe::command("stop");joinTasks();
   assert(Serial.output.find("\"outcome\":\"stopped\"")!=std::string::npos && Serial.output.find("\"rows\":0,\"missed_rows\":0")==std::string::npos);
   puts("public probe: rail fault and async startup failures, stopped workers before new case, early STOP records missed deadlines passed");
+  Serial.output.clear();SpiMeasurementProbe::command("case 8 adc 64 8000000 1 1000");
+  assert(Serial.output.find("non_increasing_case_id")!=std::string::npos && AnalogInputManager::probeWorkersStopped());
+  Serial.output.clear();SpiMeasurementProbe::command("case 7 adc 64 8000000 1 1000");
+  assert(Serial.output.find("non_increasing_case_id")!=std::string::npos);
+  puts("public probe: reused and older IDs including prior failed starts rejected before hardware work passed");
   masterEnabled=true;bodaqs_spi_probe_init(&master);
   Serial.output.clear();SpiMeasurementProbe::command("case 9 bulk 256 16000000 4 100");
   while(Serial.output.empty())SpiMeasurementProbe::loop();
@@ -341,7 +358,13 @@ int main() {
   assert(Serial.output.find("\"measured\":true")!=std::string::npos);
   puts(Serial.output.c_str());
   puts("public bulk/mixed cases: actual client+engine traffic, shared ADC path, stopped profile changes, one result each passed");
-  uint32_t caseId=11;
+  Serial.output.clear();SpiMeasurementProbe::command("case 11 bulk 128 8000000 1 100");
+  master.active=false;
+  while(Serial.output.empty())SpiMeasurementProbe::loop();
+  assert(Serial.output.find("\"outcome\":\"failed\"")!=std::string::npos && Serial.output.find("bulk_fault_or_stalled")!=std::string::npos && Serial.output.find("\"accept\":1")!=std::string::npos);
+  puts(Serial.output.c_str());
+  puts("public short bulk case: actual same-case peer ERROR produces failed result without waiting for stall duration passed");
+  uint32_t caseId=12;
   for(uint16_t frame: {64,128,256})for(uint32_t hz: {8000000U,16000000U}) {
     assert(SpiProbeTransport::begin(board,caseId++,frame,hz,4));
     for(unsigned attempts=0;attempts<3000 && SpiProbeTransport::stats().retiredObjects<4;++attempts)SpiProbeTransport::tick();
@@ -350,6 +373,12 @@ int main() {
     assert(SpiProbeTransport::stats().masterMeasured);
   }
   puts("real SPI/client/engine: all six profiles, delayed replies, exact unique1008-byte objects, RAM ACK retirement, confirmed STOP passed");
+  assert(SpiProbeTransport::begin(board,caseId++,128,8000000,1));
+  master.active=false; // Actual peer now emits response ERROR=255, not stale data.
+  for(unsigned attempts=0;attempts<30 && SpiProbeTransport::healthy();++attempts)SpiProbeTransport::tick();
+  assert(!SpiProbeTransport::healthy() && SpiProbeTransport::stats().acceptErrors==1 && SpiProbeTransport::stats().acceptedBytes==0);
+  assert(SpiProbeTransport::stop());
+  puts("real client/engine: explicit same-case peer ERROR terminates immediately before short-case duration passed");
   assert(SpiProbeTransport::begin(board,caseId++,256,16000000,1));corruptPayload=true;
   for(unsigned attempts=0;attempts<100 && !SpiProbeTransport::stats().acceptErrors;++attempts)SpiProbeTransport::tick();
   assert(SpiProbeTransport::stats().acceptErrors==1 && SpiProbeTransport::stats().acceptedBytes==0 && SpiProbeTransport::stats().retiredObjects==0);

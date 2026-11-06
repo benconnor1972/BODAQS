@@ -73,7 +73,7 @@ bool masterStats_(uint8_t page,uint32_t* out) {
 }
 void failAccept_() {++s_stats.acceptErrors;s_healthy=false;}
 void consume_(const BodaqsSpiProbeFrame& r) {
-  if(r.opcode==BODAQS_PROBE_ERROR) {failAccept_();return;}
+  if(r.opcode==(BODAQS_PROBE_ERROR|BODAQS_PROBE_RESPONSE)) {failAccept_();return;}
   if(r.node>=s_nodes) {failAccept_();return;}
   auto& n=s_nodeState[r.node];
   if(r.object_id!=n.object) {++s_stats.stale;return;}
