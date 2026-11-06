@@ -7,6 +7,47 @@ from drain_capacity import bench_accounting, evaluate, build_report
 
 
 class CapacityReportTests(unittest.TestCase):
+    def test_report_adc_rates_cannot_change_later_default_evaluations(self):
+        report = evaluate({"nodes": 1}, {"exchange_us": 100})
+        report["effective_workload"]["adc_workers_sps"].append(2000)
+        later = evaluate({"nodes": 1}, {"exchange_us": 100})
+        self.assertEqual(later["effective_workload"]["adc_workers_sps"], [])
+        self.assertEqual(later["adc_wire_fraction"], 0)
+
+    def test_effective_adc_rates_and_caller_input_are_independent(self):
+        workload = {"nodes": 1, "adc_workers_sps": [175, 175]}
+        report = evaluate(workload, {"exchange_us": 100})
+        workload["adc_workers_sps"][0] = 1000
+        self.assertEqual(report["effective_workload"]["adc_workers_sps"], [175, 175])
+        report["effective_workload"]["adc_workers_sps"].append(2000)
+        self.assertEqual(workload["adc_workers_sps"], [1000, 175])
+
+    def test_serial_request_service_can_fail_delivery_despite_wire_capacity(self):
+        report = evaluate({"nodes": 1}, {"exchange_us": 64, "encode_us": 0,
+            "master_request_us": 300})
+        # Independent floor: 128 exceptional turns at the configured 374us
+        # serial-safe request interval already need 47,872us without arrivals.
+        # Adding 28 batch turns/retries, 41.5ms fixed and 12.56ms CAN exceeds
+        # 100ms even before charging concurrent traffic (about 112.9ms).
+        self.assertIn("delivery", report["failed_gates"])
+        self.assertGreaterEqual(report["spi_burst_recovery_us"], 47872)
+        self.assertIsNone(report["delivery_estimate_us"])
+        self.assertFalse(report["delivery_qualified"])
+
+    def test_worker_yield_changes_delivery_and_concurrent_burst_recovery(self):
+        costs = {"exchange_us": 64, "encode_us": 0, "master_request_us": 0,
+                 "retirement_us": 0, "publication_us": 0}
+        unpaced = evaluate({"nodes": 1}, costs)
+        paced = evaluate({"nodes": 1}, costs | {
+            "worker_pause_us_per_eight_services": 1000})
+        # A 1ms pause/eight calls leaves at most 5291 turns/s (189us/turn).
+        # The default steady traffic still arrives during the 128-turn burst.
+        self.assertNotIn("delivery", unpaced["failed_gates"])
+        self.assertIn("delivery", paced["failed_gates"])
+        self.assertGreater(paced["spi_burst_recovery_us"],
+                           unpaced["spi_burst_recovery_us"])
+        self.assertGreater(paced["spi_burst_recovery_us"], 24192)
+
     def test_bus_ownership_limit_and_useful_drain_remain_separate_gates(self):
         report = evaluate({"nodes": 1}, {"exchange_us": 200, "mutex_hold_us": 101})
         self.assertIn("mutex_hold", report["failed_gates"])
@@ -70,7 +111,8 @@ class CapacityReportTests(unittest.TestCase):
         self.assertIn("persistence", report["failed_gates"])
         self.assertEqual(set(report["memory"]["master_banks"]), {"BANK0", "BANK1"})
         self.assertGreater(report["persistence_bytes_s"], 160000)
-        self.assertGreater(report["spi_burst_recovery_us"], 0)
+        self.assertIsNone(report["spi_burst_recovery_us"])
+        self.assertIn("burst_service_coverage", report["failed_gates"])
         self.assertGreater(report["can_fraction"], .52)
 
     def test_request_capacity_and_encoding_can_fail_a_wire_time_pass(self):
@@ -91,7 +133,8 @@ class CapacityReportTests(unittest.TestCase):
         self.assertAlmostEqual(full["selected_batches_s"], 51.27692307692308)
         self.assertGreater(partial["sample_slots_s"], partial["sample_fragments_s"])
         self.assertEqual(full["selected_batches_per_node"], 1)
-        self.assertGreater(partial["delivery_estimate_us"], 20000)
+        self.assertIsNone(partial["delivery_estimate_us"])
+        self.assertIn("delivery", partial["failed_gates"])
 
     def test_shared_bus_charges_adc_workers_and_mandatory_deadlines(self):
         report = evaluate({"nodes": 1, "adc_workers_sps": [2000, 2000]},

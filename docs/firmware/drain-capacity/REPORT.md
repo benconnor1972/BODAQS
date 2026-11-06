@@ -168,10 +168,10 @@ measured redesign bounds. The no-pacing case favors the redesign.
 | Candidate | Steady SPI | 1.25x SPI | Result |
 |---|---:|---:|---|
 | One IMU, no ADC | 34.32% | 40.06% | Conditional planning candidate |
-| Two IMUs, no ADC | 65.89% | 77.38% | Conditional planning candidate |
-| Two IMUs, two 175 sps ADC workers | 69.38% | 80.87% | Conditional planning candidate |
-| One IMU, two 1000 sps workers | 54.27% | 60.01% | Conditional planning candidate |
-| One IMU, two 2000 sps workers | 74.22% | 79.96% | Conditional planning candidate |
+| Two IMUs, no ADC | 65.89% | 77.38% | No-go under simultaneous-burst delivery sensitivity |
+| Two IMUs, two 175 sps ADC workers | 69.38% | 80.87% | No-go under simultaneous-burst delivery sensitivity |
+| One IMU, two 1000 sps workers | 54.27% | 60.01% | No-go under simultaneous-burst delivery sensitivity |
+| One IMU, two 2000 sps workers | 74.22% | 79.96% | No-go under simultaneous-burst delivery sensitivity |
 | Three IMUs, no ADC | 97.46% | 114.69% | No-go |
 | Four IMUs, no ADC | 129.04% | 152.00% | No-go |
 | Four IMUs, hypothetical 100 us total slot cost | 84.70% | 99.78% | No-go |
@@ -236,12 +236,45 @@ writer service is unmeasured. A one-second writer blackout is covered in the
 allocation; it is not a five-second authorization buffer. RAM ACK still precedes
 SD persistence. Larger metadata/layout/chunk costs must rerun the model.
 
-The provisional 100 ms delivery calculation explicitly assumes 1.5 ms source
-packet formation, 10 ms FIFO service, 20 ms batch seal and 10 ms normal scheduler
-gap, plus serialized batch service and both finite bursts. It is a **conditional
-estimate**, not a proven bound; overloaded cases report no applicable estimate.
-Passing observed-mean one/two-node no-ADC candidates estimate 78.5/84.0 ms.
-FIFO/scheduler/ADC service tails and queue age must be measured independently.
+The provisional 100 ms target applies to normal admitted acquisition-to-RAM
+delivery. This model's conservative sensitivity combines 1.5 ms source packet
+formation, 10 ms FIFO service, 20 ms batch seal and 10 ms normal scheduler gap
+with serialized batch service and both exceptional bursts simultaneously. That
+adverse envelope is a planning assumption, not a newly agreed requirement to
+deliver within 100 ms through every simultaneous exceptional fault.
+
+Available service capacity is the minimum of shared-SPI service after ADC,
+serial-safe request acceptance, and the paced worker's service rate. Selected
+batch service deducts recurring mandatory and partial-seal slots, with retries.
+SPI burst recovery deducts **all continuing steady slots**, including samples;
+128 exceptional turns cannot drain at wire speed while ordinary work continues.
+The JSON exposes these three service capacities in slots/s. This fluid-service
+calculation assumes schedulable bounded service; average costs and worker pacing
+do not prove finite-window deadlines or actual overlap. The CAN burst remains
+a separately serialized wire-time reserve, not a qualified CAN latency bound.
+
+The corrected observed-mean one-node no-ADC sensitivity estimates **96.3 ms**,
+including **36.4 ms** SPI burst recovery. Two-node no-ADC SPI recovery is
+**88.5 ms** before the fixed, batch and CAN terms, so that conservative envelope
+fails the 100 ms sensitivity despite passing the SPI throughput gates. The
+table identifies the other smaller workloads rejected by this sensitivity;
+it does not establish that normal healthy operation physically fails. The
+four-node measured sample-only throughput deficit remains independent of bursts.
+
+Independent request example: one node, 64 us exchange, zero encode and 300 us
+request work gives a 374 us serial-safe interval. Even ignoring competing traffic,
+128 burst turns plus 28 batch turns/retries and the fixed/CAN terms exceed
+112.9 ms. With continuing steady work, SPI recovery alone estimates **304.2 ms**,
+so delivery fails. A separate wire-floor example with a 1 ms pause every eight
+worker services changes the conditional interval from 64 to 189 us and SPI
+recovery from **9.6 to 42.1 ms**, crossing the delivery sensitivity gate.
+
+These remain **conditional estimates**, never physical guarantees. Cases failing
+any gate report no applicable delivery estimate. `spi_burst_recovery_us` is now
+`null` when no spare modeled service remains and the burst gate fails explicitly.
+The report owns its effective ADC-rate list: mutating a report or caller workload
+cannot change another evaluation. FIFO/scheduler/ADC service tails and queue age
+must be measured independently.
 
 ## Interface changes and remaining evidence
 
@@ -268,6 +301,8 @@ host pass or target compile cannot substitute for these measurements.
 Independent worked tests cover frozen accounting, full/one-record fragmentation,
 ADC wire demand, ownership and request-capacity failures, separate physical floor,
 literal CAN and SPI threshold crossings, memory/persistence failures, invalid
-inputs, deterministic reports and changed-source rejection. Red/green logs and
+inputs, deterministic reports, changed-source rejection, independent ADC input/
+report ownership, and request/worker-constrained delivery and burst recovery.
+Fourteen public-interface tests pass. Red/green logs and
 full generated outputs are retained outside the repository in the T01 execution
 evidence directory. No device was probed or flashed.

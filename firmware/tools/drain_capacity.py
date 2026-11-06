@@ -42,6 +42,7 @@ def evaluate(workload: dict, costs: dict) -> dict:
     if set(costs) - ({"exchange_us"} | set(COST_DEFAULTS)):
         raise ValueError("unknown cost field")
     workload = WORKLOAD_DEFAULTS | workload
+    workload["adc_workers_sps"] = list(workload["adc_workers_sps"])
     costs = COST_DEFAULTS | costs
     for key, value in (workload | costs).items():
         values = value if key == "adc_workers_sps" else [value]
@@ -121,7 +122,18 @@ def evaluate(workload: dict, costs: dict) -> dict:
         failed.append("steady_spi_and_burst")
     can_frames = samples_s / 5 + nodes * (4 + 10 + 1 + observation_hz * observation_frames + 44) + 10 + 8
     can_fraction = can_frames * 196.25 / 1e6
-    spi_burst = workload.get("spi_burst_slots", 128) * slot_cost
+    # Conditional fluid-service envelope: available shared SPI and serial-safe
+    # request acceptance and paced worker each constrain useful turns. This
+    # assumes schedulable service, not a measured latency bound. An exceptional
+    # backlog drains after steady traffic; fixed mandatory/partial traffic also
+    # competes with the selected batches used in the delivery sensitivity.
+    service_slots_s = min(max(0, 1 - adc_scheduling) * 1e6 / slot_cost,
+                          1e6 / request_interval, 1e6 / worker_interval)
+    fixed_turns = (partial_slots + auxiliary) * retry
+    batch_service_slots_s = max(0, service_slots_s - fixed_turns)
+    burst_service_slots_s = max(0, service_slots_s - steady_slots)
+    spi_burst = (workload["spi_burst_slots"] * 1e6 / burst_service_slots_s
+                 if burst_service_slots_s else None)
     can_burst = workload.get("can_burst_frames", 64) * 196.25
     # Candidate compact packet records retain complete CAN contents and identity;
     # payload layout is not implemented. 112/128-byte allocations are assumptions.
@@ -181,14 +193,15 @@ def evaluate(workload: dict, costs: dict) -> dict:
         failed.append("master_cpu")
     if logger_cpu > 1:
         failed.append("logger_cpu")
-    available = max(1e-9, 1 - adc_scheduling - auxiliary * retry * slot_cost / 1e6)
-    delivery = sum(workload[k] for k in ("packet_formation_us", "node_fifo_service_us", "batch_seal_us", "normal_scheduler_gap_us")) + nodes * (fragments + publication_turns) * retry * slot_cost / available + spi_burst + can_burst
-    if delivery > 100000:
+    delivery = (sum(workload[k] for k in ("packet_formation_us", "node_fifo_service_us", "batch_seal_us", "normal_scheduler_gap_us"))
+                + nodes * (fragments + publication_turns) * retry * 1e6 / batch_service_slots_s
+                + spi_burst + can_burst
+                if batch_service_slots_s and spi_burst is not None else None)
+    if delivery is None or delivery > 100000:
         failed.append("delivery")
-    if can_burst > 50000 or spi_burst > 100000:
+    if can_burst > 50000 or spi_burst is None or spi_burst > 100000:
         failed.append("burst_service_coverage")
     data_turns = (fragments_s + batches_s * publication_turns) * retry
-    fixed_turns = (partial_slots + auxiliary) * retry
     spi_ratio = max(0, (850000 - adc_scheduling * 1e6) / slot_cost - fixed_turns) / data_turns
     request_ratio = max(0, 1e6 / request_interval - fixed_turns) / data_turns
     master_data_cpu = data_turns * costs["master_request_us"] + batches_s * costs["master_batch_us"]
@@ -214,7 +227,7 @@ def evaluate(workload: dict, costs: dict) -> dict:
         "delivery_estimate_us": delivery if not failed else None,
         "delivery_estimate_applicable": not failed,
         "delivery_qualified": False,
-        "delivery_interpretation": "conditional serialized envelope estimate; requires service measurements",
+        "delivery_interpretation": "conditional serialized envelope including simultaneous exceptional bursts; not a normal-operation or physical guarantee",
         "catchup_spi_fraction": catchup_spi,
         "request_interval_us": request_interval,
         "request_capacity_fraction": request_fraction,
@@ -235,6 +248,10 @@ def evaluate(workload: dict, costs: dict) -> dict:
         "can_frames_s": can_frames,
         "can_burst_recovery_us": can_burst,
         "spi_burst_recovery_us": spi_burst,
+        "spi_burst_interpretation": "conditional recovery after steady traffic; null when no spare service; not a physical guarantee",
+        "service_capacity_slots_s": service_slots_s,
+        "batch_service_available_slots_s": batch_service_slots_s,
+        "burst_service_available_slots_s": burst_service_slots_s,
         "persistence_bytes_s": persistence,
         "memory": memory,
         "effective_workload": workload,
