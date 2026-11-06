@@ -27,12 +27,13 @@ struct Stats {
   uint32_t slots=0,validResponses=0,uniqueObjects=0,retiredObjects=0;
   uint64_t acceptedBytes=0;
   uint32_t transferErrors=0,wireErrors=0,stale=0,duplicates=0,acceptErrors=0;
-  TimingSummary slot,guard,encode,decode,validate,expectedCrc,iteration,requestInterval;
+  TimingSummary slot,guard,encode,decode,validate,expectedCrc,objectCrc,iteration,requestInterval;
   // Active request exchanges only: control entry/STATS/STOP are excluded.
   uint32_t decodeCounts[9]={};
   FailureSample failures[4];
   uint8_t failureCount=0;
   uint32_t failureSamplesOmitted=0,pacingDeferred=0,switchTransfers=0,switchFailures=0;
+  uint32_t csGuardDeferred=0,intervalDeferred=0;
   PreviousParticipant byPreviousCs[10];
   PreviousOperation byPreviousOperation[16];
   uint32_t operationBucketsOmitted=0;

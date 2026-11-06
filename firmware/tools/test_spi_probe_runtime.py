@@ -16,6 +16,7 @@ def main():
     parser.add_argument("--framework", type=Path, default=Path.home() / ".platformio/packages/framework-arduinoespressif32")
     parser.add_argument("--capture", type=Path, help="Retain emitted public JSON cases")
     parser.add_argument("--skip-analyzer", action="store_true", help="Logger-only development before analyzer integration")
+    parser.add_argument("--crc-bitwise", action="store_true", help="Build the logger probe comparison image")
     args = parser.parse_args()
     if args.gpio_production and (not args.gpio_startup or args.case_runner):
         parser.error("--gpio-production requires --gpio-startup without --case-runner")
@@ -69,7 +70,8 @@ def main():
         identity_file.write_text("after", encoding="utf-8")
         assert source_identity(identity_root) != first_identity
         probe_flags = [] if args.gpio_production else ['-DBODAQS_SPI_PROBE=1',
-            '-DBODAQS_SPI_PROBE_BUILD="' + source_identity(root) + '"']
+            '-DBODAQS_SPI_PROBE_LOGGER_CRC_TABLE=' + str(int(not args.crc_bitwise)),
+            '-DBODAQS_SPI_PROBE_BUILD="' + source_identity(root,int(not args.crc_bitwise)) + '"']
         subprocess.run([args.compiler, '-std=gnu++2a', '-pthread', '-DESP32=1', *probe_flags, '-DLOG_COMPILED=0', '-Wno-unused', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-I', str(temp), '-I', str(root / 'test/stubs'), '-I', str(root / 'src'), str(cpp), *map(str, sources), '-o', str(exe)], check=True)
         run = subprocess.run([str(exe)], timeout=30, capture_output=True, text=True)
         print(run.stdout, end="")
@@ -91,7 +93,18 @@ def main():
                 assert case['workers_stopped'] and case['profile']['actual_sck_hz'] is None
                 assert case['accepted_bytes'] == case['unique_objects'] * 1008
                 assert case['valid_responses'] <= case['slots']
-                assert case['schema'] == 'bodaqs.spi-probe.v7'
+                assert case['schema'] == 'bodaqs.spi-probe.v8'
+                cost=case['logger_cost'];cadence=cost['cadence']
+                assert cost['crc_algorithm']==('bitwise' if args.crc_bitwise else 'table')
+                assert case['artifacts']['logger_build'].endswith('-crc'+str(int(not args.crc_bitwise)))
+                assert sum(v['count'] for v in cadence['decisions'].values())==cadence['cycle']['count']
+                assert sum(v['total_us'] for v in cadence['decisions'].values())==cadence['cycle']['total_us']
+                assert sum(cadence[n]['total_us'] for n in ('adc_ready_service','row_service','adc_start_service','transport_service'))<=cadence['cycle']['total_us']
+                if case['case_id'] in (34,35,45,46,51):
+                    assert cadence['decisions']['dispatch']['count']==case['slots']>0
+                    assert cadence['decisions']['row_reserve']['count']>0
+                    assert cadence['decisions']['pacing']['count']>0
+                    assert cadence['dispatch_headroom']['min_us']>800
                 d = case['diagnostics']
                 assert sum(d['decode_counts']) + case['errors']['transfer'] == case['slots']
                 assert sum(d['decode_counts'][1:]) == case['errors']['wire']

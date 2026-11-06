@@ -4,7 +4,9 @@ from pathlib import Path
 import subprocess
 
 
-def source_identity(firmware):
+def source_identity(firmware, logger_crc_table=1):
+    if type(logger_crc_table) is not int or logger_crc_table not in (0, 1):
+        raise ValueError("logger CRC selection must be 0 or 1")
     firmware = Path(firmware).resolve()
     digest = sha256()
     # Git excludes ignored TI/SCons/PIO generated C and H files while retaining
@@ -28,10 +30,12 @@ def source_identity(firmware):
                                            text=True, stderr=subprocess.DEVNULL).strip()[:12]
     except (OSError, subprocess.CalledProcessError):
         revision = "unversioned"
-    return f"spi-probe-v7-{revision}-{digest.hexdigest()[:20]}"
+    return f"spi-probe-v8-{revision}-{digest.hexdigest()[:20]}-crc{logger_crc_table}"
 
 
 if "Import" in globals():
     Import("env")
-    identity = source_identity(env.subst("$PROJECT_DIR"))
+    mode = int(env.GetProjectOption("custom_probe_crc_table", "1"))
+    identity = source_identity(env.subst("$PROJECT_DIR"), mode)
+    env.Append(CPPDEFINES=[("BODAQS_SPI_PROBE_LOGGER_CRC_TABLE", mode)])
     env.Append(CPPDEFINES=[("BODAQS_SPI_PROBE_BUILD", env.StringifyMacro(identity))])

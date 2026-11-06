@@ -16,6 +16,69 @@ EMITTED_SWITCH = FIXTURE.with_name("round2-emitted-switch.jsonl")
 
 
 class ProbeAnalysisTests(unittest.TestCase):
+    def round8_sample(self,name="pipeline"):
+        return json.loads(FIXTURE.with_name(f"round8-{name}.jsonl").read_text(encoding="utf-8"))
+
+    def test_round8_emitted_cadence_and_crc_remain_diagnostic(self):
+        for name in ("baseline","pipeline","stop"):
+            c=self.round8_sample(name)
+            run=self.invoke(json.dumps(c));self.assertEqual(run.returncode,0,run.stderr)
+            report=json.loads(run.stdout);result=report["cases"][0]
+            self.assertEqual(report["schema"],"bodaqs.spi-probe-report.v8")
+            self.assertEqual(result["logger_cost"]["crc_algorithm"],"table")
+            self.assertIn("not causal blocking time",result["logger_cost"]["scope"])
+            self.assertEqual(result["logger_cost"]["cadence"],c["logger_cost"]["cadence"])
+            self.assertGreaterEqual(result["logger_cost"]["outside_completed_cycles_us"],0)
+            self.assertNotEqual(result["candidate_evidence"],"clean_measurement_candidate")
+            self.assertFalse(report["production_qualified"])
+
+    def test_round8_rejects_forged_or_missing_cadence(self):
+        zero={"count":0,"min_us":0,"max_us":0,"total_us":0}
+        for mutation in range(10):
+            c=self.round8_sample("baseline" if mutation>=8 else "pipeline")
+            cost=c["logger_cost"];cadence=cost["cadence"]
+            if mutation==0:cost["crc_algorithm"]="bitwise"
+            elif mutation==1:cadence["active"]=False
+            elif mutation==2:cadence["decisions"]["dispatch"]=zero
+            elif mutation==3:cadence["cycle"]=zero
+            elif mutation==4:cadence["adc_ready_service"]=cadence["cycle"]
+            elif mutation==5:cadence["dispatch_headroom"]={"count":c["slots"],"min_us":800,"max_us":800,"total_us":800*c["slots"]}
+            elif mutation==6:cadence["transport_service"]=zero
+            elif mutation==7:c["artifacts"]["logger_build"]="unknown"
+            elif mutation==8:
+                for key,value in cadence.items():
+                    if key=="decisions":
+                        for name in value:value[name]=zero
+                    elif isinstance(value,dict):cadence[key]=zero
+            else:
+                for key in ("cycle","adc_ready_service","row_service","adc_start_service"):
+                    cadence[key]={"count":1,"min_us":0,"max_us":0,"total_us":0}
+                cadence["decisions"]["adc_only"]={"count":1,"min_us":0,"max_us":0,"total_us":0}
+            self.assertEqual(self.invoke(json.dumps(c)).returncode,2,mutation)
+
+    def test_round8_rejects_impossible_nested_crc_or_work_totals(self):
+        for mutation in range(5):
+            c=self.round8_sample();timings=c["diagnostics"]["timing"]
+            if mutation==0:timings["object_crc"]={"count":c["unique_objects"]+2,"min_us":0,"max_us":0,"total_us":0}
+            elif mutation==1:timings["object_crc"]={"count":c["unique_objects"],"min_us":1000000,"max_us":1000000,"total_us":1000000*c["unique_objects"]}
+            elif mutation==2:c["logger_cost"]["cadence"]["adc_start_service"]={"count":1,"min_us":0,"max_us":0,"total_us":0}
+            elif mutation==3:c["row_publication"]["master_deferrals"]+=1
+            else:c["diagnostics"]["pacing_deferred"]+=1
+            self.assertEqual(self.invoke(json.dumps(c)).returncode,2,mutation)
+
+    def test_round8_both_crc_options_and_matching_baselines(self):
+        cases=[]
+        for mode in (0,1):
+            for name in ("baseline","pipeline"):
+                c=self.round8_sample(name);c["case_id"]+=mode*100
+                c["artifacts"]["logger_build"]=c["artifacts"]["logger_build"][:-1]+str(mode)
+                c["logger_cost"]["crc_algorithm"]="table" if mode else "bitwise"
+                cases.append(c)
+        run=self.invoke("\n".join(map(json.dumps,cases)));self.assertEqual(run.returncode,0,run.stderr)
+        report=json.loads(run.stdout)
+        self.assertEqual(report["cases"][1]["baseline_case_ids"],[33])
+        self.assertEqual(report["cases"][3]["baseline_case_ids"],[133])
+
     def round7_sample(self,name="pipeline"):
         return json.loads(FIXTURE.with_name(f"round7-{name}.jsonl").read_text(encoding="utf-8"))
 

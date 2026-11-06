@@ -224,7 +224,10 @@ void consume_(const BodaqsSpiProbeFrame& r) {
   memcpy(n.bytes+offset,r.payload,r.payload_length);n.mask|=bit;n.crc=r.logical_crc;
   s_progressUs=us_();s_noProgressSlots=0;
   if(n.mask==((1UL<<fragments)-1)) {
-    if(bodaqs_spi_probe_crc(n.bytes,1008)!=n.crc) {failAccept_();return;}
+    const uint32_t began=us_();
+    const uint32_t crc=bodaqs_spi_probe_crc(n.bytes,1008);
+    TimingStats_record(s_stats.objectCrc,us_()-began);
+    if(crc!=n.crc) {failAccept_();return;}
     // RAM acceptance is counted once, before any ACK can retire this object.
     n.accepted=true;++s_stats.uniqueObjects;s_stats.acceptedBytes+=1008;
   }
@@ -259,8 +262,8 @@ bool begin(const board::BoardProfile& board,uint32_t caseId,uint16_t bytes,uint3
 void tick() {
   if(!s_open || !s_entered || !s_healthy)return;
   // Defer without acquiring the bus or sleeping; caller continues row/STOP work.
-  if(s_haveTransfer && static_cast<uint32_t>(us_()-s_lastTransferUs)<25) {++s_stats.pacingDeferred;return;}
-  if(s_haveRequest && static_cast<uint32_t>(us_()-s_lastRequestUs)<s_interval) {++s_stats.pacingDeferred;return;}
+  if(s_haveTransfer && static_cast<uint32_t>(us_()-s_lastTransferUs)<25) {++s_stats.pacingDeferred;++s_stats.csGuardDeferred;return;}
+  if(s_haveRequest && static_cast<uint32_t>(us_()-s_lastRequestUs)<s_interval) {++s_stats.pacingDeferred;++s_stats.intervalDeferred;return;}
   const uint32_t began=us_();
   if(s_switchDue) {
     if(SharedSpiBus::probeUnselectedClocks(s_board->spi))++s_stats.switchTransfers;

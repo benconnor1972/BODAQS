@@ -43,3 +43,11 @@ The JSON line is preserved with an LF terminator. Its emitted logger identity is
 of SPI participant -2 for unselected clocks. This is host evidence, not a device
 timing or ADC-health observation. The case includes a deliberate command error,
 and the report correctly retains failed eligibility.
+# Round8 fixtures
+
+`round8-baseline/pipeline/stop.jsonl` are emitted development host captures from
+the actual logger wrapper with table CRC. Clocks, GPIO, SPI, RTOS and peer reply
+delay are simulated. They exercise cadence/CRC reporting and analyzer rejection;
+their source identities precede the final committed target images. They are not
+physical captures or admission evidence. Final target identities and offline
+validation captures are retained with the sealed round8 bundle.

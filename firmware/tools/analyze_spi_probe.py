@@ -14,7 +14,9 @@ SCHEMA_V4 = "bodaqs.spi-probe.v4"
 SCHEMA_V5 = "bodaqs.spi-probe.v5"
 SCHEMA_V6 = "bodaqs.spi-probe.v6"
 SCHEMA_V7 = "bodaqs.spi-probe.v7"
-WINDOW_SCHEMAS = (SCHEMA_V6, SCHEMA_V7)
+SCHEMA_V8 = "bodaqs.spi-probe.v8"
+PROCESSING_SCHEMAS = (SCHEMA_V7, SCHEMA_V8)
+WINDOW_SCHEMAS = (SCHEMA_V6, *PROCESSING_SCHEMAS)
 ROW_SCHEMAS = (SCHEMA_V5, *WINDOW_SCHEMAS)
 EXECUTION_SCHEMAS = (SCHEMA_V4, *ROW_SCHEMAS)
 ROW_OWNER_MODES = ("owner_adc", "owner_rows", "owner_pipe")
@@ -273,7 +275,7 @@ def validate(case):
                 require(isinstance(master[name], list) and len(master[name]) == 10 and
                         all(type(v) is int and 0 <= v <= 4294967295 for v in master[name]),
                         "invalid master counter page")
-        if case["schema"] == SCHEMA_V7:
+        if case["schema"] in PROCESSING_SCHEMAS:
             require(type(master["processing_measured"]) is bool,"invalid processing measured flag")
             for name in ("processing_before","processing_after","processing_meta_before","processing_meta_after"):
                 require(isinstance(master[name],list) and len(master[name])==10 and all(type(v) is int and 0<=v<=4294967295 for v in master[name]),"invalid processing page")
@@ -307,6 +309,49 @@ def validate(case):
             row_counts(case)
         if case["schema"] in WINDOW_SCHEMAS:
             window_counts(case)
+        if case["schema"] == SCHEMA_V8:
+            logger_cost_counts(case)
+
+
+def logger_cost_counts(case):
+    cost=case["logger_cost"]; c=cost["cadence"]
+    require(cost["crc_algorithm"] in ("table","bitwise"),"unsupported logger CRC algorithm")
+    require(case["artifacts"]["logger_build"].endswith("-crc"+str(int(cost["crc_algorithm"]=="table"))),"logger CRC identity mismatch")
+    active=case["profile"]["mode"] in ROW_OWNER_MODES
+    require(type(c["active"]) is bool and c["active"]==active,"invalid logger cadence mode")
+    phase_names=("adc_ready_service","row_service","adc_start_service","transport_service")
+    names=("adc_only","row_reserve","cs_guard","pacing","dispatch","other")
+    require(set(c["decisions"])==set(names),"invalid cadence decisions")
+    for name in ("cycle",*phase_names,"dispatch_headroom"):timing(c[name])
+    for value in c["decisions"].values():timing(value)
+    cycle=c["cycle"]; d=c["decisions"]
+    require(not active or cycle["count"]>=max(0,case["rows"]-int(case["outcome"]=="failed")),"missing observed owner cycles")
+    require(sum(v["count"] for v in d.values())==cycle["count"] and
+            sum(v["total_us"] for v in d.values())==cycle["total_us"],"cadence outcomes do not partition cycles")
+    require(sum(c[n]["total_us"] for n in phase_names)<=cycle["total_us"]<=case["elapsed_us"],"impossible cadence work totals")
+    require(all(c[n]["count"]==cycle["count"] for n in phase_names[:3]),"cadence phase count mismatch")
+    require(c["transport_service"]["count"]==sum(d[n]["count"] for n in ("cs_guard","pacing","dispatch","other")),"transport service count mismatch")
+    require(c["dispatch_headroom"]["count"]==d["dispatch"]["count"] and
+            (not c["dispatch_headroom"]["count"] or c["dispatch_headroom"]["min_us"]>800),"invalid dispatch headroom")
+    require(d["row_reserve"]["count"]==case["row_publication"]["master_deferrals"],"row reserve count mismatch")
+    if active:
+        require(d["dispatch"]["count"]==case["slots"],"cadence dispatch count mismatch")
+        require(d["cs_guard"]["count"]+d["pacing"]["count"]==case["diagnostics"]["pacing_deferred"],"pacing decision count mismatch")
+        require(d["adc_only"]["count"]==(cycle["count"] if case["profile"]["mode"]=="owner_adc" else 0),"ADC-only cadence mismatch")
+    else:
+        require(not cycle["count"] and not c["dispatch_headroom"]["count"],"inactive cadence observations")
+    obj=case["diagnostics"]["timing"]["object_crc"];timing(obj)
+    expected=case["diagnostics"]["timing"]["expected_crc"]
+    validate=case["diagnostics"]["timing"]["validate"]
+    require(case["unique_objects"]<=obj["count"]<=case["unique_objects"]+case["errors"]["accept"],"object CRC count mismatch")
+    require(obj["total_us"]+expected["total_us"]<=validate["total_us"],"impossible nested logger CRC totals")
+
+
+def logger_cost_report(case):
+    cost=case["logger_cost"];c=cost["cadence"]
+    return {**cost,"cycle_coverage_us":c["cycle"]["total_us"],
+            "outside_completed_cycles_us":case["elapsed_us"]-c["cycle"]["total_us"],
+            "scope":"completed owner-loop bodies only; disjoint phase totals fit inside cycles; outcome buckets partition the SAME cycles and include ADC work, not causal blocking time; object/expected CRC nest inside validation; excludes startup/shutdown; interrupts included"}
 
 
 def window_counts(case):
@@ -654,7 +699,7 @@ def analyze(data, manifest=None):
         adc = adc_status(case)
         master, engine_delta, adapter_delta, adapter_states = master_diagnostics(case)
         components = component_timing(case)
-        processing=processing_report(case) if case["schema"] == SCHEMA_V7 else None
+        processing=processing_report(case) if case["schema"] in PROCESSING_SCHEMAS else None
         if processing and processing["status"] == "invalid":master="failed"
         elif processing and processing["status"] == "unknown" and master=="clean":master="unknown"
         observations = diagnostic_observations(case)
@@ -693,6 +738,7 @@ def analyze(data, manifest=None):
                 "master_receive_pressure": "not_applicable" if p["mode"] in ADC_ONLY_MODES else
                     "unknown" if adapter_delta is None else "drops_observed" if adapter_delta[1] else "no_spi_drops_observed"} if case["schema"] in ROW_SCHEMAS else {}),
             **({"master_processing_components":processing} if processing is not None else {}),
+            **({"logger_cost":logger_cost_report(case)} if case["schema"]==SCHEMA_V8 else {}),
             **({"request_window": case["request_window"]} if case["schema"] in WINDOW_SCHEMAS else {}),
             **({"execution_control": execution_report(case)} if case["schema"] in EXECUTION_SCHEMAS else {}),
             "profile": p, "outcome": case["outcome"], "reason": case["reason"],
@@ -734,7 +780,7 @@ def analyze(data, manifest=None):
             "pipeline_diagnostics": {k: case["errors"][k] for k in ("stale", "duplicate")},
             "candidate_evidence": "failed" if failed else "diagnostic_control" if control else "clean_measurement_candidate" if clean_candidate else "unknown",
             "raw_measurements": case})
-    return {"schema": "bodaqs.spi-probe-report.v7" if any(c["schema"] == SCHEMA_V7 for c in cases) else "bodaqs.spi-probe-report.v6" if any(c["schema"] == SCHEMA_V6 for c in cases) else "bodaqs.spi-probe-report.v5" if any(c["schema"] == SCHEMA_V5 for c in cases) else "bodaqs.spi-probe-report.v4" if any(c["schema"] in EXECUTION_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v3" if any(c["schema"] in INTEGRITY_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v2" if any(c["schema"] in DIAGNOSTIC_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v1",
+    return {"schema": "bodaqs.spi-probe-report.v8" if any(c["schema"] == SCHEMA_V8 for c in cases) else "bodaqs.spi-probe-report.v7" if any(c["schema"] == SCHEMA_V7 for c in cases) else "bodaqs.spi-probe-report.v6" if any(c["schema"] == SCHEMA_V6 for c in cases) else "bodaqs.spi-probe-report.v5" if any(c["schema"] == SCHEMA_V5 for c in cases) else "bodaqs.spi-probe-report.v4" if any(c["schema"] in EXECUTION_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v3" if any(c["schema"] in INTEGRITY_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v2" if any(c["schema"] in DIAGNOSTIC_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v1",
             "capture_sha256": digest,
             "run_identity": "declared_paired" if manifest else "unknown_without_manifest",
             "manifest": manifest, "serial_events": events,

@@ -52,7 +52,9 @@ unsigned probe_trace(uint8_t *out,unsigned capacity) {
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--cc',required=True);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--cc',required=True)
+    p.add_argument('--logger-cxx',help='Exercise the actual logger wrapper with this C++ compiler')
+    a=p.parse_args()
     common=Path(__file__).resolve().parents[2]/'common/protocol'
     rng=random.Random(702)
     vectors=[b'',b'123456789',bytes(range(256))]
@@ -63,7 +65,16 @@ def main():
         traces=[]
         for mode in (0,1):
             dll=tmp/f'crc{mode}.dll'
-            subprocess.run([a.cc,'-std=c11','-O2','-Wall','-Wextra','-Werror','-shared',
+            if a.logger_cxx:
+                obj=tmp/'bridge.o'
+                subprocess.run([a.cc,'-std=c11','-O2','-DBODAQS_SPI_PROBE=1','-I'+str(common),
+                    *(['-fPIC'] if os.name!='nt' else []),
+                    '-c',str(bridge),'-o',str(obj)],check=True)
+                subprocess.run([a.logger_cxx,'-std=gnu++20','-O2','-Wall','-Wextra','-Werror','-shared',
+                    *(['-fPIC'] if os.name!='nt' else []),'-DBODAQS_SPI_PROBE=1',
+                    f'-DBODAQS_SPI_PROBE_LOGGER_CRC_TABLE={mode}',
+                    str(common.parents[2]/'src/SpiProbeCodec.cpp'),str(obj),'-o',str(dll)],check=True)
+            else:subprocess.run([a.cc,'-std=c11','-O2','-Wall','-Wextra','-Werror','-shared',
                 *(['-fPIC'] if os.name!='nt' else []),
                 '-DBODAQS_SPI_PROBE=1',f'-DBODAQS_SPI_PROBE_CRC_TABLE={mode}',
                 '-I'+str(common),str(common/'bodaqs_spi_probe.c'),str(bridge),'-o',str(dll)],check=True)
