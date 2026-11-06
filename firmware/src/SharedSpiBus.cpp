@@ -1,8 +1,12 @@
 #include "SharedSpiBus.h"
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+#include "esp_timer.h"
+#endif
 
 #if defined(ESP32)
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #endif
 
 namespace {
@@ -15,6 +19,8 @@ int8_t s_mosi = -1;
 SharedSpiBus::Diagnostics s_diagnostics;
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
 SharedSpiBus::ProbeStats s_probe;
+SharedSpiBus::ProbeTrafficWindow s_traffic;
+bool s_trafficActive=false;
 SharedSpiBus::ProbeContext s_previous;
 bool s_previousValid=false;
 uint32_t s_sequence=0;
@@ -29,6 +35,18 @@ portMUX_TYPE s_probeMux = portMUX_INITIALIZER_UNLOCKED;
 #endif
 void recordProbe_(int8_t cs, size_t bytes, bool ok, uint32_t wait, uint32_t owned) {
   PROBE_ENTER();
+  if(s_trafficActive)for(auto& p:s_traffic.participant) {
+    if(p.cs!=cs && p.cs!=-1)continue;
+    p.cs=cs;
+    p.coreMask|=1U<<xPortGetCoreID();
+    if(ok) {
+      ++p.transfers;
+      if(bytes==5)++p.steps[0];
+      else if(bytes==1)++p.steps[1];
+      else if(bytes==4)++p.steps[2];
+    } else ++p.lockFailures;
+    break;
+  }
   for (auto& p : s_probe.participant) {
     if (p.csPin != cs && p.csPin != -1) continue;
     p.csPin = cs;
@@ -210,6 +228,14 @@ bool probeUnselectedClocks(const board::SPIProfile& profile) {
   unlock_();recordProbe_(-2,sizeof(bytes),true,static_cast<uint32_t>(began-requested),owned);return true;
 }
 ProbeStats probeSnapshot() { PROBE_ENTER(); const auto copy = s_probe; PROBE_EXIT(); return copy; }
+void probeTrafficBegin() {
+  PROBE_ENTER();s_traffic=ProbeTrafficWindow{};
+  s_traffic.startedUs=esp_timer_get_time();s_trafficActive=true;PROBE_EXIT();
+}
+ProbeTrafficWindow probeTrafficEnd() {
+  PROBE_ENTER();s_traffic.endedUs=s_trafficActive?esp_timer_get_time():0;
+  s_trafficActive=false;const auto copy=s_traffic;PROBE_EXIT();return copy;
+}
 #endif
 
 }  // namespace SharedSpiBus

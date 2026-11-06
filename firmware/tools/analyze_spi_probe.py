@@ -10,8 +10,10 @@ import sys
 SCHEMA = "bodaqs.spi-probe.v1"
 SCHEMA_V2 = "bodaqs.spi-probe.v2"
 SCHEMA_V3 = "bodaqs.spi-probe.v3"
-DIAGNOSTIC_SCHEMAS = (SCHEMA_V2, SCHEMA_V3)
-NO_ROW_MODES = ("bulk", "switch", "shape", "selected")
+SCHEMA_V4 = "bodaqs.spi-probe.v4"
+INTEGRITY_SCHEMAS = (SCHEMA_V3, SCHEMA_V4)
+DIAGNOSTIC_SCHEMAS = (SCHEMA_V2, *INTEGRITY_SCHEMAS)
+NO_ROW_MODES = ("bulk", "switch", "shape", "selected", "owner", "workers")
 DECODE_NAMES = "ok argument frame_size magic version profile payload_length crc padding".split()
 COMPONENT_COUNTERS = {0: "process_calls", 1: "process_total_us", 3: "boundary_calls",
                       4: "retire_total_us", 6: "publish_calls", 7: "publish_wait_total_us"}
@@ -154,7 +156,7 @@ def integrity_counts(case):
     require(all(n <= missing_failures.get(cs, 0) for cs, n in unbucketed.items()),
             "failure samples exceed omitted operation failures")
     sequence = d["sequence"]
-    active = case["profile"]["mode"] in ("shape", "selected")
+    active = case["profile"]["mode"] in ("shape", "selected", "owner")
     require(type(sequence["active"]) is bool and sequence["active"] == active and
             type(sequence["worker_start_requested"]) is bool, "invalid sequence state")
     counts(sequence, "failures timeouts")
@@ -165,7 +167,8 @@ def integrity_counts(case):
     if active:
         require(not sequence["worker_start_requested"] and case["rows"] == 0, "sequence started workers or rows")
         if case["outcome"] == "complete":
-            require(all(row[2] > 0 for row in ops) and sequence["failures"] == sequence["timeouts"] == 0,
+            mask = case["execution"]["adc_mask"] if case["schema"] == SCHEMA_V4 else 3
+            require(all(row[2] > 0 for i, row in enumerate(ops) if mask & (1 << i)) and sequence["failures"] == sequence["timeouts"] == 0,
                     "complete sequence has missing reads or failures")
         if case["profile"]["mode"] == "shape":
             require(sum(sum(row) for row in ops) == sum(p["transfers"] for p in case["spi"] if p["cs"] == -2),
@@ -190,7 +193,7 @@ def validate(case):
             a["master_build"] == "external-manifest", "invalid artifact identity")
     p = case["profile"]
     counts(p, "frame_bytes requested_sck_hz guard_us nodes duration_ms row_hz")
-    require(p["mode"] in (("adc", "bulk", "mixed", "switch", "shape", "selected") if case["schema"] == SCHEMA_V3 else (("adc", "bulk", "mixed", "switch") if v2 else ("adc", "bulk", "mixed"))) and
+    require(p["mode"] in (("adc", "bulk", "mixed", "switch", "shape", "selected", "owner", "workers") if case["schema"] == SCHEMA_V4 else (("adc", "bulk", "mixed", "switch", "shape", "selected") if case["schema"] in INTEGRITY_SCHEMAS else (("adc", "bulk", "mixed", "switch") if v2 else ("adc", "bulk", "mixed")))) and
             p["frame_bytes"] in (64, 128, 256) and
             p["requested_sck_hz"] in (8000000, 16000000) and
             p["guard_us"] == 25 and 1 <= p["nodes"] <= 4 and
@@ -280,8 +283,66 @@ def validate(case):
         require(diagnostic["expected_crc_calls"] == diagnostic["timing"]["expected_crc"]["count"],
                 "expected CRC call count mismatch")
         diagnostic_counts(case)
-        if case["schema"] == SCHEMA_V3:
+        if case["schema"] in INTEGRITY_SCHEMAS:
             integrity_counts(case)
+        if case["schema"] == SCHEMA_V4:
+            execution_counts(case)
+
+
+def execution_counts(case):
+    e = case["execution"]
+    counts(e, "adc_mask adc_core cycle_us owner_core window_started_us window_ended_us")
+    require(1 <= e["adc_mask"] <= 3 and e["adc_core"] in (0, 1) and e["owner_core"] in (0, 1) and
+            (e["cycle_us"] == 0 or 1500 <= e["cycle_us"] <= 20000), "invalid execution profile")
+    mode = case["profile"]["mode"]
+    require(mode in ("owner", "workers") or (e["adc_mask"], e["adc_core"], e["cycle_us"]) == (3, 0, 0),
+            "execution overrides require owner/workers mode")
+    require(mode != "owner" or e["adc_core"] == e["owner_core"], "owner core mismatch")
+    require(e["window_ended_us"] >= e["window_started_us"] and
+            (e["window_started_us"] > 0 or e["window_ended_us"] == 0), "invalid traffic window")
+    span=e["window_ended_us"]-e["window_started_us"]
+    require(span >= case["elapsed_us"], "traffic window does not bracket elapsed time")
+    if case["outcome"] == "complete":
+        require(e["window_started_us"] > 0 and e["window_ended_us"] > e["window_started_us"], "missing traffic window")
+    require(isinstance(e["traffic"], list) and len(e["traffic"]) <= 8, "invalid traffic entries")
+    seen = set()
+    bus = {p["cs"]:p for p in case["spi"]}
+    for p in e["traffic"]:
+        counts(p, "core_mask transfers lock_failures")
+        require(type(p["cs"]) is int and p["cs"] in bus and p["cs"] not in seen and
+                1 <= p["core_mask"] <= 3, "invalid traffic participant/core")
+        seen.add(p["cs"])
+        require(p["transfers"] <= bus[p["cs"]]["transfers"] and
+                p["lock_failures"] <= bus[p["cs"]]["lock_failures"], "traffic exceeds all-scope counters")
+        ops = p["operations"]
+        require(isinstance(ops, list) and len(ops) == 3 and all(type(n) is int and n >= 0 for n in ops) and
+                sum(ops) <= p["transfers"], "invalid traffic operations")
+        if p["cs"] in (47, 21):
+            adc = (47, 21).index(p["cs"])
+            require(e["adc_mask"] & (1 << adc), "disabled ADC has timed traffic")
+            core = e["adc_core"] if mode in ("adc", "mixed", "workers") else e["owner_core"]
+            require(p["core_mask"] == 1 << core, "unexpected ADC execution core")
+            if e["cycle_us"]:
+                # Allow conversions already in progress at either window edge.
+                require(ops[2] <= span // e["cycle_us"] + 2, "paced reads exceed minimum cycle interval")
+        elif p["cs"] == 40:
+            require(p["core_mask"] == 1 << e["owner_core"], "unexpected master execution core")
+    if mode in ("owner", "workers") and case["outcome"] == "complete":
+        by_cs = {p["cs"]:p for p in e["traffic"]}
+        require(all(by_cs.get(cs, {}).get("operations", [0,0,0])[2] > 0
+                    for adc,cs in enumerate((47,21)) if e["adc_mask"] & (1 << adc)), "missing timed ADC reads")
+    require(case["diagnostics"]["sequence"]["worker_start_requested"] == (mode in ("adc", "mixed", "workers") and
+            case["reason"] not in ("analog_rail_fault", "master_entry_failed")) or case["outcome"] == "failed",
+            "execution worker-start mismatch")
+
+
+def execution_report(case):
+    e = case["execution"]
+    seconds = (e["window_ended_us"] - e["window_started_us"]) / 1e6
+    return {**e, "scope": "completion-counter observations between startup and STOP; boundary transactions may straddle window; core masks observed in caller tasks",
+            "traffic_rates": [{**p, "transfers_per_second":p["transfers"] / seconds if seconds else None,
+                               "reads_per_second":p["operations"][2] / seconds if seconds else None}
+                              for p in e["traffic"]], "rate_matching": "compare observed rates; requested cycle_us is a minimum interval, not achieved-rate proof"}
 
 
 def unique_keys(pairs):
@@ -437,7 +498,7 @@ def analyze(data, manifest=None):
                 # Firmware boot diagnostics commonly start with [Storage]/[SPI].
                 continue
             raise ValueError(f"line {number}: malformed JSON") from error
-        if not isinstance(item, dict) or item.get("schema") not in (SCHEMA, SCHEMA_V2, SCHEMA_V3):
+        if not isinstance(item, dict) or item.get("schema") not in (SCHEMA, *DIAGNOSTIC_SCHEMAS):
             raise ValueError(f"line {number}: unsupported schema")
         if item.get("type") == "case":
             validate(item)
@@ -473,7 +534,7 @@ def analyze(data, manifest=None):
                 master = "unknown"
         transport = "failed" if any(case["errors"][k] for k in ("transfer", "wire", "accept", "commands")) or (
             case["schema"] in DIAGNOSTIC_SCHEMAS and case["diagnostics"]["switch_failures"]) else "clean"
-        if case["schema"] == SCHEMA_V3 and any(case["diagnostics"]["sequence"][k] for k in ("failures", "timeouts")):
+        if case["schema"] in INTEGRITY_SCHEMAS and any(case["diagnostics"]["sequence"][k] for k in ("failures", "timeouts")):
             transport = "failed"
         baselines = [c for c in cases if c["profile"]["mode"] == "adc" and
                      c["schema"] == case["schema"] and
@@ -490,9 +551,10 @@ def analyze(data, manifest=None):
             p["mode"] == "adc" or (master == "clean" and case["accepted_bytes"] > 0)) and (
             p["mode"] != "mixed" or baseline == "healthy") and (
             case["schema"] not in DIAGNOSTIC_SCHEMAS or observations in ("observed", "not_applicable"))
-        control = case["schema"] in DIAGNOSTIC_SCHEMAS and (p["mode"] in ("switch", "shape", "selected") or
+        control = case["schema"] in DIAGNOSTIC_SCHEMAS and (p["mode"] in ("switch", "shape", "selected", "owner", "workers") or
                   p["crc_mode"] == "cached" or p["start_interval_us"] > 0)
         result.append({"case_id": case["case_id"],
+            **({"execution_control": execution_report(case)} if case["schema"] == SCHEMA_V4 else {}),
             "profile": p, "outcome": case["outcome"], "reason": case["reason"],
             "duration_status": duration_status,
             "scheduled_rows_target": min(case["elapsed_us"], p["duration_ms"] * 1000) * 500 / 1000000 if p["mode"] in ("adc", "mixed") else None,
@@ -515,7 +577,7 @@ def analyze(data, manifest=None):
             "failure_samples_omitted": case["diagnostics"]["failure_samples_omitted"] if case["schema"] in DIAGNOSTIC_SCHEMAS else None,
             **({"decode_by_previous_operation": case["diagnostics"]["by_previous_operation"],
                 "operation_buckets_omitted": case["diagnostics"]["operation_buckets_omitted"],
-                "sequential_control": case["diagnostics"]["sequence"]} if case["schema"] == SCHEMA_V3 else {}),
+                "sequential_control": case["diagnostics"]["sequence"]} if case["schema"] in INTEGRITY_SCHEMAS else {}),
             "decode_by_previous_cs": case["diagnostics"]["by_previous_cs"] if case["schema"] in DIAGNOSTIC_SCHEMAS else None,
             "decode_previous_cs_distribution": [
                 {**entry, "decode_calls": entry["responses"] + entry["decode_failures"],
@@ -532,7 +594,7 @@ def analyze(data, manifest=None):
             "pipeline_diagnostics": {k: case["errors"][k] for k in ("stale", "duplicate")},
             "candidate_evidence": "failed" if failed else "diagnostic_control" if control else "clean_measurement_candidate" if clean_candidate else "unknown",
             "raw_measurements": case})
-    return {"schema": "bodaqs.spi-probe-report.v3" if any(c["schema"] == SCHEMA_V3 for c in cases) else "bodaqs.spi-probe-report.v2" if any(c["schema"] in DIAGNOSTIC_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v1",
+    return {"schema": "bodaqs.spi-probe-report.v4" if any(c["schema"] == SCHEMA_V4 for c in cases) else "bodaqs.spi-probe-report.v3" if any(c["schema"] in INTEGRITY_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v2" if any(c["schema"] in DIAGNOSTIC_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v1",
             "capture_sha256": digest,
             "run_identity": "declared_paired" if manifest else "unknown_without_manifest",
             "manifest": manifest, "serial_events": events,

@@ -70,6 +70,19 @@ struct ProbeStats { ProbeParticipant participant[8]; };
 // Reset only while every participant is stopped. Snapshot is independently locked.
 void probeReset();
 ProbeStats probeSnapshot();
+struct ProbeTraffic {
+  int8_t cs=-1;
+  uint8_t coreMask=0;
+  uint32_t transfers=0, lockFailures=0;
+  uint32_t steps[3]={}; // successful 5/1/4-byte completion observations
+};
+struct ProbeTrafficWindow {
+  uint64_t startedUs=0,endedUs=0;
+  ProbeTraffic participant[8];
+};
+// Independent completion-observation window, excluding startup and STOP.
+void probeTrafficBegin();
+ProbeTrafficWindow probeTrafficEnd();
 #endif
 
 }  // namespace SharedSpiBus

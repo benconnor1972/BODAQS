@@ -97,6 +97,8 @@ AdsDevice s_ads[board::BOARD_MAX_EXTERNAL_ADCS];
 // Never reset/reuse an ISR registration token during this boot. A dispatched
 // callback from an old attachment can enter after detach or another profile.
 uintptr_t s_probeIsrGeneration = 0;
+uint8_t s_probeWorkerMask=3,s_probeWorkerCore=0;
+uint32_t s_probeCycleUs=0;
 #endif
 
 #if defined(ESP32)
@@ -727,7 +729,17 @@ void adcTaskFn_(void* arg) {
   if (dev.asyncRunning) AIN_LOGI("ADS%u async scheduler started\n", (unsigned)adc);
 
   int64_t lastBlockUs = esp_timer_get_time();
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+  int64_t nextCycleUs=0;
+#endif
   while (dev.asyncRun) {
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+    if(s_probeCycleUs && esp_timer_get_time()<nextCycleUs) {
+      vTaskDelay(1); // bounded, stoppable pacing; achieved rates are measured
+      continue;
+    }
+    if(s_probeCycleUs)nextCycleUs=esp_timer_get_time()+s_probeCycleUs;
+#endif
     if (!dev.present || !dev.initialized || dev.activeChannels == 0) {
       vTaskDelay(pdMS_TO_TICKS(10));
       lastBlockUs = esp_timer_get_time();
@@ -1038,6 +1050,9 @@ void onLoggingStart() {
   if (!anyActiveExternalAdc_()) return;
 
   for (uint8_t adc = 0; adc < board::BOARD_MAX_EXTERNAL_ADCS; ++adc) {
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+    if(!(s_probeWorkerMask & (1U<<adc)))continue;
+#endif
     AdsDevice& dev = s_ads[adc];
     if (!dev.present || !dev.initialized || dev.activeChannels == 0) continue;
     dev.nextAsyncChannel = 0;
@@ -1060,6 +1075,9 @@ void onLoggingStart() {
   }
   bool anyStarted = false;
   for (uint8_t adc = 0; adc < board::BOARD_MAX_EXTERNAL_ADCS; ++adc) {
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+    if(!(s_probeWorkerMask & (1U<<adc)))continue;
+#endif
     AdsDevice& dev = s_ads[adc];
     if (!dev.present || !dev.initialized || dev.activeChannels == 0) continue;
     if (dev.asyncTask) {
@@ -1086,7 +1104,11 @@ void onLoggingStart() {
       (void*)(uintptr_t)adc,
       2,
       &dev.asyncTask,
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+      s_probeWorkerCore);
+#else
       0);
+#endif
 
     if (ok == pdPASS) {
       anyStarted = true;
@@ -1268,6 +1290,10 @@ void endSample() {
 }
 
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+bool probeWorkerProfile(uint8_t mask,uint8_t core,uint32_t cycleUs) {
+  if(!probeWorkersStopped() || mask<1 || mask>3 || core>1 || cycleUs>20000)return false;
+  s_probeWorkerMask=mask;s_probeWorkerCore=core;s_probeCycleUs=cycleUs;return true;
+}
 bool probeTransferStep(uint8_t adc, uint8_t step, bool selectDevice) {
   if (!probeWorkersStopped() || !validAdcIndex_(adc) || !s_ads[adc].initialized) return false;
   auto& dev = s_ads[adc];
@@ -1285,7 +1311,9 @@ bool probeDataReady(uint8_t adc) {
 bool probeWorkersRunning() {
   bool any = false, all = true;
   portENTER_CRITICAL(&s_drdyMux);
-  for (const auto& dev : s_ads) {
+  for (uint8_t adc=0;adc<board::BOARD_MAX_EXTERNAL_ADCS;++adc) {
+    if(!(s_probeWorkerMask & (1U<<adc)))continue;
+    const auto& dev=s_ads[adc];
     if (!dev.present || !dev.activeChannels) continue;
     any = true;
     all = all && dev.probeTaskRunning;

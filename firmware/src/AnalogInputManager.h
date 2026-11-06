@@ -45,6 +45,8 @@ namespace AnalogInputManager {
   struct ProbeDrdyStats { ProbeDrdy adc[board::BOARD_MAX_EXTERNAL_ADCS]; };
   bool probeWorkersRunning();
   bool probeWorkersStopped();
+  // Set only while stopped. Defaults preserve the original two core-0 workers.
+  bool probeWorkerProfile(uint8_t mask, uint8_t core, uint32_t cycleUs);
   // Bench-only single-owner WREG(5), START(1), RDATA(4) steps. No workers,
   // cache publication, row reads, or implicit waits; caller owns DRDY timeout.
   bool probeTransferStep(uint8_t adc, uint8_t step, bool selectDevice);

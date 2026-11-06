@@ -16,6 +16,45 @@ EMITTED_SWITCH = FIXTURE.with_name("round2-emitted-switch.jsonl")
 
 
 class ProbeAnalysisTests(unittest.TestCase):
+    def round4_sample(self, name="workers"):
+        return json.loads(FIXTURE.with_name(f"round4-{name}.jsonl").read_text(encoding="utf-8"))
+
+    def test_round4_execution_reports_actual_rates_without_admission(self):
+        for name in ("workers", "same-core", "owner", "timeout"):
+            with self.subTest(name=name):
+                case=self.round4_sample(name)
+                run=self.invoke(json.dumps(case))
+                self.assertEqual(run.returncode,0,run.stderr)
+                report=json.loads(run.stdout)
+                self.assertEqual(report["schema"],"bodaqs.spi-probe-report.v4")
+                c=report["cases"][0]
+                self.assertEqual(c["adc_status"],"not_applicable")
+                self.assertNotEqual(c["candidate_evidence"],"clean_measurement_candidate")
+                e=c["execution_control"]
+                for p in e["traffic_rates"]:
+                    self.assertAlmostEqual(p["transfers_per_second"],p["transfers"]*1e6/(e["window_ended_us"]-e["window_started_us"]))
+                self.assertFalse(report["admission_authorized"])
+                if name=="timeout":self.assertEqual(c["candidate_evidence"],"failed")
+
+    def test_round4_execution_metadata_rejects_false_attribution(self):
+        for mutation in range(11):
+            with self.subTest(mutation=mutation):
+                c=self.round4_sample()
+                e=c["execution"]
+                adc=next(p for p in e["traffic"] if p["cs"]==21)
+                if mutation==0:e["adc_mask"]=True
+                elif mutation==1:e["adc_core"]=2
+                elif mutation==2:e["cycle_us"]=1499
+                elif mutation==3:e["adc_mask"]=1
+                elif mutation==4:adc["core_mask"]=2
+                elif mutation==5:adc["operations"][2]=True
+                elif mutation==6:adc["transfers"]=10000000
+                elif mutation==7:e["window_ended_us"]=e["window_started_us"]-1
+                elif mutation==8:e["traffic"].append(adc.copy())
+                elif mutation==9:adc["operations"][2]=0
+                else:e["window_ended_us"]=e["window_started_us"]+1
+                self.assertEqual(self.invoke(json.dumps(c)).returncode,2)
+
     def round3_sample(self, name="failures"):
         return json.loads(FIXTURE.with_name(f"round3-{name}.jsonl").read_text(encoding="utf-8"))
 

@@ -52,6 +52,8 @@ struct Gpio { int level=LOW; void (*isr)(void*)=nullptr; void* arg=nullptr; } gp
 static std::atomic<unsigned> starts[2], reads[2];
 static std::atomic<bool> failRead[2], timeoutReady[2];
 static thread_local int workerAdc=-1;
+static thread_local int simulatedCore=1;
+int xPortGetCoreID() { return simulatedCore; }
 static thread_local unsigned workerLockCalls=0;
 static thread_local bool workerStartTransfer=false;
 static std::atomic<bool> injectBeforeStart[2];
@@ -193,10 +195,10 @@ static std::mutex entryMutex;
 static std::condition_variable entryCv;
 static std::mutex exitMutex;
 static std::condition_variable exitCv;
-BaseType_t xTaskCreatePinnedToCore(void (*fn)(void*),const char*,uint32_t,void* arg,int,TaskHandle_t* out,int) {
+BaseType_t xTaskCreatePinnedToCore(void (*fn)(void*),const char*,uint32_t,void* arg,int,TaskHandle_t* out,int core) {
   int adc=(int)(uintptr_t)arg; if(adc==failTask) return 0;
   auto* t=new FakeTask; *out=t; tasks.push_back(t);
-  t->thread=std::thread([=] {current=t; workerAdc=adc; {std::unique_lock<std::mutex> lock(entryMutex);entryCv.wait(lock,[]{return !holdTaskEntry;});} fn(arg);}); return pdPASS;
+  t->thread=std::thread([=] {current=t; workerAdc=adc; simulatedCore=core; {std::unique_lock<std::mutex> lock(entryMutex);entryCv.wait(lock,[]{return !holdTaskEntry;});} fn(arg);}); return pdPASS;
 }
 TaskHandle_t xTaskGetCurrentTaskHandle() { return current; }
 void vTaskDelay(TickType_t ticks) {
@@ -411,7 +413,7 @@ int main() {
   puts("real ADC: same-microsecond ISR entry before START marker is ambiguous, later distinct-tick completion paired passed");
 #if TEST_CASE_RUNNER
   releaseWaiters=true;
-  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v3-")!=std::string::npos);
+  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v4-")!=std::string::npos);
   puts(Serial.output.c_str());Serial.output.clear();SpiMeasurementProbe::command("status");
   assert(Serial.output.find("\"logger_build\":")!=std::string::npos);puts(Serial.output.c_str());Serial.output.clear();
   // Public runner, deterministic clock boundary: 10 seconds has 5000 midpoints
@@ -590,7 +592,66 @@ int main() {
   SpiMeasurementProbe::command("status");assert(Serial.output.find("\"blocked\":false")!=std::string::npos);Serial.output.clear();
   steppedUs=-1;bulkLastHigh=0;
   puts("public sequential controls: real 5/1/4-byte ADC operations, all-CS-high and selected, no workers, metadata PASS");
-  uint32_t caseId=23;
+  // Round4 public controls: actual worker bodies and core/mask arguments.
+  for(const char* command:{
+      "case 23 workers 128 8000000 4 100 legacy 500 3 0 5000",
+      "case 24 workers 128 8000000 4 100 legacy 500 3 1 5000",
+      "case 25 workers 128 8000000 4 100 legacy 500 1 0 5000",
+      "case 26 workers 128 8000000 4 100 legacy 500 2 0 5000"}) {
+    releaseWaiters=true;forceReadyPin=true;
+    SpiMeasurementProbe::command(command);
+    while(Serial.output.empty())SpiMeasurementProbe::loop();
+    joinTasks();assert(AnalogInputManager::probeWorkersStopped());
+    assert(Serial.output.find("\"outcome\":\"complete\"")!=std::string::npos);
+    puts(Serial.output.c_str());Serial.output.clear();
+  }
+  steppedUs=static_cast<int64_t>(micros())+10000;bulkLastHigh=0;
+  for(const char* command:{
+      "case 27 owner 128 8000000 4 100 legacy 500 3 1 5000",
+      "case 28 owner 128 8000000 4 100 legacy 500 1 1 1500"}) {
+    SpiMeasurementProbe::command(command);
+    while(Serial.output.empty()){delayMicroseconds(20);SpiMeasurementProbe::loop();}
+    assert(Serial.output.find("\"outcome\":\"complete\"")!=std::string::npos);
+    assert(tasks.empty() && AnalogInputManager::probeWorkersStopped());
+    puts(Serial.output.c_str());Serial.output.clear();
+  }
+  forceReadyPin=false;sequenceNeverReady=true;
+  SpiMeasurementProbe::command("case 29 owner 128 8000000 4 100 legacy 500 3 1 5000");
+  while(Serial.output.empty()){delayMicroseconds(20);SpiMeasurementProbe::loop();}
+  assert(Serial.output.find("adc_ready_timeout")!=std::string::npos);
+  assert(SpiProbeTransport::stats().slots>2); // master serviced while DRDY stays high
+  puts(Serial.output.c_str());Serial.output.clear();
+  SpiMeasurementProbe::command("case 30 owner 128 8000000 4 100 legacy 500 3 1 5000");
+  for(unsigned i=0;i<20;++i){delayMicroseconds(20);SpiMeasurementProbe::loop();}
+  SpiMeasurementProbe::command("stop");
+  assert(Serial.output.find("\"outcome\":\"stopped\"")!=std::string::npos);
+  puts(Serial.output.c_str());Serial.output.clear();
+  sequenceNeverReady=false;forceReadyPin=true;
+  // Invalid controls must not consume IDs or start participants.
+  for(const char* command:{
+      "case 31 workers 128 8000000 4 100 legacy 500",
+      "case 31 owner 128 8000000 4 100 legacy 500 3 0 5000",
+      "case 31 workers 128 8000000 4 100 legacy 500 0 0 5000",
+      "case 31 workers 128 8000000 4 100 legacy 500 3 2 5000",
+      "case 31 workers 128 8000000 4 100 legacy 500 3 0 100",
+      "case 31 mixed 128 8000000 4 100 legacy 500 3 0 5000"}) {
+    SpiMeasurementProbe::command(command);
+    assert(Serial.output.find("invalid_profile")!=std::string::npos);
+    assert(AnalogInputManager::probeWorkersStopped());Serial.output.clear();
+  }
+  // Old modes restore default mask/core/rate after a one-worker control.
+  SpiMeasurementProbe::command("case 31 bulk 128 8000000 4 100 legacy 500");
+  while(Serial.output.empty()){delayMicroseconds(20);SpiMeasurementProbe::loop();}
+  puts(Serial.output.c_str());Serial.output.clear();
+  steppedUs=-1;bulkLastHigh=0;
+  releaseWaiters=true;
+  SpiMeasurementProbe::command("case 32 workers 128 8000000 4 100 legacy 500 1 0 20000");
+  assert(!AnalogInputManager::probeWorkerProfile(3,1,0)); // immutable until stopped
+  delay(2);SpiMeasurementProbe::command("stop");joinTasks();
+  assert(AnalogInputManager::probeWorkersStopped() && Serial.output.find("\"outcome\":\"stopped\"")!=std::string::npos);
+  puts(Serial.output.c_str());Serial.output.clear();
+  puts("Public execution controls: actual worker core/mask/pacing, independent owner conversions, continuing master service, timeout, STOP and default reset PASS");
+  uint32_t caseId=33;
   for(uint16_t frame: {64,128,256})for(uint32_t hz: {8000000U,16000000U}) {
     assert(SpiProbeTransport::begin(board,caseId++,frame,hz,4));
     for(unsigned attempts=0;attempts<1000000 && SpiProbeTransport::stats().retiredObjects<4;++attempts)SpiProbeTransport::tick();
