@@ -11,7 +11,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--compiler", default="g++")
     parser.add_argument("--case-runner", action="store_true", help="Also compile public serial/result and transport seam")
+    parser.add_argument("--gpio-startup", action="store_true", help="Actual Arduino GPIO wrapper with paused first ISR allocation")
+    parser.add_argument("--gpio-production", action="store_true", help="Exercise GPIO startup with probe instrumentation compiled out")
+    parser.add_argument("--framework", type=Path, default=Path.home() / ".platformio/packages/framework-arduinoespressif32")
     args = parser.parse_args()
+    if args.gpio_production and (not args.gpio_startup or args.case_runner):
+        parser.error("--gpio-production requires --gpio-startup without --case-runner")
     root = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix="bodaqs-spi-probe-") as temp:
         temp = Path(temp)
@@ -34,6 +39,9 @@ def main():
             if not any(s in line for s in ('ArduinoJson', 'convertFromJson', 'canConvertFromJson', 'WebServer.h', 'namespace AnalogInputManager')))
         config = '\n'.join(line for line in (root / "src/ConfigManager.cpp").read_text(encoding="utf-8").splitlines() if not line.startswith('#include'))
         fixture = fixture.replace('// CONFIG_SUPPORT', config_support + '\n' + config)
+        if args.gpio_startup:
+            from spi_probe_gpio_startup import fixture_with_gpio_startup
+            fixture = fixture_with_gpio_startup(fixture, args.framework)
         if args.case_runner:
             fixture = '#define TEST_CASE_RUNNER 1\n' + fixture
         cpp, exe = temp / "fixture.cpp", temp / "fixture.exe"
@@ -42,7 +50,8 @@ def main():
         sources += [root / 'can-fd/common/protocol/bodaqs_control.c']
         if args.case_runner:
             sources += [root / 'src' / name for name in ('SpiMeasurementProbe.cpp', 'SpiProbeTransport.cpp', 'SpiProbeCodec.cpp')]
-        subprocess.run([args.compiler, '-std=gnu++2a', '-pthread', '-DESP32=1', '-DBODAQS_SPI_PROBE=1', '-DLOG_COMPILED=0', '-Wno-unused', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-I', str(temp), '-I', str(root / 'test/stubs'), '-I', str(root / 'src'), str(cpp), *map(str, sources), '-o', str(exe)], check=True)
+        probe_flags = [] if args.gpio_production else ['-DBODAQS_SPI_PROBE=1']
+        subprocess.run([args.compiler, '-std=gnu++2a', '-pthread', '-DESP32=1', *probe_flags, '-DLOG_COMPILED=0', '-Wno-unused', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-I', str(temp), '-I', str(root / 'test/stubs'), '-I', str(root / 'src'), str(cpp), *map(str, sources), '-o', str(exe)], check=True)
         run = subprocess.run([str(exe)], timeout=15, capture_output=True, text=True)
         print(run.stdout, end="")
         if run.returncode:

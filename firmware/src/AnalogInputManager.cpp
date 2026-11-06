@@ -15,6 +15,7 @@
 #if defined(ESP32)
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #endif
 
 #define AIN_LOGE(...) LOGE_TAG("AIN", __VA_ARGS__)
@@ -32,6 +33,7 @@ constexpr uint8_t kInvalidChannel = 0xFF;
 constexpr uint32_t kExternalAdcUtilizationPermille = 700;
 constexpr uint32_t kFastDrdyPollMaxUs = 1500;
 constexpr uint32_t kAsyncStopWaitMs = 100;
+constexpr uint32_t kInterruptRegistrationWaitMs = 100;
 constexpr uint32_t kAsyncTaskStackBytes = 4096;
 constexpr int64_t kAsyncMaxNoBlockUs = 50000;
 
@@ -99,6 +101,10 @@ uintptr_t s_probeIsrGeneration = 0;
 
 #if defined(ESP32)
 portMUX_TYPE s_drdyMux = portMUX_INITIALIZER_UNLOCKED;
+// Arduino lazily installs the process-wide GPIO ISR service. Its table becomes
+// visible before the interrupt handle is ready, so ADC workers must serialize
+// attachment. Use a task mutex: allocation can block and must not hold a spinlock.
+SemaphoreHandle_t s_interruptRegistrationMutex = nullptr;
 
 void ARDUINO_ISR_ATTR adsReadyIsr_(void* arg) {
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
@@ -679,29 +685,36 @@ void adcTaskFn_(void* arg) {
 
   AdsDevice& dev = s_ads[adc];
   if (dev.cfg.drdy_pin >= 0) {
-    // The shared GPIO ISR may run on the other core. Protect its target
-    // through registration and shutdown, before this worker deletes itself.
-    portENTER_CRITICAL(&s_drdyMux);
-    dev.drdyTask = xTaskGetCurrentTaskHandle();
-    portEXIT_CRITICAL(&s_drdyMux);
-    attachInterruptArg((uint8_t)dev.cfg.drdy_pin, adsReadyIsr_,
+    if (xSemaphoreTake(s_interruptRegistrationMutex,
+                      pdMS_TO_TICKS(kInterruptRegistrationWaitMs)) != pdTRUE) {
+      dev.asyncRun = false;
+      AIN_LOGW("ADS%u interrupt registration timed out\n", (unsigned)adc);
+    } else {
+      // The shared GPIO ISR may run on the other core. Protect its target
+      // through registration and shutdown, before this worker deletes itself.
+      portENTER_CRITICAL(&s_drdyMux);
+      dev.drdyTask = xTaskGetCurrentTaskHandle();
+      portEXIT_CRITICAL(&s_drdyMux);
+      attachInterruptArg((uint8_t)dev.cfg.drdy_pin, adsReadyIsr_,
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
-                       reinterpret_cast<void*>(dev.probeIsrToken),
+                         reinterpret_cast<void*>(dev.probeIsrToken),
 #else
-                       &dev,
+                         &dev,
 #endif
-                       dev.cfg.drdy_active_low ? FALLING : RISING);
+                         dev.cfg.drdy_active_low ? FALLING : RISING);
+      xSemaphoreGive(s_interruptRegistrationMutex);
+    }
   }
-  dev.asyncRunning = true;
+  dev.asyncRunning = dev.asyncRun;
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
   portENTER_CRITICAL(&s_drdyMux);
-  dev.probeTaskRunning = true;
+  dev.probeTaskRunning = dev.asyncRun;
   portEXIT_CRITICAL(&s_drdyMux);
 #endif
   if (adc < ExternalAdcTimingStats::kMaxAdcs) {
-    s_timingStats.adc[adc].asyncRunning = true;
+    s_timingStats.adc[adc].asyncRunning = dev.asyncRun;
   }
-  AIN_LOGI("ADS%u async scheduler started\n", (unsigned)adc);
+  if (dev.asyncRunning) AIN_LOGI("ADS%u async scheduler started\n", (unsigned)adc);
 
   int64_t lastBlockUs = esp_timer_get_time();
   while (dev.asyncRun) {
@@ -1027,6 +1040,14 @@ void onLoggingStart() {
   }
 
 #if defined(ESP32)
+  // onLoggingStart is called by the owner before launching either worker.
+  if (!s_interruptRegistrationMutex) {
+    s_interruptRegistrationMutex = xSemaphoreCreateMutex();
+  }
+  if (!s_interruptRegistrationMutex) {
+    AIN_LOGW("ADC interrupt registration mutex allocation failed\n");
+    return;
+  }
   bool anyStarted = false;
   for (uint8_t adc = 0; adc < board::BOARD_MAX_EXTERNAL_ADCS; ++adc) {
     AdsDevice& dev = s_ads[adc];

@@ -18,6 +18,13 @@ node. This does not exercise physical four-node CAN or native IMU acquisition.
 
 ## Prepare and capture
 
+Use the corrected logger build if an earlier probe rebooted on the first ADC
+case in `gpio_isr_handler_add` / `esp_intr_get_cpu`. That startup race occurred
+while the two ADC workers installed the shared GPIO interrupt service. The
+corrected ADC path serializes attachment with a task mutex; frame/clock settings
+and the matching master image are unchanged. A rebooted case supplies no rate
+or ADC-health evidence. Retry the ADC-only baseline after the logger update.
+
 1. Preserve the artifact manifest and exact logger/master source revisions,
    binary SHA256 hashes, build identifiers, board variants/revisions and wiring.
    Select an external evidence directory, for example

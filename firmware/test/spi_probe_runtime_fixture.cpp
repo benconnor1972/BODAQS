@@ -110,9 +110,17 @@ void SPIClass::transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
   }
   if(adc>=0 && tx && tx[0]==16) ++reads[adc];
 }
-SemaphoreHandle_t xSemaphoreCreateMutex() { return new std::timed_mutex; }
-static std::atomic<bool> failLock=false,failWarmup=false;
+static SemaphoreHandle_t sharedSpiLock=nullptr;
+SemaphoreHandle_t xSemaphoreCreateMutex() {
+  auto* mutex=new std::timed_mutex;
+  if(!sharedSpiLock)sharedSpiLock=mutex;
+  return mutex;
+}
+static std::atomic<bool> failLock=false,failWarmup=false,failInterruptRegistration=false;
 BaseType_t xSemaphoreTake(SemaphoreHandle_t m,TickType_t timeout) {
+  // Faults and lock-call ordinals below describe SPI contention, not the
+  // independent ADC interrupt-registration mutex.
+  if(m!=sharedSpiLock)return !failInterruptRegistration && m->try_lock_for(std::chrono::milliseconds(timeout));
   if(workerAdc>=0 && ++workerLockCalls==2 && injectBeforeStart[workerAdc].exchange(false)) {
     // An older conversion's ISR dispatch while START waits behind another CS.
     std::lock_guard<std::timed_mutex> owner(*m); complete(workerAdc);delay(2);
@@ -240,6 +248,13 @@ int main() {
   puts("real ADC: failed warmup, no sample, timeout without sequence advance, clean second entry passed");
 
   AnalogInputManager::configureFromConfig(cfg,500);
+  failInterruptRegistration=true;AnalogInputManager::onLoggingStart();
+  await([]{return AnalogInputManager::probeWorkersStopped();});
+  assert(!AnalogInputManager::probeWorkersRunning());
+  {std::lock_guard<std::mutex> lock(gpioMutex);assert(!gpio[18].isr && !gpio[36].isr);}
+  stopAdc_();joinTasks();failInterruptRegistration=false;
+  puts("ADC interrupt-registration lock failure: no running workers or attached callbacks passed");
+
   failTask=1;AnalogInputManager::onLoggingStart();delay(2);
   assert(!AnalogInputManager::probeWorkersRunning());
   stopAdc_();assert(AnalogInputManager::probeWorkersStopped());joinTasks();failTask=-1;
