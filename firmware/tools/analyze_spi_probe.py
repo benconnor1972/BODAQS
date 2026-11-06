@@ -612,7 +612,7 @@ def analyze(data, manifest=None):
             case["elapsed_us"] > p["duration_ms"] * 1000 + 2000) else "short" if (
             case["elapsed_us"] < p["duration_ms"] * 1000 - 2000) else "observed"
         failed = case["outcome"] != "complete" or case.get("workers_stopped") is False or adc == "failed" or transport == "failed" or (
-            p["mode"] not in ADC_ONLY_MODES and master == "failed") or (p["mode"] == "mixed" and baseline == "failed") or duration_status != "observed"
+            p["mode"] not in ADC_ONLY_MODES and master == "failed") or (p["mode"] in ("mixed","owner_rows") and baseline == "failed") or duration_status != "observed"
         clean_candidate = not failed and manifest is not None and case.get("workers_stopped") is True and (
             p["mode"] in ADC_ONLY_MODES or (master == "clean" and case["accepted_bytes"] > 0)) and (
             p["mode"] != "mixed" or baseline == "healthy") and (

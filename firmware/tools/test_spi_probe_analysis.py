@@ -44,6 +44,18 @@ class ProbeAnalysisTests(unittest.TestCase):
                 self.assertNotEqual(c["row_freshness_status"],"healthy")
                 self.assertEqual(c["candidate_evidence"],"failed")
 
+    def test_round5_failed_owner_baseline_blocks_combined_evidence(self):
+        baseline=self.round5_sample("baseline")
+        baseline["adc"][0]["fresh"]-=1
+        baseline["adc"][0]["reused"]+=1
+        baseline["row_publication"]["fresh_both"]-=1
+        case=self.round5_sample()
+        run=self.invoke(json.dumps(baseline)+"\n"+json.dumps(case))
+        self.assertEqual(run.returncode,0,run.stderr)
+        result=json.loads(run.stdout)["cases"][1]
+        self.assertEqual(result["baseline_status"],"failed")
+        self.assertEqual(result["candidate_evidence"],"failed")
+
     def test_round5_rejects_false_row_provenance(self):
         for mutation in range(10):
             with self.subTest(mutation=mutation):
