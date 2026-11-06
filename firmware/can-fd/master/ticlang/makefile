@@ -30,10 +30,11 @@ SOURCES := ../src/main.c ../src/master_timing.c \
     ../../common/protocol/bodaqs_control_exchange.c \
     ../src/master_identity.c \
     ../../common/protocol/bodaqs_master_protocol.c \
+    ../../common/protocol/bodaqs_spi_probe.c \
     ../../common/protocol/bodaqs_master_service.c \
     ../../common/network/bodaqs_can_network.c \
     ../../common/network/bodaqs_node_inventory.c
-OBJECTS := master_timing.obj bodaqs_control.obj bodaqs_control_exchange.obj main.obj master_identity.obj bodaqs_master_protocol.obj \
+OBJECTS := master_timing.obj bodaqs_control.obj bodaqs_control_exchange.obj main.obj master_identity.obj bodaqs_master_protocol.obj bodaqs_spi_probe.obj \
     bodaqs_master_service.obj bodaqs_can_network.obj \
     bodaqs_node_inventory.obj \
     $(patsubst %.c,%.obj,$(notdir $(SYSCFG_C_FILES)))
@@ -96,6 +97,7 @@ $(foreach source,$(SOURCES),$(eval $(call C_RULE,$(source))))
 $(foreach source,$(SYSCFG_C_FILES),$(eval $(call C_RULE,$(source))))
 
 main.obj: ../../common/transport/bodaqs_record_queue.h
+main.obj bodaqs_spi_probe.obj: ../../common/protocol/bodaqs_spi_probe.h
 
 $(NAME).out: $(OBJECTS)
 	@echo Linking $@

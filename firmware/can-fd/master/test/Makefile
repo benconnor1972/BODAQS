@@ -7,6 +7,8 @@ test: $(BUILD_DIR)/test_timing.exe
 	$(BUILD_DIR)/test_timing.exe
 	$(PYTHON) test_adapter_runtime.py --cc "$(CC)"
 	$(PYTHON) test_inventory_runtime.py --cc "$(CC)"
+	$(PYTHON) test_spi_probe.py --cc "$(CC)"
+	$(PYTHON) test_probe_adapter.py --cc "$(CC)"
 $(BUILD_DIR)/test_timing.exe: test_timing.c ../src/master_timing.c ../include/master_timing.h ti_msp_dl_config.h
 	$(CC) $(CFLAGS) $(filter %.c,$^) -o $@
 
