@@ -16,6 +16,54 @@ EMITTED_SWITCH = FIXTURE.with_name("round2-emitted-switch.jsonl")
 
 
 class ProbeAnalysisTests(unittest.TestCase):
+    def round6_sample(self,name="pipeline"):
+        return json.loads(FIXTURE.with_name(f"round6-{name}.jsonl").read_text(encoding="utf-8"))
+
+    def test_round6_emitted_pipeline_retains_freshness_and_diagnostic_scope(self):
+        for name in ("pipeline","recovery"):
+            baseline=self.round6_sample("baseline");case=self.round6_sample(name)
+            run=self.invoke(json.dumps(baseline)+"\n"+json.dumps(case))
+            self.assertEqual(run.returncode,0,run.stderr)
+            report=json.loads(run.stdout);result=report["cases"][1]
+            self.assertEqual(report["schema"],"bodaqs.spi-probe-report.v6")
+            self.assertEqual(result["row_freshness_status"],"healthy")
+            self.assertEqual(result["baseline_case_ids"],[baseline["case_id"]])
+            self.assertEqual(result["request_window"],case["request_window"])
+            self.assertNotEqual(result["candidate_evidence"],"clean_measurement_candidate")
+            self.assertFalse(report["production_qualified"])
+
+    def test_round6_rejects_impossible_window_and_legacy_schema_claims(self):
+        for mutation in range(9):
+            case=self.round6_sample();w=case["request_window"]
+            if mutation==0:w["pending"]=5
+            elif mutation==1:w["new_requests"]+=1
+            elif mutation==2:w["clock_requests"]+=1
+            elif mutation==3:w["limit"]=5
+            elif mutation==4:w["active"]=False
+            elif mutation==5:w["retry_exhausted"]=1
+            elif mutation==6:case["schema"]="bodaqs.spi-probe.v5"
+            elif mutation==7:w["retry_limit"]=9
+            else:
+                w["high_water"]=w["pending"]=0
+                w["new_requests"]=w["reply_age"]["count"]
+                w["clock_requests"]=case["slots"]-w["new_requests"]-w["retry_requests"]
+            self.assertEqual(self.invoke(json.dumps(case)).returncode,2,mutation)
+
+    def test_round6_stop_and_per_request_exhaustion_cannot_pass(self):
+        for name in ("stop","exhausted"):
+            run=self.invoke(json.dumps(self.round6_sample(name)))
+            self.assertEqual(run.returncode,0,run.stderr)
+            result=json.loads(run.stdout)["cases"][0]
+            self.assertEqual(result["candidate_evidence"],"failed")
+            self.assertNotEqual(result["row_freshness_status"],"healthy")
+
+    def test_round6_failed_baseline_blocks_pipeline_evidence(self):
+        baseline=self.round6_sample("baseline");baseline["outcome"]="failed"
+        case=self.round6_sample()
+        run=self.invoke(json.dumps(baseline)+"\n"+json.dumps(case))
+        self.assertEqual(run.returncode,0,run.stderr)
+        self.assertEqual(json.loads(run.stdout)["cases"][1]["candidate_evidence"],"failed")
+
     def round5_sample(self,name="rows"):
         return json.loads(FIXTURE.with_name(f"round5-{name}.jsonl").read_text(encoding="utf-8"))
 

@@ -28,7 +28,7 @@ def source_identity(firmware):
                                            text=True, stderr=subprocess.DEVNULL).strip()[:12]
     except (OSError, subprocess.CalledProcessError):
         revision = "unversioned"
-    return f"spi-probe-v5-{revision}-{digest.hexdigest()[:20]}"
+    return f"spi-probe-v6-{revision}-{digest.hexdigest()[:20]}"
 
 
 if "Import" in globals():

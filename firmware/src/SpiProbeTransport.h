@@ -36,6 +36,11 @@ struct Stats {
   PreviousParticipant byPreviousCs[10];
   PreviousOperation byPreviousOperation[16];
   uint32_t operationBucketsOmitted=0;
+  // Timed dispatch attempts, including transfers of uncertain delivery.
+  bool pipelined=false;
+  uint32_t newRequests=0,retryRequests=0,clockRequests=0,retryExhausted=0;
+  uint32_t pendingRequests=0,pendingHighWater=0;
+  TimingSummary replyAge;
   // STATS2 endpoints: counters wrap; boot maxima/sticky invalid state are not deltas.
   bool diagnosticMeasured=false;
   uint32_t diagnosticBefore[10]={},diagnosticAfter[10]={};
@@ -44,7 +49,8 @@ struct Stats {
   uint32_t adapterBefore[10]={},adapterAfter[10]={};
 };
 bool begin(const board::BoardProfile& board,uint32_t caseId,uint16_t bytes,uint32_t hz,uint8_t nodes,
-    CrcMode crcMode=CrcMode::Legacy,uint32_t startIntervalUs=0,bool switchMode=false);
+    CrcMode crcMode=CrcMode::Legacy,uint32_t startIntervalUs=0,bool switchMode=false,
+    bool pipelined=false);
 void tick();
 // Owner-loop query for sequential controls; no locks, sleeps or transfers.
 bool requestDue();

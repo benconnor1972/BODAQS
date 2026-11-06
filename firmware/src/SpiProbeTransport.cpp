@@ -19,6 +19,7 @@ uint32_t s_interval=0,s_lastStartUs=0,s_lastRequestUs=0;
 bool s_haveRequest=false;
 bool s_haveStart=false,s_switch=false,s_switchDue=false;
 uint32_t us_();
+BodaqsSpiProbeFrame request_(uint8_t opcode);
 uint32_t expectedCrc_(uint8_t node,uint32_t object) {
   const uint32_t began=us_();
   const uint32_t crc=bodaqs_spi_probe_known_crc(s_caseId,node,object);
@@ -30,6 +31,68 @@ struct Node {
   bool accepted=false,expectedValid=false;
   uint32_t expected=0;
 } s_nodeState[4];
+// One immutable selected object per node, at most four distinct requests total.
+// A request clocks an older reply; it does not synchronously return its own.
+constexpr uint32_t kRetryUs=5000;
+struct Pending {
+  bool used=false;
+  uint8_t node=0,fragment=0,retries=0;
+  bool ack=false;
+  uint32_t object=0,firstUs=0,retryUs=0;
+} s_pending[4];
+uint8_t s_pipeCursor=0;
+void completed_(const BodaqsSpiProbeFrame& r) {
+  if(!s_stats.pipelined)return;
+  for(auto& p:s_pending)if(p.used && p.node==r.node && p.object==r.object_id &&
+      p.fragment==r.fragment && p.ack==(r.opcode==(BODAQS_PROBE_ACK|BODAQS_PROBE_RESPONSE))) {
+    TimingStats_record(s_stats.replyAge,us_()-p.firstUs);
+    p.used=false;--s_stats.pendingRequests;return;
+  }
+}
+bool pipelineRequest_(BodaqsSpiProbeFrame& q) {
+  const uint32_t now=us_();
+  Pending *oldest=nullptr,*free=nullptr;
+  for(auto& p:s_pending) {
+    if(!p.used){if(!free)free=&p;continue;}
+    if(!oldest || static_cast<uint32_t>(now-p.retryUs)>static_cast<uint32_t>(now-oldest->retryUs))oldest=&p;
+  }
+  Pending* selected=nullptr;
+  if(oldest && static_cast<uint32_t>(now-oldest->retryUs)>=kRetryUs) {
+    if(oldest->retries==8){++s_stats.retryExhausted;s_healthy=false;return false;}
+    selected=oldest;++selected->retries;selected->retryUs=now;++s_stats.retryRequests;
+  } else if(free) {
+    for(uint8_t offset=0;offset<s_nodes;++offset) {
+      const uint8_t node=(s_pipeCursor+offset)%s_nodes;
+      const auto& n=s_nodeState[node];
+      uint32_t requested=n.mask;bool ackPending=false;
+      for(const auto& p:s_pending)if(p.used && p.node==node) {
+        if(p.ack)ackPending=true;else requested|=1UL<<p.fragment;
+      }
+      uint8_t fragment=0;
+      if(n.accepted) {if(ackPending)continue;}
+      else {
+        const uint8_t fragments=bodaqs_spi_probe_fragment_count(s_profile);
+        while(fragment<fragments && (requested&(1UL<<fragment)))++fragment;
+        if(fragment==fragments)continue;
+      }
+      *free=Pending{};free->used=true;free->node=node;free->object=n.object;
+      free->ack=n.accepted;free->fragment=fragment;free->firstUs=free->retryUs=now;
+      selected=free;s_pipeCursor=(node+1)%s_nodes;
+      ++s_stats.newRequests;++s_stats.pendingRequests;
+      if(s_stats.pendingRequests>s_stats.pendingHighWater)s_stats.pendingHighWater=s_stats.pendingRequests;
+      break;
+    }
+  }
+  if(!selected) {
+    // No NOP exists in wire v1. Repeat one pending request to retrieve the
+    // reply, without extending its retry deadline or allocating another entry.
+    selected=oldest;if(!selected)return false;++s_stats.clockRequests;
+  }
+  q=request_(selected->ack?BODAQS_PROBE_ACK:BODAQS_PROBE_POLL);
+  q.node=selected->node;q.object_id=selected->object;q.fragment=selected->fragment;
+  if(selected->ack)q.logical_crc=s_nodeState[selected->node].crc;
+  return true;
+}
 uint8_t s_tx[256],s_rx[256];
 uint32_t us_() {return static_cast<uint32_t>(esp_timer_get_time());}
 BodaqsSpiProbeFrame request_(uint8_t opcode) {
@@ -132,6 +195,7 @@ void consume_(const BodaqsSpiProbeFrame& r) {
   if(r.object_id!=n.object) {++s_stats.stale;return;}
   if(r.opcode==(BODAQS_PROBE_ACK|BODAQS_PROBE_RESPONSE)) {
     if(!n.accepted || r.logical_crc!=n.crc || r.fragment || r.payload_length!=1 || r.payload[0]) {failAccept_();return;}
+    completed_(r);
     ++s_stats.validResponses;
     ++s_stats.retiredObjects;
     if(n.object==UINT32_MAX) {s_healthy=false;return;}
@@ -153,6 +217,7 @@ void consume_(const BodaqsSpiProbeFrame& r) {
     if(r.payload[i]!=bodaqs_spi_probe_known_byte(s_caseId,r.node,n.object,offset+i)) {failAccept_();return;}
   }
   ++s_stats.validResponses;
+  completed_(r);
   const uint32_t bit=1UL<<r.fragment;
   if(n.mask&bit) {++s_stats.duplicates;return;}
   memcpy(n.bytes+offset,r.payload,r.payload_length);n.mask|=bit;n.crc=r.logical_crc;
@@ -170,12 +235,13 @@ bool requestDue() {
       (!s_haveTransfer || static_cast<uint32_t>(us_()-s_lastTransferUs)>=25) &&
       (!s_haveRequest || static_cast<uint32_t>(us_()-s_lastRequestUs)>=s_interval);
 }
-bool begin(const board::BoardProfile& board,uint32_t caseId,uint16_t bytes,uint32_t hz,uint8_t nodes,CrcMode crcMode,uint32_t startIntervalUs,bool switchMode) {
+bool begin(const board::BoardProfile& board,uint32_t caseId,uint16_t bytes,uint32_t hz,uint8_t nodes,CrcMode crcMode,uint32_t startIntervalUs,bool switchMode,bool pipelined) {
   if(s_open || !board.can_fd_master.supported || board.can_fd_master.cs_pin<0)return false;
   const uint8_t profile=bodaqs_spi_probe_profile(bytes,hz,nodes);
-  if(profile==255 || !caseId || startIntervalUs>5000)return false;
+  if(profile==255 || !caseId || startIntervalUs>5000 || (pipelined && switchMode))return false;
   s_board=&board;s_caseId=caseId;s_bytes=bytes;s_hz=hz;s_nodes=nodes;s_node=0;s_profile=profile;
   s_stats=Stats{};for(auto& n:s_nodeState)n=Node{};
+  s_stats.pipelined=pipelined;s_pipeCursor=0;for(auto& p:s_pending)p=Pending{};
   s_crcMode=crcMode;s_interval=startIntervalUs;s_switch=switchMode;s_switchDue=false;
   s_haveStart=false;s_haveRequest=false; // Preserve the inter-CS guard across cases.
   s_lockFailures=0;s_noProgressSlots=0;s_open=true;s_entered=false;s_healthy=false;
@@ -198,11 +264,15 @@ void tick() {
     s_switchDue=false;TimingStats_record(s_stats.iteration,us_()-began);return;
   }
   if(++s_noProgressSlots>4096 || static_cast<uint32_t>(us_()-s_progressUs)>500000) {s_healthy=false;return;}
-  const auto& n=s_nodeState[s_node];
-  auto q=request_(n.accepted?BODAQS_PROBE_ACK:BODAQS_PROBE_POLL);
-  q.node=s_node;q.object_id=n.object;
-  if(n.accepted)q.logical_crc=n.crc;
-  else {while(n.mask&(1UL<<q.fragment))++q.fragment;}
+  BodaqsSpiProbeFrame q{};
+  if(s_stats.pipelined) {if(!pipelineRequest_(q))return;}
+  else {
+    const auto& n=s_nodeState[s_node];
+    q=request_(n.accepted?BODAQS_PROBE_ACK:BODAQS_PROBE_POLL);
+    q.node=s_node;q.object_id=n.object;
+    if(n.accepted)q.logical_crc=n.crc;
+    else {while(n.mask&(1UL<<q.fragment))++q.fragment;}
+  }
   BodaqsSpiProbeFrame r{};
   if(exchange_(q,r,true)) {
     const uint32_t validating=us_();consume_(r);

@@ -18,6 +18,8 @@
 #include <deque>
 static BodaqsSpiProbeEngine master;
 static bool masterEnabled=false,masterSilent=false,corruptPayload=false;
+static unsigned dropPollRequests=0,dropAckReplies=0;
+static bool dropNodeZero=false;
 static unsigned rawFault=0,rawFaultsLeft=0;
 static std::vector<std::array<uint8_t,256>> injectedRx;
 static bool stats2Unsupported=false;
@@ -133,7 +135,19 @@ void SPIClass::transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
       std::array<uint8_t,256> observed{};memcpy(observed.data(),rx,length);injectedRx.push_back(observed);
     }
     std::array<uint8_t,256> prepared{};
-    if(!masterSilent)bodaqs_spi_probe_process(&master,tx,length,prepared.data(),prepared.size());
+    BodaqsSpiProbeFrame dispatched{};
+    const bool decodedRequest=bodaqs_spi_probe_decode(tx,length,&dispatched);
+    const bool poll=decodedRequest && dispatched.opcode==BODAQS_PROBE_POLL;
+    if(poll && dropPollRequests) {
+      if(dropPollRequests)--dropPollRequests;
+      prepared=replies.back(); // lost request: retain a valid older reply
+    } else {
+      if(!masterSilent)bodaqs_spi_probe_process(&master,tx,length,prepared.data(),prepared.size());
+      if(decodedRequest && dispatched.opcode==BODAQS_PROBE_ACK &&
+          (dropAckReplies || (dropNodeZero && dispatched.node==0))) {
+        if(dropAckReplies)--dropAckReplies;prepared=replies.back(); // ACK applied; its reply lost
+      }
+    }
     BodaqsSpiProbeFrame response;
     if(stats2Unsupported && bodaqs_spi_probe_decode(prepared.data(),length,&response) && response.opcode==(BODAQS_PROBE_STATS|BODAQS_PROBE_RESPONSE) && response.fragment==2) {
       response.opcode=BODAQS_PROBE_ERROR|BODAQS_PROBE_RESPONSE;response.payload_length=1;response.payload[0]=BODAQS_PROBE_ARGUMENT;
@@ -425,7 +439,7 @@ int main() {
   puts("real ADC: same-microsecond ISR entry before START marker is ambiguous, later distinct-tick completion paired passed");
 #if TEST_CASE_RUNNER
   releaseWaiters=true;
-  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v5-")!=std::string::npos);
+  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v6-")!=std::string::npos);
   puts(Serial.output.c_str());Serial.output.clear();SpiMeasurementProbe::command("status");
   assert(Serial.output.find("\"logger_build\":")!=std::string::npos);puts(Serial.output.c_str());Serial.output.clear();
   // Public runner, deterministic clock boundary: 10 seconds has 5000 midpoints
@@ -721,7 +735,43 @@ int main() {
   while(Serial.output.empty()){delayMicroseconds(10);SpiMeasurementProbe::loop();}
   puts(Serial.output.c_str());Serial.output.clear();steppedUs=-1;bulkLastHigh=0;
   puts("Public owner row publication: signed wire samples, independent conversions, real cache reads, fresh/reused identities, STOP/timeout/rail/late-window and restart PASS");
-  uint32_t caseId=45;
+  rowValueFixture=true;rowReadyDelayUs=1000;forceReadyPin=false;
+  steppedUs=static_cast<int64_t>(micros())+10000;bulkLastHigh=0;
+  for(const char* command:{
+      "case 45 owner_pipe 128 8000000 4 100 cached 500 3 1 0",
+      "case 46 owner_pipe 256 16000000 4 100 cached 500 3 1 0"}) {
+    SpiMeasurementProbe::command(command);
+    while(Serial.output.empty()){delayMicroseconds(10);SpiMeasurementProbe::loop();}
+    assert(Serial.output.find("\"fresh_both\":50")!=std::string::npos);
+    assert(SpiProbeTransport::stats().pipelined && SpiProbeTransport::stats().pendingHighWater<=4);
+    assert(SpiProbeTransport::stats().retiredObjects>0 && !SpiProbeTransport::stats().acceptErrors);
+    puts(Serial.output.c_str());Serial.output.clear();
+  }
+  SpiMeasurementProbe::command("case 47 owner_pipe 128 8000000 4 100 cached 500 3 1 0");
+  for(unsigned i=0;i<1000;++i){delayMicroseconds(10);SpiMeasurementProbe::loop();}
+  SpiMeasurementProbe::command("stop");puts(Serial.output.c_str());Serial.output.clear();
+  SpiMeasurementProbe::command("case 48 owner_pipe 128 8000000 4 100 cached 500 3 1 0");
+  dropNodeZero=true;
+  while(Serial.output.empty()){delayMicroseconds(10);SpiMeasurementProbe::loop();}
+  dropNodeZero=false;
+  assert(SpiProbeTransport::stats().retryExhausted==1);
+  assert(SpiProbeTransport::stats().retiredObjects>0); // healthy peers continue despite node0 ACK loss
+  assert(Serial.output.find("\"outcome\":\"failed\"")!=std::string::npos);
+  puts(Serial.output.c_str());Serial.output.clear();
+  SpiMeasurementProbe::command("case 49 owner_pipe 128 8000000 4 100 cached 500 3 1 0");rowReadyDelayUs=3500;
+  while(Serial.output.empty()){delayMicroseconds(10);SpiMeasurementProbe::loop();}
+  puts(Serial.output.c_str());Serial.output.clear();rowReadyDelayUs=1000;
+  SpiMeasurementProbe::command("case 50 owner_pipe 128 8000000 4 100 cached 500 3 1 0");railFault=true;
+  SpiMeasurementProbe::loop();railFault=false;puts(Serial.output.c_str());Serial.output.clear();
+  SpiMeasurementProbe::command("case 51 owner_pipe 128 8000000 4 100 cached 500 3 1 0");
+  dropPollRequests=1;dropAckReplies=1;
+  while(Serial.output.empty()){delayMicroseconds(10);SpiMeasurementProbe::loop();}
+  assert(!dropPollRequests && !dropAckReplies && SpiProbeTransport::stats().retryRequests>0);
+  assert(!SpiProbeTransport::stats().retryExhausted && SpiProbeTransport::stats().retiredObjects>0);
+  puts(Serial.output.c_str());Serial.output.clear();
+  rowValueFixture=false;forceReadyPin=true;steppedUs=-1;bulkLastHigh=0;
+  puts("Public pipeline: real owner rows, loss recovery, bounded per-request exhaustion despite other nodes progressing, STOP, reuse and rail failure passed");
+  uint32_t caseId=52;
   for(uint16_t frame: {64,128,256})for(uint32_t hz: {8000000U,16000000U}) {
     assert(SpiProbeTransport::begin(board,caseId++,frame,hz,4));
     for(unsigned attempts=0;attempts<1000000 && SpiProbeTransport::stats().retiredObjects<4;++attempts)SpiProbeTransport::tick();
@@ -780,6 +830,49 @@ int main() {
     assert(SpiProbeTransport::stop());
   }
   puts("legacy/cached CRC: two-node object turnover, per-object expected CRC, corrupted exact bytes and ACK safety passed");
+
+  steppedUs=static_cast<int64_t>(micros())+10000;bulkLastHigh=0;
+  for(uint16_t bytes:{64,128,256})for(uint32_t hz:{8000000U,16000000U})for(uint8_t nodes:{1,4}) {
+    uint32_t legacySlots=0;
+    for(bool pipeline:{false,true}) {
+      assert(SpiProbeTransport::begin(board,caseId++,bytes,hz,nodes,SpiProbeTransport::CrcMode::Cached,500,false,pipeline));
+      for(unsigned attempts=0;attempts<1000000 && SpiProbeTransport::stats().retiredObjects<8;++attempts) {
+        delayMicroseconds(10);SpiProbeTransport::tick();
+      }
+      const auto& d=SpiProbeTransport::stats();
+      assert(d.retiredObjects>=8 && d.acceptedBytes>=8064 && !d.acceptErrors && !d.wireErrors);
+      if(!pipeline)legacySlots=d.slots;
+      else {
+        assert(d.slots<legacySlots*3/4); // red-capable: original stop/wait cannot meet this
+        assert(d.newRequests==d.replyAge.count+d.pendingRequests && d.pendingHighWater<=4);
+        assert(d.newRequests+d.clockRequests+d.retryRequests==d.slots);
+      }
+      assert(SpiProbeTransport::stop());
+    }
+  }
+  assert(SpiProbeTransport::begin(board,caseId++,128,8000000,4,SpiProbeTransport::CrcMode::Cached,500,false,true));
+  rawFault=7;rawFaultsLeft=2;
+  for(unsigned i=0;i<1000000 && SpiProbeTransport::stats().retiredObjects<8;++i){delayMicroseconds(10);SpiProbeTransport::tick();}
+  assert(SpiProbeTransport::stats().retiredObjects>=8 && SpiProbeTransport::stats().wireErrors==2);
+  assert(SpiProbeTransport::stop());
+  assert(SpiProbeTransport::begin(board,caseId++,128,8000000,4,SpiProbeTransport::CrcMode::Cached,500,false,true));
+  assert(SpiProbeTransport::stats().newRequests==0 && SpiProbeTransport::stats().pendingRequests==0);
+  failLock=true;
+  for(unsigned i=0;i<100000 && !SpiProbeTransport::stats().transferErrors;++i){delayMicroseconds(10);SpiProbeTransport::tick();}
+  failLock=false;
+  assert(SpiProbeTransport::stats().transferErrors==1 && SpiProbeTransport::stats().pendingRequests==1);
+  assert(SpiProbeTransport::stats().newRequests==1 && SpiProbeTransport::stats().replyAge.count==0);
+  for(unsigned i=0;i<1000000 && SpiProbeTransport::stats().retiredObjects<8;++i){delayMicroseconds(10);SpiProbeTransport::tick();}
+  assert(SpiProbeTransport::stats().retiredObjects>=8 && !SpiProbeTransport::stats().acceptErrors);
+  assert(SpiProbeTransport::stats().newRequests==SpiProbeTransport::stats().replyAge.count+SpiProbeTransport::stats().pendingRequests);
+  assert(SpiProbeTransport::stop());
+  assert(SpiProbeTransport::begin(board,caseId++,128,8000000,4,SpiProbeTransport::CrcMode::Cached,500,false,true));
+  assert(SpiProbeTransport::stats().newRequests==0 && SpiProbeTransport::stats().pendingRequests==0 && SpiProbeTransport::stats().replyAge.count==0);
+  const uint32_t retiredBeforeCorruption=master.stats.retired_objects;corruptPayload=true;
+  for(unsigned i=0;i<1000000 && SpiProbeTransport::healthy();++i){delayMicroseconds(10);SpiProbeTransport::tick();}
+  assert(SpiProbeTransport::stats().acceptErrors==1 && master.stats.retired_objects==retiredBeforeCorruption);
+  assert(SpiProbeTransport::stop());steppedUs=-1;bulkLastHigh=0;
+  puts("Pipeline differential: all6 profiles x1/4 nodes reduce dispatches >25%, delayed replies, CRC retry and corrupt payload never ACKed passed");
 
   stats2Unsupported=true;const auto unsupportedBegan=micros();
   assert(SpiProbeTransport::begin(board,caseId++,128,8000000,1));

@@ -12,8 +12,10 @@ SCHEMA_V2 = "bodaqs.spi-probe.v2"
 SCHEMA_V3 = "bodaqs.spi-probe.v3"
 SCHEMA_V4 = "bodaqs.spi-probe.v4"
 SCHEMA_V5 = "bodaqs.spi-probe.v5"
-EXECUTION_SCHEMAS = (SCHEMA_V4, SCHEMA_V5)
-ROW_OWNER_MODES = ("owner_adc", "owner_rows")
+SCHEMA_V6 = "bodaqs.spi-probe.v6"
+ROW_SCHEMAS = (SCHEMA_V5, SCHEMA_V6)
+EXECUTION_SCHEMAS = (SCHEMA_V4, *ROW_SCHEMAS)
+ROW_OWNER_MODES = ("owner_adc", "owner_rows", "owner_pipe")
 ADC_ONLY_MODES = ("adc", "owner_adc")
 INTEGRITY_SCHEMAS = (SCHEMA_V3, *EXECUTION_SCHEMAS)
 DIAGNOSTIC_SCHEMAS = (SCHEMA_V2, *INTEGRITY_SCHEMAS)
@@ -198,13 +200,14 @@ def validate(case):
             a["master_build"] == "external-manifest", "invalid artifact identity")
     p = case["profile"]
     counts(p, "frame_bytes requested_sck_hz guard_us nodes duration_ms row_hz")
-    require(p["mode"] in (("adc", "bulk", "mixed", "switch", "shape", "selected", "owner", "workers", *ROW_OWNER_MODES) if case["schema"] == SCHEMA_V5 else (("adc", "bulk", "mixed", "switch", "shape", "selected", "owner", "workers") if case["schema"] in EXECUTION_SCHEMAS else (("adc", "bulk", "mixed", "switch", "shape", "selected") if case["schema"] in INTEGRITY_SCHEMAS else (("adc", "bulk", "mixed", "switch") if v2 else ("adc", "bulk", "mixed"))))) and
+    require(p["mode"] in (("adc", "bulk", "mixed", "switch", "shape", "selected", "owner", "workers", *ROW_OWNER_MODES) if case["schema"] in ROW_SCHEMAS else (("adc", "bulk", "mixed", "switch", "shape", "selected", "owner", "workers") if case["schema"] in EXECUTION_SCHEMAS else (("adc", "bulk", "mixed", "switch", "shape", "selected") if case["schema"] in INTEGRITY_SCHEMAS else (("adc", "bulk", "mixed", "switch") if v2 else ("adc", "bulk", "mixed"))))) and
             p["frame_bytes"] in (64, 128, 256) and
             p["requested_sck_hz"] in (8000000, 16000000) and
             p["guard_us"] == 25 and 1 <= p["nodes"] <= 4 and
             100 <= p["duration_ms"] <= 3600000 and p["row_hz"] == 500 and
             p["ain"] == [0, 4] and p["configured_sps"] == [1000, 1000],
             "unsupported profile")
+    require(p["mode"] != "owner_pipe" or case["schema"] == SCHEMA_V6, "pipeline requires v6")
     if v2:
         counts(p, "start_interval_us")
         require(p["crc_mode"] in ("legacy", "cached") and p["start_interval_us"] <= 5000,
@@ -292,8 +295,31 @@ def validate(case):
             integrity_counts(case)
         if case["schema"] in EXECUTION_SCHEMAS:
             execution_counts(case)
-        if case["schema"] == SCHEMA_V5:
+        if case["schema"] in ROW_SCHEMAS:
             row_counts(case)
+        if case["schema"] == SCHEMA_V6:
+            window_counts(case)
+
+
+def window_counts(case):
+    w=case["request_window"]
+    active=case["profile"]["mode"]=="owner_pipe"
+    require(type(w["active"]) is bool and w["active"]==active,"invalid request window mode")
+    counts(w,"limit retry_us retry_limit new_requests retry_requests clock_requests retry_exhausted pending high_water")
+    timing(w["reply_age"])
+    if active:
+        require((w["limit"],w["retry_us"],w["retry_limit"])==(4,5000,8),"invalid request window policy")
+        require(0<=w["pending"]<=w["high_water"]<=4 and w["high_water"]<=w["new_requests"],"invalid pending window")
+        require((w["high_water"]==0)==(w["new_requests"]==0) and
+                (w["new_requests"]>0 or w["retry_requests"]==w["clock_requests"]==w["retry_exhausted"]==0),"request activity lacks window occupancy")
+        require(w["retry_requests"]<=8*w["new_requests"] and
+                (w["retry_exhausted"]==0 or w["retry_requests"]>=8),"invalid retry budget")
+        require(w["new_requests"]+w["retry_requests"]+w["clock_requests"]==case["slots"],"request dispatch accounting mismatch")
+        require(w["new_requests"]==w["reply_age"]["count"]+w["pending"],"request completion accounting mismatch")
+        require(w["reply_age"]["count"]<=case["valid_responses"] and w["retry_exhausted"]<=1,"invalid reply accounting")
+        require(w["retry_exhausted"]==0 or case["outcome"]=="failed","exhausted retry reported successful")
+    else:
+        require(all(w[k]==0 for k in ("limit","retry_us","retry_limit","new_requests","retry_requests","clock_requests","retry_exhausted","pending","high_water")) and w["reply_age"]["count"]==0,"inactive request window has observations")
 
 
 def execution_counts(case):
@@ -612,7 +638,7 @@ def analyze(data, manifest=None):
             case["elapsed_us"] > p["duration_ms"] * 1000 + 2000) else "short" if (
             case["elapsed_us"] < p["duration_ms"] * 1000 - 2000) else "observed"
         failed = case["outcome"] != "complete" or case.get("workers_stopped") is False or adc == "failed" or transport == "failed" or (
-            p["mode"] not in ADC_ONLY_MODES and master == "failed") or (p["mode"] in ("mixed","owner_rows") and baseline == "failed") or duration_status != "observed"
+            p["mode"] not in ADC_ONLY_MODES and master == "failed") or (p["mode"] in ("mixed","owner_rows","owner_pipe") and baseline == "failed") or duration_status != "observed"
         clean_candidate = not failed and manifest is not None and case.get("workers_stopped") is True and (
             p["mode"] in ADC_ONLY_MODES or (master == "clean" and case["accepted_bytes"] > 0)) and (
             p["mode"] != "mixed" or baseline == "healthy") and (
@@ -624,7 +650,8 @@ def analyze(data, manifest=None):
                 "row_freshness_status": ("incomplete" if case["outcome"]=="stopped" else "failed" if case["outcome"]!="complete" else adc) if p["mode"] in ROW_OWNER_MODES else "not_applicable",
                 "owner_adc_timing_scope": "config/start/wait/read/total summaries cover synchronous warmup only; acquire_ok includes timed reads; use traffic window/read_gap/cache_age/row_lag for active run" if p["mode"] in ROW_OWNER_MODES else "not_applicable",
                 "master_receive_pressure": "not_applicable" if p["mode"] in ADC_ONLY_MODES else
-                    "unknown" if adapter_delta is None else "drops_observed" if adapter_delta[1] else "no_spi_drops_observed"} if case["schema"] == SCHEMA_V5 else {}),
+                    "unknown" if adapter_delta is None else "drops_observed" if adapter_delta[1] else "no_spi_drops_observed"} if case["schema"] in ROW_SCHEMAS else {}),
+            **({"request_window": case["request_window"]} if case["schema"] == SCHEMA_V6 else {}),
             **({"execution_control": execution_report(case)} if case["schema"] in EXECUTION_SCHEMAS else {}),
             "profile": p, "outcome": case["outcome"], "reason": case["reason"],
             "duration_status": duration_status,
@@ -665,7 +692,7 @@ def analyze(data, manifest=None):
             "pipeline_diagnostics": {k: case["errors"][k] for k in ("stale", "duplicate")},
             "candidate_evidence": "failed" if failed else "diagnostic_control" if control else "clean_measurement_candidate" if clean_candidate else "unknown",
             "raw_measurements": case})
-    return {"schema": "bodaqs.spi-probe-report.v5" if any(c["schema"] == SCHEMA_V5 for c in cases) else "bodaqs.spi-probe-report.v4" if any(c["schema"] in EXECUTION_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v3" if any(c["schema"] in INTEGRITY_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v2" if any(c["schema"] in DIAGNOSTIC_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v1",
+    return {"schema": "bodaqs.spi-probe-report.v6" if any(c["schema"] == SCHEMA_V6 for c in cases) else "bodaqs.spi-probe-report.v5" if any(c["schema"] == SCHEMA_V5 for c in cases) else "bodaqs.spi-probe-report.v4" if any(c["schema"] in EXECUTION_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v3" if any(c["schema"] in INTEGRITY_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v2" if any(c["schema"] in DIAGNOSTIC_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v1",
             "capture_sha256": digest,
             "run_identity": "declared_paired" if manifest else "unknown_without_manifest",
             "manifest": manifest, "serial_events": events,

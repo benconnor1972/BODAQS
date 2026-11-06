@@ -81,7 +81,7 @@ def main():
             cases = [event for event in events if event['type'] == 'case']
             if args.capture:
                 args.capture.write_text('\n'.join(json.dumps(event) for event in events) + '\n', encoding='utf-8')
-            assert [case['case_id'] for case in cases] == [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, *range(33,45)]
+            assert [case['case_id'] for case in cases] == [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, *range(33,52)]
             assert (cases[0]['rows'], cases[0]['missed_rows']) == (5000, 0)
             assert (cases[1]['rows'], cases[1]['missed_rows']) == (49, 1)
             assert (cases[2]['rows'], cases[2]['missed_rows']) == (1, 1)
@@ -91,7 +91,7 @@ def main():
                 assert case['workers_stopped'] and case['profile']['actual_sck_hz'] is None
                 assert case['accepted_bytes'] == case['unique_objects'] * 1008
                 assert case['valid_responses'] <= case['slots']
-                assert case['schema'] == 'bodaqs.spi-probe.v5'
+                assert case['schema'] == 'bodaqs.spi-probe.v6'
                 d = case['diagnostics']
                 assert sum(d['decode_counts']) + case['errors']['transfer'] == case['slots']
                 assert sum(d['decode_counts'][1:]) == case['errors']['wire']
@@ -165,6 +165,17 @@ def main():
                     assert t['operations']==case['diagnostics']['sequence']['operations'][adc] # row consumption clocks no extra conversions
                 if cid in (34,35):assert publication['master_deferrals']>0
                 if cid==35:assert case['diagnostics']['timing']['request_interval']['min_us']>=1000
+            for cid in (45,46,51):
+                case=next(c for c in cases if c['case_id']==cid)
+                assert case['rows']==50 and case['row_publication']['fresh_both']==50
+                w=case['request_window']
+                assert w['active'] and w['high_water']<=4
+                assert w['new_requests']+w['retry_requests']+w['clock_requests']==case['slots']
+                assert w['new_requests']==w['reply_age']['count']+w['pending']
+            for cid in (47,48,49,50):
+                result=next(c for c in report['cases'] if c['case_id']==cid)
+                assert result['candidate_evidence']=='failed'
+            assert next(c for c in cases if c['case_id']==48)['request_window']['retry_exhausted']==1
             slow=next(c for c in report['cases'] if c['case_id']==36)
             assert slow['row_freshness_status']=='failed' and slow['raw_measurements']['row_publication']['fresh_both']<50
             assert next(c for c in cases if c['case_id']==37)['reason']=='adc_ready_timeout'
