@@ -37,8 +37,10 @@ namespace AnalogInputManager {
     uint64_t afterReadUs = 0;
   };
   struct ProbeDrdy {
-    uint32_t observed = 0, paired = 0, missing = 0, extra = 0, unpaired = 0;
-    TimingSummary toReadStart, toReadEnd;
+    uint32_t observed = 0, paired = 0, missing = 0, extra = 0, unpaired = 0, preStart = 0;
+    // ISR entry -> RDATA API attempt (includes unsuccessful lock attempts), and
+    // ISR entry -> successful RDATA return (includes mutex wait and transfer).
+    TimingSummary toReadAttempt, toReadEnd;
   };
   struct ProbeDrdyStats { ProbeDrdy adc[board::BOARD_MAX_EXTERNAL_ADCS]; };
   bool probeWorkersRunning();

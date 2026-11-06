@@ -30,7 +30,12 @@ bool transfer(
     const uint8_t* tx,
     uint8_t* rx,
     size_t length,
-    uint32_t lockTimeoutMs = 50);
+    uint32_t lockTimeoutMs = 50
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+    // Runs after CS release while still owning the bus. Must be bounded/no I/O.
+    , void (*probeAfterCsRelease)(void*) = nullptr, void* probeContext = nullptr
+#endif
+    );
 
 const Diagnostics& diagnostics();
 

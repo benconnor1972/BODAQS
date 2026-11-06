@@ -8,6 +8,7 @@ import tempfile
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--compiler", default="g++")
+    parser.add_argument("--case-runner", action="store_true", help="Also compile public serial/result and transport seam")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix="bodaqs-spi-probe-") as temp:
@@ -31,10 +32,14 @@ def main():
             if not any(s in line for s in ('ArduinoJson', 'convertFromJson', 'canConvertFromJson', 'WebServer.h', 'namespace AnalogInputManager')))
         config = '\n'.join(line for line in (root / "src/ConfigManager.cpp").read_text(encoding="utf-8").splitlines() if not line.startswith('#include'))
         fixture = fixture.replace('// CONFIG_SUPPORT', config_support + '\n' + config)
+        if args.case_runner:
+            fixture = '#define TEST_CASE_RUNNER 1\n' + fixture
         cpp, exe = temp / "fixture.cpp", temp / "fixture.exe"
         cpp.write_text(fixture, encoding="utf-8")
-        sources = [root / 'src' / name for name in ('AnalogInputManager.cpp', 'SharedSpiBus.cpp', 'SensorParams.cpp', 'SensorAssignment.cpp')]
+        sources = [root / 'src' / name for name in ('AnalogInputManager.cpp', 'SharedSpiBus.cpp', 'SensorParams.cpp', 'SensorAssignment.cpp', 'BoardProfile.cpp')]
         sources += [root / 'can-fd/common/protocol/bodaqs_control.c']
+        if args.case_runner:
+            sources += [root / 'src' / name for name in ('SpiMeasurementProbe.cpp', 'SpiProbeTransport.cpp', 'SpiProbeCodec.cpp')]
         subprocess.run([args.compiler, '-std=gnu++2a', '-pthread', '-DESP32=1', '-DBODAQS_SPI_PROBE=1', '-DLOG_COMPILED=0', '-Wno-unused', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-I', str(temp), '-I', str(root / 'test/stubs'), '-I', str(root / 'src'), str(cpp), *map(str, sources), '-o', str(exe)], check=True)
         subprocess.run([str(exe)], check=True, timeout=15)
 

@@ -75,6 +75,9 @@ struct AdsDevice {
   bool probeTaskPending = false;
   bool probeTaskRunning = false;
   bool probeDrdyArmed = false;
+  bool probeStartReleased = false;
+  uint32_t probeStartReleasedUs = 0;
+  uintptr_t probeIsrToken = 0;
   uint32_t probeDrdyEvents = 0;
   uint32_t probeDrdyUs = 0;
   AnalogInputManager::ProbeDrdy probeDrdy;
@@ -87,17 +90,38 @@ struct AdsDevice {
 #endif
 };
 
+AdsDevice s_ads[board::BOARD_MAX_EXTERNAL_ADCS];
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+// Never reset/reuse an ISR registration token during this boot. A dispatched
+// callback from an old attachment can enter after detach or another profile.
+uintptr_t s_probeIsrGeneration = 0;
+#endif
+
 #if defined(ESP32)
 portMUX_TYPE s_drdyMux = portMUX_INITIALIZER_UNLOCKED;
 
 void ARDUINO_ISR_ATTR adsReadyIsr_(void* arg) {
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+  const uint32_t enteredUs = micros();
+  const uintptr_t token = reinterpret_cast<uintptr_t>(arg);
+  const uint8_t adc = token & 3U;
+  if (adc >= board::BOARD_MAX_EXTERNAL_ADCS) return;
+  AdsDevice& dev = s_ads[adc];
+#else
   AdsDevice& dev = *static_cast<AdsDevice*>(arg);
+#endif
   BaseType_t higherPriorityTaskWoken = pdFALSE;
   portENTER_CRITICAL_ISR(&s_drdyMux);
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+  if (dev.probeIsrToken != token || !dev.drdyTask) {
+    portEXIT_CRITICAL_ISR(&s_drdyMux);
+    return;
+  }
   ++dev.probeDrdy.observed;
   if (dev.probeDrdyArmed) {
-    if (dev.probeDrdyEvents++ == 0) dev.probeDrdyUs = micros();
+    if (!dev.probeStartReleased || static_cast<int32_t>(enteredUs - dev.probeStartReleasedUs) < 0) {
+      ++dev.probeDrdy.preStart;
+    } else if (dev.probeDrdyEvents++ == 0) dev.probeDrdyUs = enteredUs;
     else ++dev.probeDrdy.extra;
   } else {
     ++dev.probeDrdy.unpaired;
@@ -112,7 +136,6 @@ void ARDUINO_ISR_ATTR adsReadyIsr_(void* arg) {
 #endif
 
 const board::BoardProfile* s_board = nullptr;
-AdsDevice s_ads[board::BOARD_MAX_EXTERNAL_ADCS];
 bool s_spiReady = false;
 bool s_inSample = false;
 volatile bool s_asyncLoggingActive = false;
@@ -127,7 +150,17 @@ AnalogInputManager::ProbeRow s_probeRows[board::BOARD_MAX_ANALOG_INPUTS];
 void armProbeDrdy_(AdsDevice& dev) {
   portENTER_CRITICAL(&s_drdyMux);
   dev.probeDrdyArmed = true;
+  dev.probeStartReleased = false;
   dev.probeDrdyEvents = 0;
+  portEXIT_CRITICAL(&s_drdyMux);
+}
+void probeStartReleased_(void* context) {
+  AdsDevice& dev = *static_cast<AdsDevice*>(context);
+  portENTER_CRITICAL(&s_drdyMux);
+  // Conservative software boundary just after CS high. An ISR whose entry
+  // precedes this mark is pre-START/ambiguous, even if its lock entry is later.
+  dev.probeStartReleasedUs = micros();
+  dev.probeStartReleased = true;
   portEXIT_CRITICAL(&s_drdyMux);
 }
 bool takeProbeDrdy_(AdsDevice& dev, uint32_t& edgeUs, bool ready) {
@@ -285,6 +318,12 @@ bool adsTransfer_(AdsDevice& dev, const uint8_t* tx, uint8_t* rx, size_t len) {
 
 bool adsCommand_(AdsDevice& dev, uint8_t cmd) {
   if (!dev.present || dev.cfg.cs_pin < 0 || !s_spiReady) return false;
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+  if (cmd == ADS1220_CMD_START) {
+    return SharedSpiBus::transfer(dev.cfg.cs_pin, spiSettings_(dev), &cmd,
+        nullptr, 1, 50, probeStartReleased_, &dev);
+  }
+#endif
   return adsTransfer_(dev, &cmd, nullptr, 1);
 }
 
@@ -460,7 +499,7 @@ bool readAdsChannelLive_(uint8_t adcIndex, uint8_t channel, int32_t& outCounts) 
 
   int32_t raw24 = 0;
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
-  if (paired) TimingStats_record(dev.probeDrdy.toReadStart, (uint32_t)(micros() - observedUs));
+  if (paired) TimingStats_record(dev.probeDrdy.toReadAttempt, (uint32_t)(micros() - observedUs));
 #endif
 #if BODAQS_TIMING_INSTRUMENTATION
   t0 = micros();
@@ -645,7 +684,12 @@ void adcTaskFn_(void* arg) {
     portENTER_CRITICAL(&s_drdyMux);
     dev.drdyTask = xTaskGetCurrentTaskHandle();
     portEXIT_CRITICAL(&s_drdyMux);
-    attachInterruptArg((uint8_t)dev.cfg.drdy_pin, adsReadyIsr_, &dev,
+    attachInterruptArg((uint8_t)dev.cfg.drdy_pin, adsReadyIsr_,
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+                       reinterpret_cast<void*>(dev.probeIsrToken),
+#else
+                       &dev,
+#endif
                        dev.cfg.drdy_active_low ? FALLING : RISING);
   }
   dev.asyncRunning = true;
@@ -695,6 +739,9 @@ void adcTaskFn_(void* arg) {
   if (dev.drdyTask) {
     portENTER_CRITICAL(&s_drdyMux);
     dev.drdyTask = nullptr;
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+    dev.probeIsrToken = 0;
+#endif
     portEXIT_CRITICAL(&s_drdyMux);
     detachInterrupt((uint8_t)dev.cfg.drdy_pin);
   }
@@ -992,6 +1039,12 @@ void onLoggingStart() {
     dev.asyncRun = true;
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
     portENTER_CRITICAL(&s_drdyMux);
+    if (s_probeIsrGeneration == (UINTPTR_MAX >> 2)) {
+      portEXIT_CRITICAL(&s_drdyMux);
+      dev.asyncRun = false;
+      continue; // finite registration namespace: fail async startup closed
+    }
+    dev.probeIsrToken = (++s_probeIsrGeneration << 2) | adc;
     dev.probeTaskPending = true;
     portEXIT_CRITICAL(&s_drdyMux);
 #endif
@@ -1012,6 +1065,7 @@ void onLoggingStart() {
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
       portENTER_CRITICAL(&s_drdyMux);
       dev.probeTaskPending = false;
+      dev.probeIsrToken = 0;
       portEXIT_CRITICAL(&s_drdyMux);
 #endif
       AIN_LOGW("ADS%u async scheduler failed to start; falling back to synchronous scan\n",

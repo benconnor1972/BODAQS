@@ -102,7 +102,11 @@ bool transfer(
     const uint8_t* tx,
     uint8_t* rx,
     size_t length,
-    uint32_t lockTimeoutMs) {
+    uint32_t lockTimeoutMs
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+    , void (*probeAfterCsRelease)(void*), void* probeContext
+#endif
+    ) {
   if (!s_ready || csPin < 0 || length == 0 || (!tx && !rx)) return false;
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
   const uint32_t requestedUs = micros();
@@ -128,6 +132,9 @@ bool transfer(
   }
 #endif
   digitalWrite(static_cast<uint8_t>(csPin), HIGH);
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+  if (probeAfterCsRelease) probeAfterCsRelease(probeContext);
+#endif
   s_spi->endTransaction();
   ++s_diagnostics.transactions;
   s_diagnostics.bytesTransferred += length;
