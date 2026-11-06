@@ -602,4 +602,3 @@ int main() {
   puts("real client: valid-wire corrupted logical bytes never accepted/ACKed; unconfirmed STOP blocks profile changes passed");
 #endif
 }
-
