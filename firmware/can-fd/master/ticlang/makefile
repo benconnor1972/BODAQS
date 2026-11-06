@@ -98,7 +98,7 @@ $(foreach source,$(SYSCFG_C_FILES),$(eval $(call C_RULE,$(source))))
 
 main.obj: ../../common/transport/bodaqs_record_queue.h
 main.obj bodaqs_spi_probe.obj: ../../common/protocol/bodaqs_spi_probe.h
-bodaqs_spi_probe.obj: ../../common/protocol/bodaqs_spi_probe_crc_table.h
+bodaqs_spi_probe.obj: ../../common/protocol/bodaqs_measurement.h
 
 $(NAME).out: $(OBJECTS)
 	@echo Linking $@

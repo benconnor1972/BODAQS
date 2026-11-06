@@ -26,7 +26,7 @@ uint8_t bodaqs_spi_probe_fragment_count(uint8_t p) {
 #error "BODAQS_SPI_PROBE_CRC_TABLE must be0 or1"
 #endif
 #if BODAQS_SPI_PROBE_CRC_TABLE
-#include "bodaqs_spi_probe_crc_table.h"
+#include "bodaqs_measurement.h"
 #endif
 /* Main-owned engine context is explicit; public stateless codec calls have no
  * timing side effects. Nested totals overlap and must not be added together. */
@@ -46,7 +46,7 @@ static void component_end(BodaqsSpiProbeEngine *e,unsigned index,ComponentStart 
 }
 static uint32_t crc_step(uint32_t crc,uint8_t byte) {
     #if BODAQS_SPI_PROBE_CRC_TABLE
-    return (crc>>8)^bodaqs_spi_probe_crc_table[(crc^byte)&255U];
+    return bodaqs_measurement_crc_step(crc,byte);
     #else
     crc^=byte;
     for(unsigned bit=0;bit<8;++bit) crc=(crc>>1)^(0xedb88320U & (0U-(crc&1U)));

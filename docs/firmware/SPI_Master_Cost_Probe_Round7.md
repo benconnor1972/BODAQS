@@ -26,9 +26,18 @@ Build two otherwise identical instrumented MSPM0 images from one clean commit:
 
 - `BODAQS_SPI_PROBE_CRC_TABLE=0`: original reflected bitwise IEEE CRC32.
 - `BODAQS_SPI_PROBE_CRC_TABLE=1`: same polynomial, initial/final XOR and byte order,
-  using a256-entry constant table (1024 flash bytes). This applies to the master's
+  reusing the production `bodaqs_measurement_crc_step` byte-table implementation
+  (256 entries,1024 bytes of table data). This applies to the master's
   frame CRC and synthetic object CRC. It does not skip any validation or cache a
   received checksum as evidence of valid data.
+
+The production measurement codec already uses this byte-table implementation;
+the ordinary master control codec also uses a nibble table. The slow bitwise
+routine belongs to the synthetic probe. This A/B experiment therefore measures
+and removes a probe-specific cost, not a newly discovered optimization missing
+from production. Production capacity remains separately unqualified. Table data
+may be merged by the linker across translation units; table presence in an ELF
+alone cannot establish which CRC implementation the probe actually calls.
 
 The logger remains bitwise in both comparisons; its `cached` option still caches
 only the expected synthetic object's CRC as in previous rounds. The public codec
