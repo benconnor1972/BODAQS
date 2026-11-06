@@ -95,7 +95,7 @@ placeholder with the packaged identity or actual run observation:
     "build": "<exact artifacts.logger_build in capture>"
   },
   "master": {
-    "board": "MSPM0G3519; exact board revision and serial",
+    "board": "MSPM0G3518; exact board revision and serial",
     "source_revision": "<40 lowercase hex characters>",
     "artifact_sha256": "<64 lowercase hex characters>"
   },

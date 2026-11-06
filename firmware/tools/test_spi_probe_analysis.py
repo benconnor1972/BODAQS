@@ -147,7 +147,7 @@ class ProbeAnalysisTests(unittest.TestCase):
                     "capture_path": "external/capture.txt", "protocol": 1,
                     "logger": {"board": "A8-ESP32-S3MiniN4R2", "source_revision": "a" * 40,
                                "artifact_sha256": "b" * 64, "build": "literal-fixture"},
-                    "master": {"board": "MSPM0G3519", "source_revision": "c" * 40,
+                    "master": {"board": "MSPM0G3518", "source_revision": "c" * 40,
                                "artifact_sha256": "d" * 64},
                     "wiring": "unchanged shared SPI", "instrumentation": "SCK unmeasured"}
         first = self.invoke(capture, manifest)
