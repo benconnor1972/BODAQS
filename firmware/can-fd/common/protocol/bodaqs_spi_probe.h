@@ -28,6 +28,18 @@ typedef struct {
     uint8_t opcode, node, fragment, payload_length, profile;
     uint8_t payload[232];
 } BodaqsSpiProbeFrame;
+typedef enum {
+    BODAQS_SPI_PROBE_DECODE_OK=0,
+    BODAQS_SPI_PROBE_DECODE_ARGUMENT=1,
+    BODAQS_SPI_PROBE_DECODE_FRAME_SIZE=2,
+    BODAQS_SPI_PROBE_DECODE_MAGIC=3,
+    BODAQS_SPI_PROBE_DECODE_VERSION=4,
+    BODAQS_SPI_PROBE_DECODE_PROFILE=5,
+    BODAQS_SPI_PROBE_DECODE_PAYLOAD_LENGTH=6,
+    BODAQS_SPI_PROBE_DECODE_CRC=7,
+    BODAQS_SPI_PROBE_DECODE_PADDING=8,
+    BODAQS_SPI_PROBE_DECODE_COUNT=9
+} BodaqsSpiProbeDecodeResult;
 /* Counters are prepared/retired, never claims of physical delivery. */
 typedef struct {
     uint32_t requests, malformed, rejected, prepared_fragments, repeat_fragments;
@@ -45,6 +57,9 @@ typedef struct {
     BodaqsSpiProbeStats stats;
     /* Main-owner snapshot: STATS page1. See PROTOCOL.md for indices. */
     uint32_t adapter_stats[10];
+    /* Main-owned coherent adapter snapshot: additive STATS page2.
+     * Process/counter totals wrap uint32; maxima and invalid are boot state. */
+    uint32_t diagnostic_stats[10];
 } BodaqsSpiProbeEngine;
 /* profile: size code 0/1/2 =>64/128/256; bit2 0/1 =>8/16MHz;
  * bits3..4 => node_count-1; all other bits zero. Guard fixed at25us. */
@@ -57,6 +72,10 @@ uint8_t bodaqs_spi_probe_known_byte(uint32_t case_id, uint8_t node,
     uint32_t object_id, uint16_t offset);
 uint32_t bodaqs_spi_probe_known_crc(uint32_t case_id, uint8_t node, uint32_t object_id);
 bool bodaqs_spi_probe_encode(const BodaqsSpiProbeFrame *frame, uint8_t *wire, size_t length);
+/* First rejection in the historical validation order; failure leaves frame
+ * unchanged. Sizes are checked before any wire byte is accessed. */
+BodaqsSpiProbeDecodeResult bodaqs_spi_probe_decode_result(const uint8_t *wire,
+    size_t length, BodaqsSpiProbeFrame *frame);
 bool bodaqs_spi_probe_decode(const uint8_t *wire, size_t length, BodaqsSpiProbeFrame *frame);
 void bodaqs_spi_probe_init(BodaqsSpiProbeEngine *engine);
 /* Main owner only. Selected bytes are regenerated from immutable case/node/ID,
