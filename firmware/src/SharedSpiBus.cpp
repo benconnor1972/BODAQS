@@ -15,6 +15,9 @@ int8_t s_mosi = -1;
 SharedSpiBus::Diagnostics s_diagnostics;
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
 SharedSpiBus::ProbeStats s_probe;
+SharedSpiBus::ProbeContext s_previous;
+bool s_previousValid=false;
+uint32_t s_sequence=0;
 #if defined(ESP32)
 portMUX_TYPE s_probeMux = portMUX_INITIALIZER_UNLOCKED;
 #define PROBE_ENTER() portENTER_CRITICAL(&s_probeMux)
@@ -104,7 +107,7 @@ bool transfer(
     size_t length,
     uint32_t lockTimeoutMs
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
-    , void (*probeAfterCsRelease)(void*), void* probeContext
+    , void (*probeAfterCsRelease)(void*), void* probeContext, ProbeContext* transactionContext
 #endif
     ) {
   if (!s_ready || csPin < 0 || length == 0 || (!tx && !rx)) return false;
@@ -122,6 +125,13 @@ bool transfer(
 #endif
 
   s_spi->beginTransaction(settings);
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+  ProbeContext context;
+  context.sequence=++s_sequence;context.cs=csPin;context.previousValid=s_previousValid;
+  context.previousCs=s_previousValid?s_previous.cs:-1;
+  context.previousReleaseUs=s_previous.csReleaseUs;
+  context.csAssertUs=micros();
+#endif
   digitalWrite(static_cast<uint8_t>(csPin), LOW);
 #if defined(ESP32)
   s_spi->transferBytes(tx, rx, length);
@@ -133,6 +143,9 @@ bool transfer(
 #endif
   digitalWrite(static_cast<uint8_t>(csPin), HIGH);
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+  context.csReleaseUs=micros();
+  s_previous=context;s_previousValid=true;
+  if(transactionContext)*transactionContext=context;
   if (probeAfterCsRelease) probeAfterCsRelease(probeContext);
 #endif
   s_spi->endTransaction();
@@ -150,7 +163,33 @@ bool transfer(
 
 const Diagnostics& diagnostics() { return s_diagnostics; }
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
-void probeReset() { PROBE_ENTER(); s_probe = ProbeStats{}; PROBE_EXIT(); }
+void probeReset() {
+  // Caller has stopped participants; use the real bus mutex for context state.
+  if(!lock_(50))return;
+  s_previous=ProbeContext{};s_previousValid=false;s_sequence=0;
+  PROBE_ENTER();s_probe=ProbeStats{};PROBE_EXIT();unlock_();
+}
+bool probeUnselectedClocks(const board::SPIProfile& profile) {
+  if(!s_ready || !profile.present)return false;
+  const uint32_t requested=micros();
+  if(!lock_(50)){recordProbe_(-2,4,false,0,0);return false;}
+  const uint32_t began=micros();
+  for(uint8_t i=0;i<profile.cs_count && i<8;++i)if(profile.cs_pins[i]>=0)
+    digitalWrite(static_cast<uint8_t>(profile.cs_pins[i]),HIGH);
+  s_spi->beginTransaction(SPISettings(1000000,MSBFIRST,SPI_MODE1));
+  uint8_t bytes[4]={};
+#if defined(ESP32)
+  s_spi->transferBytes(bytes,nullptr,sizeof(bytes));
+#else
+  for(uint8_t byte:bytes)s_spi->transfer(byte);
+#endif
+  s_spi->endTransaction();
+  s_previous=ProbeContext{};s_previous.sequence=++s_sequence;s_previous.cs=-2;
+  s_previous.csAssertUs=began;s_previous.csReleaseUs=micros();s_previousValid=true;
+  const uint32_t owned=static_cast<uint32_t>(micros()-began);
+  ++s_diagnostics.transactions;s_diagnostics.bytesTransferred+=sizeof(bytes);
+  unlock_();recordProbe_(-2,sizeof(bytes),true,static_cast<uint32_t>(began-requested),owned);return true;
+}
 ProbeStats probeSnapshot() { PROBE_ENTER(); const auto copy = s_probe; PROBE_EXIT(); return copy; }
 #endif
 

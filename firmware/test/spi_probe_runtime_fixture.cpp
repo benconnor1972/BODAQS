@@ -18,6 +18,10 @@
 #include <deque>
 static BodaqsSpiProbeEngine master;
 static bool masterEnabled=false,masterSilent=false,corruptPayload=false;
+static unsigned rawFault=0,rawFaultsLeft=0;
+static std::vector<std::array<uint8_t,256>> injectedRx;
+static bool stats2Unsupported=false;
+static unsigned syntheticSwitchCount=0;
 static std::deque<std::array<uint8_t,256>> replies(2);
 static uint64_t bulkLastHigh=0;
 // Rail fault signal boundary only; target build retains real PowerManager.
@@ -40,6 +44,7 @@ void delayMicroseconds(unsigned int us) { std::this_thread::sleep_for(std::chron
 void pinMode(uint8_t, uint8_t) {}
 int analogRead(uint8_t) { return 0; }
 static std::atomic<int> selected{-1};
+static std::atomic<uint8_t> pinLevel[64];
 static std::atomic<bool> forceReadyPin=false;
 static std::mutex gpioMutex;
 struct Gpio { int level=LOW; void (*isr)(void*)=nullptr; void* arg=nullptr; } gpio[64];
@@ -63,7 +68,7 @@ void probeEnterCriticalIsr(portMUX_TYPE* mux) {
   }
   mux->lock();
 }
-void digitalWrite(uint8_t pin,uint8_t level) { if (level==LOW) { assert(selected.exchange(pin)==-1); if(workerAdc>=0 && workerLockCalls==3)readCsUs[workerAdc]=micros();
+void digitalWrite(uint8_t pin,uint8_t level) { pinLevel[pin]=level; if (level==LOW) { assert(selected.exchange(pin)==-1); if(workerAdc>=0 && workerLockCalls==3)readCsUs[workerAdc]=micros();
 #if TEST_CASE_RUNNER
   if(pin==40 && masterEnabled && bulkLastHigh)assert(esp_timer_get_time()-bulkLastHigh>=25);
 #endif
@@ -84,16 +89,47 @@ static SPISettings settings;
 void SPIClass::beginTransaction(const SPISettings& requested) { settings=requested; }
 void SPIClass::endTransaction() {}
 void SPIClass::transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
-  assert(selected>=0); delayMicroseconds(10); if(rx) memset(rx,0,length);
+  if(selected<0) {
+    assert(settings.hz==1000000 && settings.mode==SPI_MODE1 && length==4);
+    const auto& bus=board::GetBoardProfile(board::BoardID::BODAQS_A8).spi;
+    for(uint8_t i=0;i<bus.cs_count && i<8;++i)if(bus.cs_pins[i]>=0)assert(pinLevel[bus.cs_pins[i]]==HIGH);
+#if TEST_CASE_RUNNER
+    ++syntheticSwitchCount;
+#endif
+    return;
+  }
+  delayMicroseconds(10); if(rx) memset(rx,0,length);
   const int adc=selected==47?0:selected==21?1:-1;
   if(adc>=0)assert(settings.hz==1000000 && settings.mode==SPI_MODE1);
   if(selected==40)assert((settings.hz==16000000 || settings.hz==8000000) && settings.mode==SPI_MODE0);
 #if TEST_CASE_RUNNER
   if(selected==40 && masterEnabled) {
     if(rx)memcpy(rx,replies.front().data(),length);replies.pop_front();
+    if(rx && rawFaultsLeft) {
+      // Inject independent raw hardware replies, after the real master encoder.
+      --rawFaultsLeft;
+      if(rawFault==3)rx[0]=0;
+      if(rawFault==4)rx[2]=2;
+      if(rawFault==5)rx[15]=255;
+      if(rawFault==6)rx[14]=255;
+      if(rawFault==7)rx[length-1]^=0x80;
+      if(rawFault==8) {
+        rx[14]=0;rx[20]=1;
+        // IEEE CRC32 independently written at the hardware boundary, so only
+        // padding fails; do not ask the codec under test to construct the fault.
+        uint32_t crc=0xffffffffU;
+        for(size_t i=0;i<length-4;++i){crc^=rx[i];for(unsigned b=0;b<8;++b)crc=(crc&1)?(crc>>1)^0xedb88320U:crc>>1;}
+        crc^=0xffffffffU;for(unsigned b=0;b<4;++b)rx[length-4+b]=crc>>(8*b);
+      }
+      std::array<uint8_t,256> observed{};memcpy(observed.data(),rx,length);injectedRx.push_back(observed);
+    }
     std::array<uint8_t,256> prepared{};
     if(!masterSilent)bodaqs_spi_probe_process(&master,tx,length,prepared.data(),prepared.size());
     BodaqsSpiProbeFrame response;
+    if(stats2Unsupported && bodaqs_spi_probe_decode(prepared.data(),length,&response) && response.opcode==(BODAQS_PROBE_STATS|BODAQS_PROBE_RESPONSE) && response.fragment==2) {
+      response.opcode=BODAQS_PROBE_ERROR|BODAQS_PROBE_RESPONSE;response.payload_length=1;response.payload[0]=BODAQS_PROBE_ARGUMENT;
+      assert(bodaqs_spi_probe_encode(&response,prepared.data(),length));
+    }
     if(corruptPayload && bodaqs_spi_probe_decode(prepared.data(),length,&response) && response.opcode==(BODAQS_PROBE_POLL|BODAQS_PROBE_RESPONSE) && response.fragment==2) {
       response.payload[0]^=1;assert(bodaqs_spi_probe_encode(&response,prepared.data(),length));corruptPayload=false;
     }
@@ -111,6 +147,8 @@ void SPIClass::transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
   if(adc>=0 && tx && tx[0]==16) ++reads[adc];
 }
 static SemaphoreHandle_t sharedSpiLock=nullptr;
+static thread_local bool holdContextAcquisition=false;
+static std::atomic<bool> contextAcquisitionReached=false,releaseContextAcquisition=false;
 SemaphoreHandle_t xSemaphoreCreateMutex() {
   auto* mutex=new std::timed_mutex;
   if(!sharedSpiLock)sharedSpiLock=mutex;
@@ -118,6 +156,10 @@ SemaphoreHandle_t xSemaphoreCreateMutex() {
 }
 static std::atomic<bool> failLock=false,failWarmup=false,failInterruptRegistration=false;
 BaseType_t xSemaphoreTake(SemaphoreHandle_t m,TickType_t timeout) {
+  if(m==sharedSpiLock && holdContextAcquisition) {
+    contextAcquisitionReached=true;
+    while(!releaseContextAcquisition)std::this_thread::yield();
+  }
   // Faults and lock-call ordinals below describe SPI contention, not the
   // independent ADC interrupt-registration mutex.
   if(m!=sharedSpiLock)return !failInterruptRegistration && m->try_lock_for(std::chrono::milliseconds(timeout));
@@ -204,7 +246,35 @@ int main() {
   assert(stats.participant[1].csPin==47 && stats.participant[1].lockFailures==1 && stats.participant[1].ownership.count==0);
   puts("real SharedSpiBus: geometry, CS serialization and per-CS ownership passed");
 
+  // Actual driver/mutex boundary: zero is a valid CS time; failed lock must not
+  // publish a fictitious participant; unselected clocks retire as participant -2.
+  SharedSpiBus::probeReset();frozenUs=0;
+  SharedSpiBus::ProbeContext firstContext, nextContext;
+  assert(SharedSpiBus::transfer(47,SPISettings(1000000,MSBFIRST,SPI_MODE1),tx,rx,4,50,nullptr,nullptr,&firstContext));
+  assert(!firstContext.previousValid && firstContext.csAssertUs==0 && firstContext.csReleaseUs==0);
+  frozenUs=0xffffffffLL;
+  assert(SharedSpiBus::transfer(40,SPISettings(8000000),tx,rx,4,50,nullptr,nullptr,&nextContext));
+  assert(nextContext.previousValid && nextContext.previousCs==47 && nextContext.previousReleaseUs==0);
+  assert(nextContext.sequence==firstContext.sequence+1);
   auto board=adcBoard();
+  assert(SharedSpiBus::probeUnselectedClocks(board.spi));
+  frozenUs=3;
+  assert(SharedSpiBus::transfer(40,SPISettings(8000000),tx,rx,4,50,nullptr,nullptr,&nextContext));
+  assert(nextContext.previousValid && nextContext.previousCs==-2 && nextContext.previousReleaseUs==0xffffffffU);
+  frozenUs=-1;
+  // Block at the actual RTOS mutex, then retire another participant before the
+  // waiting transfer acquires it. Context must describe that committed predecessor.
+  sharedSpiLock->lock();std::atomic<bool> finished=false;
+  SharedSpiBus::ProbeContext waited;
+  std::thread waiter([&]{holdContextAcquisition=true;assert(SharedSpiBus::transfer(40,SPISettings(8000000),tx,rx,4,50,nullptr,nullptr,&waited));finished=true;});
+  while(!contextAcquisitionReached)std::this_thread::yield();assert(!finished);
+  sharedSpiLock->unlock();
+  // The ADC operation commits after the master requested the lock, before the
+  // delayed acquisition. Reading predecessor state before lock would miss it.
+  assert(SharedSpiBus::transfer(47,SPISettings(1000000,MSBFIRST,SPI_MODE1),tx,rx,4));
+  releaseContextAcquisition=true;waiter.join();
+  assert(waited.previousValid && waited.previousCs==47 && waited.sequence==nextContext.sequence+2);
+  puts("shared bus context: zero and wrapped timestamps, actual unselected mode1 clocks passed");
   AnalogInputManager::begin(board);
   LoggerConfig cfg;cfg.sensorN=2;cfg.sampleRateHz=500;
   for(auto& s:cfg.sensors) {s.type=SensorType::AnalogPot;s.mutedDefault=false;}
@@ -330,7 +400,9 @@ int main() {
   puts("real ADC: same-microsecond ISR entry before START marker is ambiguous, later distinct-tick completion paired passed");
 #if TEST_CASE_RUNNER
   releaseWaiters=true;
-  SpiMeasurementProbe::begin(board);Serial.output.clear();
+  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v2-")!=std::string::npos);
+  puts(Serial.output.c_str());Serial.output.clear();SpiMeasurementProbe::command("status");
+  assert(Serial.output.find("\"logger_build\":")!=std::string::npos);puts(Serial.output.c_str());Serial.output.clear();
   // Public runner, deterministic clock boundary: 10 seconds has 5000 midpoints
   // in [start,end). ADC samples remain synthetic; this checks row scheduling,
   // not physical ADC performance or freshness qualification.
@@ -419,10 +491,31 @@ int main() {
   assert(Serial.output.find("\"outcome\":\"failed\"")!=std::string::npos && Serial.output.find("bulk_fault_or_stalled")!=std::string::npos && Serial.output.find("\"accept\":1")!=std::string::npos);
   puts(Serial.output.c_str());
   puts("public short bulk case: actual same-case peer ERROR produces failed result without waiting for stall duration passed");
-  uint32_t caseId=12;
+  Serial.output.clear();const unsigned switchBefore=syntheticSwitchCount;
+  SpiMeasurementProbe::command("case 12 switch 128 8000000 4 100 cached 500");
+  SpiMeasurementProbe::command("case 13 bulk 256 16000000 1 100 legacy 0"); // immutable active profile
+  while(Serial.output.empty())SpiMeasurementProbe::loop();
+  assert(Serial.output.find("\"mode\":\"switch\"")!=std::string::npos && AnalogInputManager::probeWorkersStopped());
+  assert(syntheticSwitchCount>switchBefore && SpiProbeTransport::stats().switchTransfers>0);
+  assert(SpiProbeTransport::stats().requestInterval.minUs>=500);
+  puts(Serial.output.c_str());Serial.output.clear();releaseWaiters=true;
+  SpiMeasurementProbe::command("case 13 mixed 128 8000000 4 100 cached 5000");
+  while(Serial.output.empty())SpiMeasurementProbe::loop();joinTasks();
+  assert(SpiProbeTransport::stats().pacingDeferred>0 && SpiProbeTransport::stats().requestInterval.minUs>=5000);
+  puts(Serial.output.c_str());Serial.output.clear();
+  SpiMeasurementProbe::command("case 14 bulk 128 8000000 1 100 legacy 0");rawFault=3;rawFaultsLeft=8;
+  while(Serial.output.empty())SpiMeasurementProbe::loop();
+  assert(SpiProbeTransport::stats().wireErrors==8 && SpiProbeTransport::stats().failureCount==4 && SpiProbeTransport::stats().failureSamplesOmitted==4);
+  puts(Serial.output.c_str());Serial.output.clear();
+  SpiMeasurementProbe::command("case 14 adc 128 8000000 1 100 cached 5001");
+  assert(Serial.output.find("invalid_profile")!=std::string::npos);Serial.output.clear();
+  SpiMeasurementProbe::command("case 14 adc 128 8000000 1 100 cached 0");
+  assert(Serial.output.find("non_increasing_case_id")!=std::string::npos);Serial.output.clear();
+  puts("public extended controls: immutable switch/cached/paced profiles, ADC row budget while deferred, bounded raw failure JSON passed");
+  uint32_t caseId=15;
   for(uint16_t frame: {64,128,256})for(uint32_t hz: {8000000U,16000000U}) {
     assert(SpiProbeTransport::begin(board,caseId++,frame,hz,4));
-    for(unsigned attempts=0;attempts<3000 && SpiProbeTransport::stats().retiredObjects<4;++attempts)SpiProbeTransport::tick();
+    for(unsigned attempts=0;attempts<1000000 && SpiProbeTransport::stats().retiredObjects<4;++attempts)SpiProbeTransport::tick();
     assert(SpiProbeTransport::stats().uniqueObjects==4 && SpiProbeTransport::stats().acceptedBytes==4032 && SpiProbeTransport::stats().retiredObjects==4);
     assert(SpiProbeTransport::stop());
     assert(SpiProbeTransport::stats().masterMeasured);
@@ -430,16 +523,83 @@ int main() {
   puts("real SPI/client/engine: all six profiles, delayed replies, exact unique1008-byte objects, RAM ACK retirement, confirmed STOP passed");
   assert(SpiProbeTransport::begin(board,caseId++,128,8000000,1));
   master.active=false; // Actual peer now emits response ERROR=255, not stale data.
-  for(unsigned attempts=0;attempts<30 && SpiProbeTransport::healthy();++attempts)SpiProbeTransport::tick();
+  for(unsigned attempts=0;attempts<100000 && SpiProbeTransport::healthy();++attempts)SpiProbeTransport::tick();
   assert(!SpiProbeTransport::healthy() && SpiProbeTransport::stats().acceptErrors==1 && SpiProbeTransport::stats().acceptedBytes==0);
   assert(SpiProbeTransport::stop());
   puts("real client/engine: explicit same-case peer ERROR terminates immediately before short-case duration passed");
   assert(SpiProbeTransport::begin(board,caseId++,256,16000000,1));corruptPayload=true;
-  for(unsigned attempts=0;attempts<100 && !SpiProbeTransport::stats().acceptErrors;++attempts)SpiProbeTransport::tick();
+  for(unsigned attempts=0;attempts<100000 && !SpiProbeTransport::stats().acceptErrors;++attempts)SpiProbeTransport::tick();
   assert(SpiProbeTransport::stats().acceptErrors==1 && SpiProbeTransport::stats().acceptedBytes==0 && SpiProbeTransport::stats().retiredObjects==0);
   assert(SpiProbeTransport::stop());
+  // Actual raw rejection provenance: eight failures saturate four fixed slots,
+  // transfer failures never invoke decoding, and a new case clears all samples.
+  for(unsigned reason=3;reason<=8;++reason) {
+    assert(SpiProbeTransport::begin(board,caseId++,128,8000000,1));
+    injectedRx.clear();rawFault=reason;rawFaultsLeft=8;
+    for(unsigned attempts=0;attempts<100000 && rawFaultsLeft;++attempts)SpiProbeTransport::tick();
+    const auto& d=SpiProbeTransport::stats();
+    assert(rawFaultsLeft==0 && d.wireErrors==8 && d.decodeCounts[reason]==8);
+    assert(d.failureCount==4 && d.failureSamplesOmitted==4);
+    for(unsigned i=0;i<4;++i) {
+      const auto& f=d.failures[i];assert(f.reason==reason && f.slot==i+1 && f.frameBytes==128);
+      assert(f.caseId==caseId-1 && f.objectId==1 && f.opcode==BODAQS_PROBE_POLL);
+      assert(f.bus.cs==40 && f.bus.previousValid && f.bus.previousCs==40);
+      assert(memcmp(f.rx,injectedRx[i].data(),128)==0);
+      if(reason==3)assert(f.rx[0]==0);
+    }
+    assert(d.byPreviousCs[0].responses==0 && d.byPreviousCs[0].decodeFailures==8);
+    assert(SpiProbeTransport::stop());
+  }
+  assert(SpiProbeTransport::begin(board,caseId++,128,8000000,1));
+  assert(SpiProbeTransport::stats().failureCount==0 && SpiProbeTransport::stats().failureSamplesOmitted==0);
+  failLock=true;for(unsigned attempts=0;attempts<100000 && !SpiProbeTransport::stats().transferErrors;++attempts)SpiProbeTransport::tick();failLock=false;
+  assert(SpiProbeTransport::stats().transferErrors==1 && SpiProbeTransport::stats().decode.count==0);
+  assert(SpiProbeTransport::stop());
+  puts("raw reply failures: each wire reason, complete bounded samples, omission counts, reset and transfer/decode separation passed");
+
+  // CRC controls retain exact-byte, whole-object validation and ACK safety.
+  for(auto mode:{SpiProbeTransport::CrcMode::Legacy,SpiProbeTransport::CrcMode::Cached}) {
+    assert(SpiProbeTransport::begin(board,caseId++,128,8000000,2,mode));
+    for(unsigned attempts=0;attempts<1000000 && SpiProbeTransport::stats().retiredObjects<4;++attempts)SpiProbeTransport::tick();
+    const auto& d=SpiProbeTransport::stats();assert(d.retiredObjects==4 && d.acceptedBytes==4032);
+    if(mode==SpiProbeTransport::CrcMode::Cached)assert(d.expectedCrc.count==4);
+    else assert(d.expectedCrc.count>4);
+    assert(SpiProbeTransport::stop());
+    assert(SpiProbeTransport::begin(board,caseId++,256,16000000,1,mode));corruptPayload=true;
+    for(unsigned attempts=0;attempts<100000 && SpiProbeTransport::healthy();++attempts)SpiProbeTransport::tick();
+    assert(SpiProbeTransport::stats().acceptErrors==1 && SpiProbeTransport::stats().acceptedBytes==0 && SpiProbeTransport::stats().retiredObjects==0);
+    assert(SpiProbeTransport::stop());
+  }
+  puts("legacy/cached CRC: two-node object turnover, per-object expected CRC, corrupted exact bytes and ACK safety passed");
+
+  stats2Unsupported=true;const auto unsupportedBegan=micros();
+  assert(SpiProbeTransport::begin(board,caseId++,128,8000000,1));
+  assert(micros()-unsupportedBegan<100000); // explicit ERROR is promptly unknown
+  assert(SpiProbeTransport::stats().slots==0 && SpiProbeTransport::stats().decode.count==0);
+  assert(SpiProbeTransport::stop() && !SpiProbeTransport::stats().diagnosticMeasured);
+  assert(SpiProbeTransport::stats().masterMeasured && SpiProbeTransport::stats().adapterMeasured);
+  stats2Unsupported=false;
+  puts("master STATS2: unsupported explicit response remains promptly unknown, page0/1 and controls retain separate scopes passed");
+
+  // Freeze only active iterations: control entry/STOP use real advancing clock.
+  assert(SpiProbeTransport::begin(board,caseId++,128,8000000,1,SpiProbeTransport::CrcMode::Cached,5000,true));
+  frozenUs=static_cast<int64_t>(micros())+10000;
+  SpiProbeTransport::tick();const auto slots=SpiProbeTransport::stats().slots;
+  for(unsigned i=0;i<100;++i)SpiProbeTransport::tick();
+  assert(SpiProbeTransport::stats().slots==slots && SpiProbeTransport::stats().pacingDeferred>=100);
+  frozenUs+=5000;SpiProbeTransport::tick(); // unselected control, never a master slot
+  assert(SpiProbeTransport::stats().switchTransfers==1 && SpiProbeTransport::stats().slots==slots);
+  SpiProbeTransport::tick();
+  assert(SpiProbeTransport::stats().slots==slots+1 && SpiProbeTransport::stats().requestInterval.minUs>=5000);
+  assert(SpiProbeTransport::stats().byPreviousCs[1].cs==-2);
+  frozenUs+=5000;failLock=true;SpiProbeTransport::tick();failLock=false;
+  assert(SpiProbeTransport::stats().switchFailures==1 && !SpiProbeTransport::healthy());
+  frozenUs=-1;bulkLastHigh=0;assert(SpiProbeTransport::stop());
+  puts("nonblocking pacing: deferred iterations, synthetic all-CS-high clocks, actual interval and preceding -2 context passed");
+
   assert(SpiProbeTransport::begin(board,caseId++,128,8000000,1));masterSilent=true;
   assert(!SpiProbeTransport::stop());assert(!SpiProbeTransport::begin(board,caseId++,64,8000000,1));
   puts("real client: valid-wire corrupted logical bytes never accepted/ACKed; unconfirmed STOP blocks profile changes passed");
 #endif
 }
+

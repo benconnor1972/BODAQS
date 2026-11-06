@@ -12,7 +12,7 @@
 #include <limits.h>
 
 #ifndef BODAQS_SPI_PROBE_BUILD
-#define BODAQS_SPI_PROBE_BUILD "spi-probe-v1 " __DATE__ " " __TIME__
+#error "Probe builds require source-derived BODAQS_SPI_PROBE_BUILD"
 #endif
 
 namespace {
@@ -22,7 +22,8 @@ struct Case {
   uint32_t id=0,hz=8000000,durationMs=1000;
   uint16_t frame=64;
   uint8_t nodes=1;
-  bool adc=false,bulk=false,active=false,transportAttempted=false;
+  bool adc=false,bulk=false,switchMode=false,cached=false,active=false,transportAttempted=false;
+  uint32_t startIntervalUs=0;
   uint64_t startUs=0,nextRowUs=0,elapsedUs=0;
   uint32_t rows=0,missedRows=0,commandErrors=0;
 } s_case;
@@ -34,7 +35,7 @@ bool s_lineOverflow=false;
 
 uint64_t now_() { return static_cast<uint64_t>(esp_timer_get_time()); }
 void error_(const char* reason) {
-  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v1\",\"type\":\"error\",\"reason\":\"%s\"}\n",reason);
+  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v2\",\"type\":\"error\",\"reason\":\"%s\"}\n",reason);
 }
 void summary_(const TimingSummary& s) {
   Serial.printf("{\"count\":%lu,\"min_us\":%lu,\"max_us\":%lu,\"total_us\":%llu}",
@@ -49,13 +50,13 @@ void emit_(const char* outcome,const char* reason,bool stopped) {
   const auto adc=AnalogInputManager::probeTimingSnapshot();
   const auto drdy=AnalogInputManager::probeDrdySnapshot();
   const auto bus=SharedSpiBus::probeSnapshot();
-  const SpiProbeTransport::Stats empty;
+  static const SpiProbeTransport::Stats empty;
   const auto& t=s_case.transportAttempted?SpiProbeTransport::stats():empty;
-  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v1\",\"type\":\"case\",\"case_id\":%lu,\"outcome\":\"%s\",\"reason\":\"%s\",",
+  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v2\",\"type\":\"case\",\"case_id\":%lu,\"outcome\":\"%s\",\"reason\":\"%s\",",
       (unsigned long)s_case.id,outcome,reason);
   Serial.printf("\"artifacts\":{\"logger_build\":\"%s\",\"master_build\":\"external-manifest\",\"protocol\":1},",BODAQS_SPI_PROBE_BUILD);
-  Serial.printf("\"profile\":{\"mode\":\"%s\",\"frame_bytes\":%u,\"requested_sck_hz\":%lu,\"actual_sck_hz\":null,\"actual_sck_basis\":\"unmeasured\",\"guard_us\":25,\"nodes\":%u,\"duration_ms\":%lu,\"row_hz\":500,\"ain\":[0,4],\"configured_sps\":[1000,1000]},",
-      s_case.adc?(s_case.bulk?"mixed":"adc"):"bulk",s_case.frame,(unsigned long)s_case.hz,s_case.nodes,(unsigned long)s_case.durationMs);
+  Serial.printf("\"profile\":{\"mode\":\"%s\",\"frame_bytes\":%u,\"requested_sck_hz\":%lu,\"actual_sck_hz\":null,\"actual_sck_basis\":\"unmeasured\",\"guard_us\":25,\"nodes\":%u,\"duration_ms\":%lu,\"row_hz\":500,\"ain\":[0,4],\"configured_sps\":[1000,1000],\"crc_mode\":\"%s\",\"start_interval_us\":%lu},",
+      s_case.adc?(s_case.bulk?"mixed":"adc"):(s_case.switchMode?"switch":"bulk"),s_case.frame,(unsigned long)s_case.hz,s_case.nodes,(unsigned long)s_case.durationMs,s_case.cached?"cached":"legacy",(unsigned long)s_case.startIntervalUs);
   Serial.printf("\"elapsed_us\":%llu,\"rows\":%lu,\"missed_rows\":%lu,\"startup_included\":true,\"workers_stopped\":%s,",
       (unsigned long long)s_case.elapsedUs,(unsigned long)s_case.rows,(unsigned long)s_case.missedRows,stopped?"true":"false");
   Serial.printf("\"slots\":%lu,\"valid_responses\":%lu,\"unique_objects\":%lu,\"accepted_bytes\":%llu,\"retired_objects\":%lu,",
@@ -66,7 +67,7 @@ void emit_(const char* outcome,const char* reason,bool stopped) {
   Serial.print("},\"spi\":[");
   bool comma=false;
   for(const auto& p:bus.participant) {
-    if(p.csPin<0)continue;
+    if(!p.transfers && !p.lockFailures)continue;
     if(comma)Serial.print(',');comma=true;
     Serial.printf("{\"cs\":%d,\"transfers\":%lu,\"bytes\":%llu,\"lock_failures\":%lu,\"lock_wait\":",p.csPin,(unsigned long)p.transfers,(unsigned long long)p.bytes,(unsigned long)p.lockFailures);
     summary_(p.lockWait);Serial.print(",\"ownership\":");summary_(p.ownership);Serial.print('}');
@@ -88,7 +89,26 @@ void emit_(const char* outcome,const char* reason,bool stopped) {
   Serial.print(",\"after\":");array_(t.masterAfter);
   Serial.printf(",\"adapter_measured\":%s,\"adapter_before\":",t.adapterMeasured?"true":"false");array_(t.adapterBefore);
   Serial.print(",\"adapter_after\":");array_(t.adapterAfter);
-  Serial.println(",\"timing_measured\":false,\"timing_scope\":\"unmeasured\"}}");
+  Serial.printf(",\"diagnostic_measured\":%s,\"diagnostic_before\":",t.diagnosticMeasured?"true":"false");array_(t.diagnosticBefore);
+  Serial.print(",\"diagnostic_after\":");array_(t.diagnosticAfter);
+  Serial.printf(",\"timing_measured\":%s,\"timing_scope\":\"%s\"},",t.diagnosticMeasured?"true":"false",t.diagnosticMeasured?"software_observations":"unmeasured");
+  Serial.print("\"diagnostics\":{\"decode_counts\":[");
+  for(uint8_t i=0;i<9;++i){if(i)Serial.print(',');Serial.printf("%lu",(unsigned long)t.decodeCounts[i]);}
+  Serial.print("],\"failure_samples\":[");
+  for(uint8_t i=0;i<t.failureCount;++i) {
+    if(i)Serial.print(',');const auto& f=t.failures[i];const auto& b=f.bus;
+    Serial.printf("{\"reason\":%u,\"slot\":%lu,\"frame_bytes\":%u,\"rx_hex\":\"",f.reason,(unsigned long)f.slot,f.frameBytes);
+    for(uint16_t byte=0;byte<f.frameBytes;++byte)Serial.printf("%02x",f.rx[byte]);
+    Serial.printf("\",\"request\":{\"opcode\":%u,\"node\":%u,\"fragment\":%u,\"profile\":%u,\"case_id\":%lu,\"object_id\":%lu,\"logical_crc\":%lu},",f.opcode,f.node,f.fragment,f.profile,(unsigned long)f.caseId,(unsigned long)f.objectId,(unsigned long)f.logicalCrc);
+    Serial.printf("\"bus\":{\"sequence\":%lu,\"cs\":%d,\"previous_valid\":%s,\"previous_cs\":%d,\"previous_release_us\":%lu,\"cs_assert_us\":%lu,\"cs_release_us\":%lu}}",(unsigned long)b.sequence,b.cs,b.previousValid?"true":"false",b.previousCs,(unsigned long)b.previousReleaseUs,(unsigned long)b.csAssertUs,(unsigned long)b.csReleaseUs);
+  }
+  Serial.printf("],\"failure_samples_omitted\":%lu,\"by_previous_cs\":[",(unsigned long)t.failureSamplesOmitted);
+  comma=false;for(const auto& p:t.byPreviousCs)if(p.used){if(comma)Serial.print(',');comma=true;Serial.printf("{\"cs\":%d,\"responses\":%lu,\"decode_failures\":%lu}",p.cs,(unsigned long)p.responses,(unsigned long)p.decodeFailures);}
+  Serial.print("],\"timing\":{\"validate\":");summary_(t.validate);
+  Serial.print(",\"expected_crc\":");summary_(t.expectedCrc);
+  Serial.print(",\"iteration\":");summary_(t.iteration);
+  Serial.print(",\"request_interval\":");summary_(t.requestInterval);
+  Serial.printf("},\"expected_crc_calls\":%lu,\"pacing_deferred\":%lu,\"switch_transfers\":%lu,\"switch_failures\":%lu}}\n",(unsigned long)t.expectedCrc.count,(unsigned long)t.pacingDeferred,(unsigned long)t.switchTransfers,(unsigned long)t.switchFailures);
 }
 void finish_(const char* outcome,const char* reason) {
   s_case.elapsedUs=s_case.startUs?now_()-s_case.startUs:0;
@@ -131,39 +151,42 @@ void begin(const board::BoardProfile& board) {
       AnalogInputManager::configureFromConfig(s_cfg,500)==500 && SharedSpiBus::ready() &&
       AnalogInputManager::activeChannelCount(0)==1 && AnalogInputManager::activeChannelCount(1)==1 &&
       AnalogInputManager::configuredDataRateSps(0)==1000 && AnalogInputManager::configuredDataRateSps(1)==1000;
-  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v1\",\"type\":\"ready\",\"ready\":%s,\"bench_only\":true}\n",s_ready?"true":"false");
+  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v2\",\"type\":\"ready\",\"ready\":%s,\"bench_only\":true,\"logger_build\":\"%s\"}\n",s_ready?"true":"false",BODAQS_SPI_PROBE_BUILD);
 }
 void command(const char* line) {
   if(!line)return;
   if(strcmp(line,"stop")==0) {if(s_case.active)finish_("stopped","command");else error_("idle");return;}
   if(s_case.active) {++s_case.commandErrors;return;}
   if(strcmp(line,"status")==0) {
-    Serial.printf("{\"schema\":\"bodaqs.spi-probe.v1\",\"type\":\"status\",\"ready\":%s,\"blocked\":%s}\n",s_ready?"true":"false",s_blocked?"true":"false");return;
+    Serial.printf("{\"schema\":\"bodaqs.spi-probe.v2\",\"type\":\"status\",\"ready\":%s,\"blocked\":%s,\"logger_build\":\"%s\"}\n",s_ready?"true":"false",s_blocked?"true":"false",BODAQS_SPI_PROBE_BUILD);return;
   }
   if(!s_ready || !s_board) {error_("not_ready");return;}
   if(s_blocked || !AnalogInputManager::probeWorkersStopped()) {error_("reboot_required");return;}
   if(strlen(line)>=sizeof(s_line)) {error_("command_too_long");return;}
   char copy[sizeof(s_line)];strcpy(copy,line);
-  char* tokens[8]={};char* save=nullptr;uint8_t n=0;
-  for(char* t=strtok_r(copy," \t",&save);t && n<8;t=strtok_r(nullptr," \t",&save))tokens[n++]=t;
-  uint32_t id=0,frame=0,hz=0,nodes=0,duration=0;
-  if(n!=7 || strcmp(tokens[0],"case") || !decimal_(tokens[1],id) || !id ||
+  char* tokens[10]={};char* save=nullptr;uint8_t n=0;
+  for(char* t=strtok_r(copy," \t",&save);t && n<10;t=strtok_r(nullptr," \t",&save))tokens[n++]=t;
+  uint32_t id=0,frame=0,hz=0,nodes=0,duration=0,interval=0;
+  if((n!=7 && n!=9) || strcmp(tokens[0],"case") || !decimal_(tokens[1],id) || !id ||
       !decimal_(tokens[3],frame) || (frame!=64 && frame!=128 && frame!=256) ||
       !decimal_(tokens[4],hz) || (hz!=8000000 && hz!=16000000) ||
       !decimal_(tokens[5],nodes) || nodes<1 || nodes>4 ||
       !decimal_(tokens[6],duration) || duration<100 || duration>3600000 ||
-      (strcmp(tokens[2],"adc") && strcmp(tokens[2],"bulk") && strcmp(tokens[2],"mixed"))) {error_("invalid_profile");return;}
+      (strcmp(tokens[2],"adc") && strcmp(tokens[2],"bulk") && strcmp(tokens[2],"mixed") && strcmp(tokens[2],"switch")) ||
+      (n==9 && ((strcmp(tokens[7],"legacy") && strcmp(tokens[7],"cached")) || !decimal_(tokens[8],interval) || interval>5000))) {error_("invalid_profile");return;}
   if(id<=s_lastCaseId) {error_("non_increasing_case_id");return;}
   // A valid start attempt owns its ID even when rail/worker/peer startup fails.
   s_lastCaseId=id;
   s_case=Case{};s_case.id=id;s_case.frame=frame;s_case.hz=hz;s_case.nodes=nodes;s_case.durationMs=duration;
-  s_case.adc=strcmp(tokens[2],"bulk")!=0;s_case.bulk=strcmp(tokens[2],"adc")!=0;
+  s_case.switchMode=strcmp(tokens[2],"switch")==0;
+  s_case.cached=n==9 && strcmp(tokens[7],"cached")==0;s_case.startIntervalUs=interval;
+  s_case.adc=strcmp(tokens[2],"adc")==0 || strcmp(tokens[2],"mixed")==0;s_case.bulk=strcmp(tokens[2],"adc")!=0;
   AnalogInputManager::configureFromConfig(s_cfg,500);
   SharedSpiBus::probeReset();
   if(s_case.adc && (PowerManager::analogRailFaultActive() || PowerManager::analogRailFaultLatched() || !PowerManager::analogRailEnabled())) {emit_("failed","analog_rail_fault",true);return;}
   if(s_case.bulk) {
     s_case.transportAttempted=true;
-    if(!SpiProbeTransport::begin(*s_board,id,frame,hz,nodes)) {finish_("failed","master_entry_failed");return;}
+    if(!SpiProbeTransport::begin(*s_board,id,frame,hz,nodes,s_case.cached?SpiProbeTransport::CrcMode::Cached:SpiProbeTransport::CrcMode::Legacy,interval,s_case.switchMode)) {finish_("failed","master_entry_failed");return;}
   }
   if(s_case.adc) {
     AnalogInputManager::onLoggingStart();
