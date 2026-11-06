@@ -23,6 +23,17 @@ struct Diagnostics {
 bool begin(const board::SPIProfile& profile);
 bool ready();
 
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+struct ProbeContext {
+  uint32_t sequence=0;
+  int8_t cs=-1,previousCs=-1;
+  bool previousValid=false;
+  uint32_t previousReleaseUs=0,csAssertUs=0,csReleaseUs=0;
+};
+// Four unselected mode1 bytes, under the same production mutex. No conversions.
+bool probeUnselectedClocks(const board::SPIProfile& profile);
+#endif
+
 // Performs one complete, mutually exclusive CS-bounded transaction.
 bool transfer(
     int8_t csPin,
@@ -33,7 +44,7 @@ bool transfer(
     uint32_t lockTimeoutMs = 50
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
     // Runs after CS release while still owning the bus. Must be bounded/no I/O.
-    , void (*probeAfterCsRelease)(void*) = nullptr, void* probeContext = nullptr
+    , void (*probeAfterCsRelease)(void*) = nullptr, void* probeContext = nullptr, ProbeContext* transactionContext = nullptr
 #endif
     );
 

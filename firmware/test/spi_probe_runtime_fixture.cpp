@@ -1,4 +1,4 @@
-#include "AnalogInputManager.h"
+﻿#include "AnalogInputManager.h"
 #include "SharedSpiBus.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -84,7 +84,8 @@ static SPISettings settings;
 void SPIClass::beginTransaction(const SPISettings& requested) { settings=requested; }
 void SPIClass::endTransaction() {}
 void SPIClass::transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
-  assert(selected>=0); delayMicroseconds(10); if(rx) memset(rx,0,length);
+  if(selected<0) {assert(settings.hz==1000000 && settings.mode==SPI_MODE1 && length==4);return;}
+  delayMicroseconds(10); if(rx) memset(rx,0,length);
   const int adc=selected==47?0:selected==21?1:-1;
   if(adc>=0)assert(settings.hz==1000000 && settings.mode==SPI_MODE1);
   if(selected==40)assert((settings.hz==16000000 || settings.hz==8000000) && settings.mode==SPI_MODE0);
@@ -204,7 +205,23 @@ int main() {
   assert(stats.participant[1].csPin==47 && stats.participant[1].lockFailures==1 && stats.participant[1].ownership.count==0);
   puts("real SharedSpiBus: geometry, CS serialization and per-CS ownership passed");
 
+  // Actual driver/mutex boundary: zero is a valid CS time; failed lock must not
+  // publish a fictitious participant; unselected clocks retire as participant -2.
+  SharedSpiBus::probeReset();frozenUs=0;
+  SharedSpiBus::ProbeContext firstContext, nextContext;
+  assert(SharedSpiBus::transfer(47,SPISettings(1000000,MSBFIRST,SPI_MODE1),tx,rx,4,50,nullptr,nullptr,&firstContext));
+  assert(!firstContext.previousValid && firstContext.csAssertUs==0 && firstContext.csReleaseUs==0);
+  frozenUs=0xffffffffLL;
+  assert(SharedSpiBus::transfer(40,SPISettings(8000000),tx,rx,4,50,nullptr,nullptr,&nextContext));
+  assert(nextContext.previousValid && nextContext.previousCs==47 && nextContext.previousReleaseUs==0);
+  assert(nextContext.sequence==firstContext.sequence+1);
   auto board=adcBoard();
+  assert(SharedSpiBus::probeUnselectedClocks(board.spi));
+  frozenUs=3;
+  assert(SharedSpiBus::transfer(40,SPISettings(8000000),tx,rx,4,50,nullptr,nullptr,&nextContext));
+  assert(nextContext.previousValid && nextContext.previousCs==-2 && nextContext.previousReleaseUs==0xffffffffU);
+  frozenUs=-1;
+  puts("shared bus context: zero and wrapped timestamps, actual unselected mode1 clocks passed");
   AnalogInputManager::begin(board);
   LoggerConfig cfg;cfg.sensorN=2;cfg.sampleRateHz=500;
   for(auto& s:cfg.sensors) {s.type=SensorType::AnalogPot;s.mutedDefault=false;}
@@ -443,3 +460,4 @@ int main() {
   puts("real client: valid-wire corrupted logical bytes never accepted/ACKed; unconfirmed STOP blocks profile changes passed");
 #endif
 }
+
