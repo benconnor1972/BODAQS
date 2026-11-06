@@ -330,7 +330,18 @@ int main() {
   assert(Serial.output.find("\"outcome\":\"stopped\"")!=std::string::npos && Serial.output.find("\"rows\":0,\"missed_rows\":0")==std::string::npos);
   puts("public probe: rail fault and async startup failures, stopped workers before new case, early STOP records missed deadlines passed");
   masterEnabled=true;bodaqs_spi_probe_init(&master);
-  uint32_t caseId=10;
+  Serial.output.clear();SpiMeasurementProbe::command("case 9 bulk 256 16000000 4 100");
+  while(Serial.output.empty())SpiMeasurementProbe::loop();
+  assert(Serial.output.find("\"mode\":\"bulk\"")!=std::string::npos && Serial.output.find("\"rows\":0")!=std::string::npos);
+  assert(Serial.output.find("\"accepted_bytes\":0")==std::string::npos && AnalogInputManager::probeWorkersStopped());
+  puts(Serial.output.c_str());
+  Serial.output.clear();releaseWaiters=true;SpiMeasurementProbe::command("case 10 mixed 128 8000000 4 100");
+  while(Serial.output.empty())SpiMeasurementProbe::loop();joinTasks();
+  assert(Serial.output.find("\"mode\":\"mixed\"")!=std::string::npos && Serial.output.find("\"accepted_bytes\":0")==std::string::npos);
+  assert(Serial.output.find("\"measured\":true")!=std::string::npos);
+  puts(Serial.output.c_str());
+  puts("public bulk/mixed cases: actual client+engine traffic, shared ADC path, stopped profile changes, one result each passed");
+  uint32_t caseId=11;
   for(uint16_t frame: {64,128,256})for(uint32_t hz: {8000000U,16000000U}) {
     assert(SpiProbeTransport::begin(board,caseId++,frame,hz,4));
     for(unsigned attempts=0;attempts<3000 && SpiProbeTransport::stats().retiredObjects<4;++attempts)SpiProbeTransport::tick();
