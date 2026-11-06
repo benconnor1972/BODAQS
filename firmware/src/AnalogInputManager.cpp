@@ -71,6 +71,14 @@ struct AdsDevice {
   bool cachedReadOk[4] = {false, false, false, false};
   uint32_t nextSeq[4] = {0, 0, 0, 0};
   uint8_t nextAsyncChannel = 0;
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+  bool probeTaskPending = false;
+  bool probeTaskRunning = false;
+  bool probeDrdyArmed = false;
+  uint32_t probeDrdyEvents = 0;
+  uint32_t probeDrdyUs = 0;
+  AnalogInputManager::ProbeDrdy probeDrdy;
+#endif
 #if defined(ESP32)
   TaskHandle_t asyncTask = nullptr;
   TaskHandle_t drdyTask = nullptr;
@@ -86,6 +94,15 @@ void ARDUINO_ISR_ATTR adsReadyIsr_(void* arg) {
   AdsDevice& dev = *static_cast<AdsDevice*>(arg);
   BaseType_t higherPriorityTaskWoken = pdFALSE;
   portENTER_CRITICAL_ISR(&s_drdyMux);
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+  ++dev.probeDrdy.observed;
+  if (dev.probeDrdyArmed) {
+    if (dev.probeDrdyEvents++ == 0) dev.probeDrdyUs = micros();
+    else ++dev.probeDrdy.extra;
+  } else {
+    ++dev.probeDrdy.unpaired;
+  }
+#endif
   if (dev.drdyTask) {
     vTaskNotifyGiveFromISR(dev.drdyTask, &higherPriorityTaskWoken);
   }
@@ -102,6 +119,29 @@ volatile bool s_asyncLoggingActive = false;
 uint16_t s_requestedHz = 100;
 uint16_t s_effectiveHz = 100;
 ExternalAdcTimingStats s_timingStats;
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+AnalogInputManager::ProbeRow s_probeRows[board::BOARD_MAX_ANALOG_INPUTS];
+
+// Associate the first observed ISR in this START/read window. Already-low GPIO
+// readiness is deliberately not fabricated into an edge timestamp.
+void armProbeDrdy_(AdsDevice& dev) {
+  portENTER_CRITICAL(&s_drdyMux);
+  dev.probeDrdyArmed = true;
+  dev.probeDrdyEvents = 0;
+  portEXIT_CRITICAL(&s_drdyMux);
+}
+bool takeProbeDrdy_(AdsDevice& dev, uint32_t& edgeUs, bool ready) {
+  portENTER_CRITICAL(&s_drdyMux);
+  const bool paired = ready && dev.probeDrdyEvents > 0;
+  edgeUs = dev.probeDrdyUs;
+  if (paired) ++dev.probeDrdy.paired;
+  else if (dev.probeDrdyEvents) ++dev.probeDrdy.unpaired;
+  else ++dev.probeDrdy.missing;
+  dev.probeDrdyArmed = false;
+  portEXIT_CRITICAL(&s_drdyMux);
+  return paired;
+}
+#endif
 
 #if defined(ESP32)
 portMUX_TYPE s_cacheMux = portMUX_INITIALIZER_UNLOCKED;
@@ -199,6 +239,16 @@ uint32_t ceilDivU32_(uint32_t num, uint32_t den) {
 
 void resetTimingStats_() {
   s_timingStats = ExternalAdcTimingStats{};
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+  portENTER_CRITICAL(&s_drdyMux);
+  for (auto& dev : s_ads) {
+    if (dev.probeTaskPending || dev.probeTaskRunning) continue;
+    dev.probeDrdy = AnalogInputManager::ProbeDrdy{};
+    dev.probeDrdyArmed = false;
+    dev.probeDrdyEvents = 0;
+  }
+  portEXIT_CRITICAL(&s_drdyMux);
+#endif
   for (uint8_t adc = 0; adc < board::BOARD_MAX_EXTERNAL_ADCS && adc < ExternalAdcTimingStats::kMaxAdcs; ++adc) {
     const AdsDevice& dev = s_ads[adc];
     auto& stats = s_timingStats.adc[adc];
@@ -374,7 +424,16 @@ bool readAdsChannelLive_(uint8_t adcIndex, uint8_t channel, int32_t& outCounts) 
 
   t0 = micros();
 #endif
-  if (!adsCommand_(dev, ADS1220_CMD_START)) return false;
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+  armProbeDrdy_(dev);
+#endif
+  if (!adsCommand_(dev, ADS1220_CMD_START)) {
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+    uint32_t ignored;
+    (void)takeProbeDrdy_(dev, ignored, false);
+#endif
+    return false;
+  }
 #if BODAQS_TIMING_INSTRUMENTATION
   TimingStats_record(adcStats.startUs, (uint32_t)(micros() - t0));
 #endif
@@ -382,6 +441,10 @@ bool readAdsChannelLive_(uint8_t adcIndex, uint8_t channel, int32_t& outCounts) 
   uint32_t waitUs = 0;
   bool readyImmediately = false;
   const bool ready = adsWaitReady_(dev, conversionTimeoutUs_(dev), &waitUs, &readyImmediately);
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+  uint32_t observedUs = 0;
+  const bool paired = takeProbeDrdy_(dev, observedUs, ready);
+#endif
 #if BODAQS_TIMING_INSTRUMENTATION
   TimingStats_record(adcStats.waitUs, waitUs);
   TimingStats_record(adcStats.channel[channel].waitUs, waitUs);
@@ -396,10 +459,16 @@ bool readAdsChannelLive_(uint8_t adcIndex, uint8_t channel, int32_t& outCounts) 
   }
 
   int32_t raw24 = 0;
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+  if (paired) TimingStats_record(dev.probeDrdy.toReadStart, (uint32_t)(micros() - observedUs));
+#endif
 #if BODAQS_TIMING_INSTRUMENTATION
   t0 = micros();
 #endif
   if (!adsReadData_(dev, raw24)) return false;
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+  if (paired) TimingStats_record(dev.probeDrdy.toReadEnd, (uint32_t)(micros() - observedUs));
+#endif
 #if BODAQS_TIMING_INSTRUMENTATION
   TimingStats_record(adcStats.readUs, (uint32_t)(micros() - t0));
 #endif
@@ -580,6 +649,11 @@ void adcTaskFn_(void* arg) {
                        dev.cfg.drdy_active_low ? FALLING : RISING);
   }
   dev.asyncRunning = true;
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+  portENTER_CRITICAL(&s_drdyMux);
+  dev.probeTaskRunning = true;
+  portEXIT_CRITICAL(&s_drdyMux);
+#endif
   if (adc < ExternalAdcTimingStats::kMaxAdcs) {
     s_timingStats.adc[adc].asyncRunning = true;
   }
@@ -630,6 +704,12 @@ void adcTaskFn_(void* arg) {
     s_timingStats.adc[adc].asyncRunning = false;
   }
   AIN_LOGI("ADS%u async scheduler stopped\n", (unsigned)adc);
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+  portENTER_CRITICAL(&s_drdyMux);
+  dev.probeTaskRunning = false;
+  dev.probeTaskPending = false;
+  portEXIT_CRITICAL(&s_drdyMux);
+#endif
   vTaskDelete(nullptr);
 }
 #endif
@@ -719,6 +799,9 @@ int8_t pinForAin(uint8_t ain) {
 }
 
 bool readCounts(uint8_t ain, int32_t& outCounts) {
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+  if (ain < board::BOARD_MAX_ANALOG_INPUTS) s_probeRows[ain] = ProbeRow{};
+#endif
   const board::AnalogInputHW* input = inputForAin_(ain);
   if (!input) return false;
 
@@ -754,6 +837,9 @@ bool readCounts(uint8_t ain, int32_t& outCounts) {
         outCounts = sample.counts;
       }
       recordCachedRowUse_(adc, channel, have, fresh, ageUs);
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+      s_probeRows[ain] = {have, fresh, sample.seq, sample.acquiredUs};
+#endif
       return have;
     }
 
@@ -904,6 +990,11 @@ void onLoggingStart() {
     }
 
     dev.asyncRun = true;
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+    portENTER_CRITICAL(&s_drdyMux);
+    dev.probeTaskPending = true;
+    portEXIT_CRITICAL(&s_drdyMux);
+#endif
     const BaseType_t ok = xTaskCreatePinnedToCore(
       adcTaskFn_,
       "ADSAsync",
@@ -918,6 +1009,11 @@ void onLoggingStart() {
     } else {
       dev.asyncTask = nullptr;
       dev.asyncRun = false;
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+      portENTER_CRITICAL(&s_drdyMux);
+      dev.probeTaskPending = false;
+      portEXIT_CRITICAL(&s_drdyMux);
+#endif
       AIN_LOGW("ADS%u async scheduler failed to start; falling back to synchronous scan\n",
                (unsigned)adc);
     }
@@ -1085,5 +1181,38 @@ void beginSample() {
 void endSample() {
   s_inSample = false;
 }
+
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+bool probeWorkersRunning() {
+  bool any = false, all = true;
+  portENTER_CRITICAL(&s_drdyMux);
+  for (const auto& dev : s_ads) {
+    if (!dev.present || !dev.activeChannels) continue;
+    any = true;
+    all = all && dev.probeTaskRunning;
+  }
+  portEXIT_CRITICAL(&s_drdyMux);
+  return any && all;
+}
+bool probeWorkersStopped() {
+  bool stopped = true;
+  portENTER_CRITICAL(&s_drdyMux);
+  for (const auto& dev : s_ads) stopped = stopped && !dev.probeTaskPending && !dev.probeTaskRunning;
+  portEXIT_CRITICAL(&s_drdyMux);
+  return stopped;
+}
+ProbeRow probeLastRow(uint8_t ain) {
+  return ain < board::BOARD_MAX_ANALOG_INPUTS ? s_probeRows[ain] : ProbeRow{};
+}
+ExternalAdcTimingStats probeTimingSnapshot() {
+  return probeWorkersStopped() ? s_timingStats : ExternalAdcTimingStats{};
+}
+ProbeDrdyStats probeDrdySnapshot() {
+  ProbeDrdyStats copy;
+  if (!probeWorkersStopped()) return copy;
+  for (uint8_t adc = 0; adc < board::BOARD_MAX_EXTERNAL_ADCS; ++adc) copy.adc[adc] = s_ads[adc].probeDrdy;
+  return copy;
+}
+#endif
 
 } // namespace AnalogInputManager

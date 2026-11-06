@@ -29,6 +29,27 @@ namespace AnalogInputManager {
   void onLoggingStart();
   void onLoggingStop();
 
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+  struct ProbeRow {
+    bool valid = false;
+    bool fresh = false;
+    uint32_t sequence = 0;
+    uint64_t afterReadUs = 0;
+  };
+  struct ProbeDrdy {
+    uint32_t observed = 0, paired = 0, missing = 0, extra = 0, unpaired = 0;
+    TimingSummary toReadStart, toReadEnd;
+  };
+  struct ProbeDrdyStats { ProbeDrdy adc[board::BOARD_MAX_EXTERNAL_ADCS]; };
+  bool probeWorkersRunning();
+  bool probeWorkersStopped();
+  // Last readCounts cache observation, without consuming the conversion again.
+  ProbeRow probeLastRow(uint8_t ain);
+  // Only returns counters after complete worker shutdown; empty otherwise.
+  ExternalAdcTimingStats probeTimingSnapshot();
+  ProbeDrdyStats probeDrdySnapshot();
+#endif
+
   // Called once around each logger sample so external ADC channels can be
   // converted once and then reused by all sensor columns in that row.
   void beginSample();
