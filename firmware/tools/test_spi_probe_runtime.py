@@ -81,7 +81,7 @@ def main():
             cases = [event for event in events if event['type'] == 'case']
             if args.capture:
                 args.capture.write_text('\n'.join(json.dumps(event) for event in events) + '\n', encoding='utf-8')
-            assert [case['case_id'] for case in cases] == [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15]
+            assert [case['case_id'] for case in cases] == [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
             assert (cases[0]['rows'], cases[0]['missed_rows']) == (5000, 0)
             assert (cases[1]['rows'], cases[1]['missed_rows']) == (49, 1)
             assert (cases[2]['rows'], cases[2]['missed_rows']) == (1, 1)
@@ -91,7 +91,7 @@ def main():
                 assert case['workers_stopped'] and case['profile']['actual_sck_hz'] is None
                 assert case['accepted_bytes'] == case['unique_objects'] * 1008
                 assert case['valid_responses'] <= case['slots']
-                assert case['schema'] == 'bodaqs.spi-probe.v2'
+                assert case['schema'] == 'bodaqs.spi-probe.v3'
                 d = case['diagnostics']
                 assert sum(d['decode_counts']) + case['errors']['transfer'] == case['slots']
                 assert sum(d['decode_counts'][1:]) == case['errors']['wire']
@@ -126,6 +126,14 @@ def main():
             assert diagnostic['switch_transfers'] == 0 and diagnostic['switch_failures'] == 1
             assert not any(report[key] for key in ('production_qualified', 't01_go', 'admission_authorized'))
             print('Public first switch lock failure through analyzer CLI: independent counts retained as failed passed')
+            for cid in (16,17):
+                control = next(case for case in report['cases'] if case['case_id'] == cid)
+                assert control['adc_status'] == 'not_applicable' and control['rows_per_second'] == 0
+                assert control['sequential_control']['active'] and not control['sequential_control']['worker_start_requested']
+                assert control['candidate_evidence'] != 'clean_measurement_candidate'
+            for cid in (18,19,20,21,22):
+                assert next(case for case in report['cases'] if case['case_id'] == cid)['candidate_evidence'] == 'failed'
+            print('Public sequential controls: raw fault provenance, readiness timeout, lock failure, STOP in wait and empty-window failure passed')
 
 
 if __name__ == '__main__':

@@ -23,6 +23,10 @@ struct Case {
   uint16_t frame=64;
   uint8_t nodes=1;
   bool adc=false,bulk=false,switchMode=false,cached=false,active=false,transportAttempted=false;
+  bool sequence=false,selected=false,workerStartRequested=false;
+  uint8_t sequenceAdc=0,sequenceStep=0;
+  uint64_t sequenceStartedUs=0;
+  uint32_t sequenceCounts[2][3]={},sequenceFailures=0,sequenceTimeouts=0;
   uint32_t startIntervalUs=0;
   uint64_t startUs=0,nextRowUs=0,elapsedUs=0;
   uint32_t rows=0,missedRows=0,commandErrors=0;
@@ -35,7 +39,7 @@ bool s_lineOverflow=false;
 
 uint64_t now_() { return static_cast<uint64_t>(esp_timer_get_time()); }
 void error_(const char* reason) {
-  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v2\",\"type\":\"error\",\"reason\":\"%s\"}\n",reason);
+  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v3\",\"type\":\"error\",\"reason\":\"%s\",\"logger_build\":\"%s\"}\n",reason,BODAQS_SPI_PROBE_BUILD);
 }
 void summary_(const TimingSummary& s) {
   Serial.printf("{\"count\":%lu,\"min_us\":%lu,\"max_us\":%lu,\"total_us\":%llu}",
@@ -46,17 +50,21 @@ void array_(const uint32_t* values) {
   for(uint8_t i=0;i<10;++i) {if(i)Serial.print(',');Serial.printf("%lu",(unsigned long)values[i]);}
   Serial.print(']');
 }
+void operation_(const SharedSpiBus::ProbeOperation& o) {
+  Serial.printf("{\"bytes\":%u,\"tx0\":%u,\"has_tx\":%s,\"has_rx\":%s}",
+      o.bytes,o.tx0,o.hasTx?"true":"false",o.hasRx?"true":"false");
+}
 void emit_(const char* outcome,const char* reason,bool stopped) {
   const auto adc=AnalogInputManager::probeTimingSnapshot();
   const auto drdy=AnalogInputManager::probeDrdySnapshot();
   const auto bus=SharedSpiBus::probeSnapshot();
   static const SpiProbeTransport::Stats empty;
   const auto& t=s_case.transportAttempted?SpiProbeTransport::stats():empty;
-  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v2\",\"type\":\"case\",\"case_id\":%lu,\"outcome\":\"%s\",\"reason\":\"%s\",",
+  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v3\",\"type\":\"case\",\"case_id\":%lu,\"outcome\":\"%s\",\"reason\":\"%s\",",
       (unsigned long)s_case.id,outcome,reason);
   Serial.printf("\"artifacts\":{\"logger_build\":\"%s\",\"master_build\":\"external-manifest\",\"protocol\":1},",BODAQS_SPI_PROBE_BUILD);
   Serial.printf("\"profile\":{\"mode\":\"%s\",\"frame_bytes\":%u,\"requested_sck_hz\":%lu,\"actual_sck_hz\":null,\"actual_sck_basis\":\"unmeasured\",\"guard_us\":25,\"nodes\":%u,\"duration_ms\":%lu,\"row_hz\":500,\"ain\":[0,4],\"configured_sps\":[1000,1000],\"crc_mode\":\"%s\",\"start_interval_us\":%lu},",
-      s_case.adc?(s_case.bulk?"mixed":"adc"):(s_case.switchMode?"switch":"bulk"),s_case.frame,(unsigned long)s_case.hz,s_case.nodes,(unsigned long)s_case.durationMs,s_case.cached?"cached":"legacy",(unsigned long)s_case.startIntervalUs);
+      s_case.sequence?(s_case.selected?"selected":"shape"):(s_case.adc?(s_case.bulk?"mixed":"adc"):(s_case.switchMode?"switch":"bulk")),s_case.frame,(unsigned long)s_case.hz,s_case.nodes,(unsigned long)s_case.durationMs,s_case.cached?"cached":"legacy",(unsigned long)s_case.startIntervalUs);
   Serial.printf("\"elapsed_us\":%llu,\"rows\":%lu,\"missed_rows\":%lu,\"startup_included\":true,\"workers_stopped\":%s,",
       (unsigned long long)s_case.elapsedUs,(unsigned long)s_case.rows,(unsigned long)s_case.missedRows,stopped?"true":"false");
   Serial.printf("\"slots\":%lu,\"valid_responses\":%lu,\"unique_objects\":%lu,\"accepted_bytes\":%llu,\"retired_objects\":%lu,",
@@ -100,11 +108,22 @@ void emit_(const char* outcome,const char* reason,bool stopped) {
     Serial.printf("{\"reason\":%u,\"slot\":%lu,\"frame_bytes\":%u,\"rx_hex\":\"",f.reason,(unsigned long)f.slot,f.frameBytes);
     for(uint16_t byte=0;byte<f.frameBytes;++byte)Serial.printf("%02x",f.rx[byte]);
     Serial.printf("\",\"request\":{\"opcode\":%u,\"node\":%u,\"fragment\":%u,\"profile\":%u,\"case_id\":%lu,\"object_id\":%lu,\"logical_crc\":%lu},",f.opcode,f.node,f.fragment,f.profile,(unsigned long)f.caseId,(unsigned long)f.objectId,(unsigned long)f.logicalCrc);
-    Serial.printf("\"bus\":{\"sequence\":%lu,\"cs\":%d,\"previous_valid\":%s,\"previous_cs\":%d,\"previous_release_us\":%lu,\"cs_assert_us\":%lu,\"cs_release_us\":%lu}}",(unsigned long)b.sequence,b.cs,b.previousValid?"true":"false",b.previousCs,(unsigned long)b.previousReleaseUs,(unsigned long)b.csAssertUs,(unsigned long)b.csReleaseUs);
+    Serial.printf("\"bus\":{\"sequence\":%lu,\"cs\":%d,\"previous_valid\":%s,\"previous_cs\":%d,\"previous_release_us\":%lu,\"cs_assert_us\":%lu,\"cs_release_us\":%lu,\"previous_operation\":",(unsigned long)b.sequence,b.cs,b.previousValid?"true":"false",b.previousCs,(unsigned long)b.previousReleaseUs,(unsigned long)b.csAssertUs,(unsigned long)b.csReleaseUs);
+    operation_(b.previousOperation);Serial.print("}}");
   }
   Serial.printf("],\"failure_samples_omitted\":%lu,\"by_previous_cs\":[",(unsigned long)t.failureSamplesOmitted);
   comma=false;for(const auto& p:t.byPreviousCs)if(p.used){if(comma)Serial.print(',');comma=true;Serial.printf("{\"cs\":%d,\"responses\":%lu,\"decode_failures\":%lu}",p.cs,(unsigned long)p.responses,(unsigned long)p.decodeFailures);}
-  Serial.print("],\"timing\":{\"validate\":");summary_(t.validate);
+  Serial.print("],\"by_previous_operation\":[");comma=false;
+  for(const auto& p:t.byPreviousOperation)if(p.used) {
+    if(comma)Serial.print(',');comma=true;
+    Serial.printf("{\"cs\":%d,\"responses\":%lu,\"decode_failures\":%lu,\"operation\":",p.cs,(unsigned long)p.responses,(unsigned long)p.decodeFailures);
+    operation_(p.operation);Serial.print('}');
+  }
+  Serial.printf("],\"operation_buckets_omitted\":%lu,\"sequence\":{\"active\":%s,\"worker_start_requested\":%s,\"failures\":%lu,\"timeouts\":%lu,\"operations\":[",
+      (unsigned long)t.operationBucketsOmitted,s_case.sequence?"true":"false",s_case.workerStartRequested?"true":"false",(unsigned long)s_case.sequenceFailures,(unsigned long)s_case.sequenceTimeouts);
+  for(uint8_t i=0;i<2;++i){if(i)Serial.print(',');Serial.printf("[%lu,%lu,%lu]",(unsigned long)s_case.sequenceCounts[i][0],(unsigned long)s_case.sequenceCounts[i][1],(unsigned long)s_case.sequenceCounts[i][2]);}
+  Serial.print("]}");
+  Serial.print(",\"timing\":{\"validate\":");summary_(t.validate);
   Serial.print(",\"expected_crc\":");summary_(t.expectedCrc);
   Serial.print(",\"iteration\":");summary_(t.iteration);
   Serial.print(",\"request_interval\":");summary_(t.requestInterval);
@@ -151,14 +170,14 @@ void begin(const board::BoardProfile& board) {
       AnalogInputManager::configureFromConfig(s_cfg,500)==500 && SharedSpiBus::ready() &&
       AnalogInputManager::activeChannelCount(0)==1 && AnalogInputManager::activeChannelCount(1)==1 &&
       AnalogInputManager::configuredDataRateSps(0)==1000 && AnalogInputManager::configuredDataRateSps(1)==1000;
-  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v2\",\"type\":\"ready\",\"ready\":%s,\"bench_only\":true,\"logger_build\":\"%s\"}\n",s_ready?"true":"false",BODAQS_SPI_PROBE_BUILD);
+  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v3\",\"type\":\"ready\",\"ready\":%s,\"bench_only\":true,\"logger_build\":\"%s\"}\n",s_ready?"true":"false",BODAQS_SPI_PROBE_BUILD);
 }
 void command(const char* line) {
   if(!line)return;
   if(strcmp(line,"stop")==0) {if(s_case.active)finish_("stopped","command");else error_("idle");return;}
   if(s_case.active) {++s_case.commandErrors;return;}
   if(strcmp(line,"status")==0) {
-    Serial.printf("{\"schema\":\"bodaqs.spi-probe.v2\",\"type\":\"status\",\"ready\":%s,\"blocked\":%s,\"logger_build\":\"%s\"}\n",s_ready?"true":"false",s_blocked?"true":"false",BODAQS_SPI_PROBE_BUILD);return;
+    Serial.printf("{\"schema\":\"bodaqs.spi-probe.v3\",\"type\":\"status\",\"ready\":%s,\"blocked\":%s,\"logger_build\":\"%s\"}\n",s_ready?"true":"false",s_blocked?"true":"false",BODAQS_SPI_PROBE_BUILD);return;
   }
   if(!s_ready || !s_board) {error_("not_ready");return;}
   if(s_blocked || !AnalogInputManager::probeWorkersStopped()) {error_("reboot_required");return;}
@@ -172,23 +191,26 @@ void command(const char* line) {
       !decimal_(tokens[4],hz) || (hz!=8000000 && hz!=16000000) ||
       !decimal_(tokens[5],nodes) || nodes<1 || nodes>4 ||
       !decimal_(tokens[6],duration) || duration<100 || duration>3600000 ||
-      (strcmp(tokens[2],"adc") && strcmp(tokens[2],"bulk") && strcmp(tokens[2],"mixed") && strcmp(tokens[2],"switch")) ||
+      (strcmp(tokens[2],"adc") && strcmp(tokens[2],"bulk") && strcmp(tokens[2],"mixed") && strcmp(tokens[2],"switch") && strcmp(tokens[2],"shape") && strcmp(tokens[2],"selected")) ||
       (n==9 && ((strcmp(tokens[7],"legacy") && strcmp(tokens[7],"cached")) || !decimal_(tokens[8],interval) || interval>5000))) {error_("invalid_profile");return;}
   if(id<=s_lastCaseId) {error_("non_increasing_case_id");return;}
   // A valid start attempt owns its ID even when rail/worker/peer startup fails.
   s_lastCaseId=id;
   s_case=Case{};s_case.id=id;s_case.frame=frame;s_case.hz=hz;s_case.nodes=nodes;s_case.durationMs=duration;
   s_case.switchMode=strcmp(tokens[2],"switch")==0;
+  s_case.sequence=strcmp(tokens[2],"shape")==0 || strcmp(tokens[2],"selected")==0;
+  s_case.selected=strcmp(tokens[2],"selected")==0;
   s_case.cached=n==9 && strcmp(tokens[7],"cached")==0;s_case.startIntervalUs=interval;
   s_case.adc=strcmp(tokens[2],"adc")==0 || strcmp(tokens[2],"mixed")==0;s_case.bulk=strcmp(tokens[2],"adc")!=0;
   AnalogInputManager::configureFromConfig(s_cfg,500);
   SharedSpiBus::probeReset();
-  if(s_case.adc && (PowerManager::analogRailFaultActive() || PowerManager::analogRailFaultLatched() || !PowerManager::analogRailEnabled())) {emit_("failed","analog_rail_fault",true);return;}
+  if((s_case.adc || s_case.selected) && (PowerManager::analogRailFaultActive() || PowerManager::analogRailFaultLatched() || !PowerManager::analogRailEnabled())) {emit_("failed","analog_rail_fault",true);return;}
   if(s_case.bulk) {
     s_case.transportAttempted=true;
     if(!SpiProbeTransport::begin(*s_board,id,frame,hz,nodes,s_case.cached?SpiProbeTransport::CrcMode::Cached:SpiProbeTransport::CrcMode::Legacy,interval,s_case.switchMode)) {finish_("failed","master_entry_failed");return;}
   }
   if(s_case.adc) {
+    s_case.workerStartRequested=true;
     AnalogInputManager::onLoggingStart();
     const uint64_t timeout=now_()+100000;
     while(!AnalogInputManager::probeWorkersRunning() && now_()<timeout)delay(1);
@@ -215,7 +237,10 @@ void loop() {
   if(now-s_case.startUs>=static_cast<uint64_t>(s_case.durationMs)*1000) {
     // Account remaining midpoints inside the finite window. Do not invent
     // catch-up reads after the timed window ended.
-    finish_("complete","duration");return;
+    if(s_case.sequence && (!s_case.sequenceCounts[0][2] || !s_case.sequenceCounts[1][2]))
+      finish_("failed","adc_sequence_incomplete");
+    else finish_("complete","duration");
+    return;
   }
   if(s_case.adc) {
     if(PowerManager::analogRailFaultActive() || PowerManager::analogRailFaultLatched()) {finish_("failed","analog_rail_fault");return;}
@@ -229,6 +254,22 @@ void loop() {
     }
   }
   if(s_case.bulk) {
+    if(s_case.sequence && SpiProbeTransport::requestDue()) {
+      if(s_case.selected && (PowerManager::analogRailFaultActive() || PowerManager::analogRailFaultLatched())) {finish_("failed","analog_rail_fault");return;}
+      if(s_case.sequenceStep==2) {
+        const uint64_t waited=now_()-s_case.sequenceStartedUs;
+        if(waited>6000) {++s_case.sequenceTimeouts;finish_("failed","adc_ready_timeout");return;}
+        // A conversion-sized delay in the unselected control; selected mode
+        // polls the real dedicated DRDY without an ISR or ADC worker.
+        if(s_case.selected?!AnalogInputManager::probeDataReady(s_case.sequenceAdc):waited<1000)return;
+      }
+      if(!AnalogInputManager::probeTransferStep(s_case.sequenceAdc,s_case.sequenceStep,s_case.selected)) {
+        ++s_case.sequenceFailures;finish_("failed","adc_step_failed");return;
+      }
+      ++s_case.sequenceCounts[s_case.sequenceAdc][s_case.sequenceStep];
+      if(s_case.sequenceStep==1)s_case.sequenceStartedUs=now_();
+      if(++s_case.sequenceStep==3){s_case.sequenceStep=0;s_case.sequenceAdc^=1;}
+    }
     SpiProbeTransport::tick();
     if(!SpiProbeTransport::healthy())finish_("failed","bulk_fault_or_stalled");
   }

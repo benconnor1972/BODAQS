@@ -22,6 +22,7 @@ static unsigned rawFault=0,rawFaultsLeft=0;
 static std::vector<std::array<uint8_t,256>> injectedRx;
 static bool stats2Unsupported=false;
 static unsigned syntheticSwitchCount=0;
+static bool sequenceNeverReady=false;
 static std::deque<std::array<uint8_t,256>> replies(2);
 static uint64_t bulkLastHigh=0;
 // Rail fault signal boundary only; target build retains real PowerManager.
@@ -35,12 +36,12 @@ bool analogRailEnabled() {return true;}
 // CONFIG_SUPPORT
 
 static const auto epoch = std::chrono::steady_clock::now();
-static std::atomic<int64_t> frozenUs{-1};
-unsigned long micros() { if(frozenUs>=0)return (unsigned long)frozenUs.load();return (unsigned long)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-epoch).count(); }
+static std::atomic<int64_t> frozenUs{-1}, steppedUs{-1};
+unsigned long micros() { if(steppedUs>=0)return (unsigned long)steppedUs.fetch_add(1); if(frozenUs>=0)return (unsigned long)frozenUs.load();return (unsigned long)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-epoch).count(); }
 unsigned long millis() { return micros()/1000; }
 int64_t esp_timer_get_time() { return micros(); }
-void delay(unsigned long ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
-void delayMicroseconds(unsigned int us) { std::this_thread::sleep_for(std::chrono::microseconds(us)); }
+void delay(unsigned long ms) { if(steppedUs>=0){steppedUs+=ms*1000;return;} std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
+void delayMicroseconds(unsigned int us) { if(steppedUs>=0){steppedUs+=us;return;} std::this_thread::sleep_for(std::chrono::microseconds(us)); }
 void pinMode(uint8_t, uint8_t) {}
 int analogRead(uint8_t) { return 0; }
 static std::atomic<int> selected{-1};
@@ -90,12 +91,13 @@ void SPIClass::beginTransaction(const SPISettings& requested) { settings=request
 void SPIClass::endTransaction() {}
 void SPIClass::transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
   if(selected<0) {
-    assert(settings.hz==1000000 && settings.mode==SPI_MODE1 && length==4);
+    assert(settings.hz==1000000 && settings.mode==SPI_MODE1 && (length==1 || length==4 || length==5));
     const auto& bus=board::GetBoardProfile(board::BoardID::BODAQS_A8).spi;
     for(uint8_t i=0;i<bus.cs_count && i<8;++i)if(bus.cs_pins[i]>=0)assert(pinLevel[bus.cs_pins[i]]==HIGH);
 #if TEST_CASE_RUNNER
-    ++syntheticSwitchCount;
+    if(length==4 && !rx && tx && tx[0]==0)++syntheticSwitchCount;
 #endif
+    if(rx)memset(rx,0,length);
     return;
   }
   delayMicroseconds(10); if(rx) memset(rx,0,length);
@@ -141,7 +143,11 @@ void SPIClass::transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
       std::unique_lock<std::mutex> lock(tieMutex);
       startTransferReached=true;tieCv.notify_all();tieCv.wait(lock,[]{return !holdStartTransfer;});
     }
-    { std::lock_guard<std::mutex> lock(gpioMutex); gpio[adc?18:36].level=workerAdc>=0?HIGH:LOW; }
+    { std::lock_guard<std::mutex> lock(gpioMutex); gpio[adc?18:36].level=(workerAdc>=0
+#if TEST_CASE_RUNNER
+        || sequenceNeverReady
+#endif
+        )?HIGH:LOW; }
     if(workerAdc>=0)workerStartTransfer=true;
   }
   if(adc>=0 && tx && tx[0]==16) ++reads[adc];
@@ -258,6 +264,8 @@ int main() {
   assert(SharedSpiBus::transfer(40,SPISettings(8000000),tx,rx,4,50,nullptr,nullptr,&nextContext));
   assert(nextContext.previousValid && nextContext.previousCs==47 && nextContext.previousReleaseUs==0);
   assert(nextContext.sequence==firstContext.sequence+1);
+  assert(firstContext.previousOperation.bytes==0 && !firstContext.previousOperation.hasTx);
+  assert(nextContext.previousOperation.bytes==4 && nextContext.previousOperation.hasTx && nextContext.previousOperation.hasRx);
   auto board=adcBoard();
   assert(SharedSpiBus::probeUnselectedClocks(board.spi));
   frozenUs=3;
@@ -276,6 +284,7 @@ int main() {
   assert(SharedSpiBus::transfer(47,SPISettings(1000000,MSBFIRST,SPI_MODE1),tx,rx,4));
   releaseContextAcquisition=true;waiter.join();
   assert(waited.previousValid && waited.previousCs==47 && waited.sequence==nextContext.sequence+2);
+  assert(waited.previousOperation.bytes==4 && waited.previousOperation.hasTx && waited.previousOperation.hasRx);
   puts("shared bus context: zero and wrapped timestamps, actual unselected mode1 clocks passed");
   AnalogInputManager::begin(board);
   LoggerConfig cfg;cfg.sensorN=2;cfg.sampleRateHz=500;
@@ -402,7 +411,7 @@ int main() {
   puts("real ADC: same-microsecond ISR entry before START marker is ambiguous, later distinct-tick completion paired passed");
 #if TEST_CASE_RUNNER
   releaseWaiters=true;
-  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v2-")!=std::string::npos);
+  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v3-")!=std::string::npos);
   puts(Serial.output.c_str());Serial.output.clear();SpiMeasurementProbe::command("status");
   assert(Serial.output.find("\"logger_build\":")!=std::string::npos);puts(Serial.output.c_str());Serial.output.clear();
   // Public runner, deterministic clock boundary: 10 seconds has 5000 midpoints
@@ -524,7 +533,64 @@ int main() {
   assert(Serial.output.find("\"outcome\":\"failed\"")!=std::string::npos && Serial.output.find("bulk_fault_or_stalled")!=std::string::npos);
   puts(Serial.output.c_str());Serial.output.clear();
   puts("public first synthetic lock failure: zero successful switch transfers, one failure, real bounded STOP passed");
-  uint32_t caseId=16;
+  // Actual public sequential controls: no workers/rows, real ADC command shapes,
+  // one operation before each request, metadata through the shared mutex.
+  steppedUs=micros()+10000;
+  for(const char* mode : {"shape", "selected"}) {
+    const unsigned id=strcmp(mode,"shape")==0?16:17;
+    char command[96];snprintf(command,sizeof command,"case %u %s 128 8000000 4 100 legacy 500",id,mode);
+    Serial.output.clear();SpiMeasurementProbe::command(command);
+    assert(AnalogInputManager::probeWorkersStopped());
+    for(unsigned i=0;i<1000 && Serial.output.empty();++i){delay(1);SpiMeasurementProbe::loop();}
+    assert(Serial.output.find("\"outcome\":\"complete\"")!=std::string::npos);
+    assert(Serial.output.find("\"worker_start_requested\":false")!=std::string::npos);
+    assert(Serial.output.find("\"rows\":0")!=std::string::npos);
+    bool sawConfig=false,sawStart=false,sawRead=false;
+    for(const auto& p:SpiProbeTransport::stats().byPreviousOperation)if(p.used) {
+      if(p.operation.bytes==5 && p.operation.tx0==0x43 && !p.operation.hasRx)sawConfig=true;
+      if(p.operation.bytes==1 && p.operation.tx0==8 && !p.operation.hasRx)sawStart=true;
+      if(p.operation.bytes==4 && p.operation.tx0==16 && p.operation.hasRx)sawRead=true;
+      assert(p.cs==(id==16?-2:21) || (id==17 && p.cs==47));
+    }
+    assert(sawConfig && sawStart && sawRead && AnalogInputManager::probeWorkersStopped());
+    puts(Serial.output.c_str());Serial.output.clear();
+  }
+  // Failures cross the actual public serial/transport seam, not private state.
+  SpiMeasurementProbe::command("case 18 shape 128 8000000 4 100 legacy 500");
+  rawFault=3;rawFaultsLeft=6;
+  while(Serial.output.empty()){delay(1);SpiMeasurementProbe::loop();}
+  assert(SpiProbeTransport::stats().wireErrors==6 && SpiProbeTransport::stats().failureCount==4);
+  for(const auto& f:SpiProbeTransport::stats().failures) {
+    assert(f.bus.previousCs==-2 && f.bus.previousOperation.hasTx);
+    assert(f.bus.previousOperation.bytes==1 || f.bus.previousOperation.bytes==4 || f.bus.previousOperation.bytes==5);
+    assert(f.bus.previousOperation.hasRx==(f.bus.previousOperation.bytes==4));
+  }
+  puts(Serial.output.c_str());Serial.output.clear();
+  sequenceNeverReady=true;forceReadyPin=false;
+  SpiMeasurementProbe::command("case 19 selected 128 8000000 4 100 legacy 500");
+  while(Serial.output.empty()){delay(1);SpiMeasurementProbe::loop();}
+  assert(Serial.output.find("adc_ready_timeout")!=std::string::npos && AnalogInputManager::probeWorkersStopped());
+  puts(Serial.output.c_str());Serial.output.clear();
+  sequenceNeverReady=false;forceReadyPin=true;
+  SpiMeasurementProbe::command("case 20 shape 128 8000000 4 100 legacy 500");
+  delay(1);failNextSpiLock=true;SpiMeasurementProbe::loop();
+  assert(!failNextSpiLock && Serial.output.find("adc_step_failed")!=std::string::npos);
+  puts(Serial.output.c_str());Serial.output.clear();
+  sequenceNeverReady=true;forceReadyPin=false;
+  SpiMeasurementProbe::command("case 21 selected 128 8000000 4 100 legacy 500");
+  delay(1);SpiMeasurementProbe::loop();delay(1);SpiMeasurementProbe::loop();
+  assert(Serial.output.empty());SpiMeasurementProbe::command("stop");
+  assert(Serial.output.find("\"outcome\":\"stopped\"")!=std::string::npos && AnalogInputManager::probeWorkersStopped());
+  puts(Serial.output.c_str());Serial.output.clear();
+  sequenceNeverReady=false;forceReadyPin=true;
+  SpiMeasurementProbe::command("case 22 shape 128 8000000 4 100 legacy 500");
+  delay(101);SpiMeasurementProbe::loop();
+  assert(Serial.output.find("adc_sequence_incomplete")!=std::string::npos);
+  puts(Serial.output.c_str());Serial.output.clear();
+  SpiMeasurementProbe::command("status");assert(Serial.output.find("\"blocked\":false")!=std::string::npos);Serial.output.clear();
+  steppedUs=-1;bulkLastHigh=0;
+  puts("public sequential controls: real 5/1/4-byte ADC operations, all-CS-high and selected, no workers, metadata PASS");
+  uint32_t caseId=23;
   for(uint16_t frame: {64,128,256})for(uint32_t hz: {8000000U,16000000U}) {
     assert(SpiProbeTransport::begin(board,caseId++,frame,hz,4));
     for(unsigned attempts=0;attempts<1000000 && SpiProbeTransport::stats().retiredObjects<4;++attempts)SpiProbeTransport::tick();

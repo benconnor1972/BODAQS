@@ -16,6 +16,57 @@ EMITTED_SWITCH = FIXTURE.with_name("round2-emitted-switch.jsonl")
 
 
 class ProbeAnalysisTests(unittest.TestCase):
+    def round3_sample(self, name="failures"):
+        return json.loads(FIXTURE.with_name(f"round3-{name}.jsonl").read_text(encoding="utf-8"))
+
+    def test_round3_actual_controls_and_faults_keep_operation_metadata(self):
+        for name in ("shape", "selected", "failures", "timeout"):
+            with self.subTest(name=name):
+                case = self.round3_sample(name)
+                run = self.invoke(json.dumps(case))
+                self.assertEqual(run.returncode, 0, run.stderr)
+                report = json.loads(run.stdout)
+                self.assertEqual(report["schema"], "bodaqs.spi-probe-report.v3")
+                result = report["cases"][0]
+                self.assertEqual(result["adc_status"], "not_applicable")
+                self.assertNotEqual(result["candidate_evidence"], "clean_measurement_candidate")
+                self.assertEqual(result["decode_by_previous_operation"], case["diagnostics"]["by_previous_operation"])
+                if name == "failures":
+                    self.assertEqual(result["decoder_counts"]["magic"], 6)
+                    self.assertEqual([s["bus"]["previous_operation"]["bytes"] for s in result["failure_samples"]], [5,1,4,5])
+                if name == "timeout":
+                    self.assertEqual(result["candidate_evidence"], "failed")
+                    self.assertEqual(result["sequential_control"]["timeouts"], 1)
+                self.assertFalse(report["production_qualified"])
+
+    def test_round3_metadata_rejects_inconsistent_operations_and_workers(self):
+        for mutation in range(8):
+            with self.subTest(mutation=mutation):
+                case = self.round3_sample()
+                d = case["diagnostics"]
+                if mutation == 0:
+                    d["by_previous_operation"][0]["operation"]["bytes"] = True
+                elif mutation == 1:
+                    d["sequence"]["worker_start_requested"] = True
+                elif mutation == 2:
+                    d["sequence"]["operations"][0][2] = 0
+                elif mutation == 3:
+                    d["by_previous_operation"][0]["decode_failures"] -= 1
+                    d["operation_buckets_omitted"] = 1
+                elif mutation == 4:
+                    # An omitted success cannot justify an unknown-key failure.
+                    bucket = next(b for b in d["by_previous_operation"] if b["responses"])
+                    bucket["responses"] -= 1
+                    d["operation_buckets_omitted"] = 1
+                    d["failure_samples"][0]["bus"]["previous_operation"]["tx0"] = 0x99
+                elif mutation == 5:
+                    d["by_previous_operation"].append(d["by_previous_operation"][0].copy())
+                elif mutation == 6:
+                    d["failure_samples"][0]["bus"]["previous_operation"]["has_rx"] = 1
+                else:
+                    d["sequence"]["active"] = False
+                self.assertNotEqual(self.invoke(json.dumps(case)).returncode, 0)
+
     def test_emitted_round2_switch_accepts_only_declared_synthetic_spi_participant(self):
         capture = EMITTED_SWITCH.read_text(encoding="utf-8")
         run = self.invoke(capture)

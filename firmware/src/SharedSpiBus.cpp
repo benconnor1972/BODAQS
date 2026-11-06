@@ -18,6 +18,7 @@ SharedSpiBus::ProbeStats s_probe;
 SharedSpiBus::ProbeContext s_previous;
 bool s_previousValid=false;
 uint32_t s_sequence=0;
+board::SPIProfile s_probeProfile;
 #if defined(ESP32)
 portMUX_TYPE s_probeMux = portMUX_INITIALIZER_UNLOCKED;
 #define PROBE_ENTER() portENTER_CRITICAL(&s_probeMux)
@@ -93,6 +94,9 @@ bool begin(const board::SPIProfile& profile) {
   s_miso = profile.miso;
   s_mosi = profile.mosi;
   s_ready = true;
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+  s_probeProfile = profile;
+#endif
   s_diagnostics.initialized = true;
   return true;
 }
@@ -107,30 +111,41 @@ bool transfer(
     size_t length,
     uint32_t lockTimeoutMs
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
-    , void (*probeAfterCsRelease)(void*), void* probeContext, ProbeContext* transactionContext
+    , void (*probeAfterCsRelease)(void*), void* probeContext, ProbeContext* transactionContext,
+    bool probeUnselected
 #endif
     ) {
   if (!s_ready || csPin < 0 || length == 0 || (!tx && !rx)) return false;
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
   const uint32_t requestedUs = micros();
+  const int8_t observedCs = probeUnselected ? -2 : csPin;
 #endif
   if (!lock_(lockTimeoutMs)) {
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
-    recordProbe_(csPin, length, false, 0, 0);
+    recordProbe_(observedCs, length, false, 0, 0);
 #endif
     return false;
   }
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
   const uint32_t lockedUs = micros();
+  if (probeUnselected) {
+    for (uint8_t i=0;i<s_probeProfile.cs_count && i<8;++i)
+      if(s_probeProfile.cs_pins[i]>=0) digitalWrite(static_cast<uint8_t>(s_probeProfile.cs_pins[i]),HIGH);
+  }
 #endif
 
   s_spi->beginTransaction(settings);
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
   ProbeContext context;
-  context.sequence=++s_sequence;context.cs=csPin;context.previousValid=s_previousValid;
+  context.sequence=++s_sequence;context.cs=observedCs;context.previousValid=s_previousValid;
   context.previousCs=s_previousValid?s_previous.cs:-1;
   context.previousReleaseUs=s_previous.csReleaseUs;
+  context.operation.bytes=static_cast<uint16_t>(length);
+  context.operation.hasTx=tx!=nullptr;context.operation.hasRx=rx!=nullptr;
+  context.operation.tx0=tx?tx[0]:0;
+  context.previousOperation=s_previous.operation;
   context.csAssertUs=micros();
+  if(!probeUnselected)
 #endif
   digitalWrite(static_cast<uint8_t>(csPin), LOW);
 #if defined(ESP32)
@@ -140,6 +155,9 @@ bool transfer(
     const uint8_t received = s_spi->transfer(tx ? tx[index] : 0);
     if (rx) rx[index] = received;
   }
+#endif
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+  if(!probeUnselected)
 #endif
   digitalWrite(static_cast<uint8_t>(csPin), HIGH);
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
@@ -156,7 +174,7 @@ bool transfer(
 #endif
   unlock_();
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
-  recordProbe_(csPin, length, true, (uint32_t)(lockedUs - requestedUs), ownedUs);
+  recordProbe_(observedCs, length, true, (uint32_t)(lockedUs - requestedUs), ownedUs);
 #endif
   return true;
 }
@@ -185,6 +203,7 @@ bool probeUnselectedClocks(const board::SPIProfile& profile) {
 #endif
   s_spi->endTransaction();
   s_previous=ProbeContext{};s_previous.sequence=++s_sequence;s_previous.cs=-2;
+  s_previous.operation.bytes=4;s_previous.operation.hasTx=true;
   s_previous.csAssertUs=began;s_previous.csReleaseUs=micros();s_previousValid=true;
   const uint32_t owned=static_cast<uint32_t>(micros()-began);
   ++s_diagnostics.transactions;s_diagnostics.bytesTransferred+=sizeof(bytes);

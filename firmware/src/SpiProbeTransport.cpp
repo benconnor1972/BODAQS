@@ -74,6 +74,17 @@ bool exchange_(const BodaqsSpiProbeFrame& q,BodaqsSpiProbeFrame& reply,bool time
     for(auto& p:s_stats.byPreviousCs)if(!p.used || p.cs==previous) {
       p.used=true;p.cs=previous;if(valid)++p.responses;else ++p.decodeFailures;break;
     }
+    const auto& operation=context.previousOperation;
+    bool bucketed=false;
+    for(auto& p:s_stats.byPreviousOperation) {
+      const auto& o=p.operation;
+      if(p.used && (p.cs!=previous || o.bytes!=operation.bytes || o.tx0!=operation.tx0 ||
+          o.hasTx!=operation.hasTx || o.hasRx!=operation.hasRx))continue;
+      p.used=true;p.cs=previous;p.operation=operation;
+      if(valid)++p.responses;else ++p.decodeFailures;
+      bucketed=true;break;
+    }
+    if(!bucketed)++s_stats.operationBucketsOmitted;
     if(!valid) {
       if(s_stats.failureCount<4) {
         auto& f=s_stats.failures[s_stats.failureCount++];
@@ -154,6 +165,11 @@ void consume_(const BodaqsSpiProbeFrame& r) {
 }
 }
 namespace SpiProbeTransport {
+bool requestDue() {
+  return s_open && s_entered && s_healthy && !s_switchDue &&
+      (!s_haveTransfer || static_cast<uint32_t>(us_()-s_lastTransferUs)>=25) &&
+      (!s_haveRequest || static_cast<uint32_t>(us_()-s_lastRequestUs)>=s_interval);
+}
 bool begin(const board::BoardProfile& board,uint32_t caseId,uint16_t bytes,uint32_t hz,uint8_t nodes,CrcMode crcMode,uint32_t startIntervalUs,bool switchMode) {
   if(s_open || !board.can_fd_master.supported || board.can_fd_master.cs_pin<0)return false;
   const uint8_t profile=bodaqs_spi_probe_profile(bytes,hz,nodes);

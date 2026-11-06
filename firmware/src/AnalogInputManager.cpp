@@ -317,39 +317,49 @@ uint32_t targetDataRateSps_(uint16_t loggerHz, uint8_t activeChannels) {
   return ceilDivU32_(requiredSps * 1000UL, kExternalAdcUtilizationPermille);
 }
 
-bool adsTransfer_(AdsDevice& dev, const uint8_t* tx, uint8_t* rx, size_t len) {
+bool adsTransfer_(AdsDevice& dev, const uint8_t* tx, uint8_t* rx, size_t len, bool selectDevice = true) {
+#if !defined(BODAQS_SPI_PROBE) || !BODAQS_SPI_PROBE
+  (void)selectDevice;
+#endif
   return SharedSpiBus::transfer(
-      dev.cfg.cs_pin, spiSettings_(dev), tx, rx, len);
+      dev.cfg.cs_pin, spiSettings_(dev), tx, rx, len, 50
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+      , nullptr, nullptr, nullptr, !selectDevice
+#endif
+      );
 }
 
-bool adsCommand_(AdsDevice& dev, uint8_t cmd) {
+bool adsCommand_(AdsDevice& dev, uint8_t cmd, bool selectDevice = true) {
   if (!dev.present || dev.cfg.cs_pin < 0 || !s_spiReady) return false;
+  // Arduino ESP32 transferBytes reads complete uint32_t source words even for
+  // short wire lengths. Back the one-byte command with an aligned full word.
+  alignas(4) const uint8_t tx[4] = {cmd, 0, 0, 0};
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
-  if (cmd == ADS1220_CMD_START) {
-    return SharedSpiBus::transfer(dev.cfg.cs_pin, spiSettings_(dev), &cmd,
+  if (cmd == ADS1220_CMD_START && selectDevice) {
+    return SharedSpiBus::transfer(dev.cfg.cs_pin, spiSettings_(dev), tx,
         nullptr, 1, 50, probeStartReleased_, &dev);
   }
 #endif
-  return adsTransfer_(dev, &cmd, nullptr, 1);
+  return adsTransfer_(dev, tx, nullptr, 1, selectDevice);
 }
 
-bool adsWriteRegisters_(AdsDevice& dev, uint8_t startReg, const uint8_t* regs, size_t len) {
+bool adsWriteRegisters_(AdsDevice& dev, uint8_t startReg, const uint8_t* regs, size_t len, bool selectDevice = true) {
   if (!dev.present || !regs || len == 0 || len > 4 || !s_spiReady) return false;
 
-  uint8_t tx[5] = {0};
+  alignas(4) uint8_t tx[8] = {0};
   tx[0] = (uint8_t)(ADS1220_CMD_WREG | ((startReg & 0x03U) << 2) | ((len - 1U) & 0x03U));
   for (size_t i = 0; i < len; ++i) tx[i + 1] = regs[i];
 
-  return adsTransfer_(dev, tx, nullptr, len + 1);
+  return adsTransfer_(dev, tx, nullptr, len + 1, selectDevice);
 }
 
-bool adsReadData_(AdsDevice& dev, int32_t& raw24) {
+bool adsReadData_(AdsDevice& dev, int32_t& raw24, bool selectDevice = true) {
   if (!dev.present || !s_spiReady) return false;
 
-  uint8_t tx[4] = { ADS1220_CMD_RDATA, 0x00, 0x00, 0x00 };
-  uint8_t rx[4] = {0};
+  alignas(4) uint8_t tx[4] = { ADS1220_CMD_RDATA, 0x00, 0x00, 0x00 };
+  alignas(4) uint8_t rx[4] = {0};
 
-  if (!adsTransfer_(dev, tx, rx, sizeof(tx))) return false;
+  if (!adsTransfer_(dev, tx, rx, sizeof(tx), selectDevice)) return false;
 
   int32_t v = ((int32_t)rx[1] << 16) | ((int32_t)rx[2] << 8) | rx[3];
   if (v & 0x00800000L) v |= 0xFF000000L;
@@ -426,7 +436,7 @@ int32_t scaleRaw24ToEffectiveBits_(int32_t raw24, uint8_t bits) {
   return (int32_t)scaled;
 }
 
-bool configureAdsChannel_(AdsDevice& dev, uint8_t channel) {
+bool configureAdsChannel_(AdsDevice& dev, uint8_t channel, bool selectDevice = true) {
   if (!validChannel_(dev, channel)) return false;
 
   const uint8_t reg0 =
@@ -438,7 +448,7 @@ bool configureAdsChannel_(AdsDevice& dev, uint8_t channel) {
   const uint8_t reg3 = 0x00;
   const uint8_t regs[4] = { reg0, reg1, reg2, reg3 };
 
-  return adsWriteRegisters_(dev, 0, regs, sizeof(regs));
+  return adsWriteRegisters_(dev, 0, regs, sizeof(regs), selectDevice);
 }
 
 uint32_t conversionTimeoutUs_(const AdsDevice& dev) {
@@ -1258,6 +1268,20 @@ void endSample() {
 }
 
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+bool probeTransferStep(uint8_t adc, uint8_t step, bool selectDevice) {
+  if (!probeWorkersStopped() || !validAdcIndex_(adc) || !s_ads[adc].initialized) return false;
+  auto& dev = s_ads[adc];
+  if (step == 0) return configureAdsChannel_(dev, 0, selectDevice);
+  if (step == 1) return adsCommand_(dev, ADS1220_CMD_START, selectDevice);
+  if (step == 2) { int32_t ignored; return adsReadData_(dev, ignored, selectDevice); }
+  return false;
+}
+bool probeDataReady(uint8_t adc) {
+  if (!validAdcIndex_(adc) || !probeWorkersStopped()) return false;
+  const auto& cfg = s_ads[adc].cfg;
+  return cfg.drdy_pin >= 0 && digitalRead(static_cast<uint8_t>(cfg.drdy_pin)) ==
+      (cfg.drdy_active_low ? LOW : HIGH);
+}
 bool probeWorkersRunning() {
   bool any = false, all = true;
   portENTER_CRITICAL(&s_drdyMux);

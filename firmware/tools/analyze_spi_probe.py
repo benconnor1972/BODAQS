@@ -9,6 +9,9 @@ import sys
 
 SCHEMA = "bodaqs.spi-probe.v1"
 SCHEMA_V2 = "bodaqs.spi-probe.v2"
+SCHEMA_V3 = "bodaqs.spi-probe.v3"
+DIAGNOSTIC_SCHEMAS = (SCHEMA_V2, SCHEMA_V3)
+NO_ROW_MODES = ("bulk", "switch", "shape", "selected")
 DECODE_NAMES = "ok argument frame_size magic version profile payload_length crc padding".split()
 COMPONENT_COUNTERS = {0: "process_calls", 1: "process_total_us", 3: "boundary_calls",
                       4: "retire_total_us", 6: "publish_calls", 7: "publish_wait_total_us"}
@@ -105,8 +108,75 @@ def diagnostic_counts(case):
             "samples exceed preceding participant failures")
 
 
+def operation_key(cs, operation):
+    counts(operation, "bytes tx0")
+    require(operation["bytes"] <= 256 and operation["tx0"] <= 255 and
+            type(operation["has_tx"]) is bool and type(operation["has_rx"]) is bool and
+            (operation["has_tx"] or operation["tx0"] == 0), "invalid previous operation")
+    return (cs, operation["bytes"], operation["tx0"], operation["has_tx"], operation["has_rx"])
+
+
+def integrity_counts(case):
+    d = case["diagnostics"]
+    counts(d, "operation_buckets_omitted")
+    buckets = d["by_previous_operation"]
+    require(isinstance(buckets, list) and len(buckets) <= 16, "invalid operation buckets")
+    seen, totals = {}, {}
+    for entry in buckets:
+        counts(entry, "responses decode_failures")
+        require(type(entry["cs"]) is int and -2 <= entry["cs"] <= 255, "invalid operation participant")
+        key = operation_key(entry["cs"], entry["operation"])
+        require(key not in seen, "duplicate operation bucket")
+        seen[key] = entry["decode_failures"]
+        pair = totals.setdefault(entry["cs"], [0, 0])
+        pair[0] += entry["responses"]
+        pair[1] += entry["decode_failures"]
+    missing, missing_failures = 0, {}
+    for entry in d["by_previous_cs"]:
+        pair = totals.pop(entry["cs"], [0, 0])
+        require(pair[0] <= entry["responses"] and pair[1] <= entry["decode_failures"],
+                "operation buckets exceed participant totals")
+        missing += entry["responses"] + entry["decode_failures"] - sum(pair)
+        missing_failures[entry["cs"]] = entry["decode_failures"] - pair[1]
+    require(not totals and missing == d["operation_buckets_omitted"], "inconsistent operation accounting")
+    retained = {}
+    for sample in d["failure_samples"]:
+        bus = sample["bus"]
+        key = operation_key(bus["previous_cs"] if bus["previous_valid"] else -1, bus["previous_operation"])
+        require(bus["previous_valid"] or key[1:] == (0, 0, False, False), "unknown operation has data")
+        retained[key] = retained.get(key, 0) + 1
+    unbucketed = {}
+    for key, n in retained.items():
+        if key in seen:
+            require(n <= seen[key], "failure samples exceed known operation failures")
+        else:
+            unbucketed[key[0]] = unbucketed.get(key[0], 0) + n
+    require(all(n <= missing_failures.get(cs, 0) for cs, n in unbucketed.items()),
+            "failure samples exceed omitted operation failures")
+    sequence = d["sequence"]
+    active = case["profile"]["mode"] in ("shape", "selected")
+    require(type(sequence["active"]) is bool and sequence["active"] == active and
+            type(sequence["worker_start_requested"]) is bool, "invalid sequence state")
+    counts(sequence, "failures timeouts")
+    ops = sequence["operations"]
+    require(isinstance(ops, list) and len(ops) == 2 and all(
+        isinstance(row, list) and len(row) == 3 and all(type(v) is int and v >= 0 for v in row)
+        and row[0] >= row[1] >= row[2] and row[0] - row[2] <= 1 for row in ops), "invalid ADC step counts")
+    if active:
+        require(not sequence["worker_start_requested"] and case["rows"] == 0, "sequence started workers or rows")
+        if case["outcome"] == "complete":
+            require(all(row[2] > 0 for row in ops) and sequence["failures"] == sequence["timeouts"] == 0,
+                    "complete sequence has missing reads or failures")
+        if case["profile"]["mode"] == "shape":
+            require(sum(sum(row) for row in ops) == sum(p["transfers"] for p in case["spi"] if p["cs"] == -2),
+                    "unselected sequence transfer mismatch")
+    else:
+        require(sum(sum(row) for row in ops) == sequence["failures"] == sequence["timeouts"] == 0,
+                "non-sequence case contains ADC steps")
+
+
 def validate(case):
-    v2 = case["schema"] == SCHEMA_V2
+    v2 = case["schema"] in DIAGNOSTIC_SCHEMAS
     counts(case, "case_id elapsed_us rows missed_rows slots valid_responses unique_objects accepted_bytes retired_objects")
     require(0 < case["case_id"] <= 4294967295, "invalid case ID")
     require(case["elapsed_us"] > 0 or (case["outcome"] != "complete" and case["rows"] == 0 and case["accepted_bytes"] == 0), "empty complete timed window")
@@ -120,7 +190,7 @@ def validate(case):
             a["master_build"] == "external-manifest", "invalid artifact identity")
     p = case["profile"]
     counts(p, "frame_bytes requested_sck_hz guard_us nodes duration_ms row_hz")
-    require(p["mode"] in (("adc", "bulk", "mixed", "switch") if v2 else ("adc", "bulk", "mixed")) and
+    require(p["mode"] in (("adc", "bulk", "mixed", "switch", "shape", "selected") if case["schema"] == SCHEMA_V3 else (("adc", "bulk", "mixed", "switch") if v2 else ("adc", "bulk", "mixed"))) and
             p["frame_bytes"] in (64, 128, 256) and
             p["requested_sck_hz"] in (8000000, 16000000) and
             p["guard_us"] == 25 and 1 <= p["nodes"] <= 4 and
@@ -143,7 +213,7 @@ def validate(case):
     if p["mode"] == "adc":
         require(all(case[k] == 0 for k in ("slots", "valid_responses", "unique_objects", "accepted_bytes", "retired_objects")),
                 "ADC-only case contains transport traffic")
-    if p["mode"] in ("bulk", "switch"):
+    if p["mode"] in NO_ROW_MODES:
         require(case["rows"] == case["missed_rows"] == 0, "bulk case contains rows")
     else:
         target = min(case["elapsed_us"], p["duration_ms"] * 1000) * p["row_hz"] / 1000000
@@ -171,7 +241,7 @@ def validate(case):
             counts(adc, "drdy_pre_start")
         require(adc["index"] in (0, 1) and adc["index"] not in seen, "invalid ADC index")
         seen.add(adc["index"])
-        if p["mode"] not in ("bulk", "switch"):
+        if p["mode"] not in NO_ROW_MODES:
             require(adc["fresh"] + adc["reused"] + adc["no_sample"] ==
                     adc["uses"] == case["rows"], "inconsistent ADC row accounting")
         for name, value in adc.items():
@@ -210,6 +280,8 @@ def validate(case):
         require(diagnostic["expected_crc_calls"] == diagnostic["timing"]["expected_crc"]["count"],
                 "expected CRC call count mismatch")
         diagnostic_counts(case)
+        if case["schema"] == SCHEMA_V3:
+            integrity_counts(case)
 
 
 def unique_keys(pairs):
@@ -221,7 +293,7 @@ def unique_keys(pairs):
 
 
 def adc_status(case):
-    if case["profile"]["mode"] in ("bulk", "switch"):
+    if case["profile"]["mode"] in NO_ROW_MODES:
         return "not_applicable"
     target = min(case["elapsed_us"], case["profile"]["duration_ms"] * 1000) * 500 / 1000000
     healthy = case["elapsed_us"] > 0 and case["rows"] > 0 and abs(case["rows"] - target) <= 1 and case["missed_rows"] == 0
@@ -257,7 +329,7 @@ def component_timing(case):
     master = case.get("master")
     result = {"status": "unknown", "scope": "software observations; process, retirement and publication wait may overlap; not a physical rearm bound",
               "counter_deltas": None, "boot_maxima": None, "timing_invalid": None}
-    if case["schema"] != SCHEMA_V2 or not master or not master["diagnostic_measured"]:
+    if case["schema"] not in DIAGNOSTIC_SCHEMAS or not master or not master["diagnostic_measured"]:
         return result
     before, after = master["diagnostic_before"], master["diagnostic_after"]
     result.update(
@@ -270,7 +342,7 @@ def component_timing(case):
 
 
 def failure_samples(case):
-    if case["schema"] != SCHEMA_V2:
+    if case["schema"] not in DIAGNOSTIC_SCHEMAS:
         return None
     result = []
     for sample in case["diagnostics"]["failure_samples"]:
@@ -284,7 +356,7 @@ def failure_samples(case):
 
 
 def diagnostic_observations(case):
-    if case["schema"] != SCHEMA_V2:
+    if case["schema"] not in DIAGNOSTIC_SCHEMAS:
         return "unknown"
     if case["profile"]["mode"] == "adc":
         return "not_applicable"
@@ -365,7 +437,7 @@ def analyze(data, manifest=None):
                 # Firmware boot diagnostics commonly start with [Storage]/[SPI].
                 continue
             raise ValueError(f"line {number}: malformed JSON") from error
-        if not isinstance(item, dict) or item.get("schema") not in (SCHEMA, SCHEMA_V2):
+        if not isinstance(item, dict) or item.get("schema") not in (SCHEMA, SCHEMA_V2, SCHEMA_V3):
             raise ValueError(f"line {number}: unsupported schema")
         if item.get("type") == "case":
             validate(item)
@@ -373,7 +445,7 @@ def analyze(data, manifest=None):
             cases.append(item)
         else:
             require(item.get("type") in ("ready", "status", "error"), "unknown result type")
-            if item["schema"] == SCHEMA_V2 and item["type"] in ("ready", "status"):
+            if item["schema"] in DIAGNOSTIC_SCHEMAS and item["type"] in ("ready", "status"):
                 require(isinstance(item["logger_build"], str) and item["logger_build"].strip(),
                         "missing source build identity")
                 require(type(item["ready"]) is bool, "invalid ready state")
@@ -393,14 +465,16 @@ def analyze(data, manifest=None):
         master, engine_delta, adapter_delta, adapter_states = master_diagnostics(case)
         components = component_timing(case)
         observations = diagnostic_observations(case)
-        if case["schema"] == SCHEMA_V2 and p["mode"] != "adc":
+        if case["schema"] in DIAGNOSTIC_SCHEMAS and p["mode"] != "adc":
             if components["status"] == "invalid":
                 master = "failed"
             elif master == "clean" and (components["status"] != "observed" or
                     case["slots"] == 0 or case["diagnostics"]["decode_counts"][0] == 0):
                 master = "unknown"
         transport = "failed" if any(case["errors"][k] for k in ("transfer", "wire", "accept", "commands")) or (
-            case["schema"] == SCHEMA_V2 and case["diagnostics"]["switch_failures"]) else "clean"
+            case["schema"] in DIAGNOSTIC_SCHEMAS and case["diagnostics"]["switch_failures"]) else "clean"
+        if case["schema"] == SCHEMA_V3 and any(case["diagnostics"]["sequence"][k] for k in ("failures", "timeouts")):
+            transport = "failed"
         baselines = [c for c in cases if c["profile"]["mode"] == "adc" and
                      c["schema"] == case["schema"] and
                      c["artifacts"] == case["artifacts"] and
@@ -415,8 +489,8 @@ def analyze(data, manifest=None):
         clean_candidate = not failed and manifest is not None and case.get("workers_stopped") is True and (
             p["mode"] == "adc" or (master == "clean" and case["accepted_bytes"] > 0)) and (
             p["mode"] != "mixed" or baseline == "healthy") and (
-            case["schema"] != SCHEMA_V2 or observations in ("observed", "not_applicable"))
-        control = case["schema"] == SCHEMA_V2 and (p["mode"] == "switch" or
+            case["schema"] not in DIAGNOSTIC_SCHEMAS or observations in ("observed", "not_applicable"))
+        control = case["schema"] in DIAGNOSTIC_SCHEMAS and (p["mode"] in ("switch", "shape", "selected") or
                   p["crc_mode"] == "cached" or p["start_interval_us"] > 0)
         result.append({"case_id": case["case_id"],
             "profile": p, "outcome": case["outcome"], "reason": case["reason"],
@@ -436,18 +510,21 @@ def analyze(data, manifest=None):
             "master_adapter_deltas": dict(zip(ADAPTER_COUNTER_NAMES, adapter_delta)) if adapter_delta is not None else None,
             "master_adapter_states": adapter_states,
             "master_component_timing": components,
-            "decoder_counts": dict(zip(DECODE_NAMES, case["diagnostics"]["decode_counts"])) if case["schema"] == SCHEMA_V2 else None,
+            "decoder_counts": dict(zip(DECODE_NAMES, case["diagnostics"]["decode_counts"])) if case["schema"] in DIAGNOSTIC_SCHEMAS else None,
             "failure_samples": failure_samples(case),
-            "failure_samples_omitted": case["diagnostics"]["failure_samples_omitted"] if case["schema"] == SCHEMA_V2 else None,
-            "decode_by_previous_cs": case["diagnostics"]["by_previous_cs"] if case["schema"] == SCHEMA_V2 else None,
+            "failure_samples_omitted": case["diagnostics"]["failure_samples_omitted"] if case["schema"] in DIAGNOSTIC_SCHEMAS else None,
+            **({"decode_by_previous_operation": case["diagnostics"]["by_previous_operation"],
+                "operation_buckets_omitted": case["diagnostics"]["operation_buckets_omitted"],
+                "sequential_control": case["diagnostics"]["sequence"]} if case["schema"] == SCHEMA_V3 else {}),
+            "decode_by_previous_cs": case["diagnostics"]["by_previous_cs"] if case["schema"] in DIAGNOSTIC_SCHEMAS else None,
             "decode_previous_cs_distribution": [
                 {**entry, "decode_calls": entry["responses"] + entry["decode_failures"],
                  "failure_fraction_of_decode_calls": entry["decode_failures"] / (entry["responses"] + entry["decode_failures"])
                  if entry["responses"] + entry["decode_failures"] else None}
-                for entry in case["diagnostics"]["by_previous_cs"]] if case["schema"] == SCHEMA_V2 else None,
+                for entry in case["diagnostics"]["by_previous_cs"]] if case["schema"] in DIAGNOSTIC_SCHEMAS else None,
             "diagnostic_observation_status": observations,
-            "transport_diagnostic_timing": case["diagnostics"]["timing"] if case["schema"] == SCHEMA_V2 else None,
-            "expected_crc_calls": case["diagnostics"]["expected_crc_calls"] if case["schema"] == SCHEMA_V2 else None,
+            "transport_diagnostic_timing": case["diagnostics"]["timing"] if case["schema"] in DIAGNOSTIC_SCHEMAS else None,
+            "expected_crc_calls": case["diagnostics"]["expected_crc_calls"] if case["schema"] in DIAGNOSTIC_SCHEMAS else None,
             "experimental_control": {"crc_mode": p.get("crc_mode", "legacy"),
                                      "start_interval_us": p.get("start_interval_us", 0),
                                      "synthetic_switch": p["mode"] == "switch"},
@@ -455,7 +532,7 @@ def analyze(data, manifest=None):
             "pipeline_diagnostics": {k: case["errors"][k] for k in ("stale", "duplicate")},
             "candidate_evidence": "failed" if failed else "diagnostic_control" if control else "clean_measurement_candidate" if clean_candidate else "unknown",
             "raw_measurements": case})
-    return {"schema": "bodaqs.spi-probe-report.v2" if any(c["schema"] == SCHEMA_V2 for c in cases) else "bodaqs.spi-probe-report.v1",
+    return {"schema": "bodaqs.spi-probe-report.v3" if any(c["schema"] == SCHEMA_V3 for c in cases) else "bodaqs.spi-probe-report.v2" if any(c["schema"] in DIAGNOSTIC_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v1",
             "capture_sha256": digest,
             "run_identity": "declared_paired" if manifest else "unknown_without_manifest",
             "manifest": manifest, "serial_events": events,
