@@ -12,6 +12,34 @@ static BodaqsSpiProbeFrame exchange(BodaqsSpiProbeEngine *e,BodaqsSpiProbeFrame 
     return r;
 }
 int main(void) {
+    /* Independent IEEE/zlib fixtures: BEGIN case7, profile0, no payload.
+     * Mutations combine faults to pin the historical first-rejection order. */
+    uint8_t literal[64]={0x53,0x50,1,1,7,[60]=0xdc,0x6b,0x9d,0x5e};
+    BodaqsSpiProbeFrame result, unchanged;
+    memset(&result,0xa5,sizeof result);unchanged=result;
+    assert(BODAQS_SPI_PROBE_DECODE_COUNT==9);
+    assert(bodaqs_spi_probe_decode_result(NULL,0,NULL)==BODAQS_SPI_PROBE_DECODE_ARGUMENT);
+    assert(bodaqs_spi_probe_decode_result(literal,0,&result)==BODAQS_SPI_PROBE_DECODE_FRAME_SIZE);
+    literal[0]=0;literal[2]=2;literal[15]=3;literal[14]=255;
+    assert(bodaqs_spi_probe_decode_result(literal,64,&result)==BODAQS_SPI_PROBE_DECODE_MAGIC);
+    literal[0]=0x53;
+    assert(bodaqs_spi_probe_decode_result(literal,64,&result)==BODAQS_SPI_PROBE_DECODE_VERSION);
+    literal[2]=1;
+    assert(bodaqs_spi_probe_decode_result(literal,64,&result)==BODAQS_SPI_PROBE_DECODE_PROFILE);
+    literal[15]=0;
+    assert(bodaqs_spi_probe_decode_result(literal,64,&result)==BODAQS_SPI_PROBE_DECODE_PAYLOAD_LENGTH);
+    literal[14]=0;literal[20]=1;
+    assert(bodaqs_spi_probe_decode_result(literal,64,&result)==BODAQS_SPI_PROBE_DECODE_CRC);
+    /* CRC repaired independently, leaving only nonzero padding. */
+    literal[60]=0x9b;literal[61]=0xf9;literal[62]=0xd9;literal[63]=0xf1;
+    assert(bodaqs_spi_probe_decode_result(literal,64,&result)==BODAQS_SPI_PROBE_DECODE_PADDING);
+    assert(!memcmp(&result,&unchanged,sizeof result));
+    assert(!bodaqs_spi_probe_decode(literal,64,&result));
+    literal[20]=0;literal[60]=0xdc;literal[61]=0x6b;literal[62]=0x9d;literal[63]=0x5e;
+    assert(bodaqs_spi_probe_decode_result(literal,64,&result)==BODAQS_SPI_PROBE_DECODE_OK);
+    assert(result.case_id==7 && result.opcode==1 && result.payload_length==0);
+    assert(bodaqs_spi_probe_decode(literal,64,&result));
+    puts("independent first-rejection vectors, unchanged failure output and bool compatibility: PASS");
     uint8_t wire[256]; BodaqsSpiProbeFrame f={0}, decoded;
     f.profile=255;assert(!bodaqs_spi_probe_encode(&f,wire,0));
     assert(bodaqs_spi_probe_crc((const uint8_t *)"123456789",9)==0xcbf43926U);
@@ -37,6 +65,16 @@ int main(void) {
         q.opcode=BODAQS_PROBE_STATS;q.fragment=1;
         e.adapter_stats[1]=19;r=exchange(&e,&q);
         assert(r.opcode==133 && r.fragment==1 && r.payload_length==40 && r.payload[4]==19);
+        q.fragment=2;
+        for(unsigned i=0;i<10;++i) e.diagnostic_stats[i]=0x12345600U+i;
+        r=exchange(&e,&q);
+        assert(r.opcode==133 && r.fragment==2 && r.payload_length==40);
+        for(unsigned i=0;i<10;++i) {
+            assert(r.payload[4*i]==i && r.payload[4*i+1]==0x56 &&
+                r.payload[4*i+2]==0x34 && r.payload[4*i+3]==0x12);
+        }
+        q.fragment=3;r=exchange(&e,&q);
+        assert(r.opcode==255 && r.payload[0]==BODAQS_PROBE_ARGUMENT);
         q.opcode=BODAQS_PROBE_BEGIN;q.fragment=0;
         q.case_id=2;r=exchange(&e,&q);assert(r.opcode==255 && r.payload[0]==BODAQS_PROBE_BUSY);q.case_id=1;
         for(uint8_t n=0;n<4;++n) {

@@ -103,7 +103,9 @@ The v2 case adds `diagnostics`:
   uint32 microseconds; compute intervals modulo uint32. Zero is a valid time.
 - `failure_samples_omitted`: rejected frames not retained.
 - `by_previous_cs`: entries `{cs,responses,decode_failures}`, including -1/-2
-  as needed; participant counts cover all actual decode calls.
+  as needed. Responses count successful decodes; failures count first rejections.
+  Their sum covers all actual decode calls. Failure fractions use both counts
+  in the denominator.
 - `timing`: TimingSummary objects `validate`, `expected_crc`, `iteration`,
   `request_interval`; `expected_crc_calls` equals expected_crc.count.
 - `pacing_deferred`, `switch_transfers`, `switch_failures`: nonnegative counts.
