@@ -10,11 +10,173 @@ import unittest
 
 TOOL = Path(__file__).with_name("analyze_spi_probe.py")
 FIXTURE = Path(__file__).with_name("spi_probe_fixtures") / "mixed.jsonl"
+ROUND2 = FIXTURE.with_name("round2-mixed.jsonl")
+FAILURES = FIXTURE.with_name("round2-failures.jsonl")
 
 
 class ProbeAnalysisTests(unittest.TestCase):
     def sample(self):
         return json.loads(FIXTURE.read_text())
+
+    def test_round2_worked_capture_reports_crc_pacing_and_page2_scopes(self):
+        run = self.invoke(ROUND2.read_text(encoding="utf-8"))
+        self.assertEqual(run.returncode, 0, run.stderr)
+        report = json.loads(run.stdout)
+        case = report["cases"][0]
+        self.assertEqual(case["decoder_counts"], {
+            "ok": 200, "argument": 0, "frame_size": 0, "magic": 0,
+            "version": 0, "profile": 0, "payload_length": 0, "crc": 0, "padding": 0})
+        self.assertEqual(case["experimental_control"], {
+            "crc_mode": "legacy", "start_interval_us": 0, "synthetic_switch": False})
+        self.assertEqual(case["master_component_timing"]["counter_deltas"], {
+            "process_calls": 150, "process_total_us": 48, "boundary_calls": 200,
+            "retire_total_us": 12, "publish_calls": 150, "publish_wait_total_us": 30})
+        self.assertEqual(case["master_component_timing"]["boot_maxima"]["process_max_us"],
+                         {"before": 80, "after": 90})
+        self.assertEqual(case["master_component_timing"]["timing_invalid"], {"before": 0, "after": 0})
+        self.assertEqual(case["master_component_timing"]["status"], "observed")
+        self.assertFalse(report["production_qualified"])
+        self.assertFalse(report["t01_go"])
+        self.assertFalse(report["admission_authorized"])
+
+    def test_round2_decoder_accounting_rejects_incomplete_or_inconsistent_evidence(self):
+        for field, value in (
+                ("decode_counts", [200]),
+                ("decode_counts", [199, 0, 0, 0, 0, 0, 0, 0, 0]),
+                ("decode_counts", [200, False, 0, 0, 0, 0, 0, 0, 0]),
+                ("failure_samples_omitted", 1),
+                ("by_previous_cs", []),
+                ("by_previous_cs", [{"cs": -1, "responses": 199, "decode_failures": 0}]),
+                ("expected_crc_calls", 3),
+                ("switch_transfers", 1),
+                ("switch_failures", 1)):
+            with self.subTest(field=field, value=value):
+                case = json.loads(ROUND2.read_text(encoding="utf-8"))
+                case["diagnostics"][field] = value
+                self.assertEqual(self.invoke(json.dumps(case)).returncode, 2)
+
+    def test_round2_failure_samples_keep_complete_bytes_requests_and_safe_intervals(self):
+        run = self.invoke(FAILURES.read_text(encoding="utf-8"))
+        self.assertEqual(run.returncode, 0, run.stderr)
+        case = json.loads(run.stdout)["cases"][0]
+        self.assertEqual(case["decoder_counts"]["magic"], 1)
+        self.assertEqual(case["decoder_counts"]["crc"], 2)
+        self.assertEqual(case["failure_samples_omitted"], 1)
+        first, second = case["failure_samples"]
+        self.assertEqual(first["bus_intervals_us"], {"cs_ownership": 8, "since_previous_release": None})
+        self.assertEqual(second["bus_intervals_us"], {"cs_ownership": 12, "since_previous_release": 6})
+        self.assertEqual(second["request"], {"opcode": 2, "case_id": 203, "profile": 24,
+                         "node": 0, "fragment": 1, "object_id": 1, "logical_crc": 0})
+        self.assertEqual(len(bytes.fromhex(second["rx_hex"])), 64)
+        self.assertEqual(case["decode_by_previous_cs"], [
+            {"cs": -1, "responses": 1, "decode_failures": 1},
+            {"cs": 10, "responses": 5, "decode_failures": 2}])
+        self.assertEqual(case["decode_previous_cs_distribution"][0]["decode_calls"], 2)
+        self.assertEqual(case["decode_previous_cs_distribution"][0]["failure_fraction_of_decode_calls"], 0.5)
+        self.assertAlmostEqual(case["decode_previous_cs_distribution"][1]["failure_fraction_of_decode_calls"], 0.2857142857)
+        self.assertEqual(case["candidate_evidence"], "failed")
+        # A known preceding release at zero must retain a measured interval.
+        sample = json.loads(FAILURES.read_text(encoding="utf-8"))
+        sample["diagnostics"]["failure_samples"][1]["bus"].update(
+            previous_release_us=0, cs_assert_us=6, cs_release_us=18)
+        run = self.invoke(json.dumps(sample))
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(json.loads(run.stdout)["cases"][0]["failure_samples"][1]["bus_intervals_us"],
+                         {"cs_ownership": 12, "since_previous_release": 6})
+
+    def test_round2_invalid_sample_context_is_rejected(self):
+        for field, value in (
+                ("reason", 0), ("reason", 8), ("slot", 0), ("slot", 11),
+                ("frame_bytes", 128), ("rx_hex", "00"), ("rx_hex", "z" * 128),
+                ("request.case_id", 202), ("request.profile", 25),
+                ("request.node", 4), ("request.fragment", 26),
+                ("request.object_id", 0), ("request.logical_crc", -1),
+                ("bus.sequence", 4294967296), ("bus.previous_valid", 1),
+                ("bus.cs", -1), ("bus.previous_cs", -3), ("bus.cs_assert_us", -1)):
+            with self.subTest(field=field):
+                case = json.loads(FAILURES.read_text(encoding="utf-8"))
+                target = case["diagnostics"]["failure_samples"][0]
+                parts = field.split(".")
+                for part in parts[:-1]:
+                    target = target[part]
+                target[parts[-1]] = value
+                self.assertEqual(self.invoke(json.dumps(case)).returncode, 2)
+        for change in ("duplicates", "saturation", "distribution"):
+            case = json.loads(FAILURES.read_text(encoding="utf-8"))
+            d = case["diagnostics"]
+            if change == "duplicates":
+                d["failure_samples"][1]["slot"] = 2
+            elif change == "saturation":
+                d["failure_samples"] *= 3
+            else:
+                d["by_previous_cs"][0]["decode_failures"] = 0
+                d["by_previous_cs"][1]["decode_failures"] = 3
+            self.assertEqual(self.invoke(json.dumps(case)).returncode, 2)
+
+    def test_round2_comparisons_keep_crc_pacing_and_full_profile_separate(self):
+        cases = []
+        for number, mode, crc, interval in (
+                (210, "bulk", "legacy", 0), (211, "mixed", "legacy", 0),
+                (212, "bulk", "cached", 0), (213, "mixed", "legacy", 500)):
+            case = json.loads(ROUND2.read_text(encoding="utf-8"))
+            case["case_id"] = number
+            case["profile"].update(mode=mode, crc_mode=crc, start_interval_us=interval)
+            if mode == "bulk":
+                case["rows"] = 0
+                for adc in case["adc"]:
+                    adc.update(fresh=0, uses=0)
+            cases.append(case)
+        run = self.invoke("\n".join(json.dumps(c) for c in cases))
+        self.assertEqual(run.returncode, 0, run.stderr)
+        groups = [c for c in json.loads(run.stdout)["comparison"] if
+                  c["frame_bytes"] == 64 and c["requested_sck_hz"] == 8000000]
+        self.assertEqual(len(groups), 3)
+        self.assertEqual([(g["bulk_case_ids"], g["mixed_case_ids"]) for g in groups],
+                         [([212], []), ([210], [211]), ([], [213])])
+        self.assertEqual([g["mixed_to_bulk_rate_ratios"] for g in groups], [[], [1], []])
+
+    def test_round2_page2_unknown_invalid_and_no_observations_never_pass(self):
+        for variation, expected in (("missing", "unknown"), ("unsupported", "unknown"),
+                                    ("sticky", "invalid"), ("empty", "no_observations")):
+            with self.subTest(variation=variation):
+                case = json.loads(ROUND2.read_text(encoding="utf-8"))
+                if variation == "missing":
+                    del case["master"]
+                elif variation == "unsupported":
+                    case["master"].update(diagnostic_measured=False, timing_measured=False, timing_scope="unmeasured")
+                elif variation == "sticky":
+                    case["master"]["diagnostic_before"][9] = 1
+                    case["master"]["diagnostic_after"][9] = 1
+                else:
+                    case["master"]["diagnostic_after"] = case["master"]["diagnostic_before"][:]
+                run = self.invoke(json.dumps(case))
+                self.assertEqual(run.returncode, 0, run.stderr)
+                result = json.loads(run.stdout)["cases"][0]
+                self.assertEqual(result["master_component_timing"]["status"], expected)
+                self.assertNotEqual(result["candidate_evidence"], "clean_measurement_candidate")
+                self.assertNotEqual(result["master_diagnostics_status"], "clean")
+
+    def test_round2_controls_keep_observed_adc_health_separate_from_eligibility(self):
+        for mode, crc, interval in (("switch", "legacy", 500), ("mixed", "legacy", 500),
+                                    ("mixed", "cached", 0), ("bulk", "cached", 0)):
+            with self.subTest(mode=mode, crc=crc, interval=interval):
+                case = json.loads(ROUND2.read_text(encoding="utf-8"))
+                case["profile"].update(mode=mode, crc_mode=crc, start_interval_us=interval)
+                if mode in ("switch", "bulk"):
+                    case["rows"] = 0
+                    for adc in case["adc"]:
+                        adc.update(fresh=0, uses=0)
+                if mode == "switch":
+                    case["diagnostics"].update(switch_transfers=180, switch_failures=0)
+                run = self.invoke(json.dumps(case))
+                self.assertEqual(run.returncode, 0, run.stderr)
+                report = json.loads(run.stdout)
+                result = report["cases"][0]
+                self.assertEqual(result["candidate_evidence"], "diagnostic_control")
+                self.assertEqual(result["adc_status"], "healthy" if mode == "mixed" else "not_applicable")
+                self.assertFalse(report["production_qualified"])
+                self.assertFalse(report["t01_go"])
+                self.assertFalse(report["admission_authorized"])
 
     def baseline(self):
         baseline = self.sample()
@@ -23,6 +185,65 @@ class ProbeAnalysisTests(unittest.TestCase):
         for name in ("slots", "valid_responses", "unique_objects", "accepted_bytes", "retired_objects"):
             baseline[name] = 0
         return baseline
+
+    def manifest(self, capture):
+        return {"schema": "bodaqs.spi-probe-manifest.v1", "protocol": 1,
+                "capture_sha256": hashlib.sha256(capture.encode("utf-8")).hexdigest(),
+                "capture_path": "external/literal.txt", "wiring": "literal test fixture",
+                "instrumentation": "host fixture; no physical measurements",
+                "logger": {"board": "A8", "source_revision": "a" * 40,
+                           "artifact_sha256": "b" * 64, "build": "literal-fixture"},
+                "master": {"board": "MSPM0", "source_revision": "c" * 40, "artifact_sha256": "d" * 64}}
+
+    def test_round2_paired_bulk_needs_actual_diagnostic_observations(self):
+        for variation, expected in (("observed", "clean_measurement_candidate"),
+                                    ("page_unknown", "unknown"), ("iteration_empty", "unknown"),
+                                    ("interval_empty", "unknown"), ("validate_empty", "unknown"),
+                                    ("crc_empty", "unknown"), ("sticky", "failed")):
+            with self.subTest(variation=variation):
+                case = json.loads(ROUND2.read_text(encoding="utf-8"))
+                case["profile"]["mode"] = "bulk"
+                case["rows"] = 0
+                for adc in case["adc"]:
+                    adc.update(fresh=0, uses=0)
+                if variation == "page_unknown":
+                    case["master"].update(diagnostic_measured=False, timing_measured=False, timing_scope="unmeasured")
+                elif variation.endswith("_empty"):
+                    key = {"iteration_empty": "iteration", "interval_empty": "request_interval",
+                           "validate_empty": "validate", "crc_empty": "expected_crc"}[variation]
+                    case["diagnostics"]["timing"][key] = {"count": 0, "min_us": 0, "max_us": 0, "total_us": 0}
+                    if key == "expected_crc":
+                        case["diagnostics"]["expected_crc_calls"] = 0
+                elif variation == "sticky":
+                    case["master"]["diagnostic_before"][9] = 1
+                    case["master"]["diagnostic_after"][9] = 1
+                capture = json.dumps(case)
+                run = self.invoke(capture, self.manifest(capture))
+                self.assertEqual(run.returncode, 0, run.stderr)
+                result = json.loads(run.stdout)["cases"][0]
+                self.assertEqual(result["candidate_evidence"], expected)
+
+    def test_round2_switch_failures_are_observed_failures(self):
+        case = json.loads(ROUND2.read_text(encoding="utf-8"))
+        case["profile"]["mode"] = "switch"
+        case["rows"] = 0
+        for adc in case["adc"]:
+            adc.update(fresh=0, uses=0)
+        case["diagnostics"].update(switch_transfers=10, switch_failures=1)
+        run = self.invoke(json.dumps(case))
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(json.loads(run.stdout)["cases"][0]["candidate_evidence"], "failed")
+
+    def test_round2_ready_and_status_retain_required_source_identity(self):
+        for kind in ("ready", "status"):
+            event = {"schema": "bodaqs.spi-probe.v2", "type": kind, "ready": True,
+                     "blocked": False, "logger_build": "literal-fixture"}
+            capture = json.dumps(event) + "\n" + ROUND2.read_text(encoding="utf-8")
+            run = self.invoke(capture)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertEqual(json.loads(run.stdout)["serial_events"][0]["logger_build"], "literal-fixture")
+            del event["logger_build"]
+            self.assertEqual(self.invoke(json.dumps(event) + "\n" + ROUND2.read_text(encoding="utf-8")).returncode, 2)
 
     def invoke(self, capture, manifest=None):
         with tempfile.TemporaryDirectory() as folder:

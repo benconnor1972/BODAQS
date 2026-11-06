@@ -1,4 +1,4 @@
-# SPI measurement probe: manual capture and offline comparison
+# SPI measurement probe: round 2 manual capture
 
 This bench-only procedure implements the evidence collection in the
 [confirmed SPI revision](CAN-FD_SPI_Transaction_Revision.md) and
@@ -6,7 +6,10 @@ This bench-only procedure implements the evidence collection in the
 production, authorize workload admission, or change the historical
 [T01 no-go](drain-capacity/REPORT.md). Keep the original T01 files untouched.
 
-The user flashes the reviewed probe artifacts manually. This procedure does
+Use the [round 2 diagnostic contract](SPI_Measurement_Probe_Round2.md).
+Preserve all earlier bundles and the first comparison matrix unchanged.
+The user flashes **both updated logger and matching master** artifacts manually;
+the node firmware is unchanged. This procedure does
 not authorize an agent to flash, probe devices, push changes, or update issues.
 Use the packaged source/artifact manifest to select the logger A8
 ESP32-S3MiniN4R2 probe image and the corresponding MSPM0 master acquisition-CAN
@@ -21,8 +24,8 @@ node. This does not exercise physical four-node CAN or native IMU acquisition.
 Use the corrected logger build if an earlier probe rebooted on the first ADC
 case in `gpio_isr_handler_add` / `esp_intr_get_cpu`. That startup race occurred
 while the two ADC workers installed the shared GPIO interrupt service. The
-corrected ADC path serializes attachment with a task mutex; frame/clock settings
-and the matching master image are unchanged. A rebooted case supplies no rate
+corrected ADC path serializes attachment with a task mutex. Round 2 retains this
+fix and adds master STATS page2, requiring the matching new master. A rebooted case supplies no rate
 or ADC-health evidence. Retry the ADC-only baseline after the logger update.
 
 1. Preserve the artifact manifest and exact logger/master source revisions,
@@ -36,12 +39,14 @@ or ADC-health evidence. Retry the ADC-only baseline after the logger update.
    JSON lines with timestamps or echoed commands. Ensure the master is running
    the matching probe image. Wait for `type:"ready",ready:true`.
 3. Send `status` only while idle. Require `ready:true,blocked:false` before each
-   new case. The first fixed profile is 64 bytes at a **requested** 8 MHz,
+   new case. Check the source-derived `logger_build` in ready/status against the
+   package; case output retains it in `artifacts.logger_build`.
+   The first fixed profile is 128 bytes at a **requested** 8 MHz,
    four simulated nodes, 25 us inter-CS guard. No statement about actual SCK is
    implied. ADC-only uses one channel per ADC, AIN0 and AIN4, 500 logged rows/s;
    each worker is configured for 1000 conversions/s.
 
-## Fixed cases
+## Short diagnostic sequence
 
 Predeclare **10 seconds per case** for this comparison. That is a comparison
 window, not sustained-service qualification. Longer, repeated and instrumented
@@ -51,23 +56,41 @@ stopped/failed case. Do not paste the block as a batch. Send one line, wait for
 its result, verify idle, then send the next line.
 
 ```text
-case 100 adc 64 8000000 4 10000
-case 101 bulk 64 8000000 4 10000
-case 102 mixed 64 8000000 4 10000
-case 103 bulk 128 8000000 4 10000
-case 104 mixed 128 8000000 4 10000
-case 105 bulk 256 8000000 4 10000
-case 106 mixed 256 8000000 4 10000
-case 107 bulk 64 16000000 4 10000
-case 108 mixed 64 16000000 4 10000
-case 109 bulk 128 16000000 4 10000
-case 110 mixed 128 16000000 4 10000
-case 111 bulk 256 16000000 4 10000
-case 112 mixed 256 16000000 4 10000
+case 200 adc 128 8000000 4 10000 legacy 0
+case 201 bulk 128 8000000 4 10000 legacy 0
+case 202 mixed 128 8000000 4 10000 legacy 0
 ```
 
+**Pause to inspect these results before continuing.** Compare first-rejection
+reasons, complete failed replies, request/bus context, and participant failure
+counts. Diagnose reproducible integrity failures before pursuing drain rates.
+Then run each subsequent control separately, checking idle between cases:
+
+```text
+case 203 bulk 128 8000000 4 10000 legacy 500
+case 204 switch 128 8000000 4 10000 legacy 500
+case 205 mixed 128 8000000 4 10000 legacy 500
+case 206 bulk 128 8000000 4 10000 cached 0
+case 207 mixed 128 8000000 4 10000 cached 0
+```
+
+`legacy` preserves repeated expected-CRC computation; `cached` caches only the
+deterministic expected checksum per node object. Wire, fragment, identity,
+whole-object CRC and RAM/ACK checks remain active. The final number adds a
+minimum request start interval in microseconds (0..5000); the separate 25 us
+inter-CS minimum is unchanged. Waiting does not hold the SPI mutex. Compare
+observed `request_interval` distributions: a configured 500 us does not establish
+matched traffic, and faster CRC validation can itself change pacing.
+
+`switch` runs bulk transport with an unselected four-byte 1 MHz/mode1 clock
+burst between requests, through the production SPI driver/mutex with all board
+CS lines high. It runs no ADC workers or conversions. Participant -2 identifies
+this synthetic operation; -1 means unknown. It cannot establish ADC service or
+capacity, and is not a reproduction of ADC conversion/worker scheduling.
+The original seven-token command still selects `legacy 0`.
+
 Each duration completion stops the workers and confirms the master's STOP
-before reporting completion for bulk/mixed. Require the matching case ID,
+before reporting completion for bulk/mixed/switch. Require the matching case ID,
 `outcome:"complete"` and `workers_stopped:true`, then send `status` and require
 idle readiness before changing the profile. Do not send `status` during a case:
 commands during acquisition are counted as errors and produce no immediate output.
@@ -117,7 +140,7 @@ which firmware was physically flashed. The master reports `external-manifest`
 for its build, so its exact identity must come from that manual pairing. Use one
 manifest per unchanged logger/master artifact pair; do not combine captures from
 different builds or resets with reused IDs. Add instrument files and measured
-SCK/duty/timing evidence to the external manifest when available. Schema v1's
+SCK/duty/timing evidence to the external manifest when available. Both schemas'
 `actual_sck_hz:null` remains unmeasured; requested 16 MHz is never an actual-clock
 measurement. The analyzer does not qualify external instrumentation evidence.
 
@@ -146,7 +169,9 @@ deterministic for the same capture and manifest.
   bytes, polling, retries and prepared responses are not useful drain. Both
   accepted and retired rates remain visible for failed candidates.
 - The comparison lists bulk and mixed IDs for each 64/128/256-byte, 8/16 MHz
-  requested profile, grouped by node count, duration and logger build. Missing
+  requested profile, grouped by the full declared experimental profile, schema
+  and artifact identity, including CRC mode and added pacing. Legacy, cached and
+  paced cases are never pooled. Missing
   combinations stay missing. It shows mixed/bulk useful-rate ratios without
   choosing a production winner. Artifact provenance is the paired manifest.
 - ADC modes require `fresh + reused + no_sample = uses = rows` per channel.
@@ -177,7 +202,24 @@ deterministic for the same capture and manifest.
   scope labels. Ownership ends immediately before mutex give and excludes
   give/instrumentation publication overhead. `drdy_pre_start` observations cannot
   become paired conversion observations and do not claim physical pad-edge timing.
-  Master processing/rearm timing remains unmeasured.
+  Master page2 supplies software process, CS retirement/rearm and prepared-reply
+  publication-to-swap observations when both snapshots succeed. These scopes
+  can overlap: never sum them into a physical rearm margin. Counter deltas are
+  modulo uint32; boot maxima and sticky `timing_invalid` remain before/after
+  endpoints and are never subtracted. Sticky invalidity at either endpoint fails
+  timing validity. Missing/failed snapshots and absent observations stay unknown.
+- Decoder reason counts identify the first rejection, not a second decode.
+  Successful decode counts can exceed `valid_responses`, which additionally
+  checks case/profile and object/fragment acceptance. `responses` in
+  `by_previous_cs` means decode OK; the failure-fraction denominator is
+  `responses + decode_failures`, excluding transfer failures. Samples are bounded
+  to four complete replies; retained plus omitted equals wire failures. Their
+  request identity is the request sent, not an interpretation of the bad reply.
+  Bus timestamps are uint32 software observations under the mutex; zero is valid,
+  differences wrap modulo uint32, and a missing previous participant has an
+  unknown gap. First samples alone do not establish an error distribution.
+  `validate`, `expected_crc`, `iteration` and actual `request_interval` timing
+  summaries retain counts; `expected_crc_calls` equals its timing count.
 - Transfer, wire-integrity and object-acceptance errors fail a clean candidate.
   Stale/duplicate pipeline replies remain diagnostics and do not automatically
   imply a CRC failure. Master engine counters and the first eight adapter fields
@@ -190,10 +232,17 @@ deterministic for the same capture and manifest.
   including sticky invalidity present before the case. Missing/unsupported
   pages are unknown, even when their arrays contain zeros. Queue drops/recovery
   and CAN losses fail a clean candidate but are distinct from electrical errors;
-  RX queue drops alone do not prove 16 MHz electrically unreliable.
+  RX queue drops alone do not prove 16 MHz electrically unreliable. CAN servicing
+  is excluded from this synthetic workload; observed CAN software drops and
+  hardware losses stay visible and cannot become a concurrent-CAN pass.
 - `clean_measurement_candidate` means only this capture's declared measurement
   checks are clean and paired. `unknown` retains missing evidence; `failed`
-  retains observed failures. No value authorizes production, complete T01 go,
+  retains observed failures. `diagnostic_control` marks cached, paced or switch
+  cases, which cannot become clean capacity candidates. Actual ADC freshness
+  may still be healthy in cached/paced mixed runs; it does not establish matched
+  offered traffic. An ADC-only baseline of the same schema/build/node count and
+  duration can support these comparisons because transport controls are inactive
+  during that baseline. No value authorizes production, complete T01 go,
   four-node physical CAN, native IMU timing, persistence, workload admission,
   sustained electrical reliability, bounded service tails or burst/retry proofs.
   Those remain separate gates under the confirmed revision.
