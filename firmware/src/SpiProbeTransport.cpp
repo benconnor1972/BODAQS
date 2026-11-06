@@ -13,11 +13,22 @@ uint32_t s_noProgressSlots=0;
 uint16_t s_bytes=0;
 uint8_t s_profile=255,s_node=0,s_nodes=0,s_lockFailures=0;
 bool s_open=false,s_entered=false,s_healthy=false,s_haveTransfer=false;
-bool s_beforeEngine=false,s_beforeAdapter=false;
+bool s_beforeEngine=false,s_beforeAdapter=false,s_beforeDiagnostic=false;
+SpiProbeTransport::CrcMode s_crcMode=SpiProbeTransport::CrcMode::Legacy;
+uint32_t s_interval=0,s_lastStartUs=0,s_lastRequestUs=0;
+bool s_haveRequest=false;
+bool s_haveStart=false,s_switch=false,s_switchDue=false;
+uint32_t us_();
+uint32_t expectedCrc_(uint8_t node,uint32_t object) {
+  const uint32_t began=us_();
+  const uint32_t crc=bodaqs_spi_probe_known_crc(s_caseId,node,object);
+  TimingStats_record(s_stats.expectedCrc,us_()-began);return crc;
+}
 struct Node {
   uint8_t bytes[1008]={};
   uint32_t object=1,crc=0,mask=0;
-  bool accepted=false;
+  bool accepted=false,expectedValid=false;
+  uint32_t expected=0;
 } s_nodeState[4];
 uint8_t s_tx[256],s_rx[256];
 uint32_t us_() {return static_cast<uint32_t>(esp_timer_get_time());}
@@ -30,20 +41,49 @@ bool exchange_(const BodaqsSpiProbeFrame& q,BodaqsSpiProbeFrame& reply,bool time
   if(timed)TimingStats_record(s_stats.encode,us_()-t0);
   t0=us_();
   // Same production mutex as ADS1220. The endpoint guard never owns that mutex.
-  while(s_haveTransfer && static_cast<uint32_t>(us_()-s_lastTransferUs)<25) {
+  while((s_haveTransfer && static_cast<uint32_t>(us_()-s_lastTransferUs)<25) ||
+      (s_haveRequest && static_cast<uint32_t>(us_()-s_lastRequestUs)<s_interval)) {
     const uint32_t gap=static_cast<uint32_t>(us_()-s_lastTransferUs);
-    if(gap<25)delayMicroseconds(25-gap);
+    const uint32_t requestGap=static_cast<uint32_t>(us_()-s_lastRequestUs);
+    const uint32_t csWait=s_haveTransfer && gap<25?25-gap:0;
+    const uint32_t paceWait=s_haveRequest && requestGap<s_interval?s_interval-requestGap:0;
+    delayMicroseconds(csWait>paceWait?csWait:paceWait);
   }
   if(timed)TimingStats_record(s_stats.guard,us_()-t0);
   t0=us_();
+  SharedSpiBus::ProbeContext context;
   const bool ok=SharedSpiBus::transfer(s_board->can_fd_master.cs_pin,
-      SPISettings(s_hz,MSBFIRST,SPI_MODE0),s_tx,s_rx,s_bytes);
-  s_lastTransferUs=us_();s_haveTransfer=true;
+      SPISettings(s_hz,MSBFIRST,SPI_MODE0),s_tx,s_rx,s_bytes,50,nullptr,nullptr,&context);
+  s_lastTransferUs=us_();
+  if(ok) {
+    s_haveTransfer=true;s_lastRequestUs=context.csAssertUs;s_haveRequest=true;
+    if(timed) {
+      if(s_haveStart)TimingStats_record(s_stats.requestInterval,static_cast<uint32_t>(context.csAssertUs-s_lastStartUs));
+      s_lastStartUs=context.csAssertUs;s_haveStart=true;
+    }
+  }
   if(timed) {++s_stats.slots;TimingStats_record(s_stats.slot,s_lastTransferUs-t0);}
   if(!ok) {if(timed) {++s_stats.transferErrors;if(++s_lockFailures>=8)s_healthy=false;}return false;}
   s_lockFailures=0;
-  t0=us_();const bool valid=bodaqs_spi_probe_decode(s_rx,s_bytes,&reply);
+  t0=us_();const auto reason=bodaqs_spi_probe_decode_result(s_rx,s_bytes,&reply);
+  const bool valid=reason==BODAQS_SPI_PROBE_DECODE_OK;
   if(timed)TimingStats_record(s_stats.decode,us_()-t0);
+  if(timed) {
+    ++s_stats.decodeCounts[reason];
+    const int8_t previous=context.previousValid?context.previousCs:-1;
+    for(auto& p:s_stats.byPreviousCs)if(!p.used || p.cs==previous) {
+      p.used=true;p.cs=previous;if(valid)++p.responses;else ++p.decodeFailures;break;
+    }
+    if(!valid) {
+      if(s_stats.failureCount<4) {
+        auto& f=s_stats.failures[s_stats.failureCount++];
+        f.reason=reason;f.slot=s_stats.slots;f.frameBytes=s_bytes;f.bus=context;
+        f.opcode=q.opcode;f.node=q.node;f.fragment=q.fragment;f.profile=q.profile;
+        f.caseId=q.case_id;f.objectId=q.object_id;f.logicalCrc=q.logical_crc;
+        memcpy(f.rx,s_rx,s_bytes);
+      } else ++s_stats.failureSamplesOmitted;
+    }
+  }
   if(!valid) {if(timed)++s_stats.wireErrors;return false;}
   if(reply.case_id!=s_caseId || reply.profile!=s_profile) {if(timed)++s_stats.stale;return false;}
   return true;
@@ -53,6 +93,8 @@ bool control_(const BodaqsSpiProbeFrame& q,BodaqsSpiProbeFrame* result=nullptr) 
   for(unsigned attempt=0;attempt<4096 && static_cast<uint32_t>(us_()-began)<500000;++attempt) {
     BodaqsSpiProbeFrame reply{};
     if(!exchange_(q,reply,false))continue;
+    if(q.opcode==BODAQS_PROBE_STATS && reply.opcode==(BODAQS_PROBE_ERROR|BODAQS_PROBE_RESPONSE) &&
+        reply.node==q.node && reply.fragment==q.fragment && reply.object_id==q.object_id && reply.logical_crc==q.logical_crc)return false;
     if(reply.opcode!=(q.opcode|BODAQS_PROBE_RESPONSE) || reply.node!=q.node ||
         reply.fragment!=q.fragment || reply.object_id!=q.object_id || reply.logical_crc!=q.logical_crc)continue;
     const bool valid=q.opcode==BODAQS_PROBE_STATS?reply.payload_length==40:
@@ -82,7 +124,7 @@ void consume_(const BodaqsSpiProbeFrame& r) {
     ++s_stats.validResponses;
     ++s_stats.retiredObjects;
     if(n.object==UINT32_MAX) {s_healthy=false;return;}
-    ++n.object;n.mask=0;n.accepted=false;n.crc=0;
+    ++n.object;n.mask=0;n.accepted=false;n.crc=0;n.expectedValid=false;
     s_node=(r.node+1)%s_nodes;s_progressUs=us_();s_noProgressSlots=0;return;
   }
   if(r.opcode!=(BODAQS_PROBE_POLL|BODAQS_PROBE_RESPONSE)) {++s_stats.stale;return;}
@@ -91,8 +133,11 @@ void consume_(const BodaqsSpiProbeFrame& r) {
   const uint16_t offset=r.fragment*capacity;
   const uint16_t remaining=offset<1008?1008-offset:0;
   const uint8_t expectedLength=remaining<capacity?remaining:capacity;
+  const uint32_t expected=s_crcMode==SpiProbeTransport::CrcMode::Cached?
+      (n.expectedValid?n.expected:(n.expected=expectedCrc_(r.node,n.object),n.expectedValid=true,n.expected)):
+      expectedCrc_(r.node,n.object);
   if(r.fragment>=fragments || !expectedLength || r.payload_length!=expectedLength ||
-      r.logical_crc!=bodaqs_spi_probe_known_crc(s_caseId,r.node,n.object)) {failAccept_();return;}
+      r.logical_crc!=expected) {failAccept_();return;}
   for(uint8_t i=0;i<r.payload_length;++i) {
     if(r.payload[i]!=bodaqs_spi_probe_known_byte(s_caseId,r.node,n.object,offset+i)) {failAccept_();return;}
   }
@@ -109,21 +154,33 @@ void consume_(const BodaqsSpiProbeFrame& r) {
 }
 }
 namespace SpiProbeTransport {
-bool begin(const board::BoardProfile& board,uint32_t caseId,uint16_t bytes,uint32_t hz,uint8_t nodes) {
+bool begin(const board::BoardProfile& board,uint32_t caseId,uint16_t bytes,uint32_t hz,uint8_t nodes,CrcMode crcMode,uint32_t startIntervalUs,bool switchMode) {
   if(s_open || !board.can_fd_master.supported || board.can_fd_master.cs_pin<0)return false;
   const uint8_t profile=bodaqs_spi_probe_profile(bytes,hz,nodes);
-  if(profile==255 || !caseId)return false;
+  if(profile==255 || !caseId || startIntervalUs>5000)return false;
   s_board=&board;s_caseId=caseId;s_bytes=bytes;s_hz=hz;s_nodes=nodes;s_node=0;s_profile=profile;
   s_stats=Stats{};for(auto& n:s_nodeState)n=Node{};
+  s_crcMode=crcMode;s_interval=startIntervalUs;s_switch=switchMode;s_switchDue=false;
+  s_haveStart=false;s_haveRequest=false; // Preserve the inter-CS guard across cases.
   s_lockFailures=0;s_noProgressSlots=0;s_open=true;s_entered=false;s_healthy=false;
   if(!control_(request_(BODAQS_PROBE_BEGIN)))return false;
   s_entered=true;
   s_beforeEngine=masterStats_(0,s_stats.masterBefore);
   s_beforeAdapter=masterStats_(1,s_stats.adapterBefore);
+  s_beforeDiagnostic=masterStats_(2,s_stats.diagnosticBefore);
   s_progressUs=us_();s_healthy=true;return true;
 }
 void tick() {
   if(!s_open || !s_entered || !s_healthy)return;
+  // Defer without acquiring the bus or sleeping; caller continues row/STOP work.
+  if(s_haveTransfer && static_cast<uint32_t>(us_()-s_lastTransferUs)<25) {++s_stats.pacingDeferred;return;}
+  if(s_haveRequest && static_cast<uint32_t>(us_()-s_lastRequestUs)<s_interval) {++s_stats.pacingDeferred;return;}
+  const uint32_t began=us_();
+  if(s_switchDue) {
+    if(SharedSpiBus::probeUnselectedClocks(s_board->spi))++s_stats.switchTransfers;
+    else {++s_stats.switchFailures;s_healthy=false;}
+    s_switchDue=false;TimingStats_record(s_stats.iteration,us_()-began);return;
+  }
   if(++s_noProgressSlots>4096 || static_cast<uint32_t>(us_()-s_progressUs)>500000) {s_healthy=false;return;}
   const auto& n=s_nodeState[s_node];
   auto q=request_(n.accepted?BODAQS_PROBE_ACK:BODAQS_PROBE_POLL);
@@ -131,7 +188,12 @@ void tick() {
   if(n.accepted)q.logical_crc=n.crc;
   else {while(n.mask&(1UL<<q.fragment))++q.fragment;}
   BodaqsSpiProbeFrame r{};
-  if(exchange_(q,r,true))consume_(r);
+  if(exchange_(q,r,true)) {
+    const uint32_t validating=us_();consume_(r);
+    TimingStats_record(s_stats.validate,us_()-validating);
+  }
+  TimingStats_record(s_stats.iteration,us_()-began);
+  s_switchDue=s_switch;
 }
 bool healthy() {return s_healthy;}
 bool stop() {
@@ -139,6 +201,8 @@ bool stop() {
   if(s_entered) {
     const bool afterEngine=masterStats_(0,s_stats.masterAfter);
     const bool afterAdapter=masterStats_(1,s_stats.adapterAfter);
+    const bool afterDiagnostic=masterStats_(2,s_stats.diagnosticAfter);
+    s_stats.diagnosticMeasured=s_beforeDiagnostic && afterDiagnostic;
     s_stats.masterMeasured=s_beforeEngine && afterEngine;
     s_stats.adapterMeasured=s_beforeAdapter && afterAdapter;
   }

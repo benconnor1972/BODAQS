@@ -170,7 +170,9 @@ void probeReset() {
   PROBE_ENTER();s_probe=ProbeStats{};PROBE_EXIT();unlock_();
 }
 bool probeUnselectedClocks(const board::SPIProfile& profile) {
-  if(!s_ready || !profile.present || !lock_(50))return false;
+  if(!s_ready || !profile.present)return false;
+  const uint32_t requested=micros();
+  if(!lock_(50)){recordProbe_(-2,4,false,0,0);return false;}
   const uint32_t began=micros();
   for(uint8_t i=0;i<profile.cs_count && i<8;++i)if(profile.cs_pins[i]>=0)
     digitalWrite(static_cast<uint8_t>(profile.cs_pins[i]),HIGH);
@@ -186,7 +188,7 @@ bool probeUnselectedClocks(const board::SPIProfile& profile) {
   s_previous.csAssertUs=began;s_previous.csReleaseUs=micros();s_previousValid=true;
   const uint32_t owned=static_cast<uint32_t>(micros()-began);
   ++s_diagnostics.transactions;s_diagnostics.bytesTransferred+=sizeof(bytes);
-  unlock_();recordProbe_(-2,sizeof(bytes),true,0,owned);return true;
+  unlock_();recordProbe_(-2,sizeof(bytes),true,static_cast<uint32_t>(began-requested),owned);return true;
 }
 ProbeStats probeSnapshot() { PROBE_ENTER(); const auto copy = s_probe; PROBE_EXIT(); return copy; }
 #endif

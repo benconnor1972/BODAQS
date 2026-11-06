@@ -70,7 +70,14 @@ void attachInterruptArg(uint8_t pin,void (*fn)(void*),void* arg,int mode) {
     fixture = fixture.replace("BaseType_t xSemaphoreTake(SemaphoreHandle_t m,TickType_t timeout) {", r'''
 BaseType_t xSemaphoreTake(SemaphoreHandle_t m,TickType_t timeout) {
   if(m!=sharedSpiLock) {
-    if(sdkTablePublished && !sdkHandleReady)registrationWaiter=true;
+    assert(timeout==100); // Keep the production registration deadline unchanged.
+    if(m->try_lock()) {
+      // Force the second worker to attempt this real mutex before the first
+      // owner publishes the SDK table. The old flag missed this ordering.
+      if(!sdkTablePublished)while(!registrationWaiter)std::this_thread::yield();
+      return pdTRUE;
+    }
+    registrationWaiter=true;
     return m->try_lock_for(std::chrono::milliseconds(timeout));
   }
 ''')
@@ -91,6 +98,11 @@ static bool workersStopped() {
   return !stats.adc[0].asyncRunning && !stats.adc[1].asyncRunning;
 #endif
 }
+template<class F> static void awaitGpio(const char* observation,F pred) {
+  const auto until=millis()+1000;
+  while(!pred() && millis()<until)delay(1);
+  if(!pred()){fprintf(stderr,"GPIO await failed: %s\n",observation);abort();}
+}
 int main() {
   auto board=adcBoard();AnalogInputManager::begin(board);
   LoggerConfig cfg;cfg.sensorN=2;cfg.sampleRateHz=500;
@@ -100,20 +112,20 @@ int main() {
   assert(AnalogInputManager::configureFromConfig(cfg,500)==500);
   AnalogInputManager::onLoggingStart();
   // Both real workers start; the first is paused in actual Arduino attachment.
-  await([]{return sdkTablePublished.load();});
-  await([]{return registrationWaiter.load();});
+  awaitGpio("SDK table publication",[]{return sdkTablePublished.load();});
+  awaitGpio("actual registration mutex contention",[]{return registrationWaiter.load();});
   assert(!sdkHandleReady);
   {std::lock_guard<std::mutex> lock(installMutex);releaseInstallation=true;}
   installCv.notify_all();
-  await([]{return workersRunning();});
-  await([]{return starts[0]>=1 && starts[1]>=1;});
+  awaitGpio("workers running",[]{return workersRunning();});
+  awaitGpio("first START on both ADCs",[]{return starts[0]>=1 && starts[1]>=1;});
   complete(0);complete(1);
-  await([]{return reads[0]>=2 && reads[1]>=2;});
+  awaitGpio("DRDY read on both ADCs",[]{return reads[0]>=2 && reads[1]>=2;});
   stopAdc_();joinTasks();assert(workersStopped());
   assert(sdkHandleReady);
   // The same service survives STOP/restart; no concurrent reinstallation needed.
   AnalogInputManager::onLoggingStart();
-  await([]{return workersRunning();});
+  awaitGpio("workers running",[]{return workersRunning();});
   stopAdc_();joinTasks();assert(workersStopped());
   puts("Actual Arduino GPIO wrapper: paused first allocation, two ADC workers, DRDY, STOP/restart passed");
 }
