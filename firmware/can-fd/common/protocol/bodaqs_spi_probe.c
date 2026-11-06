@@ -46,15 +46,21 @@ bool bodaqs_spi_probe_encode(const BodaqsSpiProbeFrame *f,uint8_t *w,size_t leng
     put32(w+16,f->logical_crc);memcpy(w+20,f->payload,f->payload_length);
     put32(w+length-4,bodaqs_spi_probe_crc(w,length-4));return true;
 }
-bool bodaqs_spi_probe_decode(const uint8_t *w,size_t length,BodaqsSpiProbeFrame *f) {
-    if(!w || !f || (length!=64 && length!=128 && length!=256) ||
-        w[0]!=0x53 || w[1]!=0x50 || w[2]!=1 ||
-        length!=bodaqs_spi_probe_frame_bytes(w[15]) || w[14]>length-24 ||
-        get32(w+length-4)!=bodaqs_spi_probe_crc(w,length-4)) return false;
-    for(size_t i=20U+w[14];i<length-4;++i) if(w[i]) return false;
+BodaqsSpiProbeDecodeResult bodaqs_spi_probe_decode_result(const uint8_t *w,size_t length,BodaqsSpiProbeFrame *f) {
+    if(!w || !f) return BODAQS_SPI_PROBE_DECODE_ARGUMENT;
+    if(length!=64 && length!=128 && length!=256) return BODAQS_SPI_PROBE_DECODE_FRAME_SIZE;
+    if(w[0]!=0x53 || w[1]!=0x50) return BODAQS_SPI_PROBE_DECODE_MAGIC;
+    if(w[2]!=1) return BODAQS_SPI_PROBE_DECODE_VERSION;
+    if(length!=bodaqs_spi_probe_frame_bytes(w[15])) return BODAQS_SPI_PROBE_DECODE_PROFILE;
+    if(w[14]>length-24) return BODAQS_SPI_PROBE_DECODE_PAYLOAD_LENGTH;
+    if(get32(w+length-4)!=bodaqs_spi_probe_crc(w,length-4)) return BODAQS_SPI_PROBE_DECODE_CRC;
+    for(size_t i=20U+w[14];i<length-4;++i) if(w[i]) return BODAQS_SPI_PROBE_DECODE_PADDING;
     memset(f,0,sizeof *f);f->opcode=w[3];f->case_id=get32(w+4);f->object_id=get32(w+8);
     f->node=w[12];f->fragment=w[13];f->payload_length=w[14];f->profile=w[15];f->logical_crc=get32(w+16);
-    memcpy(f->payload,w+20,f->payload_length);return true;
+    memcpy(f->payload,w+20,f->payload_length);return BODAQS_SPI_PROBE_DECODE_OK;
+}
+bool bodaqs_spi_probe_decode(const uint8_t *w,size_t length,BodaqsSpiProbeFrame *f) {
+    return bodaqs_spi_probe_decode_result(w,length,f)==BODAQS_SPI_PROBE_DECODE_OK;
 }
 void bodaqs_spi_probe_init(BodaqsSpiProbeEngine *e) {memset(e,0,sizeof *e);}
 static uint8_t fragment(BodaqsSpiProbeEngine *e,const BodaqsSpiProbeFrame *q,BodaqsSpiProbeFrame *r) {
@@ -94,12 +100,13 @@ static uint8_t command(BodaqsSpiProbeEngine *e,BodaqsSpiProbeFrame *q,BodaqsSpiP
             if(q->fragment) return BODAQS_PROBE_ARGUMENT;
             e->active=false;return BODAQS_PROBE_OK;
         }
-        if(q->fragment>1) return BODAQS_PROBE_ARGUMENT;
+        if(q->fragment>2) return BODAQS_PROBE_ARGUMENT;
         const uint32_t counters[]={e->stats.requests,e->stats.malformed,e->stats.rejected,
             e->stats.prepared_fragments,e->stats.repeat_fragments,e->stats.selected_objects,
             e->stats.retired_objects,e->stats.duplicate_acks,e->stats.bad_acks,e->stats.cases};
         r->payload_length=40;
-        for(unsigned i=0;i<10;++i) put32(r->payload+4*i,q->fragment?e->adapter_stats[i]:counters[i]);
+        const uint32_t *page=q->fragment==2?e->diagnostic_stats:q->fragment?e->adapter_stats:counters;
+        for(unsigned i=0;i<10;++i) put32(r->payload+4*i,page[i]);
         return BODAQS_PROBE_OK;
     }
     if(!e->active) return BODAQS_PROBE_CONTEXT;

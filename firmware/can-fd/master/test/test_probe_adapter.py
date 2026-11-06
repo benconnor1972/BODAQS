@@ -16,12 +16,18 @@ def function(name):
     return source[m.start():end]
 functions='\n'.join(function(n) for n in ('arm_spi_slot','retire_spi_boundary','service_spi_receive'))
 owner=function('service_spi_receive')
-functions=functions.replace(owner,owner.replace('__DMB();','inject_boundary(1); __DMB();')
-    .replace('gSpiTransmitReady=true;','gSpiTransmitReady=true; inject_boundary(2);'))
+functions=functions.replace(owner,owner.replace('uint32_t publish_mask=__get_PRIMASK();',
+    'inject_boundary(1); uint32_t publish_mask=__get_PRIMASK();')
+    .replace('__set_PRIMASK(publish_mask);','__set_PRIMASK(publish_mask); inject_boundary(2);')
+    .replace('gSpiProbe.diagnostic_stats[3]=gSpiProbeBoundaryInfo.boundaries;',
+        'gSpiProbe.diagnostic_stats[3]=gSpiProbeBoundaryInfo.boundaries; request_snapshot_irq();'))
+state=source[source.index('typedef struct {\n    uint32_t boundaries,retire_total_us'):]
+state=state[:state.index('static uint32_t gSpiProbePublishedTick,gSpiProbePublishedEpoch;')+
+    len('static uint32_t gSpiProbePublishedTick,gSpiProbePublishedEpoch;')]
 fixture=Path(__file__).with_name('probe_adapter_fixture.c').read_text()
 with tempfile.TemporaryDirectory() as tmp:
     c=Path(tmp)/'adapter.c';exe=Path(tmp)/'adapter.exe'
-    c.write_text(fixture.replace('/* ACTUAL_ADAPTER */',functions))
+    c.write_text(fixture.replace('/* ACTUAL_ADAPTER */',state+'\n'+functions))
     common=root/'firmware/can-fd/common'
     subprocess.run([a.cc,'-std=c11','-Wall','-Wextra','-Werror','-O2','-DBODAQS_SPI_PROBE=1',
         '-Wno-pointer-to-int-cast','-I'+str(common/'protocol'),'-I'+str(common/'transport'),str(c),
