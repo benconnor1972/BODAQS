@@ -19,7 +19,9 @@ SCHEMA_V9 = "bodaqs.spi-probe.v9"
 SCHEMA_V10 = "bodaqs.spi-probe.v10"
 SCHEMA_V11 = "bodaqs.spi-probe.v11"
 SCHEMA_V13 = "bodaqs.spi-probe.v13"
-RETRY_SCHEMAS = (SCHEMA_V11,SCHEMA_V13)
+SCHEMA_V14 = "bodaqs.spi-probe.v14"
+TRACE_SCHEMAS = (SCHEMA_V13,SCHEMA_V14)
+RETRY_SCHEMAS = (SCHEMA_V11,*TRACE_SCHEMAS)
 FLOW_SCHEMAS = (SCHEMA_V10,*RETRY_SCHEMAS)
 RECEIVE_SCHEMAS = (SCHEMA_V9,*FLOW_SCHEMAS)
 COST_SCHEMAS = (SCHEMA_V8, *RECEIVE_SCHEMAS)
@@ -199,8 +201,9 @@ def integrity_counts(case):
 
 def validate(case):
     v2 = case["schema"] in DIAGNOSTIC_SCHEMAS
-    if case["schema"]==SCHEMA_V13:
+    if case["schema"] in TRACE_SCHEMAS:
         reply_trace_report(case)  # validate representation before interpreting it
+    if case["schema"]==SCHEMA_V14:early_report(case)
     counts(case, "case_id elapsed_us rows missed_rows slots valid_responses unique_objects accepted_bytes retired_objects")
     require(0 < case["case_id"] <= 4294967295, "invalid case ID")
     require(case["elapsed_us"] > 0 or (case["outcome"] != "complete" and case["rows"] == 0 and case["accepted_bytes"] == 0), "empty complete timed window")
@@ -412,6 +415,28 @@ def receive_report(case):
     return result
 
 
+def early_report(case):
+    """Control-inclusive STATS25 observations, not a timed loss-free claim."""
+    m=case["master"]
+    require(type(m["early_measured"]) is bool,"invalid early measurement flag")
+    a,b=m["early_before"],m["early_after"]
+    require(all(isinstance(p,list) and len(p)==10 and all(type(x) is int and 0<=x<=0xffffffff for x in p) for p in (a,b)),"invalid early endpoints")
+    result={"status":"unknown","enabled":None,"raw_before":a,"raw_after":b,
+        "scope":"STATS25 boot counters include controls outside timed run; quarantine discards are separate from queue-full losses; rearm max includes IRQ-masked reset/arm; not a pad-level bound"}
+    if case["profile"]["mode"] in ADC_ONLY_MODES:
+        result["status"]="not_applicable";return result
+    if not m["early_measured"] or a[0]!=1 or b[0]!=1:return result
+    invalid=a[1] not in (0,1) or a[1]!=b[1] or not a[8] or a[8]!=b[8] or a[9] or b[9] or b[7]<a[7]
+    invalid=invalid or any(p[2]!=((p[3]+p[4])&0xffffffff) or
+        ((p[5]-p[6])&0xffffffff)>1 or (not p[1] and any(p[2:8])) for p in (a,b))
+    counters={name:(b[i]-a[i])&0xffffffff for name,i in (("attempts",2),("published",3),("busy_deferrals",4),("collisions",5),("quarantined_discards",6))}
+    invalid=invalid or (counters["collisions"]>counters["published"] or
+        counters["attempts"]!=((counters["published"]+counters["busy_deferrals"])&0xffffffff))
+    result.update(status="invalid" if invalid else "failed" if counters["collisions"] or counters["quarantined_discards"] else "observed",
+        enabled=bool(a[1]),counter_deltas=counters,rearm_boot_max_before_us=a[7],rearm_boot_max_after_us=b[7])
+    return result
+
+
 def reply_trace_report(case):
     """Master-local bounded sample; no clock alignment or delivery inference."""
     trace=case["master"]["reply_trace"]
@@ -446,7 +471,9 @@ def reply_trace_report(case):
                    "process_to_ready_us":(w[8]-w[7])&0xffffffff}
         if flags&2:
             durations["ready_to_publication_us"]=(w[9]-w[8])&0xffffffff
-            invalid=invalid or not 0<((w[12]-w[11])&0xffffffff)<0x80000000
+            distance=(w[12]-w[11])&0xffffffff
+            early=case["schema"]==SCHEMA_V14 and early_report(case).get("status")=="observed" and early_report(case).get("enabled") is True
+            invalid=invalid or not (0<=distance<0x80000000 and (distance>0 or early))
         if flags&4:
             durations["publication_to_full_exchange_us"]=(w[10]-w[9])&0xffffffff
             durations["arrival_to_full_exchange_us"]=(w[10]-w[5])&0xffffffff
@@ -838,7 +865,10 @@ def analyze(data, manifest=None):
         if processing and processing["status"] == "invalid":master="failed"
         elif processing and processing["status"] == "unknown" and master=="clean":master="unknown"
         flow=flow_report(case) if case["schema"] in FLOW_SCHEMAS else None
-        trace=reply_trace_report(case) if case["schema"]==SCHEMA_V13 else None
+        trace=reply_trace_report(case) if case["schema"] in TRACE_SCHEMAS else None
+        early=early_report(case) if case["schema"]==SCHEMA_V14 else None
+        if early and early["status"] in ("invalid","failed"):master="failed"
+        elif early and early["status"]=="unknown" and master=="clean":master="unknown"
         if trace and trace["status"]=="invalid":master="failed"
         if flow and flow["status"]=="invalid":master="failed"
         elif flow and flow["clock_only"] and flow["status"]!="observed" and master=="clean":master="unknown"
@@ -882,6 +912,7 @@ def analyze(data, manifest=None):
             **({"master_receive_turnover":receive} if receive is not None else {}),
             **({"master_flow_control":flow} if flow is not None else {}),
             **({"master_reply_trace":trace} if trace is not None else {}),
+            **({"master_early_publication":early_report(case)} if case["schema"]==SCHEMA_V14 else {}),
             **({"request_window": case["request_window"]} if case["schema"] in WINDOW_SCHEMAS else {}),
             **({"execution_control": execution_report(case)} if case["schema"] in EXECUTION_SCHEMAS else {}),
             "profile": p, "outcome": case["outcome"], "reason": case["reason"],
@@ -923,7 +954,7 @@ def analyze(data, manifest=None):
             "pipeline_diagnostics": {k: case["errors"][k] for k in ("stale", "duplicate")},
             "candidate_evidence": "failed" if failed else "diagnostic_control" if control else "clean_measurement_candidate" if clean_candidate else "unknown",
             "raw_measurements": case})
-    return {"schema": "bodaqs.spi-probe-report.v13" if any(c["schema"]==SCHEMA_V13 for c in cases) else "bodaqs.spi-probe-report.v11" if any(c["schema"]==SCHEMA_V11 for c in cases) else "bodaqs.spi-probe-report.v10" if any(c["schema"]==SCHEMA_V10 for c in cases) else "bodaqs.spi-probe-report.v9" if any(c["schema"] == SCHEMA_V9 for c in cases) else "bodaqs.spi-probe-report.v8" if any(c["schema"] == SCHEMA_V8 for c in cases) else "bodaqs.spi-probe-report.v7" if any(c["schema"] == SCHEMA_V7 for c in cases) else "bodaqs.spi-probe-report.v6" if any(c["schema"] == SCHEMA_V6 for c in cases) else "bodaqs.spi-probe-report.v5" if any(c["schema"] == SCHEMA_V5 for c in cases) else "bodaqs.spi-probe-report.v4" if any(c["schema"] in EXECUTION_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v3" if any(c["schema"] in INTEGRITY_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v2" if any(c["schema"] in DIAGNOSTIC_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v1",
+    return {"schema": "bodaqs.spi-probe-report.v14" if any(c["schema"]==SCHEMA_V14 for c in cases) else "bodaqs.spi-probe-report.v13" if any(c["schema"]==SCHEMA_V13 for c in cases) else "bodaqs.spi-probe-report.v11" if any(c["schema"]==SCHEMA_V11 for c in cases) else "bodaqs.spi-probe-report.v10" if any(c["schema"]==SCHEMA_V10 for c in cases) else "bodaqs.spi-probe-report.v9" if any(c["schema"] == SCHEMA_V9 for c in cases) else "bodaqs.spi-probe-report.v8" if any(c["schema"] == SCHEMA_V8 for c in cases) else "bodaqs.spi-probe-report.v7" if any(c["schema"] == SCHEMA_V7 for c in cases) else "bodaqs.spi-probe-report.v6" if any(c["schema"] == SCHEMA_V6 for c in cases) else "bodaqs.spi-probe-report.v5" if any(c["schema"] == SCHEMA_V5 for c in cases) else "bodaqs.spi-probe-report.v4" if any(c["schema"] in EXECUTION_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v3" if any(c["schema"] in INTEGRITY_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v2" if any(c["schema"] in DIAGNOSTIC_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v1",
             "capture_sha256": digest,
             "run_identity": "declared_paired" if manifest else "unknown_without_manifest",
             "manifest": manifest, "serial_events": events,

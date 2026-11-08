@@ -103,7 +103,7 @@ def main():
                 assert case['workers_stopped']==(case['case_id']!=76) and case['profile']['actual_sck_hz'] is None
                 assert case['accepted_bytes'] == case['unique_objects'] * 1008
                 assert case['valid_responses'] <= case['slots']
-                assert case['schema'] == 'bodaqs.spi-probe.v13'
+                assert case['schema'] == 'bodaqs.spi-probe.v14'
                 cost=case['logger_cost'];cadence=cost['cadence']
                 assert cost['crc_algorithm']==('bitwise' if args.crc_bitwise else 'table')
                 assert case['artifacts']['logger_build'].endswith('-crc'+str(int(not args.crc_bitwise)))

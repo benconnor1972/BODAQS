@@ -45,6 +45,8 @@ struct Stats {
   uint32_t pendingRequests=0,pendingHighWater=0;
   TimingSummary replyAge;
   // Post-window master-local observations; never subtract from logger clock.
+  bool earlyMeasured=false;
+  uint32_t earlyBefore[10]={},earlyAfter[10]={};
   bool traceMeasured=false,traceReadComplete=false;
   uint32_t traceHeader[10]={},traceRecords[8][20]={};
   uint8_t traceCount=0;

@@ -239,6 +239,7 @@ void consume_(const BodaqsSpiProbeFrame& r) {
 }
 }
 namespace SpiProbeTransport {
+static bool s_beforeEarly=false;
 bool requestDue() {
   return s_open && s_entered && s_healthy && !s_switchDue &&
       (!s_haveTransfer || static_cast<uint32_t>(us_()-s_lastTransferUs)>=25) &&
@@ -266,6 +267,7 @@ bool begin(const board::BoardProfile& board,uint32_t caseId,uint16_t bytes,uint3
   const bool turnover=masterStats_(6,s_stats.turnoverBefore);
   s_beforeReceive=receive && turnover;
   s_beforeFlow=masterStats_(7,s_stats.flowBefore);
+  s_beforeEarly=masterStats_(25,s_stats.earlyBefore);
   if(clockOnly && (!s_beforeFlow || s_stats.flowBefore[0]!=1 || s_stats.flowBefore[1]!=1))return false;
   // Finish on the original universally supported page. Older peers reject
   // optional pages; ordered delayed ERROR replies must leave before data starts.
@@ -307,6 +309,7 @@ bool stop(bool collectTrace) {
   // A failed STOP can be retried. Re-read into the same bounded arena, never
   // append a second capture or retain a completion claim from an earlier attempt.
   s_stats.traceCount=0;s_stats.traceMeasured=false;s_stats.traceReadComplete=false;
+  s_stats.earlyMeasured=false;
   memset(s_stats.traceHeader,0,sizeof s_stats.traceHeader);
   if(s_entered) {
     const bool afterEngine=masterStats_(0,s_stats.masterAfter);
@@ -322,6 +325,7 @@ bool stop(bool collectTrace) {
     s_stats.flowMeasured=s_beforeFlow && flow;
     // Read only after the timed workload and ADC workers have stopped. Unsupported
     // peers remain unknown; failed/incomplete observer retrieval cannot be evidence.
+    s_stats.earlyMeasured=collectTrace && masterStats_(25,s_stats.earlyAfter) && s_beforeEarly;
     const bool trace=collectTrace && masterStats_(8,s_stats.traceHeader);
     s_stats.traceMeasured=trace && s_stats.traceHeader[0]==1;
     if(s_stats.traceMeasured && s_stats.traceHeader[1]<=1 && s_stats.traceHeader[2]==8 &&

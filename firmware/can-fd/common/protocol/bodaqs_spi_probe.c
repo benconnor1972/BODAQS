@@ -146,7 +146,7 @@ static uint8_t command(BodaqsSpiProbeEngine *e,BodaqsSpiProbeFrame *q,BodaqsSpiP
             if(q->fragment) return BODAQS_PROBE_ARGUMENT;
             e->active=false;return BODAQS_PROBE_OK;
         }
-        if(q->fragment>24) return BODAQS_PROBE_ARGUMENT;
+        if(q->fragment>25) return BODAQS_PROBE_ARGUMENT;
         const uint32_t counters[]={e->stats.requests,e->stats.malformed,e->stats.rejected,
             e->stats.prepared_fragments,e->stats.repeat_fragments,e->stats.selected_objects,
             e->stats.retired_objects,e->stats.duplicate_acks,e->stats.bad_acks,e->stats.cases};

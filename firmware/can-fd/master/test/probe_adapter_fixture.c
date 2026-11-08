@@ -27,29 +27,42 @@ static struct {uint32_t boundaries,prepared,malformed,queue_dropped,queue_high_w
     uint32_t process_calls,process_max_us,process_total_us;
     uint32_t clock_epoch,timing_invalid;BodaqsSpiProbeStats engine;} gMasterSpiProbeInfo;
 static unsigned remaining=256,cs_high=1,disabled,prefetched,arms,resets,fifo_count;
+static unsigned raw_cs;
+static unsigned rearm_inject,rearm_low;
+static void rearm_edge(unsigned stage) {
+    if(rearm_inject!=stage)return;
+    rearm_inject=0;raw_cs=1;cs_high=!rearm_low;
+}
 static uint8_t fifo[16];static uint32_t irq_mask,tick=1,clock_epoch=1,clock_calls;
 static bool snapshot_irq_pending,snapshot_delivered;
 static unsigned snapshot_boundary_count;
 static void snapshot_irq(void);
+static bool deliver_cs_irq;
+static unsigned delivered_cs_irqs;
+static void fake_cs_irq(void);
 static uint32_t __get_PRIMASK(void) {return irq_mask;}
 static void __disable_irq(void) {irq_mask=1;}
 static void __set_PRIMASK(uint32_t v) {
     irq_mask=v;
     if(!v && snapshot_irq_pending) {snapshot_irq_pending=false;snapshot_irq();}
+    if(!v && deliver_cs_irq && raw_cs)fake_cs_irq();
 }
 static void __DMB(void) {}
 static unsigned DL_DMA_getTransferSize(int d,int c) {(void)d;(void)c;return remaining;}
 static unsigned DL_GPIO_readPins(int p,int m) {(void)p;(void)m;return cs_high;}
-static void DL_DMA_disableChannel(int d,int c) {(void)d;disabled|=1U<<c;}
+static unsigned DL_GPIO_getRawInterruptStatus(int p,int m) {(void)p;(void)m;return raw_cs;}
+static void DL_GPIO_clearInterruptStatus(int p,int m) {(void)p;(void)m;raw_cs=0;rearm_edge(1);}
+static bool DL_SPI_isRXFIFOEmpty(void *p) {(void)p;return fifo_count==0;}
+static void DL_DMA_disableChannel(int d,int c) {(void)d;disabled|=1U<<c;if(c==0)rearm_edge(2);}
 static unsigned DL_SPI_drainRXFIFO8(void *d,uint8_t *out,uint32_t max) {
     (void)d;unsigned take=fifo_count<max?fifo_count:max;
     memcpy(out,fifo,take);memmove(fifo,fifo+take,fifo_count-take);fifo_count-=take;return take;
 }
 static void DL_SPI_disable(void *d) {(void)d;assert(disabled==3);}
-static void DL_SPI_reset(void *d) {(void)d;assert(disabled==3);prefetched=0;++resets;}
+static void DL_SPI_reset(void *d) {(void)d;assert(disabled==3);prefetched=0;fifo_count=0;++resets;rearm_edge(3);}
 static void DL_SPI_enablePower(void *d) {(void)d;}
 static void delay_cycles(int d) {(void)d;}
-static void SYSCFG_DL_SPI_A8_init(void) {}
+static void SYSCFG_DL_SPI_A8_init(void) {rearm_edge(4);}
 static int DL_SPI_getPendingInterrupt(void *d) {(void)d;return 0;}
 static unsigned dma_sizes[2];
 static void DL_DMA_setSrcAddr(int d,int c,uint32_t p) {(void)d;(void)c;(void)p;}
@@ -57,7 +70,9 @@ static void DL_DMA_setDestAddr(int d,int c,uint32_t p) {(void)d;(void)c;(void)p;
 static void DL_DMA_setTransferSize(int d,int c,unsigned size) {(void)d;assert(size==256);dma_sizes[c]=size;}
 static void DL_DMA_enableChannel(int d,int c) {
     (void)d;assert(disabled==3 && dma_sizes[c]==256);
+    if(c==DMA_SPI_RX_CHAN_ID)rearm_edge(5);
     if(c==DMA_SPI_TX_CHAN_ID) {disabled=0;remaining=dma_sizes[DMA_SPI_RX_CHAN_ID];++arms;}
+    if(c==DMA_SPI_TX_CHAN_ID)rearm_edge(6);
 }
 static uint32_t bodaqs_master_timing_clock(void *p,uint32_t *epoch) {
     (void)p;*epoch=clock_epoch;++clock_calls;return tick++;
@@ -82,6 +97,148 @@ static void request_snapshot_irq(void) {
     else snapshot_irq();
 }
 /* ACTUAL_ADAPTER */
+static void fake_cs_irq(void) {
+    assert(!irq_mask);++delivered_cs_irqs;raw_cs=0;retire_spi_boundary();
+}
+static uint32_t value(const BodaqsSpiProbeFrame *r,unsigned index);
+static void early_lifecycle(void) {
+    memset(guarded_rx.before,0xa5,sizeof guarded_rx.before);
+    memset(guarded_rx.after,0xa5,sizeof guarded_rx.after);
+    memset((void *)&gSpiProbeEarly,0,sizeof gSpiProbeEarly);
+    uint8_t work[272]={0},clock[272]={0};
+    clock_epoch=1;gSpiTransmitReady=false;gSpiProbeQuarantine=false;
+    gSpiProbeActiveObserved=true;gSpiProbeActiveBytes=0;
+    bodaqs_spi_probe_init(&gSpiProbe);
+    bodaqs_spi_probe_set_clock(&gSpiProbe,bodaqs_master_timing_clock,NULL);
+    bodaqs_record_queue_init(&gSpiReceiveQueue,storage,256,BODAQS_SPI_PROBE_RX_QUEUE_CAPACITY);
+    BodaqsSpiProbeFrame q={.opcode=BODAQS_PROBE_BEGIN,.case_id=1000,.profile=bodaqs_spi_probe_profile(256,16000000,4)},r;
+    BodaqsSpiProbeFrame c={.opcode=BODAQS_PROBE_CLOCK,.profile=2};
+    assert(bodaqs_spi_probe_encode(&q,work,256));assert(bodaqs_spi_probe_encode(&c,clock,256));
+    memcpy(gReceiveSlots[gReceiveIndex],work,256);remaining=0;cs_high=1;
+    retire_spi_boundary();service_spi_receive();assert(gSpiTransmitReady);
+    unsigned before=gTransmitIndex,boundaries=gSpiProbeBoundaryInfo.boundaries;
+    unsigned rx=gReceiveIndex,queued=gSpiReceiveQueue.depth;
+    probe_early_publish();
+#if BODAQS_SPI_PROBE_EARLY_PUBLISH
+    assert(!gSpiTransmitReady && gTransmitIndex==(before^1U));
+    assert(gReceiveIndex==rx && gSpiReceiveQueue.depth==queued && gSpiProbeBoundaryInfo.boundaries==boundaries);
+    assert(bodaqs_spi_probe_decode(gTransmitSlots[gTransmitIndex],256,&r) && r.opcode==129 && r.case_id==1000);
+#else
+    assert(gSpiTransmitReady && gTransmitIndex==before);
+    (void)rx;(void)queued;(void)boundaries;(void)r;
+#endif
+#if BODAQS_SPI_PROBE_EARLY_PUBLISH
+    /* Real next-exchange bytes must contain BEGIN, not an extra stale CLOCK. */
+    assert(!gSpiProbeActiveObserved && gSpiProbeActiveBytes==256);
+    q.opcode=BODAQS_PROBE_POLL;q.object_id=1;q.fragment=4;
+    assert(bodaqs_spi_probe_encode(&q,work,256));
+    memcpy(gReceiveSlots[gReceiveIndex],work,256);remaining=0;
+    retire_spi_boundary();assert(gSpiProbeActiveObserved);
+#if BODAQS_SPI_PROBE_TRACE
+    gSpiProbeTraceSeen=256;gSpiProbeTraceCount=0;
+#endif
+    service_spi_receive();assert(gSpiTransmitReady);
+    before=gTransmitIndex;boundaries=gSpiProbeBoundaryInfo.boundaries;
+    /* No writes when low, when RX DMA has progressed or a byte awaits DMA. */
+    for(unsigned busy=0;busy<3;++busy) {
+        cs_high=busy!=0;remaining=busy==1?255:256;fifo_count=busy==2;
+        unsigned reset_before=resets;probe_early_publish();
+        assert(gTransmitIndex==before && gSpiTransmitReady && resets==reset_before);
+    }
+    cs_high=1;remaining=256;fifo_count=0;raw_cs=0;
+    probe_early_publish();assert(gTransmitIndex==(before^1U) && !gSpiTransmitReady);
+#if BODAQS_SPI_PROBE_TRACE
+    assert(gSpiProbeTraceCount==1 && gSpiProbeTrace[0].words[4]==3);
+    assert(gSpiProbeTrace[0].words[12]==gSpiProbeTrace[0].words[11]);
+#endif
+    /* Main may prepare later work, but cannot replace an unobserved reply. */
+    gSpiTransmitReady=true;before=gTransmitIndex;unsigned reset_before=resets;
+    probe_early_publish();assert(gTransmitIndex==before && gSpiTransmitReady && resets==reset_before);
+    for(unsigned n=0;n<3;++n) {
+        unsigned len=n==0?255:n==1?257:256;
+        memcpy(gReceiveSlots[gReceiveIndex],clock,len>256?256:len);remaining=len>256?0:256-len;
+        fifo_count=len==257;fifo[0]=0;retire_spi_boundary();
+        if(n<2) {
+            assert(!gSpiProbeActiveObserved && gSpiTransmitReady && gTransmitIndex==before);
+#if BODAQS_SPI_PROBE_TRACE
+            assert(gSpiProbeTrace[0].words[4]==3);
+#endif
+        } else {
+            assert(!gSpiTransmitReady && gTransmitIndex==(before^1U));
+#if BODAQS_SPI_PROBE_TRACE
+            assert(gSpiProbeTrace[0].words[4]==7);
+#endif
+        }
+        /* These deliberately malformed probes are checked by other fixtures;
+         * remove their copied queue cells so this test isolates TX ownership. */
+        uint8_t discarded_wire[256];
+        while(bodaqs_record_queue_pop(&gSpiReceiveQueue,discarded_wire)){}
+    }
+    /* Every reset/rearm stage sees an edge latch even when the full pulse
+     * leaves no retained RX bytes. Low CS defers quarantine until its rise. */
+    for(unsigned stage=1;stage<=6;++stage)for(unsigned low=0;low<=1;++low) {
+        remaining=256;fifo_count=0;cs_high=1;raw_cs=0;
+        gSpiProbeActiveObserved=true;gSpiProbeQuarantine=false;gSpiTransmitReady=true;
+        unsigned collisions=gSpiProbeEarly.collisions,discarded=gSpiProbeEarly.discarded;
+        before=gTransmitIndex;rearm_inject=stage;rearm_low=low;
+        probe_early_publish();assert(!rearm_inject && !irq_mask);
+        if(stage==1) {
+            assert(gSpiTransmitReady && gTransmitIndex==before && !gSpiProbeQuarantine);
+            assert(gSpiProbeEarly.collisions==collisions);
+        } else {
+            assert(gSpiProbeQuarantine && !gSpiTransmitReady && gTransmitIndex==(before^1U));
+            assert(gSpiProbeEarly.collisions==collisions+1 && !gSpiProbeActiveObserved);
+            unsigned active=gTransmitIndex,depth=gSpiReceiveQueue.depth;
+            uint32_t bypass=gSpiProbeClockBypassed;
+            /* A later prepared reply survives quarantine, as does active TX. */
+            gSpiTransmitReady=true;
+            gSpiRetirementRequest.generation=99;gSpiRetirementRequest.context=88;
+            retire_spi_boundary();
+            if(low)assert(gSpiProbeQuarantine && gSpiProbeEarly.discarded==discarded);
+            cs_high=1;retire_spi_boundary();
+            assert(!gSpiProbeQuarantine && gSpiProbeEarly.discarded==discarded+1);
+            assert(gTransmitIndex==active && gSpiTransmitReady && !gSpiProbeActiveObserved);
+            assert(gSpiReceiveQueue.depth==depth && gSpiProbeClockBypassed==bypass);
+            assert(!gSpiRetirementProof.generation && !gSpiRetirementProof.context);
+            gSpiRetirementRequest.generation=0;gSpiRetirementRequest.context=0;
+            /* Exact clean repeat observes active then permits later publication. */
+            memcpy(gReceiveSlots[gReceiveIndex],clock,256);remaining=0;raw_cs=0;
+            retire_spi_boundary();assert(!gSpiTransmitReady && gTransmitIndex==(active^1U));
+        }
+        cs_high=1;raw_cs=0;gSpiTransmitReady=false;
+    }
+    /* Pending GPIO IRQ runs only after restore, including a complete pulse
+     * with zero retained DMA bytes. Its boundary consumes quarantine once. */
+    for(unsigned low=0;low<2;++low) {
+        remaining=256;fifo_count=0;cs_high=1;raw_cs=0;gSpiProbeActiveObserved=true;
+        gSpiTransmitReady=true;rearm_inject=6;rearm_low=low;deliver_cs_irq=true;
+        unsigned delivered=delivered_cs_irqs,discarded=gSpiProbeEarly.discarded;
+        probe_early_publish();assert(delivered_cs_irqs==delivered+1 && !raw_cs);
+        assert(gSpiProbeQuarantine==(low!=0));
+        if(low){cs_high=1;raw_cs=1;fake_cs_irq();}
+        assert(!gSpiProbeQuarantine && gSpiProbeEarly.discarded==discarded+1);
+        deliver_cs_irq=false;
+    }
+    /* Native tick and finite boot counters wrap, while epoch0 stays invalid. */
+    gSpiProbeEarly.attempts=0xffffffffU;gSpiProbeEarly.published=0xfffffffeU;gSpiProbeEarly.busy=1;
+    gSpiProbeActiveObserved=true;gSpiTransmitReady=true;tick=0xfffffffeU;
+    remaining=256;raw_cs=0;probe_early_publish();
+    assert(gSpiProbeEarly.attempts==0 && gSpiProbeEarly.published==0xffffffffU && !gSpiProbeEarly.invalid);
+    gSpiProbeActiveObserved=true;gSpiTransmitReady=true;clock_epoch=0;probe_early_publish();
+    assert(gSpiProbeEarly.invalid);clock_epoch=1;
+    /* STATS25 comes from actual adapter snapshot, with boot counters retained. */
+    q.opcode=BODAQS_PROBE_STATS;q.fragment=25;q.object_id=0;
+    assert(bodaqs_spi_probe_encode(&q,work,256));
+    memcpy(gReceiveSlots[gReceiveIndex],work,256);remaining=0;
+    retire_spi_boundary();service_spi_receive();
+    assert(bodaqs_spi_probe_decode(gTransmitSlots[gTransmitIndex^1U],256,&r));
+    assert(r.opcode==133 && value(&r,0)==1 && value(&r,1)==1);
+    assert(value(&r,5)==12 && value(&r,6)==12);
+    assert(value(&r,9)==1);
+#endif
+    (void)DL_GPIO_getRawInterruptStatus(0,1);DL_GPIO_clearInterruptStatus(0,1);(void)DL_SPI_isRXFIFOEmpty(SPI_A8_INST);
+    printf("actual early publication: mode%d next-exchange availability PASS\n",BODAQS_SPI_PROBE_EARLY_PUBLISH);
+}
 static void physical(const uint8_t *request,unsigned length,unsigned tail) {
     assert(length>=tail && tail<=sizeof fifo);
     unsigned dma=length-tail;if(dma>256) dma=256;
@@ -98,7 +255,7 @@ static BodaqsSpiProbeFrame wire_reply(BodaqsSpiProbeFrame q,uint8_t opcode,uint3
     /* Model MISO before retirement: publication only affects later CS. */
     for(unsigned attempts=0;attempts<20;++attempts) {
         memcpy(observed,gTransmitSlots[gTransmitIndex],bytes);
-        physical(request,bytes,0);service_spi_receive();
+        physical(request,bytes,0);probe_early_publish();service_spi_receive();probe_early_publish();
         if(bodaqs_spi_probe_decode(observed,bytes,&r) && r.case_id==q.case_id &&
             r.profile==q.profile && r.node==q.node && r.fragment==q.fragment &&
             r.opcode==opcode && (!object || r.object_id==object)) return r;
@@ -195,7 +352,7 @@ static void trace_lifecycle(void) {
     puts("reply trace: bounded capture, POLL/ACK, publication interleavings, short/excess, fenced readout, epoch/tick/boundary wrap and STOP/BEGIN reset PASS");
 }
 #endif
-int main(void) {
+int legacy_main(void) {
     memset(guarded_rx.before,0xa5,sizeof guarded_rx.before);
     memset(guarded_rx.after,0xa5,sizeof guarded_rx.after);
     bodaqs_spi_probe_init(&gSpiProbe);
@@ -462,9 +619,59 @@ int main(void) {
 #if BODAQS_SPI_PROBE_TRACE
     trace_lifecycle();
 #endif
+    early_lifecycle();
     printf("actual probe adapter: queue%u mixed lengths/bytes/FIFO/overflow/publication/counter+tick wrap/epoch/STOP PASS\n",cap);
     puts("actual probe adapter: CS lengths/FIFO/overflow/queue/publication/entry/exit PASS");
     puts("actual probe adapter: complete RAM objects, wrong/lost/repeated ACK and ACK publication preemption PASS");
     puts("actual probe adapter: coherent IRQ-fenced STATS2, boot maxima and sticky invalid timing PASS");
     return 0;
+}
+
+int main(void) {
+#if BODAQS_SPI_PROBE_EARLY_PUBLISH
+    early_lifecycle();
+    for(unsigned bytes=64;bytes<=256;bytes*=2) {
+        gSpiTransmitReady=false;gSpiProbeQuarantine=false;cs_high=1;raw_cs=0;remaining=256;fifo_count=0;
+        bodaqs_spi_probe_init(&gSpiProbe);
+        bodaqs_spi_probe_set_clock(&gSpiProbe,bodaqs_master_timing_clock,NULL);
+        bodaqs_record_queue_init(&gSpiReceiveQueue,storage,256,BODAQS_SPI_PROBE_RX_QUEUE_CAPACITY);
+        BodaqsSpiProbeFrame q={.opcode=BODAQS_PROBE_BEGIN,.case_id=bytes,
+            .profile=bodaqs_spi_probe_profile((uint16_t)bytes,16000000,4)},r;
+        (void)wire_reply(q,129,0);
+        for(unsigned node=0;node<4;++node) {
+            uint8_t object[1008];unsigned used=0;
+            q.opcode=BODAQS_PROBE_POLL;q.node=(uint8_t)node;q.object_id=1;
+            for(unsigned i=0;i<bodaqs_spi_probe_fragment_count(q.profile);++i) {
+                q.fragment=(uint8_t)i;r=wire_reply(q,130,1);
+                memcpy(object+used,r.payload,r.payload_length);used+=r.payload_length;
+            }
+            assert(used==1008 && bodaqs_spi_probe_crc(object,used)==r.logical_crc);
+            q.opcode=BODAQS_PROBE_ACK;q.fragment=0;q.logical_crc=r.logical_crc^1U;
+            r=wire_reply(q,255,1);assert(r.payload[0]==BODAQS_PROBE_CHECKSUM);
+            assert(gSpiProbe.stats.retired_objects==node);
+            q.logical_crc^=1U;
+            /* Drop the first physical reply; bounded repeat must retire once. */
+            uint8_t request[256];assert(bodaqs_spi_probe_encode(&q,request,bytes));
+            physical(request,bytes,0);service_spi_receive();probe_early_publish();
+            (void)wire_reply(q,131,1);(void)wire_reply(q,131,1);
+            assert(gSpiProbe.stats.retired_objects==node+1);
+            if(node==0) {
+                q.opcode=BODAQS_PROBE_ACK_FETCH;
+                (void)wire_reply(q,132,2);(void)wire_reply(q,132,2);
+                assert(gSpiProbe.stats.retired_objects==1);
+            }
+            q.logical_crc=0;
+        }
+        q.opcode=BODAQS_PROBE_STOP;q.node=0;q.object_id=0;q.fragment=0;
+        (void)wire_reply(q,134,0);
+        q.opcode=BODAQS_PROBE_BEGIN;q.case_id+=1000;
+        q.profile=bodaqs_spi_probe_profile(bytes==256?64:256,16000000,4);
+        gSpiProbeActiveObserved=false; /* new case authorizes replacing old frame size */
+        (void)wire_reply(q,129,0);
+    }
+    puts("early candidate: full objects/four nodes/64,128,256/wrong,lost,repeated ACK/new case frame-size change PASS");
+    return 0;
+#else
+    return legacy_main();
+#endif
 }

@@ -30,7 +30,7 @@ def source_identity(firmware, logger_crc_table=1):
                                            text=True, stderr=subprocess.DEVNULL).strip()[:12]
     except (OSError, subprocess.CalledProcessError):
         revision = "unversioned"
-    return f"spi-probe-v13-{revision}-{digest.hexdigest()[:20]}-crc{logger_crc_table}"
+    return f"spi-probe-v14-{revision}-{digest.hexdigest()[:20]}-crc{logger_crc_table}"
 
 
 if "Import" in globals():

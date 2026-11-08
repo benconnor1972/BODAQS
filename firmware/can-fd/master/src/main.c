@@ -123,6 +123,18 @@ static uint32_t gSpiProbePublishedTick,gSpiProbePublishedEpoch;
 #endif
 #define PROBE_TRACE_CAPACITY 8U
 #define PROBE_TRACE_SKIP 256U
+/* Round14 bench only. Both variants observe both CS edges, but only the
+ * candidate may replace an already observed reply in a CS-high gap. */
+#ifndef BODAQS_SPI_PROBE_EARLY_PUBLISH
+#define BODAQS_SPI_PROBE_EARLY_PUBLISH 0
+#endif
+#if BODAQS_SPI_PROBE_EARLY_PUBLISH != 0 && BODAQS_SPI_PROBE_EARLY_PUBLISH != 1
+#error "BODAQS_SPI_PROBE_EARLY_PUBLISH must be 0 or 1"
+#endif
+static volatile bool gSpiProbeActiveObserved=true,gSpiProbeQuarantine;
+static volatile uint16_t gSpiProbeActiveBytes;
+typedef struct {uint32_t attempts,published,busy,collisions,discarded,max_us,invalid;} ProbeEarly;
+static volatile ProbeEarly gSpiProbeEarly;
 #if BODAQS_SPI_PROBE_TRACE
 typedef struct {uint32_t words[20];} ProbeReplyTrace;
 static volatile ProbeReplyTrace gSpiProbeTrace[PROBE_TRACE_CAPACITY];
@@ -883,6 +895,9 @@ static void service_sync(void) {
 
 static void service_spi_receive(void);
 static void retire_spi_boundary(void);
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+static void probe_early_publish(void);
+#endif
 #if !defined(BODAQS_SPI_PROBE) || !BODAQS_SPI_PROBE
 static void service_spi_retirement(void);
 #endif
@@ -946,7 +961,11 @@ int main(void)
     DL_SYSTICK_enable();
     /* CS input is already enabled by the SPI peripheral pin configuration.
      * GPIO edge observation is independent of the selected peripheral function. */
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+    DL_GPIO_setLowerPinsPolarity(GPIO_SPI_A8_CS_PORT, DL_GPIO_PIN_8_EDGE_RISE_FALL);
+#else
     DL_GPIO_setLowerPinsPolarity(GPIO_SPI_A8_CS_PORT, DL_GPIO_PIN_8_EDGE_RISE);
+#endif
     DL_GPIO_clearInterruptStatus(GPIO_SPI_A8_CS_PORT, GPIO_SPI_A8_CS_PIN);
     DL_GPIO_enableInterrupt(GPIO_SPI_A8_CS_PORT, GPIO_SPI_A8_CS_PIN);
     NVIC_SetPriority(GPIOA_INT_IRQn, 0U);
@@ -962,6 +981,9 @@ int main(void)
         service_spi_retirement();
 #endif
         retire_spi_boundary();
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+        probe_early_publish();
+#endif
 #if !defined(BODAQS_SPI_PROBE) || !BODAQS_SPI_PROBE
         service_spi_retirement();
 #endif
@@ -1122,6 +1144,106 @@ static void service_spi_retirement(void)
  * Keeping the 84-byte capacity permits observational legacy MODE_INFO while
  * the active protocol uses 64 bytes. SPI reset empties prefetched TX FIFO bytes
  * so a short transaction cannot shift the next response. */
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+/* Caller owns PRIMASK or CS retirement. Selection for rearm is publication;
+ * neither this helper nor a gap rearm proves that MISO was clocked. */
+static void probe_publish_reply(uint32_t boundary_started,uint32_t boundary_epoch,uint32_t boundary_ordinal)
+{
+    (void)boundary_ordinal;
+#if BODAQS_SPI_PROBE_TRACE
+        const uint8_t published_trace=gSpiProbeTraceTx[gTransmitIndex^1U];
+        if(published_trace) {
+            volatile uint32_t *w=gSpiProbeTrace[published_trace-1U].words;
+            w[9]=boundary_started;w[12]=boundary_ordinal;w[4]|=2U;
+            if(!boundary_epoch || boundary_epoch!=w[3]) {
+                w[4]|=8U;gSpiProbeTraceInvalid=1;
+            }
+        }
+#endif
+        ++gSpiProbeBoundaryInfo.publish_calls;
+        if(!boundary_epoch || boundary_epoch!=gSpiProbePublishedEpoch)
+            gSpiProbeBoundaryInfo.timing_invalid=1;
+        else {
+            uint32_t wait=boundary_started-gSpiProbePublishedTick;
+            gSpiProbeBoundaryInfo.publish_wait_total_us+=wait;
+            if(wait>gSpiProbeBoundaryInfo.publish_wait_max_us)
+                gSpiProbeBoundaryInfo.publish_wait_max_us=wait;
+        }
+        gTransmitIndex ^= 1U;
+        gSpiTransmitReady=false;
+        gSpiProbeActiveObserved=false;
+        gSpiProbeActiveBytes=(uint16_t)(64U<<(gTransmitSlots[gTransmitIndex][15]&3U));
+}
+
+static void probe_early_publish(void)
+{
+#if BODAQS_SPI_PROBE_EARLY_PUBLISH
+    uint32_t mask=__get_PRIMASK();
+    __disable_irq();
+    if(!gSpiTransmitReady || gSpiRetiring || gSpiProbeQuarantine || !gSpiProbeActiveObserved) {
+        __set_PRIMASK(mask);return;
+    }
+    ++gSpiProbeEarly.attempts;
+    /* DMA/FIFO progress belongs to a real physical transaction, even while
+     * CS is already high and its rising interrupt has not yet been serviced. */
+    if(!DL_GPIO_readPins(GPIO_SPI_A8_CS_PORT,GPIO_SPI_A8_CS_PIN) ||
+       DL_DMA_getTransferSize(DMA,DMA_SPI_RX_CHAN_ID)!=BODAQS_SPI_ADAPTER_CAPACITY ||
+       !DL_SPI_isRXFIFOEmpty(SPI_A8_INST)) {
+        ++gSpiProbeEarly.busy;__set_PRIMASK(mask);return;
+    }
+    /* Both-edge RIS is independent of PRIMASK and survives SPI reset. Clear
+     * stale evidence before the FINAL untouched/high check, never afterward. */
+    DL_GPIO_clearInterruptStatus(GPIO_SPI_A8_CS_PORT,GPIO_SPI_A8_CS_PIN);
+    if(!DL_GPIO_readPins(GPIO_SPI_A8_CS_PORT,GPIO_SPI_A8_CS_PIN) ||
+       DL_DMA_getTransferSize(DMA,DMA_SPI_RX_CHAN_ID)!=BODAQS_SPI_ADAPTER_CAPACITY ||
+       !DL_SPI_isRXFIFOEmpty(SPI_A8_INST) ||
+       DL_GPIO_getRawInterruptStatus(GPIO_SPI_A8_CS_PORT,GPIO_SPI_A8_CS_PIN)) {
+        ++gSpiProbeEarly.busy;__set_PRIMASK(mask);return;
+    }
+    uint32_t epoch,finished_epoch;
+    uint32_t started=bodaqs_master_timing_clock(NULL,&epoch);
+    gSpiRetiring=true;
+    DL_DMA_disableChannel(DMA,DMA_SPI_RX_CHAN_ID);
+    DL_DMA_disableChannel(DMA,DMA_SPI_TX_CHAN_ID);
+    /* IRQ masking cannot stop the peer. Preserve a complete edge pulse or
+     * receive progress across reset, including a burst with zero retained RX. */
+    bool collided=!DL_GPIO_readPins(GPIO_SPI_A8_CS_PORT,GPIO_SPI_A8_CS_PIN) ||
+        DL_GPIO_getRawInterruptStatus(GPIO_SPI_A8_CS_PORT,GPIO_SPI_A8_CS_PIN) ||
+        DL_DMA_getTransferSize(DMA,DMA_SPI_RX_CHAN_ID)!=BODAQS_SPI_ADAPTER_CAPACITY ||
+        !DL_SPI_isRXFIFOEmpty(SPI_A8_INST);
+    DL_SPI_disable(SPI_A8_INST);
+    DL_SPI_reset(SPI_A8_INST);
+    DL_SPI_enablePower(SPI_A8_INST);
+    delay_cycles(POWER_STARTUP_DELAY);
+    SYSCFG_DL_SPI_A8_init();
+    (void)DL_SPI_getPendingInterrupt(SPI_A8_INST);
+    uint32_t publish_epoch;
+    uint32_t publish_tick=bodaqs_master_timing_clock(NULL,&publish_epoch);
+    probe_publish_reply(publish_tick,publish_epoch,gSpiProbeBoundaryInfo.boundaries);
+    /* Same RX slot: no fabricated boundary, queue credit or retirement proof. */
+    arm_spi_slot();
+    collided=collided || !DL_GPIO_readPins(GPIO_SPI_A8_CS_PORT,GPIO_SPI_A8_CS_PIN) ||
+        DL_GPIO_getRawInterruptStatus(GPIO_SPI_A8_CS_PORT,GPIO_SPI_A8_CS_PIN) ||
+        DL_DMA_getTransferSize(DMA,DMA_SPI_RX_CHAN_ID)!=BODAQS_SPI_ADAPTER_CAPACITY ||
+        !DL_SPI_isRXFIFOEmpty(SPI_A8_INST);
+    uint32_t elapsed=bodaqs_master_timing_clock(NULL,&finished_epoch)-started;
+    if(!epoch || epoch!=finished_epoch || epoch!=publish_epoch)gSpiProbeEarly.invalid=1;
+    else if(elapsed>gSpiProbeEarly.max_us)gSpiProbeEarly.max_us=elapsed;
+    ++gSpiProbeEarly.published;
+    if(collided) {
+        ++gSpiProbeEarly.collisions;gSpiProbeQuarantine=true;
+#if BODAQS_SPI_PROBE_TRACE
+        const uint8_t active=gSpiProbeTraceTx[gTransmitIndex];
+        if(active)gSpiProbeTrace[active-1U].words[4]|=8U;
+        gSpiProbeTraceInvalid=1;
+#endif
+    }
+    gSpiRetiring=false;
+    __set_PRIMASK(mask);
+#endif
+}
+#endif
+
 static void retire_spi_boundary(void)
 {
     uint32_t primask = __get_PRIMASK();
@@ -1137,7 +1259,14 @@ static void retire_spi_boundary(void)
      * also includes unsent TX FIFO bytes: a 64-byte measurement slot leaves
      * prefetched bytes from the 84-byte DMA capacity, so waiting for !BUSY
      * would prevent the reset below from ever retiring that short slot. */
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+    const bool quarantined=gSpiProbeQuarantine;
+    /* A reset-time collision can retain no bytes. It still requires a clean
+     * CS-high reset; it is never submitted as an empty request. */
+    if ((!quarantined && remaining == BODAQS_SPI_ADAPTER_CAPACITY) ||
+#else
     if (remaining == BODAQS_SPI_ADAPTER_CAPACITY ||
+#endif
         DL_GPIO_readPins(GPIO_SPI_A8_CS_PORT, GPIO_SPI_A8_CS_PIN) == 0U) {
         gSpiRetiring=false; return;
     }
@@ -1153,6 +1282,9 @@ static void retire_spi_boundary(void)
     /* Snapshot the owner-published identity, never partially updated service
      * state. Only the active or fully published inactive DMA buffer is ours. */
     SpiRetirement retirement = {gSpiRetirementRequest.generation,gSpiRetirementRequest.context};
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+    if(quarantined)retirement.generation=0;
+#endif
     if(retirement.generation) {
         retire_measurement_slot(gTransmitSlots[gTransmitIndex],retirement.context);
         if(gSpiTransmitReady)
@@ -1172,7 +1304,7 @@ static void retire_spi_boundary(void)
     if(active_trace) {
         volatile uint32_t *w=gSpiProbeTrace[active_trace-1U].words;
         const uint32_t bytes=64U<<((w[2]>>24)&3U);
-        if(!(w[4]&4U) && length==bytes) {
+        if(!quarantined && !(w[4]&4U) && length==bytes) {
             w[10]=boundary_started;w[13]=boundary_ordinal;w[4]|=4U;
             if(!boundary_epoch || boundary_epoch!=w[3]) {
                 w[4]|=8U;gSpiProbeTraceInvalid=1;
@@ -1180,10 +1312,14 @@ static void retire_spi_boundary(void)
         }
     }
 #endif
+    if(!quarantined && length==gSpiProbeActiveBytes)gSpiProbeActiveObserved=true;
     probe_turnover_epoch(boundary_epoch);
     /* Exact CLOCK can publish an already prepared MISO reply below, but never
      * submits work. Full length, including FIFO excess, was established above. */
-    if(bodaqs_spi_probe_is_clock(gReceiveSlots[gReceiveIndex],length)) {
+    if(quarantined) {
+        ++gSpiProbeEarly.discarded;
+        gSpiProbeQuarantine=false;
+    } else if(bodaqs_spi_probe_is_clock(gReceiveSlots[gReceiveIndex],length)) {
         ++gSpiProbeClockBypassed;
     } else if(gSpiReceiveQueue.depth<gSpiReceiveQueue.capacity) {
         ProbeReceiveMeta *meta=&gSpiProbeReceiveMeta[gSpiReceiveQueue.tail];
@@ -1204,33 +1340,14 @@ static void retire_spi_boundary(void)
         ++gSpiReceiveQueue.dropped;
     }
 #endif
-    /* Publish only a fully prepared response at a physical boundary. Parsing,
-     * control dispatch and all ownership changes remain in the main loop. */
-    if (gSpiTransmitReady) {
+    /* Quarantine cannot replace an unobserved active reply with later work. */
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
-#if BODAQS_SPI_PROBE_TRACE
-        const uint8_t published_trace=gSpiProbeTraceTx[gTransmitIndex^1U];
-        if(published_trace) {
-            volatile uint32_t *w=gSpiProbeTrace[published_trace-1U].words;
-            w[9]=boundary_started;w[12]=boundary_ordinal;w[4]|=2U;
-            if(!boundary_epoch || boundary_epoch!=w[3]) {
-                w[4]|=8U;gSpiProbeTraceInvalid=1;
-            }
-        }
+    if(gSpiTransmitReady && !quarantined &&
+       (!BODAQS_SPI_PROBE_EARLY_PUBLISH || gSpiProbeActiveObserved))
+        probe_publish_reply(boundary_started,boundary_epoch,boundary_ordinal);
+#else
+    if(gSpiTransmitReady) {gTransmitIndex^=1U;gSpiTransmitReady=false;}
 #endif
-        ++gSpiProbeBoundaryInfo.publish_calls;
-        if(!boundary_epoch || boundary_epoch!=gSpiProbePublishedEpoch)
-            gSpiProbeBoundaryInfo.timing_invalid=1;
-        else {
-            uint32_t wait=boundary_started-gSpiProbePublishedTick;
-            gSpiProbeBoundaryInfo.publish_wait_total_us+=wait;
-            if(wait>gSpiProbeBoundaryInfo.publish_wait_max_us)
-                gSpiProbeBoundaryInfo.publish_wait_max_us=wait;
-        }
-#endif
-        gTransmitIndex ^= 1U;
-        gSpiTransmitReady = false;
-    }
     DL_SPI_disable(SPI_A8_INST);
     DL_SPI_reset(SPI_A8_INST);
     DL_SPI_enablePower(SPI_A8_INST);
@@ -1376,9 +1493,16 @@ static void service_spi_receive(void)
                 }
 #endif
             }
+            if(length>=20 && received[3]==BODAQS_PROBE_STATS && received[13]==25) {
+                const uint32_t early[]={1,BODAQS_SPI_PROBE_EARLY_PUBLISH,gSpiProbeEarly.attempts,
+                    gSpiProbeEarly.published,gSpiProbeEarly.busy,gSpiProbeEarly.collisions,
+                    gSpiProbeEarly.discarded,gSpiProbeEarly.max_us,epoch,gSpiProbeEarly.invalid};
+                memcpy(gSpiProbe.trace_stats,early,sizeof early);
+            }
             gMasterSpiProbeInfo.boundaries=gSpiProbeBoundaryInfo.boundaries;
             __set_PRIMASK(mask);
         }
+        const uint32_t previous_case=gSpiProbe.case_id;
         bool prepared=bodaqs_spi_probe_process(&gSpiProbe,received,length,
             gTransmitSlots[next_index],BODAQS_SPI_ADAPTER_CAPACITY);
         uint32_t elapsed=bodaqs_master_timing_clock(NULL,&finished_epoch)-started;
@@ -1399,6 +1523,9 @@ static void service_spi_receive(void)
              * sees the complete timestamp/epoch/ready tuple. */
             uint32_t publish_mask=__get_PRIMASK();
             __disable_irq();
+            /* New admitted BEGIN explicitly replaces the previous case, even
+             * if its last reply used a different physical frame size. */
+            if(gSpiProbe.case_id!=previous_case)gSpiProbeActiveObserved=true;
 #if BODAQS_SPI_PROBE_TRACE
             /* A newly admitted BEGIN changes the engine case. Idempotent BEGIN,
              * STOP and diagnostic readout retain the capture. Reset all indices

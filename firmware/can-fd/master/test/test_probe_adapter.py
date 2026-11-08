@@ -15,7 +15,7 @@ def function(name):
     while depth:
         depth+=(source[end]=='{')-(source[end]=='}');end+=1
     return source[m.start():end]
-functions='\n'.join(function(n) for n in ('probe_turnover_epoch','probe_turnover_blocked','arm_spi_slot','retire_spi_boundary','service_spi_receive'))
+functions='\n'.join(function(n) for n in ('probe_turnover_epoch','probe_turnover_blocked','arm_spi_slot','probe_publish_reply','probe_early_publish','retire_spi_boundary','service_spi_receive'))
 owner=function('service_spi_receive')
 functions=functions.replace(owner,owner.replace('uint32_t publish_mask=__get_PRIMASK();',
     'inject_boundary(1); uint32_t publish_mask=__get_PRIMASK();')
@@ -38,8 +38,10 @@ with tempfile.TemporaryDirectory() as tmp:
     common=root/'firmware/can-fd/common'
     for mode,trace in ((0,0),(1,0),(0,1),(1,1)):
       for capacity in (1,4):
+       for early in (0,1):
         subprocess.run([a.cc,'-std=c11','-Wall','-Wextra','-Werror','-O2','-DBODAQS_SPI_PROBE=1',
             f'-DBODAQS_SPI_PROBE_RX_QUEUE_CAPACITY={capacity}',
+            f'-DBODAQS_SPI_PROBE_EARLY_PUBLISH={early}',
             f'-DBODAQS_SPI_PROBE_CRC_TABLE={mode}',f'-DBODAQS_SPI_PROBE_TRACE={trace}','-Wno-pointer-to-int-cast','-I'+str(common/'protocol'),'-I'+str(common/'transport'),str(c),
             str(common/'protocol/bodaqs_spi_probe.c'),'-o',str(exe)],check=True)
         subprocess.run([str(exe)],check=True)

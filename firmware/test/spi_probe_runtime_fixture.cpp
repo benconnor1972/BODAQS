@@ -149,7 +149,8 @@ void SPIClass::transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
       prepared=replies.back(); // lost request: retain a valid older reply
     } else {
       if(decodedRequest && dispatched.opcode==BODAQS_PROBE_STATS && dispatched.fragment>=8) {
-        ++traceQueries;
+        if(dispatched.fragment!=25)++traceQueries;
+        else assert(!(probeTestStopFailure && SpiProbeTransport::stats().slots>0));
         memset(master.trace_stats,0,sizeof master.trace_stats);
         if(traceEmulated) {
           const auto page=dispatched.fragment;
@@ -157,6 +158,11 @@ void SPIClass::transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
             const uint32_t header[]={1,traceEmulated==1?1U:0U,8,256,traceEmulated==1?2U:0U,
                 traceEmulated==1?258U:0U,dispatched.case_id,1,0,0};
             memcpy(master.trace_stats,header,sizeof header);
+          } else if(page==25) {
+            const uint32_t early[]={1,traceEmulated==1?1U:0U,
+                traceEmulated==1?10U:0U,traceEmulated==1?10U:0U,0,0,0,
+                traceEmulated==1?12U:0U,1,0};
+            memcpy(master.trace_stats,early,sizeof early);
           } else if(page>=9 && page<=12) {
             const uint32_t n=(page-9)/2;
             const uint32_t words[]={257+n,1,(n?3U:2U)|((dispatched.profile&3U)<<24),1,7,
@@ -468,7 +474,7 @@ int main() {
   puts("real ADC: same-microsecond ISR entry before START marker is ambiguous, later distinct-tick completion paired passed");
 #if TEST_CASE_RUNNER
   releaseWaiters=true;
-  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v13-")!=std::string::npos);
+  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v14-")!=std::string::npos);
   puts(Serial.output.c_str());Serial.output.clear();SpiMeasurementProbe::command("status");
   assert(Serial.output.find("\"logger_build\":")!=std::string::npos);puts(Serial.output.c_str());Serial.output.clear();
   // Public runner, deterministic clock boundary: 10 seconds has 5000 midpoints
@@ -893,11 +899,14 @@ int main() {
     const auto& trace=SpiProbeTransport::stats();
     if(cid==76) {
       assert(traceQueries==beforeQueries && !trace.traceMeasured);
+      assert(!trace.earlyMeasured && trace.earlyBefore[0]==1 && trace.earlyAfter[0]==0);
       assert(Serial.output.find("adc_stop_incomplete_reboot_required")!=std::string::npos);
     } else {
       assert(trace.traceMeasured && trace.traceCount==(cid==73?2:cid==74?1:0));
       assert(trace.traceReadComplete==(cid!=74));
       assert(traceQueries>beforeQueries);
+      assert(trace.earlyMeasured && trace.earlyBefore[0]==1 && trace.earlyAfter[0]==1);
+      assert(trace.earlyBefore[1]==(cid==75?0U:1U) && trace.earlyAfter[7]==(cid==75?0U:12U));
     }
     assert(!master.active); // STOP still confirmed even when readout skipped/partial.
     puts(Serial.output.c_str());Serial.output.clear();
@@ -1040,6 +1049,11 @@ int main() {
   assert(SpiProbeTransport::stats().traceCount==2);
   dropStopReplies=false;assert(SpiProbeTransport::stop(true));
   assert(SpiProbeTransport::stats().traceCount==2 && SpiProbeTransport::stats().traceReadComplete);
+  assert(SpiProbeTransport::stats().earlyMeasured && SpiProbeTransport::stats().earlyAfter[7]==12);
+  assert(SpiProbeTransport::begin(board,caseId++,128,8000000,1));
+  traceFailPage=25;assert(SpiProbeTransport::stop(true));
+  assert(!SpiProbeTransport::stats().earlyMeasured && SpiProbeTransport::stats().traceReadComplete);
+  traceFailPage=0;
   traceEmulated=0;steppedUs=-1;bulkLastHigh=0;
   puts("Trace readout retry after unconfirmed STOP replaces the bounded capture PASS");
   assert(SpiProbeTransport::begin(board,caseId++,128,8000000,1));masterSilent=true;

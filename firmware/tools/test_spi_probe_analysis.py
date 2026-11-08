@@ -24,6 +24,49 @@ class ProbeAnalysisTests(unittest.TestCase):
             'records':[[257,1,2|(1<<24),1,7,100,120,150,160,300,500,20,21,22,4,c['case_id'],0,0,0,0]]}
         return c
 
+    def early_sample(self):
+        c=self.trace_sample();c['schema']='bodaqs.spi-probe.v14'
+        c['master'].update(early_measured=True,early_before=[1,1,10,10,0,0,0,12,1,0],early_after=[1,1,20,20,0,0,0,12,1,0])
+        c['master']['reply_trace']['records'][0][12]=20
+        return c
+
+    def test_round14_same_boundary_requires_recognized_early_mode(self):
+        for mode in ('early','late','unknown','invalid'):
+            c=self.early_sample()
+            if mode=='late':c['master']['early_before']=c['master']['early_after']=[1,0,0,0,0,0,0,0,1,0]
+            if mode=='unknown':c['master']['early_measured']=False
+            if mode=='invalid':c['master']['early_after'][8]=2
+            run=self.invoke(json.dumps(c));self.assertEqual(run.returncode,0,run.stderr)
+            report=json.loads(run.stdout);self.assertEqual(report['schema'],'bodaqs.spi-probe-report.v14')
+            t=report['cases'][0]['master_reply_trace']
+            self.assertEqual(t['status'],'observed' if mode=='early' else 'invalid')
+
+    def test_round14_collision_is_failed_even_with_clean_wire(self):
+        for kind in ('collision','discard','epoch','disabled_activity'):
+            c=self.early_sample();a=c['master']['early_after']
+            if kind=='collision':a[5]=1
+            if kind=='discard':a[5]=a[6]=1
+            if kind=='epoch':a[8]=2
+            if kind=='disabled_activity':c['master']['early_before'][1]=a[1]=0
+            run=self.invoke(json.dumps(c));self.assertEqual(run.returncode,0,run.stderr)
+            out=json.loads(run.stdout)['cases'][0]
+            self.assertIn(out['master_early_publication']['status'],('failed','invalid'))
+            self.assertEqual(out['candidate_evidence'],'failed')
+
+    def test_round14_bad_endpoint_shape_is_rejected(self):
+        for v in ([0]*9,[True]+[0]*9):
+            c=self.early_sample();c['master']['early_after']=v
+            self.assertEqual(self.invoke(json.dumps(c)).returncode,2)
+
+    def test_round14_modular_counter_conservation(self):
+        c=self.early_sample()
+        c['master']['early_before']=[1,1,0,0xfffffffd,3,0,0,12,1,0]
+        c['master']['early_after']=[1,1,2,0xffffffff,3,0,0,12,1,0]
+        run=self.invoke(json.dumps(c));self.assertEqual(run.returncode,0,run.stderr)
+        out=json.loads(run.stdout)['cases'][0]['master_early_publication']
+        self.assertEqual(out['status'],'observed')
+        self.assertEqual(out['counter_deltas']['published'],2)
+
     def test_round13_master_local_stages_and_wrap(self):
         for wrap in (False,True):
             c=self.trace_sample()

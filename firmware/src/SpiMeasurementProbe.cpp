@@ -56,7 +56,7 @@ bool s_lineOverflow=false;
 constexpr uint32_t kRowGuardUs=800;
 uint64_t now_() { return static_cast<uint64_t>(esp_timer_get_time()); }
 void error_(const char* reason) {
-  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v13\",\"type\":\"error\",\"reason\":\"%s\",\"logger_build\":\"%s\"}\n",reason,BODAQS_SPI_PROBE_BUILD);
+  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v14\",\"type\":\"error\",\"reason\":\"%s\",\"logger_build\":\"%s\"}\n",reason,BODAQS_SPI_PROBE_BUILD);
 }
 void summary_(const TimingSummary& s) {
   Serial.printf("{\"count\":%lu,\"min_us\":%lu,\"max_us\":%lu,\"total_us\":%llu}",
@@ -114,7 +114,7 @@ void emit_(const char* outcome,const char* reason,bool stopped) {
   const auto bus=SharedSpiBus::probeSnapshot();
   static const SpiProbeTransport::Stats empty;
   const auto& t=s_case.transportAttempted?SpiProbeTransport::stats():empty;
-  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v13\",\"type\":\"case\",\"case_id\":%lu,\"outcome\":\"%s\",\"reason\":\"%s\",",
+  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v14\",\"type\":\"case\",\"case_id\":%lu,\"outcome\":\"%s\",\"reason\":\"%s\",",
       (unsigned long)s_case.id,outcome,reason);
   Serial.printf("\"artifacts\":{\"logger_build\":\"%s\",\"master_build\":\"external-manifest\",\"protocol\":1},",BODAQS_SPI_PROBE_BUILD);
   Serial.printf("\"profile\":{\"mode\":\"%s\",\"frame_bytes\":%u,\"requested_sck_hz\":%lu,\"actual_sck_hz\":null,\"actual_sck_basis\":\"unmeasured\",\"guard_us\":25,\"nodes\":%u,\"duration_ms\":%lu,\"row_hz\":500,\"ain\":[0,4],\"configured_sps\":[1000,1000],\"crc_mode\":\"%s\",\"start_interval_us\":%lu,\"retry_us\":%lu},",
@@ -195,6 +195,8 @@ void emit_(const char* outcome,const char* reason,bool stopped) {
   Serial.print(",\"turnover_after\":");array_(t.turnoverAfter);
   Serial.printf(",\"flow_measured\":%s,\"flow_before\":",t.flowMeasured?"true":"false");array_(t.flowBefore);
   Serial.print(",\"flow_after\":");array_(t.flowAfter);
+  Serial.printf(",\"early_measured\":%s,\"early_before\":",t.earlyMeasured?"true":"false");array_(t.earlyBefore);
+  Serial.print(",\"early_after\":");array_(t.earlyAfter);
   Serial.printf(",\"reply_trace\":{\"measured\":%s,\"read_complete\":%s,\"header\":",t.traceMeasured?"true":"false",t.traceReadComplete?"true":"false");
   array_(t.traceHeader);Serial.print(",\"records\":[");
   for(uint8_t i=0;i<t.traceCount;++i) {
@@ -293,14 +295,14 @@ void begin(const board::BoardProfile& board) {
       AnalogInputManager::configureFromConfig(s_cfg,500)==500 && SharedSpiBus::ready() &&
       AnalogInputManager::activeChannelCount(0)==1 && AnalogInputManager::activeChannelCount(1)==1 &&
       AnalogInputManager::configuredDataRateSps(0)==1000 && AnalogInputManager::configuredDataRateSps(1)==1000;
-  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v13\",\"type\":\"ready\",\"ready\":%s,\"bench_only\":true,\"logger_build\":\"%s\"}\n",s_ready?"true":"false",BODAQS_SPI_PROBE_BUILD);
+  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v14\",\"type\":\"ready\",\"ready\":%s,\"bench_only\":true,\"logger_build\":\"%s\"}\n",s_ready?"true":"false",BODAQS_SPI_PROBE_BUILD);
 }
 void command(const char* line) {
   if(!line)return;
   if(strcmp(line,"stop")==0) {if(s_case.active)finish_("stopped","command");else error_("idle");return;}
   if(s_case.active) {++s_case.commandErrors;return;}
   if(strcmp(line,"status")==0) {
-    Serial.printf("{\"schema\":\"bodaqs.spi-probe.v13\",\"type\":\"status\",\"ready\":%s,\"blocked\":%s,\"logger_build\":\"%s\"}\n",s_ready?"true":"false",s_blocked?"true":"false",BODAQS_SPI_PROBE_BUILD);return;
+    Serial.printf("{\"schema\":\"bodaqs.spi-probe.v14\",\"type\":\"status\",\"ready\":%s,\"blocked\":%s,\"logger_build\":\"%s\"}\n",s_ready?"true":"false",s_blocked?"true":"false",BODAQS_SPI_PROBE_BUILD);return;
   }
   if(!s_ready || !s_board) {error_("not_ready");return;}
   if(s_blocked || !AnalogInputManager::probeWorkersStopped()) {error_("reboot_required");return;}
