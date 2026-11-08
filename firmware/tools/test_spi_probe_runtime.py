@@ -53,6 +53,16 @@ def main():
         sources += [root / 'can-fd/common/protocol/bodaqs_control.c']
         if args.case_runner:
             sources += [root / 'src' / name for name in ('SpiMeasurementProbe.cpp', 'SpiProbeTransport.cpp', 'SpiProbeCodec.cpp')]
+            # Simulate only the stop-status boundary, leaving finish_ and its real
+            # transport call intact. Allows a red-capable unsafe-readout check.
+            original=root/'src/SpiMeasurementProbe.cpp'
+            observed=original.read_text(encoding='utf-8')
+            seam='const bool stopped=AnalogInputManager::probeWorkersStopped();'
+            assert observed.count(seam)==1
+            case_source=temp/'SpiMeasurementProbe.cpp'
+            case_source.write_text('extern bool probeTestStopFailure;\n'+observed.replace(seam,
+                'const bool stopped=AnalogInputManager::probeWorkersStopped() && !probeTestStopFailure;'),encoding='utf-8')
+            sources[sources.index(original)]=case_source
         from spi_probe_build_identity import source_identity
         # The identity must change for an isolated change to another compiled TU.
         identity_root = temp / "identity-firmware"
@@ -83,17 +93,17 @@ def main():
             cases = [event for event in events if event['type'] == 'case']
             if args.capture:
                 args.capture.write_text('\n'.join(json.dumps(event) for event in events) + '\n', encoding='utf-8')
-            assert [case['case_id'] for case in cases] == [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, *range(33,73)]
+            assert [case['case_id'] for case in cases] == [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, *range(33,77)]
             assert (cases[0]['rows'], cases[0]['missed_rows']) == (5000, 0)
             assert (cases[1]['rows'], cases[1]['missed_rows']) == (49, 1)
             assert (cases[2]['rows'], cases[2]['missed_rows']) == (1, 1)
             assert (cases[3]['rows'], cases[3]['missed_rows']) == (0, 50)
             assert cases[8]['outcome'] == 'failed' and cases[8]['elapsed_us'] < 100000
             for case in cases:
-                assert case['workers_stopped'] and case['profile']['actual_sck_hz'] is None
+                assert case['workers_stopped']==(case['case_id']!=76) and case['profile']['actual_sck_hz'] is None
                 assert case['accepted_bytes'] == case['unique_objects'] * 1008
                 assert case['valid_responses'] <= case['slots']
-                assert case['schema'] == 'bodaqs.spi-probe.v11'
+                assert case['schema'] == 'bodaqs.spi-probe.v13'
                 cost=case['logger_cost'];cadence=cost['cadence']
                 assert cost['crc_algorithm']==('bitwise' if args.crc_bitwise else 'table')
                 assert case['artifacts']['logger_build'].endswith('-crc'+str(int(not args.crc_bitwise)))

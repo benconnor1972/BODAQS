@@ -68,6 +68,8 @@ typedef struct {
     uint32_t component_epoch,component_invalid;
     /* Adapter-owned coherent snapshots: additive STATS5/6, schema1. */
     uint32_t receive_stats[10],turnover_stats[10],flow_stats[10];
+    /* Adapter snapshot for requested STATS8..24; observer only, not authority. */
+    uint32_t trace_stats[10];
 } BodaqsSpiProbeEngine;
 /* profile: size code 0/1/2 =>64/128/256; bit2 0/1 =>8/16MHz;
  * bits3..4 => node_count-1; all other bits zero. Guard fixed at25us. */

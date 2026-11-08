@@ -16,6 +16,67 @@ EMITTED_SWITCH = FIXTURE.with_name("round2-emitted-switch.jsonl")
 
 
 class ProbeAnalysisTests(unittest.TestCase):
+    def trace_sample(self):
+        c=self.flow_sample();c['schema']='bodaqs.spi-probe.v13'
+        c['profile']['retry_us']=10000;c['request_window']['retry_us']=10000
+        c['master']['reply_trace']={'measured':True,'read_complete':True,
+            'header':[1,1,8,256,1,257,c['case_id'],1,0,0],
+            'records':[[257,1,2|(1<<24),1,7,100,120,150,160,300,500,20,21,22,4,c['case_id'],0,0,0,0]]}
+        return c
+
+    def test_round13_master_local_stages_and_wrap(self):
+        for wrap in (False,True):
+            c=self.trace_sample()
+            if wrap:
+                w=c['master']['reply_trace']['records'][0]
+                for i in range(5,11):w[i]=(w[i]+0xffffff80)&0xffffffff
+                for i in range(11,14):w[i]=(w[i]+0xffffffea)&0xffffffff
+            run=self.invoke(json.dumps(c));self.assertEqual(run.returncode,0,run.stderr)
+            report=json.loads(run.stdout);self.assertEqual(report['schema'],'bodaqs.spi-probe-report.v13')
+            t=report['cases'][0]['master_reply_trace'];self.assertEqual(t['status'],'observed')
+            self.assertEqual([t['records'][0][k] for k in ('arrival_to_process_us','processing_us','process_to_ready_us','ready_to_publication_us','publication_to_full_exchange_us','arrival_to_full_exchange_us')],[20,30,10,140,200,400])
+            self.assertFalse(report['production_qualified'])
+
+    def test_round13_invalid_trace_never_yields_stage_evidence(self):
+        for mutation in range(13):
+            c=self.trace_sample();t=c['master']['reply_trace'];w=t['records'][0]
+            if mutation==0:t['header'][8]=1
+            if mutation==1:w[3]=2
+            if mutation==2:w[4]=5  # full exchange without publication
+            if mutation==3:w[0]=258
+            if mutation==4:w[15]+=1
+            if mutation==5:w[16]=1
+            if mutation==6:w[9]=w[8]-1
+            if mutation==7:w[12]=w[11]
+            if mutation==8:t['header'][4]=2
+            if mutation==9:t['header'][1]=0
+            if mutation==10:w[2]=3|(1<<16)|(1<<24) # fragmented ACK
+            if mutation==11:t['header'][9]=1
+            if mutation==12:w[4]=3 # page9 pre-IRQ flags with page10 post-IRQ full tick
+            run=self.invoke(json.dumps(c));self.assertEqual(run.returncode,0,run.stderr)
+            out=json.loads(run.stdout)['cases'][0]
+            self.assertEqual(out['master_reply_trace']['status'],'invalid',mutation)
+            self.assertNotIn('stages',out['master_reply_trace'])
+            self.assertEqual(out['candidate_evidence'],'failed')
+
+    def test_round13_unknown_disabled_and_partial_readout(self):
+        for status in ('unknown','disabled','incomplete'):
+            c=self.trace_sample();t=c['master']['reply_trace']
+            if status=='unknown':t.update(measured=False,read_complete=False,header=[0]*10,records=[])
+            if status=='disabled':t['header'][1]=t['header'][4]=t['header'][5]=0;t['records']=[]
+            if status=='incomplete':t['read_complete']=False;t['records']=[]
+            run=self.invoke(json.dumps(c));self.assertEqual(run.returncode,0,run.stderr)
+            self.assertEqual(json.loads(run.stdout)['cases'][0]['master_reply_trace']['status'],status)
+
+    def test_round13_rejects_bad_trace_shape(self):
+        for mutation in range(4):
+            c=self.trace_sample();t=c['master']['reply_trace']
+            if mutation==0:t['header'][0]=True
+            if mutation==1:t['records'][0].pop()
+            if mutation==2:t['records']*=9
+            if mutation==3:t['measured']=1
+            self.assertEqual(self.invoke(json.dumps(c)).returncode,2)
+
     def test_round11_retry_policy_and_matching(self):
         for retry in (5000,10000,20000):
             c=self.flow_sample();c['schema']='bodaqs.spi-probe.v11'

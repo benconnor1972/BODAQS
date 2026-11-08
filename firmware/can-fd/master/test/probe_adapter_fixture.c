@@ -109,6 +109,92 @@ static uint32_t value(const BodaqsSpiProbeFrame *r,unsigned index) {
     const uint8_t *p=r->payload+4*index;
     return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);
 }
+#if BODAQS_SPI_PROBE_TRACE
+static void trace_lifecycle(void) {
+    uint8_t work[272]={0},clock[272]={0};
+    clock_epoch=1;tick=0xfffffe00U;gSpiTransmitReady=false;
+    bodaqs_spi_probe_init(&gSpiProbe);
+    bodaqs_spi_probe_set_clock(&gSpiProbe,bodaqs_master_timing_clock,NULL);
+    bodaqs_record_queue_init(&gSpiReceiveQueue,storage,256,BODAQS_SPI_PROBE_RX_QUEUE_CAPACITY);
+    BodaqsSpiProbeFrame q={.opcode=BODAQS_PROBE_BEGIN,.case_id=100,.profile=bodaqs_spi_probe_profile(256,16000000,4)};
+    BodaqsSpiProbeFrame c={.opcode=BODAQS_PROBE_CLOCK,.profile=2};
+    assert(bodaqs_spi_probe_encode(&c,clock,256));
+    (void)wire_reply(q,129,0);
+    while(gSpiReceiveQueue.depth) {if(gSpiTransmitReady)physical(clock,256,0);service_spi_receive();}
+    if(gSpiTransmitReady)physical(clock,256,0);
+    for(unsigned i=1;i<=265;++i) {
+        q.opcode=i==262?BODAQS_PROBE_ACK:BODAQS_PROBE_POLL;
+        q.object_id=i>262?2:1;q.fragment=i==262?0:(uint8_t)(i%5);
+        q.logical_crc=i==262?bodaqs_spi_probe_known_crc(100,0,1):0;
+        assert(bodaqs_spi_probe_encode(&q,work,256));
+        if(i==257) {tick=0xfffffff0U;gSpiProbeBoundaryInfo.boundaries=0xfffffffeU;}
+        physical(work,256,0);
+        if(i==257 || i==258) {inject_stage=i==257?1:2;inject_length=256;memcpy(inject_wire,clock,256);}
+        service_spi_receive();assert(!inject_stage);
+        if(i==257) {
+            assert(gSpiProbeTraceCount==1 && gSpiProbeTrace[0].words[4]==1);
+            BodaqsSpiProbeFrame query={.opcode=BODAQS_PROBE_STATS,.case_id=100,.profile=q.profile,.fragment=9};
+            assert(bodaqs_spi_probe_encode(&query,work,256));
+            physical(work,256,0);assert(gSpiProbeTrace[0].words[4]==3);
+            physical(clock,255,0);assert(gSpiProbeTrace[0].words[4]==3);
+            physical(clock,257,1);assert(gSpiProbeTrace[0].words[4]==3);
+            /* STATS9 was queued by the publication exchange. Interrupt while its
+             * snapshot is copying: the pending full CLOCK changes this record.
+             * Page9 must contain the entire pre-IRQ state, not flags from after. */
+            inject_stage=3;snapshot_delivered=false;memcpy(inject_wire,clock,256);inject_length=256;
+            service_spi_receive();assert(snapshot_delivered && !snapshot_irq_pending && !inject_stage);
+            assert(gSpiProbeTrace[0].words[4]==7 && gSpiTransmitReady);
+            BodaqsSpiProbeFrame observed;
+            assert(bodaqs_spi_probe_decode(gTransmitSlots[gTransmitIndex^1U],256,&observed));
+            assert(observed.fragment==9 && value(&observed,4)==3);
+            while(gSpiReceiveQueue.depth) {if(gSpiTransmitReady)physical(clock,256,0);service_spi_receive();}
+        }
+        if(gSpiTransmitReady)physical(clock,256,0);
+        physical(clock,256,3);
+        if(i>256 && i<=264) {
+            const volatile uint32_t *w=gSpiProbeTrace[i-257].words;
+            assert(w[0]==i && w[1]==(i>262?2U:1U) && w[3]==1 && w[4]==7 && w[15]==100);
+            assert((w[2]&255U)==(i==262?BODAQS_PROBE_ACK:BODAQS_PROBE_POLL));
+            assert((uint32_t)(w[12]-w[11])>=1 && (uint32_t)(w[13]-w[12])>=1);
+            assert((uint32_t)(w[6]-w[5])<1000 && (uint32_t)(w[10]-w[5])<1000);
+        }
+    }
+    assert(gSpiProbeTraceCount==8 && gSpiProbeTraceSeen==265);
+    q.opcode=BODAQS_PROBE_STATS;q.object_id=0;q.logical_crc=0;q.fragment=8;
+    BodaqsSpiProbeFrame r=wire_reply(q,133,0);
+    assert(value(&r,0)==1 && value(&r,1)==1 && value(&r,4)==8 && value(&r,5)==265 && value(&r,6)==100);
+    for(unsigned page=9;page<=24;++page) {
+        q.fragment=(uint8_t)page;r=wire_reply(q,133,0);
+        for(unsigned j=0;j<10;++j)assert(value(&r,j)==gSpiProbeTrace[(page-9)/2].words[((page-9)%2)*10+j]);
+    }
+    for(unsigned page=8;page<=10;++page) {
+        q.fragment=(uint8_t)page;inject_stage=3;snapshot_delivered=false;
+        r=wire_reply(q,133,0);
+        assert(snapshot_delivered && !snapshot_irq_pending && !inject_stage);
+        assert(gSpiProbeTraceCount==8 && gSpiProbeTraceSeen==265);
+    }
+    q.opcode=BODAQS_PROBE_BEGIN;q.fragment=0;(void)wire_reply(q,129,0);
+    assert(gSpiProbeTraceCount==8 && gSpiProbeTraceSeen==265); /* idempotent BEGIN */
+    q.opcode=BODAQS_PROBE_STOP;q.fragment=0;(void)wire_reply(q,134,0);
+    assert(gSpiProbeTraceCount==8); /* STOP retains the bounded capture. */
+    q.opcode=BODAQS_PROBE_BEGIN;q.case_id=101;(void)wire_reply(q,129,0);
+    assert(gSpiProbeTraceCount==0 && gSpiProbeTraceSeen==0 && gSpiProbeTraceCase==101);
+    assert(!gSpiProbeTraceTx[0] && !gSpiProbeTraceTx[1]);
+    physical(clock,256,0);assert(!gSpiProbeTrace[0].words[4]); /* no old-buffer alias */
+    while(gSpiReceiveQueue.depth) {if(gSpiTransmitReady)physical(clock,256,0);service_spi_receive();}
+    if(gSpiTransmitReady)physical(clock,256,0);
+    for(unsigned i=1;i<=257;++i) {
+        q.opcode=BODAQS_PROBE_POLL;q.object_id=1;q.fragment=0;
+        assert(bodaqs_spi_probe_encode(&q,work,256));physical(work,256,0);service_spi_receive();
+        if(i==257)clock_epoch=0;
+        physical(clock,256,0);physical(clock,256,0);
+    }
+    assert(gSpiProbeTrace[0].words[4]==15 && gSpiProbeTraceInvalid);
+    q.opcode=BODAQS_PROBE_STATS;q.object_id=0;q.fragment=8;r=wire_reply(q,133,0);
+    assert(value(&r,8)==1);clock_epoch=1;
+    puts("reply trace: bounded capture, POLL/ACK, publication interleavings, short/excess, fenced readout, epoch/tick/boundary wrap and STOP/BEGIN reset PASS");
+}
+#endif
 int main(void) {
     memset(guarded_rx.before,0xa5,sizeof guarded_rx.before);
     memset(guarded_rx.after,0xa5,sizeof guarded_rx.after);
@@ -373,6 +459,9 @@ int main(void) {
     q.opcode=BODAQS_PROBE_STOP;q.fragment=0;(void)wire_reply(q,134,0);
     q.opcode=BODAQS_PROBE_BEGIN;q.case_id+=100;(void)wire_reply(q,129,0);
     q.opcode=BODAQS_PROBE_STATS;q.fragment=5;r=wire_reply(q,133,0);assert(value(&r,5)==1);
+#if BODAQS_SPI_PROBE_TRACE
+    trace_lifecycle();
+#endif
     printf("actual probe adapter: queue%u mixed lengths/bytes/FIFO/overflow/publication/counter+tick wrap/epoch/STOP PASS\n",cap);
     puts("actual probe adapter: CS lengths/FIFO/overflow/queue/publication/entry/exit PASS");
     puts("actual probe adapter: complete RAM objects, wrong/lost/repeated ACK and ACK publication preemption PASS");

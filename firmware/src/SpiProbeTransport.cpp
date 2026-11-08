@@ -302,8 +302,12 @@ void tick() {
   s_switchDue=s_switch;
 }
 bool healthy() {return s_healthy;}
-bool stop() {
+bool stop(bool collectTrace) {
   if(!s_open)return true;
+  // A failed STOP can be retried. Re-read into the same bounded arena, never
+  // append a second capture or retain a completion claim from an earlier attempt.
+  s_stats.traceCount=0;s_stats.traceMeasured=false;s_stats.traceReadComplete=false;
+  memset(s_stats.traceHeader,0,sizeof s_stats.traceHeader);
   if(s_entered) {
     const bool afterEngine=masterStats_(0,s_stats.masterAfter);
     const bool afterAdapter=masterStats_(1,s_stats.adapterAfter);
@@ -316,6 +320,19 @@ bool stop() {
     s_stats.receiveMeasured=s_beforeReceive && receive && turnover;
     const bool flow=masterStats_(7,s_stats.flowAfter);
     s_stats.flowMeasured=s_beforeFlow && flow;
+    // Read only after the timed workload and ADC workers have stopped. Unsupported
+    // peers remain unknown; failed/incomplete observer retrieval cannot be evidence.
+    const bool trace=collectTrace && masterStats_(8,s_stats.traceHeader);
+    s_stats.traceMeasured=trace && s_stats.traceHeader[0]==1;
+    if(s_stats.traceMeasured && s_stats.traceHeader[1]<=1 && s_stats.traceHeader[2]==8 &&
+        s_stats.traceHeader[3]==256 && s_stats.traceHeader[4]<=8 && s_stats.traceHeader[6]==s_caseId) {
+      s_stats.traceReadComplete=true;
+      for(uint8_t i=0;i<s_stats.traceHeader[4];++i) {
+        if(!masterStats_(9+2*i,s_stats.traceRecords[i]) ||
+            !masterStats_(10+2*i,s_stats.traceRecords[i]+10)) {s_stats.traceReadComplete=false;break;}
+        ++s_stats.traceCount;
+      }
+    }
     s_stats.diagnosticMeasured=s_beforeDiagnostic && afterDiagnostic;
     s_stats.masterMeasured=s_beforeEngine && afterEngine;
     s_stats.adapterMeasured=s_beforeAdapter && afterAdapter;

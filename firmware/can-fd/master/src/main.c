@@ -112,6 +112,26 @@ typedef struct {
 } MasterSpiProbeBoundaryInfo;
 static volatile MasterSpiProbeBoundaryInfo gSpiProbeBoundaryInfo;
 static uint32_t gSpiProbePublishedTick,gSpiProbePublishedEpoch;
+/* Round13 observer. Main fills identities only after successful engine processing.
+ * IRQ updates fixed indices only; none of this state affects DMA or ACK authority.
+ * A full exchange observation is NOT proof of valid MISO or logger acceptance. */
+#ifndef BODAQS_SPI_PROBE_TRACE
+#define BODAQS_SPI_PROBE_TRACE 0
+#endif
+#if BODAQS_SPI_PROBE_TRACE != 0 && BODAQS_SPI_PROBE_TRACE != 1
+#error "BODAQS_SPI_PROBE_TRACE must be 0 or 1"
+#endif
+#define PROBE_TRACE_CAPACITY 8U
+#define PROBE_TRACE_SKIP 256U
+#if BODAQS_SPI_PROBE_TRACE
+typedef struct {uint32_t words[20];} ProbeReplyTrace;
+static volatile ProbeReplyTrace gSpiProbeTrace[PROBE_TRACE_CAPACITY];
+static uint32_t gSpiProbeTraceCase,gSpiProbeTraceSeen,gSpiProbeTraceCount;
+static uint32_t gSpiProbeTraceEpoch,gSpiProbeTraceInvalid;
+/* Index+1 (zero means none), published atomically with the ready tuple. */
+static uint8_t gSpiProbeTraceTx[2];
+#endif
+/* End probe reply trace state. */
 #endif
 
 /* Active drain diagnostic state. */
@@ -196,7 +216,7 @@ static uint8_t gReceiveIndex;
 static uint8_t gSpiReceiveStorage[BODAQS_SPI_PROBE_RX_QUEUE_CAPACITY][BODAQS_SPI_ADAPTER_CAPACITY];
 /* Probe receive turnover state. Each field has one writer, except epoch/invalid
  * which all callers serialize against the boundary ISR. No DMA pointers retained. */
-typedef struct {uint32_t tick,epoch;uint16_t length;} ProbeReceiveMeta;
+typedef struct {uint32_t tick,epoch,boundary;uint16_t length;} ProbeReceiveMeta;
 static ProbeReceiveMeta gSpiProbeReceiveMeta[BODAQS_SPI_PROBE_RX_QUEUE_CAPACITY];
 typedef struct {
     uint32_t enqueued,dequeued,full_ready,full_other;
@@ -1144,6 +1164,22 @@ static void retire_spi_boundary(void)
         &gReceiveSlots[gReceiveIndex][length], (uint32_t)remaining);
     if (DL_SPI_drainRXFIFO8(SPI_A8_INST, &excess, 1U)) length = BODAQS_SPI_ADAPTER_CAPACITY+1U;
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+    const uint32_t boundary_ordinal=gSpiProbeBoundaryInfo.boundaries+1U;
+#if BODAQS_SPI_PROBE_TRACE
+    /* The ACTIVE buffer was clocked before any publication below. A short or
+     * excessive burst cannot complete this observation. Do not inspect DMA bytes. */
+    const uint8_t active_trace=gSpiProbeTraceTx[gTransmitIndex];
+    if(active_trace) {
+        volatile uint32_t *w=gSpiProbeTrace[active_trace-1U].words;
+        const uint32_t bytes=64U<<((w[2]>>24)&3U);
+        if(!(w[4]&4U) && length==bytes) {
+            w[10]=boundary_started;w[13]=boundary_ordinal;w[4]|=4U;
+            if(!boundary_epoch || boundary_epoch!=w[3]) {
+                w[4]|=8U;gSpiProbeTraceInvalid=1;
+            }
+        }
+    }
+#endif
     probe_turnover_epoch(boundary_epoch);
     /* Exact CLOCK can publish an already prepared MISO reply below, but never
      * submits work. Full length, including FIFO excess, was established above. */
@@ -1152,6 +1188,7 @@ static void retire_spi_boundary(void)
     } else if(gSpiReceiveQueue.depth<gSpiReceiveQueue.capacity) {
         ProbeReceiveMeta *meta=&gSpiProbeReceiveMeta[gSpiReceiveQueue.tail];
         meta->length=(uint16_t)length;meta->tick=boundary_started;meta->epoch=boundary_epoch;
+        meta->boundary=boundary_ordinal;
         (void)bodaqs_record_queue_push(&gSpiReceiveQueue,gReceiveSlots[gReceiveIndex]);
         ++gSpiProbeTurnover.enqueued;
     } else {
@@ -1171,6 +1208,16 @@ static void retire_spi_boundary(void)
      * control dispatch and all ownership changes remain in the main loop. */
     if (gSpiTransmitReady) {
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+#if BODAQS_SPI_PROBE_TRACE
+        const uint8_t published_trace=gSpiProbeTraceTx[gTransmitIndex^1U];
+        if(published_trace) {
+            volatile uint32_t *w=gSpiProbeTrace[published_trace-1U].words;
+            w[9]=boundary_started;w[12]=boundary_ordinal;w[4]|=2U;
+            if(!boundary_epoch || boundary_epoch!=w[3]) {
+                w[4]|=8U;gSpiProbeTraceInvalid=1;
+            }
+        }
+#endif
         ++gSpiProbeBoundaryInfo.publish_calls;
         if(!boundary_epoch || boundary_epoch!=gSpiProbePublishedEpoch)
             gSpiProbeBoundaryInfo.timing_invalid=1;
@@ -1307,6 +1354,28 @@ static void service_spi_receive(void)
             memcpy(gSpiProbe.turnover_stats,turnover_page,sizeof turnover_page);
             const uint32_t flow_page[]={1,1,gSpiProbeClockBypassed,0,0,0,0,0,0,0};
             memcpy(gSpiProbe.flow_stats,flow_page,sizeof flow_page);
+            /* Only an observer page selector is read before decode. A malformed
+             * request still fails in the engine and cannot obtain a response. */
+            memset(gSpiProbe.trace_stats,0,sizeof gSpiProbe.trace_stats);
+            if(length>=20 && received[3]==BODAQS_PROBE_STATS && received[13]>=8 && received[13]<=24) {
+                const uint8_t page=received[13];
+                if(page==8) {
+                    uint32_t header[]={1,BODAQS_SPI_PROBE_TRACE,PROBE_TRACE_CAPACITY,PROBE_TRACE_SKIP,
+                        0,0,gSpiProbe.case_id,epoch,0,0};
+#if BODAQS_SPI_PROBE_TRACE
+                    header[4]=gSpiProbeTraceCount;header[5]=gSpiProbeTraceSeen;header[6]=gSpiProbeTraceCase;
+                    header[7]=gSpiProbeTraceEpoch;header[8]=gSpiProbeTraceInvalid;
+#endif
+                    memcpy(gSpiProbe.trace_stats,header,sizeof header);
+                }
+#if BODAQS_SPI_PROBE_TRACE
+                else {
+                    const unsigned index=(page-9U)/2U,offset=((page-9U)%2U)*10U;
+                    if(index<gSpiProbeTraceCount)
+                        for(unsigned i=0;i<10;++i)gSpiProbe.trace_stats[i]=gSpiProbeTrace[index].words[offset+i];
+                }
+#endif
+            }
             gMasterSpiProbeInfo.boundaries=gSpiProbeBoundaryInfo.boundaries;
             __set_PRIMASK(mask);
         }
@@ -1330,7 +1399,45 @@ static void service_spi_receive(void)
              * sees the complete timestamp/epoch/ready tuple. */
             uint32_t publish_mask=__get_PRIMASK();
             __disable_irq();
+#if BODAQS_SPI_PROBE_TRACE
+            /* A newly admitted BEGIN changes the engine case. Idempotent BEGIN,
+             * STOP and diagnostic readout retain the capture. Reset all indices
+             * together so an old active buffer cannot write into the new arena. */
+            if(gSpiProbeTraceCase!=gSpiProbe.case_id) {
+                memset((void *)gSpiProbeTrace,0,sizeof gSpiProbeTrace);
+                gSpiProbeTraceCase=gSpiProbe.case_id;gSpiProbeTraceCount=0;gSpiProbeTraceSeen=0;
+                gSpiProbeTraceTx[0]=gSpiProbeTraceTx[1]=0;
+                gSpiProbeTraceEpoch=epoch;gSpiProbeTraceInvalid=!epoch;
+            }
+            gSpiProbeTraceTx[next_index]=0;
+            volatile uint32_t *trace_words=NULL;
+            const uint8_t *reply=gTransmitSlots[next_index];
+            if(reply[3]==(BODAQS_PROBE_POLL|BODAQS_PROBE_RESPONSE) ||
+               reply[3]==(BODAQS_PROBE_ACK|BODAQS_PROBE_RESPONSE)) {
+                ++gSpiProbeTraceSeen;
+                if(gSpiProbeTraceSeen>PROBE_TRACE_SKIP && gSpiProbeTraceCount<PROBE_TRACE_CAPACITY) {
+                    const unsigned index=gSpiProbeTraceCount++;
+                    trace_words=gSpiProbeTrace[index].words;
+                    trace_words[0]=gSpiProbeTraceSeen;
+                    trace_words[1]=(uint32_t)reply[8]|((uint32_t)reply[9]<<8)|((uint32_t)reply[10]<<16)|((uint32_t)reply[11]<<24);
+                    trace_words[2]=(reply[3]&127U)|((uint32_t)reply[12]<<8)|((uint32_t)reply[13]<<16)|((uint32_t)(reply[15]&3U)<<24);
+                    trace_words[3]=epoch;trace_words[4]=1;
+                    trace_words[5]=meta.tick;trace_words[6]=started;trace_words[7]=started+elapsed;
+                    trace_words[11]=meta.boundary;trace_words[14]=queued_depth;trace_words[15]=gSpiProbe.case_id;
+                    if(!epoch || meta.epoch!=epoch || dequeue_epoch!=epoch || finished_epoch!=epoch || gSpiProbeTraceEpoch!=epoch) {
+                        trace_words[4]|=8U;gSpiProbeTraceInvalid=1;
+                    }
+                    gSpiProbeTraceTx[next_index]=(uint8_t)(index+1U);
+                }
+            }
+#endif
             gSpiProbePublishedTick=bodaqs_master_timing_clock(NULL,&gSpiProbePublishedEpoch);
+#if BODAQS_SPI_PROBE_TRACE
+            if(trace_words) {
+                trace_words[8]=gSpiProbePublishedTick;
+                if(gSpiProbePublishedEpoch!=epoch) {trace_words[4]|=8U;gSpiProbeTraceInvalid=1;}
+            }
+#endif
             __DMB();
             gSpiTransmitReady=true;
             __set_PRIMASK(publish_mask);

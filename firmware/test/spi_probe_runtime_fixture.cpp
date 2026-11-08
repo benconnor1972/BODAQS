@@ -24,6 +24,9 @@ static unsigned rawFault=0,rawFaultsLeft=0;
 static std::vector<std::array<uint8_t,256>> injectedRx;
 static bool stats2Unsupported=false;
 static bool receivePagesUnsupported=false;
+static unsigned traceEmulated=0,traceFailPage=0,traceQueries=0;
+static bool dropStopReplies=false;
+bool probeTestStopFailure=false;
 static unsigned syntheticSwitchCount=0;
 static bool sequenceNeverReady=false;
 static std::deque<std::array<uint8_t,256>> replies(2);
@@ -145,6 +148,23 @@ void SPIClass::transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
       if(dropPollRequests)--dropPollRequests;
       prepared=replies.back(); // lost request: retain a valid older reply
     } else {
+      if(decodedRequest && dispatched.opcode==BODAQS_PROBE_STATS && dispatched.fragment>=8) {
+        ++traceQueries;
+        memset(master.trace_stats,0,sizeof master.trace_stats);
+        if(traceEmulated) {
+          const auto page=dispatched.fragment;
+          if(page==8) {
+            const uint32_t header[]={1,traceEmulated==1?1U:0U,8,256,traceEmulated==1?2U:0U,
+                traceEmulated==1?258U:0U,dispatched.case_id,1,0,0};
+            memcpy(master.trace_stats,header,sizeof header);
+          } else if(page>=9 && page<=12) {
+            const uint32_t n=(page-9)/2;
+            const uint32_t words[]={257+n,1,(n?3U:2U)|((dispatched.profile&3U)<<24),1,7,
+                100,120,150,160,300,500,20,21,22,4,dispatched.case_id,0,0,0,0};
+            memcpy(master.trace_stats,words+((page-9)%2)*10,sizeof master.trace_stats);
+          }
+        }
+      }
       if(!masterSilent)bodaqs_spi_probe_process(&master,tx,length,prepared.data(),prepared.size());
       if(poll && dropPollReplies) {
         --dropPollReplies;prepared=replies.back(); // Request applied; POLL reply lost.
@@ -155,8 +175,10 @@ void SPIClass::transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
       }
     }
     BodaqsSpiProbeFrame response;
+    if(dropStopReplies && bodaqs_spi_probe_decode(prepared.data(),length,&response) && response.opcode==(BODAQS_PROBE_STOP|BODAQS_PROBE_RESPONSE))
+      prepared=replies.back();
     if(bodaqs_spi_probe_decode(prepared.data(),length,&response) && response.opcode==(BODAQS_PROBE_STATS|BODAQS_PROBE_RESPONSE) &&
-        ((stats2Unsupported && response.fragment==2) || (receivePagesUnsupported && response.fragment>=5))) {
+        ((stats2Unsupported && response.fragment==2) || (receivePagesUnsupported && response.fragment>=5) || (traceFailPage && response.fragment==traceFailPage))) {
       response.opcode=BODAQS_PROBE_ERROR|BODAQS_PROBE_RESPONSE;response.payload_length=1;response.payload[0]=BODAQS_PROBE_ARGUMENT;
       assert(bodaqs_spi_probe_encode(&response,prepared.data(),length));
     }
@@ -446,7 +468,7 @@ int main() {
   puts("real ADC: same-microsecond ISR entry before START marker is ambiguous, later distinct-tick completion paired passed");
 #if TEST_CASE_RUNNER
   releaseWaiters=true;
-  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v11-")!=std::string::npos);
+  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v13-")!=std::string::npos);
   puts(Serial.output.c_str());Serial.output.clear();SpiMeasurementProbe::command("status");
   assert(Serial.output.find("\"logger_build\":")!=std::string::npos);puts(Serial.output.c_str());Serial.output.clear();
   // Public runner, deterministic clock boundary: 10 seconds has 5000 midpoints
@@ -862,9 +884,29 @@ int main() {
   }
   assert(delayedRetries[0]>delayedRetries[2]);
   replies.assign(2,std::array<uint8_t,256>{});
+  for(unsigned cid=73;cid<=76;++cid) {
+    traceEmulated=cid==75?2:1;traceFailPage=cid==74?12:0;
+    probeTestStopFailure=cid==76;const unsigned beforeQueries=traceQueries;
+    char cmd[96];snprintf(cmd,sizeof(cmd),"case %u owner_flow 128 8000000 4 100 cached 500 3 1 0 10000",cid);
+    SpiMeasurementProbe::command(cmd);assert(Serial.output.empty());
+    while(Serial.output.empty()){delayMicroseconds(10);SpiMeasurementProbe::loop();}
+    const auto& trace=SpiProbeTransport::stats();
+    if(cid==76) {
+      assert(traceQueries==beforeQueries && !trace.traceMeasured);
+      assert(Serial.output.find("adc_stop_incomplete_reboot_required")!=std::string::npos);
+    } else {
+      assert(trace.traceMeasured && trace.traceCount==(cid==73?2:cid==74?1:0));
+      assert(trace.traceReadComplete==(cid!=74));
+      assert(traceQueries>beforeQueries);
+    }
+    assert(!master.active); // STOP still confirmed even when readout skipped/partial.
+    puts(Serial.output.c_str());Serial.output.clear();
+  }
+  traceEmulated=traceFailPage=0;probeTestStopFailure=false;
+  puts("Public trace collector: successful, partial, disabled and failed worker-stop skips all trace controls PASS");
   rowValueFixture=false;forceReadyPin=true;steppedUs=-1;bulkLastHigh=0;
   puts("Public pipeline: real owner rows, loss recovery, bounded per-request exhaustion despite other nodes progressing, STOP, reuse and rail failure passed");
-  uint32_t caseId=73;
+  uint32_t caseId=77;
   for(uint16_t frame: {64,128,256})for(uint32_t hz: {8000000U,16000000U}) {
     assert(SpiProbeTransport::begin(board,caseId++,frame,hz,4));
     for(unsigned attempts=0;attempts<1000000 && SpiProbeTransport::stats().retiredObjects<4;++attempts)SpiProbeTransport::tick();
@@ -992,6 +1034,14 @@ int main() {
   frozenUs=-1;bulkLastHigh=0;assert(SpiProbeTransport::stop());
   puts("nonblocking pacing: deferred iterations, synthetic all-CS-high clocks, actual interval and preceding -2 context passed");
 
+  traceEmulated=1;steppedUs=static_cast<int64_t>(micros())+10000;bulkLastHigh=0;
+  assert(SpiProbeTransport::begin(board,caseId++,128,8000000,1));
+  dropStopReplies=true;assert(!SpiProbeTransport::stop(true));
+  assert(SpiProbeTransport::stats().traceCount==2);
+  dropStopReplies=false;assert(SpiProbeTransport::stop(true));
+  assert(SpiProbeTransport::stats().traceCount==2 && SpiProbeTransport::stats().traceReadComplete);
+  traceEmulated=0;steppedUs=-1;bulkLastHigh=0;
+  puts("Trace readout retry after unconfirmed STOP replaces the bounded capture PASS");
   assert(SpiProbeTransport::begin(board,caseId++,128,8000000,1));masterSilent=true;
   assert(!SpiProbeTransport::stop());assert(!SpiProbeTransport::begin(board,caseId++,64,8000000,1));
   puts("real client: valid-wire corrupted logical bytes never accepted/ACKed; unconfirmed STOP blocks profile changes passed");

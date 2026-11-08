@@ -44,6 +44,10 @@ struct Stats {
   uint32_t newRequests=0,retryRequests=0,clockRequests=0,retryExhausted=0;
   uint32_t pendingRequests=0,pendingHighWater=0;
   TimingSummary replyAge;
+  // Post-window master-local observations; never subtract from logger clock.
+  bool traceMeasured=false,traceReadComplete=false;
+  uint32_t traceHeader[10]={},traceRecords[8][20]={};
+  uint8_t traceCount=0;
   // STATS2 endpoints: counters wrap; boot maxima/sticky invalid state are not deltas.
   bool diagnosticMeasured=false;
   uint32_t diagnosticBefore[10]={},diagnosticAfter[10]={};
@@ -64,7 +68,8 @@ void tick();
 // Owner-loop query for sequential controls; no locks, sleeps or transfers.
 bool requestDue();
 bool healthy();
-bool stop();
+// Optional observer readout requires caller confirmation that ADC workers stopped.
+bool stop(bool collectTrace=false);
 const Stats& stats();
 }
 #endif

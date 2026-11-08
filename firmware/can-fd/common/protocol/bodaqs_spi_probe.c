@@ -146,13 +146,13 @@ static uint8_t command(BodaqsSpiProbeEngine *e,BodaqsSpiProbeFrame *q,BodaqsSpiP
             if(q->fragment) return BODAQS_PROBE_ARGUMENT;
             e->active=false;return BODAQS_PROBE_OK;
         }
-        if(q->fragment>7) return BODAQS_PROBE_ARGUMENT;
+        if(q->fragment>24) return BODAQS_PROBE_ARGUMENT;
         const uint32_t counters[]={e->stats.requests,e->stats.malformed,e->stats.rejected,
             e->stats.prepared_fragments,e->stats.repeat_fragments,e->stats.selected_objects,
             e->stats.retired_objects,e->stats.duplicate_acks,e->stats.bad_acks,e->stats.cases};
         r->payload_length=40;
         const uint32_t metadata[]={1,BODAQS_SPI_PROBE_CRC_TABLE,e->component_epoch,e->component_invalid,e->component_clock!=NULL,0,0,0,0,0};
-        const uint32_t *page=q->fragment==7?e->flow_stats:q->fragment==6?e->turnover_stats:q->fragment==5?e->receive_stats:
+        const uint32_t *page=q->fragment>=8?e->trace_stats:q->fragment==7?e->flow_stats:q->fragment==6?e->turnover_stats:q->fragment==5?e->receive_stats:
             q->fragment==4?metadata:q->fragment==3?e->component_stats:
             q->fragment==2?e->diagnostic_stats:q->fragment?e->adapter_stats:counters;
         for(unsigned i=0;i<10;++i) put32(r->payload+4*i,page[i]);
