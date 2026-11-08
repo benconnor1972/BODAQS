@@ -45,7 +45,12 @@ static const auto epoch = std::chrono::steady_clock::now();
 static std::atomic<int64_t> frozenUs{-1}, steppedUs{-1};
 unsigned long micros() { if(steppedUs>=0)return (unsigned long)steppedUs.fetch_add(1); if(frozenUs>=0)return (unsigned long)frozenUs.load();return (unsigned long)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-epoch).count(); }
 unsigned long millis() { return micros()/1000; }
-int64_t esp_timer_get_time() { return micros(); }
+// ESP timer is 64-bit even when Arduino micros() wraps at 32 bits on Windows.
+int64_t esp_timer_get_time() {
+  if(steppedUs>=0)return steppedUs.fetch_add(1);
+  if(frozenUs>=0)return frozenUs.load();
+  return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-epoch).count();
+}
 void delay(unsigned long ms) { if(steppedUs>=0){steppedUs+=ms*1000;return;} std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
 void delayMicroseconds(unsigned int us) { if(steppedUs>=0){steppedUs+=us;return;} std::this_thread::sleep_for(std::chrono::microseconds(us)); }
 void pinMode(uint8_t, uint8_t) {}
@@ -474,7 +479,7 @@ int main() {
   puts("real ADC: same-microsecond ISR entry before START marker is ambiguous, later distinct-tick completion paired passed");
 #if TEST_CASE_RUNNER
   releaseWaiters=true;
-  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v14-")!=std::string::npos);
+  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v15-")!=std::string::npos);
   puts(Serial.output.c_str());Serial.output.clear();SpiMeasurementProbe::command("status");
   assert(Serial.output.find("\"logger_build\":")!=std::string::npos);puts(Serial.output.c_str());Serial.output.clear();
   // Public runner, deterministic clock boundary: 10 seconds has 5000 midpoints
@@ -890,14 +895,42 @@ int main() {
   }
   assert(delayedRetries[0]>delayedRetries[2]);
   replies.assign(2,std::array<uint8_t,256>{});
-  for(unsigned cid=73;cid<=76;++cid) {
+  for(unsigned cid=73;cid<=81;++cid) {
+    if(cid>=76 && cid<=80) {
+      traceEmulated=traceFailPage=0;
+      if(cid==80) {steppedUs=(INT64_C(1)<<32)-1020000;bulkLastHigh=0;}
+      if(cid==76)for(const char* invalid:{
+          "case 76 owner_flow 256 16000000 4 1200 cached 500 3 1 0 10000 2",
+          "case 76 owner_flow 256 16000000 4 1200 cached 500 3 1 0 10000 1 extra",
+          "case 76 owner_pipe 256 16000000 4 1200 cached 500 3 1 0 10000 1"}) {
+        SpiMeasurementProbe::command(invalid);
+        assert(Serial.output.find("invalid_profile")!=std::string::npos);Serial.output.clear();
+      }
+      char cmd[96];snprintf(cmd,sizeof(cmd),"case %u owner_flow 256 16000000 4 %u cached 500 3 1 0 10000 %u",
+          cid,cid==78?100:1200,cid==77?0:1);
+      SpiMeasurementProbe::command(cmd);assert(Serial.output.empty());
+      const auto began=steppedUs.load();
+      while(Serial.output.empty()) {
+        delayMicroseconds(10);SpiMeasurementProbe::loop();
+        if(cid==79 && steppedUs.load()-began>1040000)SpiMeasurementProbe::command("stop");
+      }
+      assert(!master.active);
+      if(cid==76 || cid==80) {
+        if(Serial.output.find("\"complete\":true,\"closed\":true")==std::string::npos) {
+          auto offset=Serial.output.find("\"dispatch_trace\"");
+          fprintf(stderr,"dispatch case %u: %s; %s\n",cid,Serial.output.substr(0,150).c_str(),Serial.output.substr(offset,260).c_str());
+        }
+        assert(Serial.output.find("\"complete\":true,\"closed\":true")!=std::string::npos);
+      }
+      puts(Serial.output.c_str());Serial.output.clear();continue;
+    }
     traceEmulated=cid==75?2:1;traceFailPage=cid==74?12:0;
-    probeTestStopFailure=cid==76;const unsigned beforeQueries=traceQueries;
+    probeTestStopFailure=cid==81;const unsigned beforeQueries=traceQueries;
     char cmd[96];snprintf(cmd,sizeof(cmd),"case %u owner_flow 128 8000000 4 100 cached 500 3 1 0 10000",cid);
     SpiMeasurementProbe::command(cmd);assert(Serial.output.empty());
     while(Serial.output.empty()){delayMicroseconds(10);SpiMeasurementProbe::loop();}
     const auto& trace=SpiProbeTransport::stats();
-    if(cid==76) {
+    if(cid==81) {
       assert(traceQueries==beforeQueries && !trace.traceMeasured);
       assert(!trace.earlyMeasured && trace.earlyBefore[0]==1 && trace.earlyAfter[0]==0);
       assert(Serial.output.find("adc_stop_incomplete_reboot_required")!=std::string::npos);
@@ -915,7 +948,7 @@ int main() {
   puts("Public trace collector: successful, partial, disabled and failed worker-stop skips all trace controls PASS");
   rowValueFixture=false;forceReadyPin=true;steppedUs=-1;bulkLastHigh=0;
   puts("Public pipeline: real owner rows, loss recovery, bounded per-request exhaustion despite other nodes progressing, STOP, reuse and rail failure passed");
-  uint32_t caseId=77;
+  uint32_t caseId=82;
   for(uint16_t frame: {64,128,256})for(uint32_t hz: {8000000U,16000000U}) {
     assert(SpiProbeTransport::begin(board,caseId++,frame,hz,4));
     for(unsigned attempts=0;attempts<1000000 && SpiProbeTransport::stats().retiredObjects<4;++attempts)SpiProbeTransport::tick();

@@ -104,7 +104,7 @@ uint32_t us_() {return static_cast<uint32_t>(esp_timer_get_time());}
 BodaqsSpiProbeFrame request_(uint8_t opcode) {
   BodaqsSpiProbeFrame f{};f.opcode=opcode;f.case_id=s_caseId;f.profile=s_profile;return f;
 }
-bool exchange_(const BodaqsSpiProbeFrame& q,BodaqsSpiProbeFrame& reply,bool timed) {
+bool exchange_(const BodaqsSpiProbeFrame& q,BodaqsSpiProbeFrame& reply,bool timed,SpiProbeTransport::ExchangeObservation* observation=nullptr) {
   uint32_t t0=us_();
   if(!bodaqs_spi_probe_encode(&q,s_tx,s_bytes))return false;
   if(timed)TimingStats_record(s_stats.encode,us_()-t0);
@@ -124,6 +124,10 @@ bool exchange_(const BodaqsSpiProbeFrame& q,BodaqsSpiProbeFrame& reply,bool time
   const bool ok=SharedSpiBus::transfer(s_board->can_fd_master.cs_pin,
       SPISettings(s_hz,MSBFIRST,SPI_MODE0),s_tx,s_rx,s_bytes,50,nullptr,nullptr,&context);
   s_lastTransferUs=us_();
+  if(observation) {
+    observation->replyStatus=ok?2:1;
+    if(ok) {observation->cs=context.csAssertUs;observation->release=context.csReleaseUs;}
+  }
   if(ok) {
     s_haveTransfer=true;s_lastRequestUs=context.csAssertUs;s_haveRequest=true;
     if(timed) {
@@ -136,6 +140,11 @@ bool exchange_(const BodaqsSpiProbeFrame& q,BodaqsSpiProbeFrame& reply,bool time
   s_lockFailures=0;
   t0=us_();const auto reason=bodaqs_spi_probe_decode_result(s_rx,s_bytes,&reply);
   const bool valid=reason==BODAQS_SPI_PROBE_DECODE_OK;
+  if(observation && valid) {
+    observation->replyOpcode=reply.opcode;observation->replyNode=reply.node;
+    observation->replyFragment=reply.fragment;observation->replyObject=reply.object_id;
+    observation->replyStatus=(reply.case_id==s_caseId && reply.profile==s_profile)?4:3;
+  }
   if(timed)TimingStats_record(s_stats.decode,us_()-t0);
   if(timed) {
     ++s_stats.decodeCounts[reason];
@@ -274,7 +283,12 @@ bool begin(const board::BoardProfile& board,uint32_t caseId,uint16_t bytes,uint3
   s_beforeEngine=masterStats_(0,s_stats.masterBefore);
   s_progressUs=us_();s_healthy=true;return true;
 }
-void tick() {
+DispatchState dispatchState() {
+  return {s_lastRequestUs,s_lastTransferUs,static_cast<uint8_t>(s_stats.pendingRequests),
+      static_cast<uint8_t>((s_haveRequest?1:0)|(s_haveTransfer?2:0))};
+}
+void tick(ExchangeObservation* observation) {
+  if(observation)*observation=ExchangeObservation{};
   if(!s_open || !s_entered || !s_healthy)return;
   // Defer without acquiring the bus or sleeping; caller continues row/STOP work.
   if(s_haveTransfer && static_cast<uint32_t>(us_()-s_lastTransferUs)<25) {++s_stats.pacingDeferred;++s_stats.csGuardDeferred;return;}
@@ -296,7 +310,11 @@ void tick() {
     else {while(n.mask&(1UL<<q.fragment))++q.fragment;}
   }
   BodaqsSpiProbeFrame r{};
-  if(exchange_(q,r,true)) {
+  if(observation) {
+    observation->requestOpcode=q.opcode;observation->requestNode=q.node;
+    observation->requestFragment=q.fragment;observation->requestObject=q.object_id;
+  }
+  if(exchange_(q,r,true,observation)) {
     const uint32_t validating=us_();consume_(r);
     TimingStats_record(s_stats.validate,us_()-validating);
   }

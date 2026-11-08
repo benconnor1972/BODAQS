@@ -66,7 +66,20 @@ struct Stats {
 bool begin(const board::BoardProfile& board,uint32_t caseId,uint16_t bytes,uint32_t hz,uint8_t nodes,
     CrcMode crcMode=CrcMode::Legacy,uint32_t startIntervalUs=0,bool switchMode=false,
     bool pipelined=false,bool clockOnly=false,uint32_t retryUs=5000);
-void tick();
+// Optional logger-local observation, never an authority for dispatch or ACK.
+struct DispatchState {
+  uint32_t lastCs=0,lastTransferEnd=0;
+  uint8_t pending=0,clockState=0; // bit0: lastCs known; bit1: lastTransferEnd known
+};
+struct ExchangeObservation {
+  uint32_t cs=0,release=0,requestObject=0,replyObject=0;
+  uint8_t requestOpcode=0,requestNode=0,requestFragment=0;
+  uint8_t replyOpcode=0,replyNode=0,replyFragment=0;
+  uint8_t replyStatus=0; // 0=no exchange, 1=transfer failure, 2=decode failure,
+                        // 3=stale case/profile, 4=decoded matching case/profile
+};
+DispatchState dispatchState();
+void tick(ExchangeObservation* observation=nullptr);
 // Owner-loop query for sequential controls; no locks, sleeps or transfers.
 bool requestDue();
 bool healthy();

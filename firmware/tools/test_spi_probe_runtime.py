@@ -93,17 +93,17 @@ def main():
             cases = [event for event in events if event['type'] == 'case']
             if args.capture:
                 args.capture.write_text('\n'.join(json.dumps(event) for event in events) + '\n', encoding='utf-8')
-            assert [case['case_id'] for case in cases] == [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, *range(33,77)]
+            assert [case['case_id'] for case in cases] == [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, *range(33,82)]
             assert (cases[0]['rows'], cases[0]['missed_rows']) == (5000, 0)
             assert (cases[1]['rows'], cases[1]['missed_rows']) == (49, 1)
             assert (cases[2]['rows'], cases[2]['missed_rows']) == (1, 1)
             assert (cases[3]['rows'], cases[3]['missed_rows']) == (0, 50)
             assert cases[8]['outcome'] == 'failed' and cases[8]['elapsed_us'] < 100000
             for case in cases:
-                assert case['workers_stopped']==(case['case_id']!=76) and case['profile']['actual_sck_hz'] is None
+                assert case['workers_stopped']==(case['case_id']!=81) and case['profile']['actual_sck_hz'] is None
                 assert case['accepted_bytes'] == case['unique_objects'] * 1008
                 assert case['valid_responses'] <= case['slots']
-                assert case['schema'] == 'bodaqs.spi-probe.v14'
+                assert case['schema'] == 'bodaqs.spi-probe.v15'
                 cost=case['logger_cost'];cadence=cost['cadence']
                 assert cost['crc_algorithm']==('bitwise' if args.crc_bitwise else 'table')
                 assert case['artifacts']['logger_build'].endswith('-crc'+str(int(not args.crc_bitwise)))
@@ -143,6 +143,21 @@ def main():
             assert rail_fault['adc_status'] == 'failed' and rail_fault['candidate_evidence'] == 'failed'
             print('Public rail-fault capture through analyzer CLI: no observed ADC rows cannot report healthy passed')
             report = json.loads(analyzed.stdout)
+            for cid in (76,77,78,79,80):
+                c=next(c for c in report['cases'] if c['case_id']==cid)
+                trace=c['logger_dispatch_trace']
+                assert trace['status']==('observed' if cid in (76,80) else 'disabled' if cid==77 else 'incomplete')
+                if cid in (76,77,80):
+                    assert trace['window_summary']['status']=='observed'
+                    assert trace['window_summary']['exchanges']>0
+                if cid in (76,80):
+                    assert trace['decision_cycles']['row_reserve']>0 and trace['decision_cycles']['pacing']>0
+                    assert trace['exchanges']>0 and trace['start_intervals_us']
+                    assert any(r['reads'] and r['starts'] for r in trace['records'])
+                    assert any(r['published'] for r in trace['records'])
+                    assert {r['request_opcode'] for r in trace['records']} >= {2,3}
+                if cid in (78,79):assert c['candidate_evidence']=='failed'
+            print('Dispatch trace: bounded window, off control, partial STOP, ADC/row/transfer events and Arduino clock wrap PASS')
             for cid in (53,54,55):
                 flow=next(c for c in report['cases'] if c['case_id']==cid)
                 assert flow['master_flow_control']['status']=='observed'

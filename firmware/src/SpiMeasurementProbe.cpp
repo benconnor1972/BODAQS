@@ -7,6 +7,7 @@
 #include "SpiProbeTransport.h"
 #include "SpiProbeRows.h"
 #include "SpiProbeCodecConfig.h"
+#include "SpiDispatchTrace.h"
 #include "esp_timer.h"
 #include "freertos/task.h"
 #include <stdio.h>
@@ -48,6 +49,10 @@ struct Case {
   uint32_t rows=0,missedRows=0,commandErrors=0;
 } s_case;
 bool s_ready=false,s_blocked=false;
+SpiDispatchTrace s_dispatchTrace;
+SpiDispatchRecord s_dispatchRecord;
+SpiProbeTransport::ExchangeObservation s_dispatchExchange;
+uint32_t s_dispatchCounters[6]={};
 uint32_t s_lastCaseId=0;
 char s_line[96];
 uint8_t s_lineLength=0;
@@ -56,7 +61,7 @@ bool s_lineOverflow=false;
 constexpr uint32_t kRowGuardUs=800;
 uint64_t now_() { return static_cast<uint64_t>(esp_timer_get_time()); }
 void error_(const char* reason) {
-  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v14\",\"type\":\"error\",\"reason\":\"%s\",\"logger_build\":\"%s\"}\n",reason,BODAQS_SPI_PROBE_BUILD);
+  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v15\",\"type\":\"error\",\"reason\":\"%s\",\"logger_build\":\"%s\"}\n",reason,BODAQS_SPI_PROBE_BUILD);
 }
 void summary_(const TimingSummary& s) {
   Serial.printf("{\"count\":%lu,\"min_us\":%lu,\"max_us\":%lu,\"total_us\":%llu}",
@@ -76,6 +81,30 @@ void row_(const SpiProbeRow& r) {
   Serial.printf("{\"index\":%lu,\"scheduled_us\":%llu,\"published_us\":%llu,\"counts\":[%ld,%ld],\"conversion\":[%lu,%lu],\"acquired_us\":[%llu,%llu],\"valid_mask\":%u,\"fresh_mask\":%u}",
       (unsigned long)r.index,(unsigned long long)r.scheduledUs,(unsigned long long)r.publishedUs,
       (long)r.counts[0],(long)r.counts[1],(unsigned long)r.conversion[0],(unsigned long)r.conversion[1],(unsigned long long)r.acquiredUs[0],(unsigned long long)r.acquiredUs[1],r.validMask,r.freshMask);
+}
+void dispatchTrace_() {
+  const auto& t=s_dispatchTrace;
+  Serial.printf("\"dispatch_trace\":{\"enabled\":%s,\"complete\":%s,\"closed\":%s,\"start_us\":%lu,\"duration_us\":%lu,\"capacity\":%u,\"record_bytes\":%u,\"cycles\":%lu,\"overflow\":%lu,\"observed_end_us\":%lu,",
+      t.enabled?"true":"false",t.complete()?"true":"false",t.closed?"true":"false",
+      (unsigned long)t.kStartUs,(unsigned long)t.kDurationUs,t.kCapacity,(unsigned)sizeof(SpiDispatchRecord),
+      (unsigned long)t.cycles,(unsigned long)t.overflow,(unsigned long)t.observedEnd);
+  Serial.printf("\"window\":[%lu,%lu,%lu,%lu,%lu,%lu],\"records\":[",
+      (unsigned long)t.windowBegin,(unsigned long)t.windowEnd,(unsigned long)t.slotsBegin,
+      (unsigned long)t.slotsEnd,(unsigned long)t.rowsBegin,(unsigned long)t.rowsEnd);
+  for(uint16_t i=0;i<t.count;++i) {
+    const auto& r=t.records[i];if(i)Serial.print(',');
+    Serial.printf("[%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,",
+        (unsigned long)r.begin,(unsigned long)r.readyEnd,(unsigned long)r.rowEnd,(unsigned long)r.startEnd,
+        (unsigned long)r.decisionAt,(unsigned long)r.end,(unsigned long)r.spanEnd,(unsigned long)r.nextRow,
+        (unsigned long)r.lastCs,(unsigned long)r.lastTransferEnd,(unsigned long)r.cs,(unsigned long)r.release,
+        (unsigned long)r.row,(unsigned long)r.slot,(unsigned long)r.requestObject,(unsigned long)r.replyObject,
+        (unsigned long)r.validateUs,(unsigned long)r.expectedUs,(unsigned long)r.objectUs);
+    Serial.printf("%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u]",
+        r.cycles,r.decision,r.pendingBefore,r.pendingAfter,r.adcBefore,r.adcAfter,r.reads,r.starts,
+        r.published,r.clockState,r.requestOpcode,r.requestNode,r.requestFragment,
+        r.replyOpcode,r.replyNode,r.replyFragment,r.replyStatus,r.outcomeFlags);
+  }
+  Serial.print("]},");
 }
 void publishRow_() {
   const uint64_t current=now_();
@@ -114,7 +143,7 @@ void emit_(const char* outcome,const char* reason,bool stopped) {
   const auto bus=SharedSpiBus::probeSnapshot();
   static const SpiProbeTransport::Stats empty;
   const auto& t=s_case.transportAttempted?SpiProbeTransport::stats():empty;
-  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v14\",\"type\":\"case\",\"case_id\":%lu,\"outcome\":\"%s\",\"reason\":\"%s\",",
+  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v15\",\"type\":\"case\",\"case_id\":%lu,\"outcome\":\"%s\",\"reason\":\"%s\",",
       (unsigned long)s_case.id,outcome,reason);
   Serial.printf("\"artifacts\":{\"logger_build\":\"%s\",\"master_build\":\"external-manifest\",\"protocol\":1},",BODAQS_SPI_PROBE_BUILD);
   Serial.printf("\"profile\":{\"mode\":\"%s\",\"frame_bytes\":%u,\"requested_sck_hz\":%lu,\"actual_sck_hz\":null,\"actual_sck_basis\":\"unmeasured\",\"guard_us\":25,\"nodes\":%u,\"duration_ms\":%lu,\"row_hz\":500,\"ain\":[0,4],\"configured_sps\":[1000,1000],\"crc_mode\":\"%s\",\"start_interval_us\":%lu,\"retry_us\":%lu},",
@@ -151,6 +180,7 @@ void emit_(const char* outcome,const char* reason,bool stopped) {
   const char* decisions[]={"adc_only","row_reserve","cs_guard","pacing","dispatch","other"};
   for(uint8_t i=0;i<6;++i) {if(i)Serial.print(',');Serial.printf("\"%s\":",decisions[i]);summary_(s_case.decision[i]);}
   Serial.print("}}},");
+  dispatchTrace_();
   Serial.printf("\"elapsed_us\":%llu,\"rows\":%lu,\"missed_rows\":%lu,\"startup_included\":true,\"workers_stopped\":%s,",
       (unsigned long long)s_case.elapsedUs,(unsigned long)s_case.rows,(unsigned long)s_case.missedRows,stopped?"true":"false");
   Serial.printf("\"slots\":%lu,\"valid_responses\":%lu,\"unique_objects\":%lu,\"accepted_bytes\":%llu,\"retired_objects\":%lu,",
@@ -295,27 +325,27 @@ void begin(const board::BoardProfile& board) {
       AnalogInputManager::configureFromConfig(s_cfg,500)==500 && SharedSpiBus::ready() &&
       AnalogInputManager::activeChannelCount(0)==1 && AnalogInputManager::activeChannelCount(1)==1 &&
       AnalogInputManager::configuredDataRateSps(0)==1000 && AnalogInputManager::configuredDataRateSps(1)==1000;
-  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v14\",\"type\":\"ready\",\"ready\":%s,\"bench_only\":true,\"logger_build\":\"%s\"}\n",s_ready?"true":"false",BODAQS_SPI_PROBE_BUILD);
+  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v15\",\"type\":\"ready\",\"ready\":%s,\"bench_only\":true,\"logger_build\":\"%s\"}\n",s_ready?"true":"false",BODAQS_SPI_PROBE_BUILD);
 }
 void command(const char* line) {
   if(!line)return;
   if(strcmp(line,"stop")==0) {if(s_case.active)finish_("stopped","command");else error_("idle");return;}
   if(s_case.active) {++s_case.commandErrors;return;}
   if(strcmp(line,"status")==0) {
-    Serial.printf("{\"schema\":\"bodaqs.spi-probe.v14\",\"type\":\"status\",\"ready\":%s,\"blocked\":%s,\"logger_build\":\"%s\"}\n",s_ready?"true":"false",s_blocked?"true":"false",BODAQS_SPI_PROBE_BUILD);return;
+    Serial.printf("{\"schema\":\"bodaqs.spi-probe.v15\",\"type\":\"status\",\"ready\":%s,\"blocked\":%s,\"logger_build\":\"%s\"}\n",s_ready?"true":"false",s_blocked?"true":"false",BODAQS_SPI_PROBE_BUILD);return;
   }
   if(!s_ready || !s_board) {error_("not_ready");return;}
   if(s_blocked || !AnalogInputManager::probeWorkersStopped()) {error_("reboot_required");return;}
   if(strlen(line)>=sizeof(s_line)) {error_("command_too_long");return;}
   char copy[sizeof(s_line)];strcpy(copy,line);
-  char* tokens[14]={};char* save=nullptr;uint8_t n=0;
-  for(char* t=strtok_r(copy," \t",&save);t && n<14;t=strtok_r(nullptr," \t",&save))tokens[n++]=t;
-  uint32_t id=0,frame=0,hz=0,nodes=0,duration=0,interval=0,mask=3,core=0,cycle=0,retry=5000;
+  char* tokens[15]={};char* save=nullptr;uint8_t n=0;
+  for(char* t=strtok_r(copy," \t",&save);t && n<15;t=strtok_r(nullptr," \t",&save))tokens[n++]=t;
+  uint32_t id=0,frame=0,hz=0,nodes=0,duration=0,interval=0,mask=3,core=0,cycle=0,retry=5000,dispatchTrace=0;
   const bool ownerRowsMode=n>=3 && (strcmp(tokens[2],"owner_flow")==0 || strcmp(tokens[2],"owner_pipe")==0 || strcmp(tokens[2],"owner_rows")==0 || strcmp(tokens[2],"owner_adc")==0);
   const bool pipelineMode=n>=3 && (strcmp(tokens[2],"owner_flow")==0 || strcmp(tokens[2],"owner_pipe")==0);
   const bool ownerMode=ownerRowsMode || (n>=3 && strcmp(tokens[2],"owner")==0);
   const bool executionMode=ownerMode || (n>=3 && strcmp(tokens[2],"workers")==0);
-  if((n!=7 && n!=9 && n!=12 && n!=13) || strcmp(tokens[0],"case") || !decimal_(tokens[1],id) || !id ||
+  if((n!=7 && n!=9 && n!=12 && n!=13 && n!=14) || strcmp(tokens[0],"case") || !decimal_(tokens[1],id) || !id ||
       !decimal_(tokens[3],frame) || (frame!=64 && frame!=128 && frame!=256) ||
       !decimal_(tokens[4],hz) || (hz!=8000000 && hz!=16000000) ||
       !decimal_(tokens[5],nodes) || nodes<1 || nodes>4 ||
@@ -328,11 +358,13 @@ void command(const char* line) {
                  (cycle && cycle<1500) || cycle>20000 ||
                  (ownerMode && core!=static_cast<uint32_t>(xPortGetCoreID())))) ||
       (ownerRowsMode && (mask!=3 || cycle!=0)) ||
-      (n==13 && (!pipelineMode || !decimal_(tokens[12],retry) || (retry!=5000 && retry!=10000 && retry!=20000)))) {error_("invalid_profile");return;}
+      (n>=13 && (!pipelineMode || !decimal_(tokens[12],retry) || (retry!=5000 && retry!=10000 && retry!=20000))) ||
+      (n==14 && (strcmp(tokens[2],"owner_flow") || !decimal_(tokens[13],dispatchTrace) || dispatchTrace>1))) {error_("invalid_profile");return;}
   if(id<=s_lastCaseId) {error_("non_increasing_case_id");return;}
   // A valid start attempt owns its ID even when rail/worker/peer startup fails.
   s_lastCaseId=id;
   s_case=Case{};s_case.id=id;s_case.frame=frame;s_case.hz=hz;s_case.nodes=nodes;s_case.durationMs=duration;
+  s_dispatchTrace.reset(dispatchTrace!=0);
   s_case.retryUs=retry;
   s_case.clockOnly=strcmp(tokens[2],"owner_flow")==0;
   s_case.pipelined=s_case.clockOnly || strcmp(tokens[2],"owner_pipe")==0;
@@ -390,10 +422,33 @@ void loop() {
   if(s_case.ownerRows) {
     if(PowerManager::analogRailFaultActive() || PowerManager::analogRailFaultLatched() || !PowerManager::analogRailEnabled()) {finish_("failed","analog_rail_fault");return;}
     const uint64_t cycleStart=now_();
+    const bool tracing=s_case.clockOnly && s_dispatchTrace.observe(static_cast<uint32_t>(cycleStart-s_case.startUs),
+        SpiProbeTransport::stats().slots,s_case.rows);
+    auto& record=s_dispatchRecord;
+    auto& exchange=s_dispatchExchange;
+    uint64_t validateBefore=0,expectedBefore=0,objectBefore=0;
+    const uint32_t rowsBefore=s_case.rows;
+    if(tracing) {
+      record=SpiDispatchRecord{};exchange=SpiProbeTransport::ExchangeObservation{};
+      const auto state=SpiProbeTransport::dispatchState();
+      record.begin=static_cast<uint32_t>(cycleStart-s_case.startUs);
+      record.lastCs=state.lastCs-static_cast<uint32_t>(s_case.startUs);
+      record.lastTransferEnd=state.lastTransferEnd-static_cast<uint32_t>(s_case.startUs);
+      record.clockState=state.clockState;record.pendingBefore=state.pending;
+      record.adcBefore=s_case.ownerStep[0]|(s_case.ownerStep[1]<<2);
+      const auto& stats=SpiProbeTransport::stats();
+      validateBefore=stats.validate.totalUs;expectedBefore=stats.expectedCrc.totalUs;objectBefore=stats.objectCrc.totalUs;
+      s_dispatchCounters[0]=stats.validResponses;s_dispatchCounters[1]=stats.duplicates;
+      s_dispatchCounters[2]=stats.stale;s_dispatchCounters[3]=stats.acceptErrors;
+      s_dispatchCounters[4]=stats.uniqueObjects;s_dispatchCounters[5]=stats.retiredObjects;
+    }
     // Drain completed conversions first, then publish the due row before starts.
     for(uint8_t adc=0;adc<2;++adc)if(s_case.ownerStep[adc]==2) {
       if(now_()-s_case.ownerStartedUs[adc]>6000) {++s_case.sequenceTimeouts;finish_("failed","adc_ready_timeout");return;}
-      if(AnalogInputManager::probeDataReady(adc) && !ownerTransfer_(adc,2))return;
+      if(AnalogInputManager::probeDataReady(adc)) {
+        if(!ownerTransfer_(adc,2))return;
+        if(tracing)record.reads|=1U<<adc;
+      }
     }
     // ADC work may cross the finite window: never fabricate an end-of-case row.
     if(now_()>=s_case.startUs+static_cast<uint64_t>(s_case.durationMs)*1000) {finish_("complete","duration");return;}
@@ -403,17 +458,22 @@ void loop() {
     for(uint8_t adc=0;adc<2;++adc)if(s_case.ownerStep[adc]==0) {
       // Bounded WREG/START pair, using the same physical commands as workers.
       if(!ownerTransfer_(adc,0) || !ownerTransfer_(adc,1))return;
+      if(tracing)record.starts|=1U<<adc;
     }
     const uint64_t startEnd=now_();
     uint8_t decision=0;
     bool healthy=true;
     if(s_case.bulk) {
       const uint64_t current=now_();
+      if(tracing) {
+        record.decisionAt=static_cast<uint32_t>(current-s_case.startUs);
+        record.nextRow=static_cast<uint32_t>(s_case.nextRowUs-s_case.startUs);
+      }
       if(current>=s_case.nextRowUs || s_case.nextRowUs-current<=kRowGuardUs) {++s_case.deadlineDeferrals;decision=1;}
       else {
         const auto& before=SpiProbeTransport::stats();
         const uint32_t slots=before.slots,guard=before.csGuardDeferred,pace=before.intervalDeferred;
-        SpiProbeTransport::tick();
+        SpiProbeTransport::tick(tracing?&exchange:nullptr);
         const auto& after=SpiProbeTransport::stats();
         decision=after.slots!=slots?4:after.csGuardDeferred!=guard?2:after.intervalDeferred!=pace?3:5;
         if(decision==4)TimingStats_record(s_case.dispatchHeadroom,s_case.nextRowUs-current);
@@ -427,6 +487,33 @@ void loop() {
     if(s_case.bulk && decision!=1)TimingStats_record(s_case.transportService,end-startEnd);
     TimingStats_record(s_case.ownerCycle,end-cycleStart);
     TimingStats_record(s_case.decision[decision],end-cycleStart);
+    if(tracing) {
+      record.readyEnd=static_cast<uint32_t>(readyEnd-s_case.startUs);
+      record.rowEnd=static_cast<uint32_t>(rowEnd-s_case.startUs);
+      record.startEnd=static_cast<uint32_t>(startEnd-s_case.startUs);
+      record.end=record.spanEnd=static_cast<uint32_t>(end-s_case.startUs);
+      record.decision=decision;record.row=s_case.rows;record.published=s_case.rows!=rowsBefore;
+      record.adcAfter=s_case.ownerStep[0]|(s_case.ownerStep[1]<<2);
+      const auto& stats=SpiProbeTransport::stats();
+      record.pendingAfter=static_cast<uint8_t>(stats.pendingRequests);record.slot=stats.slots;
+      record.validateUs=static_cast<uint32_t>(stats.validate.totalUs-validateBefore);
+      record.expectedUs=static_cast<uint32_t>(stats.expectedCrc.totalUs-expectedBefore);
+      record.objectUs=static_cast<uint32_t>(stats.objectCrc.totalUs-objectBefore);
+      record.outcomeFlags=(stats.validResponses!=s_dispatchCounters[0]?1:0)|
+          (stats.duplicates!=s_dispatchCounters[1]?2:0)|(stats.stale!=s_dispatchCounters[2]?4:0)|
+          (stats.acceptErrors!=s_dispatchCounters[3]?8:0)|(stats.uniqueObjects!=s_dispatchCounters[4]?16:0)|
+          (stats.retiredObjects!=s_dispatchCounters[5]?32:0);
+      record.requestOpcode=exchange.requestOpcode;record.requestNode=exchange.requestNode;
+      record.requestFragment=exchange.requestFragment;record.requestObject=exchange.requestObject;
+      record.replyOpcode=exchange.replyOpcode;record.replyNode=exchange.replyNode;
+      record.replyFragment=exchange.replyFragment;record.replyObject=exchange.replyObject;
+      record.replyStatus=exchange.replyStatus;
+      if(exchange.replyStatus>=2) {
+        record.cs=exchange.cs-static_cast<uint32_t>(s_case.startUs);
+        record.release=exchange.release-static_cast<uint32_t>(s_case.startUs);
+      }
+      s_dispatchTrace.append(record);
+    }
     if(!healthy)finish_("failed","bulk_fault_or_stalled");
     return;
   }

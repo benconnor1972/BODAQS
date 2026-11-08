@@ -20,7 +20,9 @@ SCHEMA_V10 = "bodaqs.spi-probe.v10"
 SCHEMA_V11 = "bodaqs.spi-probe.v11"
 SCHEMA_V13 = "bodaqs.spi-probe.v13"
 SCHEMA_V14 = "bodaqs.spi-probe.v14"
-TRACE_SCHEMAS = (SCHEMA_V13,SCHEMA_V14)
+SCHEMA_V15 = "bodaqs.spi-probe.v15"
+EARLY_SCHEMAS = (SCHEMA_V14,SCHEMA_V15)
+TRACE_SCHEMAS = (SCHEMA_V13,*EARLY_SCHEMAS)
 RETRY_SCHEMAS = (SCHEMA_V11,*TRACE_SCHEMAS)
 FLOW_SCHEMAS = (SCHEMA_V10,*RETRY_SCHEMAS)
 RECEIVE_SCHEMAS = (SCHEMA_V9,*FLOW_SCHEMAS)
@@ -203,7 +205,8 @@ def validate(case):
     v2 = case["schema"] in DIAGNOSTIC_SCHEMAS
     if case["schema"] in TRACE_SCHEMAS:
         reply_trace_report(case)  # validate representation before interpreting it
-    if case["schema"]==SCHEMA_V14:early_report(case)
+    if case["schema"] in EARLY_SCHEMAS:early_report(case)
+    if case["schema"]==SCHEMA_V15:dispatch_trace_report(case)
     counts(case, "case_id elapsed_us rows missed_rows slots valid_responses unique_objects accepted_bytes retired_objects")
     require(0 < case["case_id"] <= 4294967295, "invalid case ID")
     require(case["elapsed_us"] > 0 or (case["outcome"] != "complete" and case["rows"] == 0 and case["accepted_bytes"] == 0), "empty complete timed window")
@@ -342,6 +345,112 @@ def validate(case):
             logger_cost_counts(case)
 
 
+DISPATCH_COLUMNS = ("begin ready_end row_end start_end decision_at end span_end next_row "
+    "last_cs last_transfer_end cs release row slot request_object reply_object "
+    "validate_us expected_us object_us cycles decision pending_before pending_after "
+    "adc_before adc_after reads starts published clock_state request_opcode request_node "
+    "request_fragment reply_opcode reply_node reply_fragment reply_status outcome_flags").split()
+DISPATCH_DECISIONS = ("adc_only","row_reserve","cs_guard","pacing","dispatch","other")
+
+
+def dispatch_trace_report(case):
+    t=case["dispatch_trace"]
+    require(all(type(t[n]) is bool for n in ("enabled","complete","closed")),"invalid dispatch trace flags")
+    counts(t,"start_us duration_us capacity record_bytes cycles overflow observed_end_us")
+    require((t["start_us"],t["duration_us"],t["capacity"],t["record_bytes"])==(1001000,64000,512,96),
+            "unsupported dispatch trace layout")
+    require(isinstance(t["records"],list) and len(t["records"])<=t["capacity"],"invalid dispatch trace arena")
+    require(t["complete"]==(t["enabled"] and t["closed"] and bool(t["records"]) and not t["overflow"]),
+            "inconsistent dispatch trace completeness")
+    if not t["enabled"]:
+        require(not t["records"] and not any(t[n] for n in ("closed","cycles","overflow","observed_end_us")),
+                "disabled dispatch trace contains observations")
+    else:
+        require(case["profile"]["mode"]=="owner_flow","dispatch trace outside owner_flow")
+    cutoff=t["start_us"]+t["duration_us"]
+    window=t["window"]
+    require(isinstance(window,list) and len(window)==6 and
+            all(type(v) is int and 0<=v<=0xffffffff for v in window),"invalid dispatch window endpoints")
+    wb,we,sb,se,rb,re=window
+    require((not wb and not any(window)) or
+            (t["start_us"]<=wb<cutoff and sb<=case["slots"] and rb<=case["rows"] and
+             ((not we and se==re==0) or
+              (cutoff<=we<=case["elapsed_us"] and sb<=se<=case["slots"] and rb<=re<=case["rows"]))),
+            "inconsistent dispatch window endpoints")
+    if t["complete"]:require(we==t["observed_end_us"],"trace/window close mismatch")
+    if t["closed"]:require(cutoff<=t["observed_end_us"]<=case["elapsed_us"],"invalid trace close time")
+    else:require(t["observed_end_us"]==0,"unclosed trace has close time")
+    records=[];previous=None;decision_counts=dict.fromkeys(DISPATCH_DECISIONS,0)
+    for values in t["records"]:
+        require(isinstance(values,list) and len(values)==len(DISPATCH_COLUMNS) and
+                all(type(v) is int and 0<=v<=0xffffffff for v in values),"invalid dispatch record")
+        r=dict(zip(DISPATCH_COLUMNS,values));records.append(r)
+        require(t["start_us"]<=r["begin"]<cutoff and
+                r["begin"]<=r["ready_end"]<=r["row_end"]<=r["start_end"]<=r["decision_at"]<=r["end"]<=r["span_end"]<=case["elapsed_us"],
+                "unordered dispatch stages")
+        require(1<=r["cycles"]<=65535 and 1<=r["decision"]<=5 and
+                all(r[n]<=4 for n in ("pending_before","pending_after")) and
+                all(r[n]<=3 for n in ("reads","starts","clock_state")) and r["published"]<=1 and r["outcome_flags"]<=63 and
+                all(r[n]&3<=2 and r[n]>>2<=2 for n in ("adc_before","adc_after")),"invalid dispatch state")
+        require(r["slot"]<=case["slots"] and r["row"]<=case["rows"],"dispatch counters exceed case")
+        require(r["expected_us"]+r["object_us"]<=r["validate_us"]<=r["end"]-r["decision_at"],
+                "invalid dispatch validation cost")
+        dispatched=r["decision"]==4
+        if r["cycles"]>1:
+            require(not any(r[n] for n in ("reads","starts","published")) and
+                    r["decision"] in (1,2,3) and r["pending_before"]==r["pending_after"] and
+                    r["adc_before"]==r["adc_after"],"coalesced span contains active work")
+        else:require(r["span_end"]==r["end"],"single cycle has extended span")
+        if previous:
+            require(r["begin"]>=previous["span_end"] and
+                    r["pending_before"]==previous["pending_after"] and
+                    r["adc_before"]==previous["adc_after"] and
+                    r["row"]==previous["row"]+r["published"] and
+                    r["slot"]==previous["slot"]+int(dispatched),"dispatch continuity failure")
+            if previous["reply_status"]>=2:
+                require(r["last_cs"]==previous["cs"],"dispatch pacing anchor lost")
+        if r["decision"]==1:
+            require(r["next_row"]<=r["decision_at"]+800,"row-reserve decision outside reserve")
+        else:
+            require(r["next_row"]>r["decision_at"]+800,"transport decision inside row reserve")
+        if dispatched:
+            require(1<=r["reply_status"]<=4 and r["request_opcode"] in (2,3,7),"invalid traced exchange")
+            require(r["request_node"]<case["profile"]["nodes"] and r["request_fragment"]<26,"invalid traced request")
+            if r["reply_status"]>=2:
+                require(r["decision_at"]<=r["cs"]<=r["release"]<=r["end"],"unordered exchange times")
+                if r["clock_state"]&1:
+                    require(((r["cs"]-r["last_cs"])&0xffffffff)>=case["profile"]["start_interval_us"],
+                            "traced start violates pacing")
+        else:
+            require(not any(r[n] for n in ("reply_status","cs","release","request_opcode","request_node",
+                    "request_fragment","request_object","reply_opcode","reply_node","reply_fragment","reply_object",
+                    "validate_us","expected_us","object_us","outcome_flags")),"non-dispatch contains exchange work")
+        require(all(r[n]<=255 for n in ("request_opcode","request_node","request_fragment","reply_opcode","reply_node","reply_fragment")),
+                "invalid dispatch wire identity")
+        decision_counts[DISPATCH_DECISIONS[r["decision"]]]+=r["cycles"]
+        previous=r
+    retained=sum(r["cycles"] for r in records)
+    require(retained+t["overflow"]==t["cycles"],"dispatch trace cycle conservation failure")
+    if t["complete"]:
+        require(sum(r["decision"]==4 for r in records)==se-sb and
+                sum(r["published"] for r in records)==re-rb and records[0]["begin"]==wb,
+                "dispatch trace/window conservation failure")
+    for name,n in decision_counts.items():
+        require(n<=case["logger_cost"]["cadence"]["decisions"][name]["count"],"trace decisions exceed whole run")
+    exchanges=[r for r in records if r["decision"]==4]
+    for name,whole in (("validate_us","validate"),("expected_us","expected_crc"),("object_us","object_crc")):
+        require(sum(r[name] for r in exchanges)<=case["diagnostics"]["timing"][whole]["total_us"],"trace cost exceeds whole run")
+    intervals=[(b["cs"]-a["cs"])&0xffffffff for a,b in zip(exchanges,exchanges[1:])
+               if a["reply_status"]>=2 and b["reply_status"]>=2]
+    return {"status":"disabled" if not t["enabled"] else "observed" if t["complete"] else "incomplete",
+            "metadata":{k:v for k,v in t.items() if k!="records"},"decision_cycles":decision_counts,
+            "window_summary":{"status":"observed" if we else "incomplete" if wb else "not_observed",
+                "elapsed_us":we-wb if we else None,"exchanges":se-sb if we else None,
+                "rows":re-rb if we else None,"exchange_hz":(se-sb)*1e6/(we-wb) if we else None},
+            "exchanges":len(exchanges),"start_intervals_us":intervals,"records":records,
+            "scope":"logger-local software observations; 64ms of cycle starts after 1001ms; final cycle may cross cutoff; idle spans retain first stages and last end only; gaps include observer/outer-loop work; matching decoded replies are not necessarily accepted; no physical-ready or phase-lock proof"}
+
+
 def logger_cost_counts(case):
     cost=case["logger_cost"]; c=cost["cadence"]
     require(cost["crc_algorithm"] in ("table","bitwise"),"unsupported logger CRC algorithm")
@@ -472,7 +581,7 @@ def reply_trace_report(case):
         if flags&2:
             durations["ready_to_publication_us"]=(w[9]-w[8])&0xffffffff
             distance=(w[12]-w[11])&0xffffffff
-            early=case["schema"]==SCHEMA_V14 and early_report(case).get("status")=="observed" and early_report(case).get("enabled") is True
+            early=case["schema"] in EARLY_SCHEMAS and early_report(case).get("status")=="observed" and early_report(case).get("enabled") is True
             invalid=invalid or not (0<=distance<0x80000000 and (distance>0 or early))
         if flags&4:
             durations["publication_to_full_exchange_us"]=(w[10]-w[9])&0xffffffff
@@ -866,7 +975,7 @@ def analyze(data, manifest=None):
         elif processing and processing["status"] == "unknown" and master=="clean":master="unknown"
         flow=flow_report(case) if case["schema"] in FLOW_SCHEMAS else None
         trace=reply_trace_report(case) if case["schema"] in TRACE_SCHEMAS else None
-        early=early_report(case) if case["schema"]==SCHEMA_V14 else None
+        early=early_report(case) if case["schema"] in EARLY_SCHEMAS else None
         if early and early["status"] in ("invalid","failed"):master="failed"
         elif early and early["status"]=="unknown" and master=="clean":master="unknown"
         if trace and trace["status"]=="invalid":master="failed"
@@ -899,6 +1008,8 @@ def analyze(data, manifest=None):
             p["mode"] in ADC_ONLY_MODES or (master == "clean" and case["accepted_bytes"] > 0)) and (
             p["mode"] != "mixed" or baseline == "healthy") and (
             case["schema"] not in DIAGNOSTIC_SCHEMAS or observations in ("observed", "not_applicable"))
+        dispatch=dispatch_trace_report(case) if case["schema"]==SCHEMA_V15 else None
+        if dispatch and dispatch["status"]=="incomplete":failed=True
         control = case["schema"] in DIAGNOSTIC_SCHEMAS and (p["mode"] in ("switch", "shape", "selected", "owner", "workers", *ROW_OWNER_MODES) or
                   p["crc_mode"] == "cached" or p["start_interval_us"] > 0)
         result.append({"case_id": case["case_id"],
@@ -912,7 +1023,8 @@ def analyze(data, manifest=None):
             **({"master_receive_turnover":receive} if receive is not None else {}),
             **({"master_flow_control":flow} if flow is not None else {}),
             **({"master_reply_trace":trace} if trace is not None else {}),
-            **({"master_early_publication":early_report(case)} if case["schema"]==SCHEMA_V14 else {}),
+            **({"master_early_publication":early_report(case)} if case["schema"] in EARLY_SCHEMAS else {}),
+            **({"logger_dispatch_trace":dispatch} if dispatch is not None else {}),
             **({"request_window": case["request_window"]} if case["schema"] in WINDOW_SCHEMAS else {}),
             **({"execution_control": execution_report(case)} if case["schema"] in EXECUTION_SCHEMAS else {}),
             "profile": p, "outcome": case["outcome"], "reason": case["reason"],
@@ -954,7 +1066,7 @@ def analyze(data, manifest=None):
             "pipeline_diagnostics": {k: case["errors"][k] for k in ("stale", "duplicate")},
             "candidate_evidence": "failed" if failed else "diagnostic_control" if control else "clean_measurement_candidate" if clean_candidate else "unknown",
             "raw_measurements": case})
-    return {"schema": "bodaqs.spi-probe-report.v14" if any(c["schema"]==SCHEMA_V14 for c in cases) else "bodaqs.spi-probe-report.v13" if any(c["schema"]==SCHEMA_V13 for c in cases) else "bodaqs.spi-probe-report.v11" if any(c["schema"]==SCHEMA_V11 for c in cases) else "bodaqs.spi-probe-report.v10" if any(c["schema"]==SCHEMA_V10 for c in cases) else "bodaqs.spi-probe-report.v9" if any(c["schema"] == SCHEMA_V9 for c in cases) else "bodaqs.spi-probe-report.v8" if any(c["schema"] == SCHEMA_V8 for c in cases) else "bodaqs.spi-probe-report.v7" if any(c["schema"] == SCHEMA_V7 for c in cases) else "bodaqs.spi-probe-report.v6" if any(c["schema"] == SCHEMA_V6 for c in cases) else "bodaqs.spi-probe-report.v5" if any(c["schema"] == SCHEMA_V5 for c in cases) else "bodaqs.spi-probe-report.v4" if any(c["schema"] in EXECUTION_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v3" if any(c["schema"] in INTEGRITY_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v2" if any(c["schema"] in DIAGNOSTIC_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v1",
+    return {"schema": "bodaqs.spi-probe-report.v15" if any(c["schema"]==SCHEMA_V15 for c in cases) else "bodaqs.spi-probe-report.v14" if any(c["schema"]==SCHEMA_V14 for c in cases) else "bodaqs.spi-probe-report.v13" if any(c["schema"]==SCHEMA_V13 for c in cases) else "bodaqs.spi-probe-report.v11" if any(c["schema"]==SCHEMA_V11 for c in cases) else "bodaqs.spi-probe-report.v10" if any(c["schema"]==SCHEMA_V10 for c in cases) else "bodaqs.spi-probe-report.v9" if any(c["schema"] == SCHEMA_V9 for c in cases) else "bodaqs.spi-probe-report.v8" if any(c["schema"] == SCHEMA_V8 for c in cases) else "bodaqs.spi-probe-report.v7" if any(c["schema"] == SCHEMA_V7 for c in cases) else "bodaqs.spi-probe-report.v6" if any(c["schema"] == SCHEMA_V6 for c in cases) else "bodaqs.spi-probe-report.v5" if any(c["schema"] == SCHEMA_V5 for c in cases) else "bodaqs.spi-probe-report.v4" if any(c["schema"] in EXECUTION_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v3" if any(c["schema"] in INTEGRITY_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v2" if any(c["schema"] in DIAGNOSTIC_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v1",
             "capture_sha256": digest,
             "run_identity": "declared_paired" if manifest else "unknown_without_manifest",
             "manifest": manifest, "serial_events": events,
