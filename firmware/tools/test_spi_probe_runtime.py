@@ -136,6 +136,10 @@ def main():
             unsupported=next(c for c in report['cases'] if c['case_id']==52)
             assert unsupported['raw_measurements']['master']['receive_measured'] is False
             assert unsupported['master_receive_turnover']['status']=='unknown'
+            compat=unsupported['raw_measurements']
+            assert compat['outcome']=='complete' and compat['rows']==50 and compat['missed_rows']==0
+            assert compat['row_publication']['fresh_both']==50
+            assert compat['errors']['accept']==compat['errors']['wire']==compat['errors']['transfer']==0
             switch_failure = next(case for case in report['cases'] if case['case_id'] == 15)
             assert switch_failure['candidate_evidence'] == 'failed'
             diagnostic = switch_failure['raw_measurements']['diagnostics']

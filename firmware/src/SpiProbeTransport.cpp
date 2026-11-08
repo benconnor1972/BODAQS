@@ -252,7 +252,6 @@ bool begin(const board::BoardProfile& board,uint32_t caseId,uint16_t bytes,uint3
   s_lockFailures=0;s_noProgressSlots=0;s_open=true;s_entered=false;s_healthy=false;
   if(!control_(request_(BODAQS_PROBE_BEGIN)))return false;
   s_entered=true;
-  s_beforeEngine=masterStats_(0,s_stats.masterBefore);
   s_beforeAdapter=masterStats_(1,s_stats.adapterBefore);
   s_beforeDiagnostic=masterStats_(2,s_stats.diagnosticBefore);
   const bool processing=masterStats_(3,s_stats.processingBefore);
@@ -261,6 +260,9 @@ bool begin(const board::BoardProfile& board,uint32_t caseId,uint16_t bytes,uint3
   const bool receive=masterStats_(5,s_stats.receiveBefore);
   const bool turnover=masterStats_(6,s_stats.turnoverBefore);
   s_beforeReceive=receive && turnover;
+  // Finish on the original universally supported page. Older peers reject
+  // optional pages; ordered delayed ERROR replies must leave before data starts.
+  s_beforeEngine=masterStats_(0,s_stats.masterBefore);
   s_progressUs=us_();s_healthy=true;return true;
 }
 void tick() {

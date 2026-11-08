@@ -88,6 +88,11 @@ schema zero. Public result v9 adds master.receive_measured and four10-value page
 receive_before/after,turnover_before/after. Receipt means pages were received,
 not validated. ADC-only pages/flag remain zero/false. Old masters promptly reject
 unsupported pages; the reader marks observations unavailable.
+Startup finishes with the original supported STATS0 exchange. A public host
+regression with pages5/6 explicitly rejected caught delayed control ERROR replies
+leaking into the first timed data exchange; completing STATS0 after optional
+queries consumes those earlier FIFO replies. Optional measurements stay unknown.
+This diagnostic ordering is not physical retirement/fence authority.
 
 Analyzer keeps v1..v8 reports unchanged. New master_receive_turnover is observed,
 unknown, invalid or not_applicable. Unknown/unsupported metadata cannot establish
