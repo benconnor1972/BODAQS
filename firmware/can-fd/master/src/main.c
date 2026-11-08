@@ -104,8 +104,9 @@ typedef struct {
     BodaqsSpiProbeStats engine;
 } MasterSpiProbeInfo;
 volatile MasterSpiProbeInfo gMasterSpiProbeInfo;
-/* Boundary-owner fields are never written by main. Publication tick/epoch are
- * main-owned and become readable together with gSpiTransmitReady. */
+/* Retirement fields belong to the boundary owner. Publication observations are
+ * shared with the IRQ-fenced main gap path; tick/epoch become readable together
+ * with gSpiTransmitReady. */
 typedef struct {
     uint32_t boundaries,retire_total_us,retire_max_us;
     uint32_t publish_calls,publish_wait_total_us,publish_wait_max_us,timing_invalid;
