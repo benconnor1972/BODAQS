@@ -38,7 +38,9 @@ struct Stats {
   PreviousOperation byPreviousOperation[16];
   uint32_t operationBucketsOmitted=0;
   // Timed dispatch attempts, including transfers of uncertain delivery.
-  bool pipelined=false;
+  bool pipelined=false,clockOnly=false;
+  bool flowMeasured=false;
+  uint32_t flowBefore[10]={},flowAfter[10]={};
   uint32_t newRequests=0,retryRequests=0,clockRequests=0,retryExhausted=0;
   uint32_t pendingRequests=0,pendingHighWater=0;
   TimingSummary replyAge;
@@ -57,7 +59,7 @@ struct Stats {
 };
 bool begin(const board::BoardProfile& board,uint32_t caseId,uint16_t bytes,uint32_t hz,uint8_t nodes,
     CrcMode crcMode=CrcMode::Legacy,uint32_t startIntervalUs=0,bool switchMode=false,
-    bool pipelined=false);
+    bool pipelined=false,bool clockOnly=false);
 void tick();
 // Owner-loop query for sequential controls; no locks, sleeps or transfers.
 bool requestDue();

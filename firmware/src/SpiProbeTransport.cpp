@@ -15,7 +15,7 @@ uint8_t s_profile=255,s_node=0,s_nodes=0,s_lockFailures=0;
 bool s_open=false,s_entered=false,s_healthy=false,s_haveTransfer=false;
 bool s_beforeEngine=false,s_beforeAdapter=false,s_beforeDiagnostic=false;
 bool s_beforeProcessing=false;
-bool s_beforeReceive=false;
+bool s_beforeReceive=false,s_beforeFlow=false;
 SpiProbeTransport::CrcMode s_crcMode=SpiProbeTransport::CrcMode::Legacy;
 uint32_t s_interval=0,s_lastStartUs=0,s_lastRequestUs=0;
 bool s_haveRequest=false;
@@ -86,9 +86,13 @@ bool pipelineRequest_(BodaqsSpiProbeFrame& q) {
     }
   }
   if(!selected) {
-    // No NOP exists in wire v1. Repeat one pending request to retrieve the
-    // reply, without extending its retry deadline or allocating another entry.
+    // Legacy control repeats pending work; owner_flow uses inert CLOCK.
+    // Neither extends the retry deadline nor allocates another entry.
     selected=oldest;if(!selected)return false;++s_stats.clockRequests;
+    if(s_stats.clockOnly) {
+      q=BodaqsSpiProbeFrame{};q.opcode=BODAQS_PROBE_CLOCK;
+      q.profile=s_bytes==64?0:s_bytes==128?1:2;return true;
+    }
   }
   q=request_(selected->ack?BODAQS_PROBE_ACK:BODAQS_PROBE_POLL);
   q.node=selected->node;q.object_id=selected->object;q.fragment=selected->fragment;
@@ -240,13 +244,13 @@ bool requestDue() {
       (!s_haveTransfer || static_cast<uint32_t>(us_()-s_lastTransferUs)>=25) &&
       (!s_haveRequest || static_cast<uint32_t>(us_()-s_lastRequestUs)>=s_interval);
 }
-bool begin(const board::BoardProfile& board,uint32_t caseId,uint16_t bytes,uint32_t hz,uint8_t nodes,CrcMode crcMode,uint32_t startIntervalUs,bool switchMode,bool pipelined) {
+bool begin(const board::BoardProfile& board,uint32_t caseId,uint16_t bytes,uint32_t hz,uint8_t nodes,CrcMode crcMode,uint32_t startIntervalUs,bool switchMode,bool pipelined,bool clockOnly) {
   if(s_open || !board.can_fd_master.supported || board.can_fd_master.cs_pin<0)return false;
   const uint8_t profile=bodaqs_spi_probe_profile(bytes,hz,nodes);
-  if(profile==255 || !caseId || startIntervalUs>5000 || (pipelined && switchMode))return false;
+  if(profile==255 || !caseId || startIntervalUs>5000 || (pipelined && switchMode) || (clockOnly && !pipelined))return false;
   s_board=&board;s_caseId=caseId;s_bytes=bytes;s_hz=hz;s_nodes=nodes;s_node=0;s_profile=profile;
   s_stats=Stats{};for(auto& n:s_nodeState)n=Node{};
-  s_stats.pipelined=pipelined;s_pipeCursor=0;for(auto& p:s_pending)p=Pending{};
+  s_stats.pipelined=pipelined;s_stats.clockOnly=clockOnly;s_pipeCursor=0;for(auto& p:s_pending)p=Pending{};
   s_crcMode=crcMode;s_interval=startIntervalUs;s_switch=switchMode;s_switchDue=false;
   s_haveStart=false;s_haveRequest=false; // Preserve the inter-CS guard across cases.
   s_lockFailures=0;s_noProgressSlots=0;s_open=true;s_entered=false;s_healthy=false;
@@ -260,6 +264,8 @@ bool begin(const board::BoardProfile& board,uint32_t caseId,uint16_t bytes,uint3
   const bool receive=masterStats_(5,s_stats.receiveBefore);
   const bool turnover=masterStats_(6,s_stats.turnoverBefore);
   s_beforeReceive=receive && turnover;
+  s_beforeFlow=masterStats_(7,s_stats.flowBefore);
+  if(clockOnly && (!s_beforeFlow || s_stats.flowBefore[0]!=1 || s_stats.flowBefore[1]!=1))return false;
   // Finish on the original universally supported page. Older peers reject
   // optional pages; ordered delayed ERROR replies must leave before data starts.
   s_beforeEngine=masterStats_(0,s_stats.masterBefore);
@@ -307,6 +313,8 @@ bool stop() {
     const bool receive=masterStats_(5,s_stats.receiveAfter);
     const bool turnover=masterStats_(6,s_stats.turnoverAfter);
     s_stats.receiveMeasured=s_beforeReceive && receive && turnover;
+    const bool flow=masterStats_(7,s_stats.flowAfter);
+    s_stats.flowMeasured=s_beforeFlow && flow;
     s_stats.diagnosticMeasured=s_beforeDiagnostic && afterDiagnostic;
     s_stats.masterMeasured=s_beforeEngine && afterEngine;
     s_stats.adapterMeasured=s_beforeAdapter && afterAdapter;

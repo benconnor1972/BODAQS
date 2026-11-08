@@ -126,6 +126,66 @@ int main(void) {
         assert(gSpiProbeReceiveMeta[gSpiReceiveQueue.head].length==lengths[i]);service_spi_receive();
         assert(!gSpiTransmitReady && !gSpiReceiveQueue.depth && !prefetched);
     }
+    assert(gSpiProbe.stats.malformed>=7);
+    /* CLOCK_ORACLE */
+    /* Independent zlib bytes, every bit, physical truncation/tail and full FIFO.
+     * This block goes red on round9: CLOCK becomes ordinary queued work. */
+    assert(!bodaqs_spi_probe_is_clock(NULL,64));
+    for(unsigned bytes=64;bytes<=256;bytes*=2) {
+        unsigned code=bytes==64?0:bytes==128?1:2;
+        BodaqsSpiProbeFrame clock={.opcode=BODAQS_PROBE_CLOCK,.profile=(uint8_t)code};
+        assert(bodaqs_spi_probe_encode(&clock,qwire,bytes));
+        assert(!memcmp(qwire,clock_oracle[code],bytes));
+        assert(bodaqs_spi_probe_is_clock(qwire,bytes));
+        uint32_t bypass=gSpiProbeClockBypassed;
+        physical(qwire,bytes,3);
+        assert(gSpiReceiveQueue.depth==0 && gSpiProbeClockBypassed==bypass+1);
+        for(unsigned i=0;i<bytes;++i)for(unsigned bit=0;bit<8;++bit) {
+            qwire[i]^=(uint8_t)(1U<<bit);
+            assert(!bodaqs_spi_probe_is_clock(qwire,bytes));
+            bypass=gSpiProbeClockBypassed;physical(qwire,bytes,0);
+            assert(gSpiReceiveQueue.depth==1 && gSpiProbeClockBypassed==bypass);
+            service_spi_receive();assert(!gSpiTransmitReady);
+            qwire[i]^=(uint8_t)(1U<<bit);
+        }
+        for(unsigned length=bytes-1;length<=bytes+1;length+=2) {
+            assert(!bodaqs_spi_probe_is_clock(qwire,length));
+            bypass=gSpiProbeClockBypassed;physical(qwire,length,length==257?1:0);
+            assert(gSpiReceiveQueue.depth==1 && gSpiProbeClockBypassed==bypass);
+            service_spi_receive();assert(!gSpiTransmitReady);
+        }
+        for(unsigned variant=0;variant<3;++variant) {
+            BodaqsSpiProbeFrame other=clock;
+            if(variant==0)other.case_id=1;
+            if(variant==1)other.profile|=4;
+            if(variant==2)other.object_id=1;
+            uint8_t wire[256];assert(bodaqs_spi_probe_encode(&other,wire,bytes));
+            assert(!bodaqs_spi_probe_is_clock(wire,bytes));
+            physical(wire,bytes,0);assert(gSpiReceiveQueue.depth==1);
+            service_spi_receive();gSpiTransmitReady=false;
+        }
+        bodaqs_record_queue_init(&gSpiReceiveQueue,storage,256,BODAQS_SPI_PROBE_RX_QUEUE_CAPACITY);
+        uint8_t work[256];BodaqsSpiProbeFrame begin={.opcode=BODAQS_PROBE_BEGIN,.case_id=bytes,
+            .profile=bodaqs_spi_probe_profile((uint16_t)bytes,16000000,4)};
+        assert(bodaqs_spi_probe_encode(&begin,work,bytes));
+        for(unsigned i=0;i<gSpiReceiveQueue.capacity;++i)physical(work,bytes,0);
+        unsigned drops=gSpiReceiveQueue.dropped;uint32_t enqueued=gSpiProbeTurnover.enqueued;
+        unsigned txindex=gTransmitIndex;gSpiTransmitReady=true;
+        memcpy(gTransmitSlots[txindex^1U],work,bytes);
+        physical(qwire,bytes,0);
+        assert(gSpiReceiveQueue.depth==gSpiReceiveQueue.capacity && gSpiReceiveQueue.dropped==drops);
+        assert(gSpiProbeTurnover.enqueued==enqueued && !gSpiTransmitReady && gTransmitIndex==(txindex^1U));
+        assert(!memcmp(gTransmitSlots[gTransmitIndex],work,bytes));
+        while(gSpiReceiveQueue.depth) {service_spi_receive();physical(qwire,bytes,0);}
+        /* Clocking after STOP has no session authority; BEGIN remains main-owned. */
+        begin.opcode=BODAQS_PROBE_STOP;assert(bodaqs_spi_probe_encode(&begin,work,bytes));
+        physical(work,bytes,0);service_spi_receive();physical(qwire,bytes,0);
+        assert(!gSpiProbe.active && !gSpiReceiveQueue.depth);
+        bodaqs_spi_probe_init(&gSpiProbe);
+        bodaqs_spi_probe_set_clock(&gSpiProbe,bodaqs_master_timing_clock,NULL);
+        bodaqs_record_queue_init(&gSpiReceiveQueue,storage,256,1);
+    }
+    puts("actual CLOCK: independent zlib,3584 bit mutations, noncanonical CRC-valid frames, truncation/excess, full queue and STOP PASS");
     for(unsigned bytes=64;bytes<=256;bytes*=2) {
         q=(BodaqsSpiProbeFrame){.opcode=BODAQS_PROBE_BEGIN,.case_id=bytes,
             .profile=bodaqs_spi_probe_profile((uint16_t)bytes,16000000,4)};
@@ -156,7 +216,7 @@ int main(void) {
         if(gSpiReceiveQueue.depth) service_spi_receive();
         gSpiTransmitReady=false;
     }
-    assert(gSpiProbe.stats.malformed>=7 && arms==resets);
+    assert(arms==resets);
     /* Public acceptance now crosses actual DMA and CS boundary for every
      * fragment, then ACK retirement is interrupted on both publication sides. */
     for(unsigned bytes=64;bytes<=256;bytes*=2) {

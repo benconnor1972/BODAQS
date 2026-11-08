@@ -121,6 +121,14 @@ static uint8_t fragment(BodaqsSpiProbeEngine *e,const BodaqsSpiProbeFrame *q,Bod
     n->prepared_mask|=1U<<q->fragment;++e->stats.prepared_fragments;
     return BODAQS_PROBE_OK;
 }
+bool bodaqs_spi_probe_is_clock(const uint8_t *wire,size_t length) {
+    static const uint8_t crc[3][4]={{161,253,136,93},{204,241,10,200},{57,173,133,110}};
+    if(!wire || (length!=64 && length!=128 && length!=256))return false;
+    const unsigned code=length==64?0:length==128?1:2;
+    if(wire[0]!=83 || wire[1]!=80 || wire[2]!=1 || wire[3]!=BODAQS_PROBE_CLOCK || wire[15]!=code)return false;
+    for(size_t i=4;i<length-4;++i)if(i!=15 && wire[i])return false;
+    return memcmp(wire+length-4,crc[code],4)==0;
+}
 static uint8_t command(BodaqsSpiProbeEngine *e,BodaqsSpiProbeFrame *q,BodaqsSpiProbeFrame *r) {
     if(!q->case_id || q->payload_length) return BODAQS_PROBE_ARGUMENT;
     if(q->opcode==BODAQS_PROBE_BEGIN) {
@@ -138,13 +146,13 @@ static uint8_t command(BodaqsSpiProbeEngine *e,BodaqsSpiProbeFrame *q,BodaqsSpiP
             if(q->fragment) return BODAQS_PROBE_ARGUMENT;
             e->active=false;return BODAQS_PROBE_OK;
         }
-        if(q->fragment>6) return BODAQS_PROBE_ARGUMENT;
+        if(q->fragment>7) return BODAQS_PROBE_ARGUMENT;
         const uint32_t counters[]={e->stats.requests,e->stats.malformed,e->stats.rejected,
             e->stats.prepared_fragments,e->stats.repeat_fragments,e->stats.selected_objects,
             e->stats.retired_objects,e->stats.duplicate_acks,e->stats.bad_acks,e->stats.cases};
         r->payload_length=40;
         const uint32_t metadata[]={1,BODAQS_SPI_PROBE_CRC_TABLE,e->component_epoch,e->component_invalid,e->component_clock!=NULL,0,0,0,0,0};
-        const uint32_t *page=q->fragment==6?e->turnover_stats:q->fragment==5?e->receive_stats:
+        const uint32_t *page=q->fragment==7?e->flow_stats:q->fragment==6?e->turnover_stats:q->fragment==5?e->receive_stats:
             q->fragment==4?metadata:q->fragment==3?e->component_stats:
             q->fragment==2?e->diagnostic_stats:q->fragment?e->adapter_stats:counters;
         for(unsigned i=0;i<10;++i) put32(r->payload+4*i,page[i]);

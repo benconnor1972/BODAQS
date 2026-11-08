@@ -16,12 +16,13 @@ SCHEMA_V6 = "bodaqs.spi-probe.v6"
 SCHEMA_V7 = "bodaqs.spi-probe.v7"
 SCHEMA_V8 = "bodaqs.spi-probe.v8"
 SCHEMA_V9 = "bodaqs.spi-probe.v9"
-COST_SCHEMAS = (SCHEMA_V8, SCHEMA_V9)
+SCHEMA_V10 = "bodaqs.spi-probe.v10"
+COST_SCHEMAS = (SCHEMA_V8, SCHEMA_V9, SCHEMA_V10)
 PROCESSING_SCHEMAS = (SCHEMA_V7, *COST_SCHEMAS)
 WINDOW_SCHEMAS = (SCHEMA_V6, *PROCESSING_SCHEMAS)
 ROW_SCHEMAS = (SCHEMA_V5, *WINDOW_SCHEMAS)
 EXECUTION_SCHEMAS = (SCHEMA_V4, *ROW_SCHEMAS)
-ROW_OWNER_MODES = ("owner_adc", "owner_rows", "owner_pipe")
+ROW_OWNER_MODES = ("owner_adc", "owner_rows", "owner_pipe", "owner_flow")
 ADC_ONLY_MODES = ("adc", "owner_adc")
 INTEGRITY_SCHEMAS = (SCHEMA_V3, *EXECUTION_SCHEMAS)
 DIAGNOSTIC_SCHEMAS = (SCHEMA_V2, *INTEGRITY_SCHEMAS)
@@ -213,7 +214,8 @@ def validate(case):
             100 <= p["duration_ms"] <= 3600000 and p["row_hz"] == 500 and
             p["ain"] == [0, 4] and p["configured_sps"] == [1000, 1000],
             "unsupported profile")
-    require(p["mode"] != "owner_pipe" or case["schema"] in WINDOW_SCHEMAS, "pipeline requires v6")
+    require(p["mode"]!="owner_flow" or case["schema"]==SCHEMA_V10,"clock-only requires v10")
+    require(p["mode"] not in ("owner_pipe","owner_flow") or case["schema"] in WINDOW_SCHEMAS, "pipeline requires v6")
     if v2:
         counts(p, "start_interval_us")
         require(p["crc_mode"] in ("legacy", "cached") and p["start_interval_us"] <= 5000,
@@ -283,12 +285,18 @@ def validate(case):
                 require(isinstance(master[name],list) and len(master[name])==10 and all(type(v) is int and 0<=v<=4294967295 for v in master[name]),"invalid processing page")
             if p["mode"] in ADC_ONLY_MODES:
                 require(not master["processing_measured"] and all(not any(master[n]) for n in ("processing_before","processing_after","processing_meta_before","processing_meta_after")),"ADC-only case has processing observations")
-        if case["schema"]==SCHEMA_V9:
+        if case["schema"] in (SCHEMA_V9,SCHEMA_V10):
             require(type(master["receive_measured"]) is bool,"invalid receive measured flag")
             for name in ("receive_before","receive_after","turnover_before","turnover_after"):
                 require(isinstance(master[name],list) and len(master[name])==10 and all(type(v) is int and 0<=v<=4294967295 for v in master[name]),"invalid receive turnover page")
             if p["mode"] in ADC_ONLY_MODES:
                 require(not master["receive_measured"] and all(not any(master[n]) for n in ("receive_before","receive_after","turnover_before","turnover_after")),"ADC-only receive observations")
+        if case["schema"]==SCHEMA_V10:
+            require(type(master["flow_measured"]) is bool,"invalid flow measured flag")
+            for name in ("flow_before","flow_after"):
+                require(isinstance(master[name],list) and len(master[name])==10 and all(type(v) is int and 0<=v<=4294967295 for v in master[name]),"invalid flow page")
+            if p["mode"] in ADC_ONLY_MODES:
+                require(not master["flow_measured"] and not any(master["flow_before"]+master["flow_after"]),"ADC-only flow observations")
         if v2:
             require(type(master["diagnostic_measured"]) is bool, "invalid diagnostic measured flag")
             for name in ("diagnostic_before", "diagnostic_after"):
@@ -394,9 +402,28 @@ def receive_report(case):
     return result
 
 
+def flow_report(case):
+    result={"status":"not_applicable" if case["profile"]["mode"] in ADC_ONLY_MODES else "unknown",
+            "clock_only":case["profile"]["mode"]=="owner_flow","bypassed":None,
+            "scope":"STATS7 boot counter delta includes controls outside timed run; bypass is not response delivery/readiness or a work credit"}
+    m=case["master"]
+    if result["status"]=="not_applicable" or not m["flow_measured"]:return result
+    a,b=m["flow_before"],m["flow_after"]
+    if a[:2]!=[1,1] or b[:2]!=[1,1]:return result
+    result["status"]="invalid" if any(a[3:]+b[3:]) else "observed"
+    if result["status"]=="observed":
+        result["bypassed"]=(b[2]-a[2])&0xffffffff
+        # Endpoint scope encloses all successful timed clocks. Transfer failures
+        # are uncertain delivery, not evidence that the master failed to bypass.
+        w=case["request_window"]
+        if result["clock_only"] and result["bypassed"]<max(0,w["clock_requests"]-case["errors"]["transfer"]):
+            result["status"]="invalid";result["bypassed"]=None
+    return result
+
+
 def window_counts(case):
     w=case["request_window"]
-    active=case["profile"]["mode"]=="owner_pipe"
+    active=case["profile"]["mode"] in ("owner_pipe","owner_flow")
     require(type(w["active"]) is bool and w["active"]==active,"invalid request window mode")
     counts(w,"limit retry_us retry_limit new_requests retry_requests clock_requests retry_exhausted pending high_water")
     timing(w["reply_age"])
@@ -740,12 +767,15 @@ def analyze(data, manifest=None):
         master, engine_delta, adapter_delta, adapter_states = master_diagnostics(case)
         components = component_timing(case)
         processing=processing_report(case) if case["schema"] in PROCESSING_SCHEMAS else None
-        receive=receive_report(case) if case["schema"]==SCHEMA_V9 else None
+        receive=receive_report(case) if case["schema"] in (SCHEMA_V9,SCHEMA_V10) else None
         if receive and receive["status"]=="invalid":master="failed"
         elif receive and receive["status"]=="observed" and any(receive["counter_deltas"][n] for n in ("full_reply_ready","full_other")):master="failed"
         elif receive and receive["status"]=="unknown" and master=="clean":master="unknown"
         if processing and processing["status"] == "invalid":master="failed"
         elif processing and processing["status"] == "unknown" and master=="clean":master="unknown"
+        flow=flow_report(case) if case["schema"]==SCHEMA_V10 else None
+        if flow and flow["status"]=="invalid":master="failed"
+        elif flow and flow["clock_only"] and flow["status"]!="observed" and master=="clean":master="unknown"
         observations = diagnostic_observations(case)
         if case["schema"] in DIAGNOSTIC_SCHEMAS and p["mode"] not in ADC_ONLY_MODES:
             if components["status"] == "invalid":
@@ -768,7 +798,7 @@ def analyze(data, manifest=None):
             case["elapsed_us"] > p["duration_ms"] * 1000 + 2000) else "short" if (
             case["elapsed_us"] < p["duration_ms"] * 1000 - 2000) else "observed"
         failed = case["outcome"] != "complete" or case.get("workers_stopped") is False or adc == "failed" or transport == "failed" or (
-            p["mode"] not in ADC_ONLY_MODES and master == "failed") or (p["mode"] in ("mixed","owner_rows","owner_pipe") and baseline == "failed") or duration_status != "observed"
+            p["mode"] not in ADC_ONLY_MODES and master == "failed") or (p["mode"] in ("mixed","owner_rows","owner_pipe","owner_flow") and baseline == "failed") or duration_status != "observed"
         clean_candidate = not failed and manifest is not None and case.get("workers_stopped") is True and (
             p["mode"] in ADC_ONLY_MODES or (master == "clean" and case["accepted_bytes"] > 0)) and (
             p["mode"] != "mixed" or baseline == "healthy") and (
@@ -784,6 +814,7 @@ def analyze(data, manifest=None):
             **({"master_processing_components":processing} if processing is not None else {}),
             **({"logger_cost":logger_cost_report(case)} if case["schema"] in COST_SCHEMAS else {}),
             **({"master_receive_turnover":receive} if receive is not None else {}),
+            **({"master_flow_control":flow} if flow is not None else {}),
             **({"request_window": case["request_window"]} if case["schema"] in WINDOW_SCHEMAS else {}),
             **({"execution_control": execution_report(case)} if case["schema"] in EXECUTION_SCHEMAS else {}),
             "profile": p, "outcome": case["outcome"], "reason": case["reason"],
@@ -825,7 +856,7 @@ def analyze(data, manifest=None):
             "pipeline_diagnostics": {k: case["errors"][k] for k in ("stale", "duplicate")},
             "candidate_evidence": "failed" if failed else "diagnostic_control" if control else "clean_measurement_candidate" if clean_candidate else "unknown",
             "raw_measurements": case})
-    return {"schema": "bodaqs.spi-probe-report.v9" if any(c["schema"] == SCHEMA_V9 for c in cases) else "bodaqs.spi-probe-report.v8" if any(c["schema"] == SCHEMA_V8 for c in cases) else "bodaqs.spi-probe-report.v7" if any(c["schema"] == SCHEMA_V7 for c in cases) else "bodaqs.spi-probe-report.v6" if any(c["schema"] == SCHEMA_V6 for c in cases) else "bodaqs.spi-probe-report.v5" if any(c["schema"] == SCHEMA_V5 for c in cases) else "bodaqs.spi-probe-report.v4" if any(c["schema"] in EXECUTION_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v3" if any(c["schema"] in INTEGRITY_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v2" if any(c["schema"] in DIAGNOSTIC_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v1",
+    return {"schema": "bodaqs.spi-probe-report.v10" if any(c["schema"]==SCHEMA_V10 for c in cases) else "bodaqs.spi-probe-report.v9" if any(c["schema"] == SCHEMA_V9 for c in cases) else "bodaqs.spi-probe-report.v8" if any(c["schema"] == SCHEMA_V8 for c in cases) else "bodaqs.spi-probe-report.v7" if any(c["schema"] == SCHEMA_V7 for c in cases) else "bodaqs.spi-probe-report.v6" if any(c["schema"] == SCHEMA_V6 for c in cases) else "bodaqs.spi-probe-report.v5" if any(c["schema"] == SCHEMA_V5 for c in cases) else "bodaqs.spi-probe-report.v4" if any(c["schema"] in EXECUTION_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v3" if any(c["schema"] in INTEGRITY_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v2" if any(c["schema"] in DIAGNOSTIC_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v1",
             "capture_sha256": digest,
             "run_identity": "declared_paired" if manifest else "unknown_without_manifest",
             "manifest": manifest, "serial_events": events,

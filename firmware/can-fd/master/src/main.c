@@ -206,6 +206,7 @@ typedef struct {
     bool blocked;
 } ProbeTurnover;
 static volatile ProbeTurnover gSpiProbeTurnover;
+static volatile uint32_t gSpiProbeClockBypassed;
 /* End probe receive turnover state. */
 #else
 static uint8_t gSpiReceiveStorage[1][BODAQS_SPI_ADAPTER_CAPACITY];
@@ -1144,7 +1145,11 @@ static void retire_spi_boundary(void)
     if (DL_SPI_drainRXFIFO8(SPI_A8_INST, &excess, 1U)) length = BODAQS_SPI_ADAPTER_CAPACITY+1U;
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
     probe_turnover_epoch(boundary_epoch);
-    if(gSpiReceiveQueue.depth<gSpiReceiveQueue.capacity) {
+    /* Exact CLOCK can publish an already prepared MISO reply below, but never
+     * submits work. Full length, including FIFO excess, was established above. */
+    if(bodaqs_spi_probe_is_clock(gReceiveSlots[gReceiveIndex],length)) {
+        ++gSpiProbeClockBypassed;
+    } else if(gSpiReceiveQueue.depth<gSpiReceiveQueue.capacity) {
         ProbeReceiveMeta *meta=&gSpiProbeReceiveMeta[gSpiReceiveQueue.tail];
         meta->length=(uint16_t)length;meta->tick=boundary_started;meta->epoch=boundary_epoch;
         (void)bodaqs_record_queue_push(&gSpiReceiveQueue,gReceiveSlots[gReceiveIndex]);
@@ -1300,6 +1305,8 @@ static void service_spi_receive(void)
                 epoch,gSpiProbeTurnover.invalid};
             memcpy(gSpiProbe.receive_stats,receive_page,sizeof receive_page);
             memcpy(gSpiProbe.turnover_stats,turnover_page,sizeof turnover_page);
+            const uint32_t flow_page[]={1,1,gSpiProbeClockBypassed,0,0,0,0,0,0,0};
+            memcpy(gSpiProbe.flow_stats,flow_page,sizeof flow_page);
             gMasterSpiProbeInfo.boundaries=gSpiProbeBoundaryInfo.boundaries;
             __set_PRIMASK(mask);
         }

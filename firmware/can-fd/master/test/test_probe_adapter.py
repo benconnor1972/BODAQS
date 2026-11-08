@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+import zlib
 p=argparse.ArgumentParser();p.add_argument('--cc',required=True);a=p.parse_args()
 root=Path(__file__).resolve().parents[4]
 source=(root/'firmware/can-fd/master/src/main.c').read_text()
@@ -25,6 +26,12 @@ state=source[source.index('typedef struct {\n    uint32_t boundaries,retire_tota
 state=state[:state.index('static uint32_t gSpiProbePublishedTick,gSpiProbePublishedEpoch;')+
     len('static uint32_t gSpiProbePublishedTick,gSpiProbePublishedEpoch;')]
 fixture=Path(__file__).with_name('probe_adapter_fixture.c').read_text()
+oracles=[]
+for code,length in enumerate((64,128,256)):
+    raw=bytearray(length);raw[:4]=bytes((83,80,1,7));raw[15]=code
+    raw[-4:]=zlib.crc32(raw[:-4]).to_bytes(4,'little')
+    oracles.append('{'+','.join(str(x) for x in raw)+'}')
+fixture=fixture.replace('/* CLOCK_ORACLE */','static const uint8_t clock_oracle[3][256]={'+','.join(oracles)+'};')
 queue_state=source[source.index('/* Probe receive turnover state.'):source.index('/* End probe receive turnover state. */')]
 with tempfile.TemporaryDirectory() as tmp:
     c=Path(tmp)/'adapter.c';exe=Path(tmp)/'adapter.exe'

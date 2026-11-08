@@ -16,6 +16,49 @@ EMITTED_SWITCH = FIXTURE.with_name("round2-emitted-switch.jsonl")
 
 
 class ProbeAnalysisTests(unittest.TestCase):
+    def flow_sample(self):
+        c=self.round9_sample();c["schema"]="bodaqs.spi-probe.v10"
+        c["profile"]["mode"]="owner_flow"
+        c["master"].update(flow_measured=True,flow_before=[1,1,0,0,0,0,0,0,0,0],
+            flow_after=[1,1,c["request_window"]["clock_requests"],0,0,0,0,0,0,0])
+        return c
+
+    def test_round10_flow_capability_and_counter_wrap(self):
+        c=self.flow_sample();m=c["master"];clocks=c["request_window"]["clock_requests"]
+        m["flow_before"][2]=4294967295;m["flow_after"][2]=(4294967295+clocks)&0xffffffff
+        run=self.invoke(json.dumps(c));self.assertEqual(run.returncode,0,run.stderr)
+        r=json.loads(run.stdout);self.assertEqual(r["schema"],"bodaqs.spi-probe-report.v10")
+        self.assertEqual(r["cases"][0]["master_flow_control"]["status"],"observed")
+        self.assertEqual(r["cases"][0]["master_flow_control"]["bypassed"],clocks)
+        self.assertFalse(r["production_qualified"])
+
+    def test_round10_missing_unknown_reserved_and_short_bypass(self):
+        for n in range(5):
+            c=self.flow_sample();m=c["master"]
+            if n==0:m["flow_measured"]=False
+            elif n==1:m["flow_before"][0]=0
+            elif n==2:m["flow_after"][1]=2
+            elif n==3:m["flow_before"][4]=1
+            else:
+                w=c["request_window"]
+                # Move one timed retry/clock dispatch from work into CLOCK.
+                w["clock_requests"]+=1;w["new_requests"]-=1;w["pending"]-=1
+            run=self.invoke(json.dumps(c));self.assertEqual(run.returncode,0,run.stderr)
+            r=json.loads(run.stdout)["cases"][0]
+            self.assertEqual(r["master_flow_control"]["status"],"unknown" if n<3 else "invalid")
+            if n>=3:self.assertEqual(r["candidate_evidence"],"failed")
+
+    def test_round10_rejects_bad_shape_adc_or_old_schema_flow(self):
+        for n in range(4):
+            c=self.flow_sample()
+            if n==0:c["master"]["flow_after"][2]=True
+            if n==1:c["master"]["flow_after"].pop()
+            if n==2:
+                c=self.round9_sample("baseline");c["schema"]="bodaqs.spi-probe.v10"
+                c["master"].update(flow_measured=True,flow_before=[0]*10,flow_after=[0]*10)
+            if n==3:c["schema"]="bodaqs.spi-probe.v9"
+            self.assertEqual(self.invoke(json.dumps(c)).returncode,2)
+
     def round9_sample(self,name="pipeline"):
         return json.loads(FIXTURE.with_name(f"round9-{name}.jsonl").read_text(encoding="utf-8"))
 

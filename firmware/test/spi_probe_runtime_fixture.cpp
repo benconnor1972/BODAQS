@@ -139,7 +139,9 @@ void SPIClass::transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
     BodaqsSpiProbeFrame dispatched{};
     const bool decodedRequest=bodaqs_spi_probe_decode(tx,length,&dispatched);
     const bool poll=decodedRequest && dispatched.opcode==BODAQS_PROBE_POLL;
-    if(poll && dropPollRequests) {
+    if(bodaqs_spi_probe_is_clock(tx,length)) {
+      ++master.flow_stats[2];prepared=replies.back();
+    } else if(poll && dropPollRequests) {
       if(dropPollRequests)--dropPollRequests;
       prepared=replies.back(); // lost request: retain a valid older reply
     } else {
@@ -441,7 +443,7 @@ int main() {
   puts("real ADC: same-microsecond ISR entry before START marker is ambiguous, later distinct-tick completion paired passed");
 #if TEST_CASE_RUNNER
   releaseWaiters=true;
-  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v9-")!=std::string::npos);
+  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v10-")!=std::string::npos);
   puts(Serial.output.c_str());Serial.output.clear();SpiMeasurementProbe::command("status");
   assert(Serial.output.find("\"logger_build\":")!=std::string::npos);puts(Serial.output.c_str());Serial.output.clear();
   // Public runner, deterministic clock boundary: 10 seconds has 5000 midpoints
@@ -514,7 +516,7 @@ int main() {
   Serial.output.clear();SpiMeasurementProbe::command("case 7 adc 64 8000000 1 1000");
   assert(Serial.output.find("non_increasing_case_id")!=std::string::npos);
   puts("public probe: reused and older IDs including prior failed starts rejected before hardware work passed");
-  masterEnabled=true;bodaqs_spi_probe_init(&master);
+  masterEnabled=true;bodaqs_spi_probe_init(&master);master.flow_stats[0]=master.flow_stats[1]=1;
   bodaqs_spi_probe_set_clock(&master,[](void*,uint32_t* epoch)->uint32_t{*epoch=1;return static_cast<uint32_t>(esp_timer_get_time());},nullptr);
   Serial.output.clear();SpiMeasurementProbe::command("case 9 bulk 256 16000000 4 100");
   while(Serial.output.empty())SpiMeasurementProbe::loop();
@@ -777,9 +779,29 @@ int main() {
   while(Serial.output.empty()){delayMicroseconds(10);SpiMeasurementProbe::loop();}
   assert(!SpiProbeTransport::stats().receiveMeasured && SpiProbeTransport::stats().retiredObjects>0);
   puts(Serial.output.c_str());Serial.output.clear();receivePagesUnsupported=false;
+  replies.assign(6,std::array<uint8_t,256>{}); // Force the real four-request window full.
+  for(const char* cmd:{
+      "case 53 owner_flow 128 8000000 4 100 cached 500 3 1 0",
+      "case 54 owner_flow 256 16000000 4 100 cached 500 3 1 0"}) {
+    SpiMeasurementProbe::command(cmd);
+    while(Serial.output.empty()){delayMicroseconds(10);SpiMeasurementProbe::loop();}
+    assert(SpiProbeTransport::stats().retiredObjects>0 && SpiProbeTransport::stats().clockRequests>0);
+    assert(SpiProbeTransport::stats().flowMeasured && !SpiProbeTransport::stats().retryExhausted);
+    puts(Serial.output.c_str());Serial.output.clear();
+  }
+  SpiMeasurementProbe::command("case 55 owner_flow 128 8000000 4 100 cached 500 3 1 0");
+  dropPollRequests=1;dropAckReplies=1;
+  while(Serial.output.empty()){delayMicroseconds(10);SpiMeasurementProbe::loop();}
+  assert(!dropPollRequests && !dropAckReplies && SpiProbeTransport::stats().retryRequests>0);
+  puts(Serial.output.c_str());Serial.output.clear();
+  master.flow_stats[0]=0;
+  SpiMeasurementProbe::command("case 56 owner_flow 128 8000000 4 100 cached 500 3 1 0");
+  assert(Serial.output.find("master_entry_failed")!=std::string::npos && SpiProbeTransport::stats().slots==0);
+  puts(Serial.output.c_str());Serial.output.clear();master.flow_stats[0]=1;
+  replies.assign(2,std::array<uint8_t,256>{});
   rowValueFixture=false;forceReadyPin=true;steppedUs=-1;bulkLastHigh=0;
   puts("Public pipeline: real owner rows, loss recovery, bounded per-request exhaustion despite other nodes progressing, STOP, reuse and rail failure passed");
-  uint32_t caseId=53;
+  uint32_t caseId=57;
   for(uint16_t frame: {64,128,256})for(uint32_t hz: {8000000U,16000000U}) {
     assert(SpiProbeTransport::begin(board,caseId++,frame,hz,4));
     for(unsigned attempts=0;attempts<1000000 && SpiProbeTransport::stats().retiredObjects<4;++attempts)SpiProbeTransport::tick();

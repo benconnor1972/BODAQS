@@ -19,7 +19,7 @@ extern "C" {
  * LogicalCRC covers exactly1008 synthetic bytes, separate from frame CRC. */
 enum { BODAQS_PROBE_BEGIN=1, BODAQS_PROBE_POLL=2, BODAQS_PROBE_ACK=3,
     BODAQS_PROBE_ACK_FETCH=4, BODAQS_PROBE_STATS=5, BODAQS_PROBE_STOP=6,
-    BODAQS_PROBE_ERROR=127, BODAQS_PROBE_RESPONSE=128 };
+    BODAQS_PROBE_CLOCK=7, BODAQS_PROBE_ERROR=127, BODAQS_PROBE_RESPONSE=128 };
 enum { BODAQS_PROBE_OK=0, BODAQS_PROBE_BAD_FRAME=1, BODAQS_PROBE_BUSY=2,
     BODAQS_PROBE_CONTEXT=3, BODAQS_PROBE_ARGUMENT=4, BODAQS_PROBE_CHECKSUM=5,
     BODAQS_PROBE_EXHAUSTED=6 };
@@ -67,7 +67,7 @@ typedef struct {
     void *component_clock_arg;
     uint32_t component_epoch,component_invalid;
     /* Adapter-owned coherent snapshots: additive STATS5/6, schema1. */
-    uint32_t receive_stats[10],turnover_stats[10];
+    uint32_t receive_stats[10],turnover_stats[10],flow_stats[10];
 } BodaqsSpiProbeEngine;
 /* profile: size code 0/1/2 =>64/128/256; bit2 0/1 =>8/16MHz;
  * bits3..4 => node_count-1; all other bits zero. Guard fixed at25us. */
@@ -85,6 +85,10 @@ bool bodaqs_spi_probe_encode(const BodaqsSpiProbeFrame *frame, uint8_t *wire, si
 BodaqsSpiProbeDecodeResult bodaqs_spi_probe_decode_result(const uint8_t *wire,
     size_t length, BodaqsSpiProbeFrame *frame);
 bool bodaqs_spi_probe_decode(const uint8_t *wire, size_t length, BodaqsSpiProbeFrame *frame);
+/* Exact bench CLOCK: canonical size-only profile, all identities/payload/padding
+ * zero, valid fixed CRC. No scope/ACK/fence authority. Safe before main decoding;
+ * caller must first establish physical length after DMA disable/FIFO drain. */
+bool bodaqs_spi_probe_is_clock(const uint8_t *wire,size_t length);
 void bodaqs_spi_probe_init(BodaqsSpiProbeEngine *engine);
 /* Install before processing requests; no ISR/reentrant use or live switching.
  * NULL leaves timings unmeasured. BEGIN/STOP do not reset boot counters. */

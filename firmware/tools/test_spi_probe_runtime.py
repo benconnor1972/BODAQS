@@ -83,7 +83,7 @@ def main():
             cases = [event for event in events if event['type'] == 'case']
             if args.capture:
                 args.capture.write_text('\n'.join(json.dumps(event) for event in events) + '\n', encoding='utf-8')
-            assert [case['case_id'] for case in cases] == [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, *range(33,53)]
+            assert [case['case_id'] for case in cases] == [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, *range(33,57)]
             assert (cases[0]['rows'], cases[0]['missed_rows']) == (5000, 0)
             assert (cases[1]['rows'], cases[1]['missed_rows']) == (49, 1)
             assert (cases[2]['rows'], cases[2]['missed_rows']) == (1, 1)
@@ -93,7 +93,7 @@ def main():
                 assert case['workers_stopped'] and case['profile']['actual_sck_hz'] is None
                 assert case['accepted_bytes'] == case['unique_objects'] * 1008
                 assert case['valid_responses'] <= case['slots']
-                assert case['schema'] == 'bodaqs.spi-probe.v9'
+                assert case['schema'] == 'bodaqs.spi-probe.v10'
                 cost=case['logger_cost'];cadence=cost['cadence']
                 assert cost['crc_algorithm']==('bitwise' if args.crc_bitwise else 'table')
                 assert case['artifacts']['logger_build'].endswith('-crc'+str(int(not args.crc_bitwise)))
@@ -133,6 +133,13 @@ def main():
             assert rail_fault['adc_status'] == 'failed' and rail_fault['candidate_evidence'] == 'failed'
             print('Public rail-fault capture through analyzer CLI: no observed ADC rows cannot report healthy passed')
             report = json.loads(analyzed.stdout)
+            for cid in (53,54,55):
+                flow=next(c for c in report['cases'] if c['case_id']==cid)
+                assert flow['master_flow_control']['status']=='observed'
+                assert flow['row_freshness_status']=='healthy' and flow['transport_status']=='clean'
+                assert flow['master_flow_control']['bypassed']>=flow['request_window']['clock_requests']>0
+            failed_entry=next(c for c in report['cases'] if c['case_id']==56)
+            assert failed_entry['outcome']=='failed' and failed_entry['raw_measurements']['slots']==0
             unsupported=next(c for c in report['cases'] if c['case_id']==52)
             assert unsupported['raw_measurements']['master']['receive_measured'] is False
             assert unsupported['master_receive_turnover']['status']=='unknown'

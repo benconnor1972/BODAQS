@@ -27,7 +27,7 @@ struct Case {
   uint8_t nodes=1;
   bool adc=false,bulk=false,switchMode=false,cached=false,active=false,transportAttempted=false;
   bool sequence=false,selected=false,workerStartRequested=false;
-  bool owner=false,workerControl=false,trafficStarted=false,ownerRows=false,pipelined=false;
+  bool owner=false,workerControl=false,trafficStarted=false,ownerRows=false,pipelined=false,clockOnly=false;
   SpiProbeRowLedger rowLedger;
   uint32_t deadlineDeferrals=0;
   uint64_t lastOwnerReadUs[2]={};
@@ -56,7 +56,7 @@ bool s_lineOverflow=false;
 constexpr uint32_t kRowGuardUs=800;
 uint64_t now_() { return static_cast<uint64_t>(esp_timer_get_time()); }
 void error_(const char* reason) {
-  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v9\",\"type\":\"error\",\"reason\":\"%s\",\"logger_build\":\"%s\"}\n",reason,BODAQS_SPI_PROBE_BUILD);
+  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v10\",\"type\":\"error\",\"reason\":\"%s\",\"logger_build\":\"%s\"}\n",reason,BODAQS_SPI_PROBE_BUILD);
 }
 void summary_(const TimingSummary& s) {
   Serial.printf("{\"count\":%lu,\"min_us\":%lu,\"max_us\":%lu,\"total_us\":%llu}",
@@ -114,11 +114,11 @@ void emit_(const char* outcome,const char* reason,bool stopped) {
   const auto bus=SharedSpiBus::probeSnapshot();
   static const SpiProbeTransport::Stats empty;
   const auto& t=s_case.transportAttempted?SpiProbeTransport::stats():empty;
-  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v9\",\"type\":\"case\",\"case_id\":%lu,\"outcome\":\"%s\",\"reason\":\"%s\",",
+  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v10\",\"type\":\"case\",\"case_id\":%lu,\"outcome\":\"%s\",\"reason\":\"%s\",",
       (unsigned long)s_case.id,outcome,reason);
   Serial.printf("\"artifacts\":{\"logger_build\":\"%s\",\"master_build\":\"external-manifest\",\"protocol\":1},",BODAQS_SPI_PROBE_BUILD);
   Serial.printf("\"profile\":{\"mode\":\"%s\",\"frame_bytes\":%u,\"requested_sck_hz\":%lu,\"actual_sck_hz\":null,\"actual_sck_basis\":\"unmeasured\",\"guard_us\":25,\"nodes\":%u,\"duration_ms\":%lu,\"row_hz\":500,\"ain\":[0,4],\"configured_sps\":[1000,1000],\"crc_mode\":\"%s\",\"start_interval_us\":%lu},",
-      s_case.pipelined?"owner_pipe":s_case.ownerRows?(s_case.bulk?"owner_rows":"owner_adc"):s_case.owner?"owner":s_case.workerControl?"workers":s_case.sequence?(s_case.selected?"selected":"shape"):(s_case.adc?(s_case.bulk?"mixed":"adc"):(s_case.switchMode?"switch":"bulk")),s_case.frame,(unsigned long)s_case.hz,s_case.nodes,(unsigned long)s_case.durationMs,s_case.cached?"cached":"legacy",(unsigned long)s_case.startIntervalUs);
+      s_case.clockOnly?"owner_flow":s_case.pipelined?"owner_pipe":s_case.ownerRows?(s_case.bulk?"owner_rows":"owner_adc"):s_case.owner?"owner":s_case.workerControl?"workers":s_case.sequence?(s_case.selected?"selected":"shape"):(s_case.adc?(s_case.bulk?"mixed":"adc"):(s_case.switchMode?"switch":"bulk")),s_case.frame,(unsigned long)s_case.hz,s_case.nodes,(unsigned long)s_case.durationMs,s_case.cached?"cached":"legacy",(unsigned long)s_case.startIntervalUs);
   // Execution controls are explicit even when inactive for old modes.
   Serial.printf("\"execution\":{\"adc_mask\":%u,\"adc_core\":%u,\"cycle_us\":%lu,\"owner_core\":%u,\"window_started_us\":%llu,\"window_ended_us\":%llu,\"traffic\":[",
       s_case.adcMask,s_case.adcCore,(unsigned long)s_case.cycleUs,xPortGetCoreID(),
@@ -193,6 +193,8 @@ void emit_(const char* outcome,const char* reason,bool stopped) {
   Serial.print(",\"receive_after\":");array_(t.receiveAfter);
   Serial.print(",\"turnover_before\":");array_(t.turnoverBefore);
   Serial.print(",\"turnover_after\":");array_(t.turnoverAfter);
+  Serial.printf(",\"flow_measured\":%s,\"flow_before\":",t.flowMeasured?"true":"false");array_(t.flowBefore);
+  Serial.print(",\"flow_after\":");array_(t.flowAfter);
   Serial.printf(",\"timing_measured\":%s,\"timing_scope\":\"%s\"},",t.diagnosticMeasured?"true":"false",t.diagnosticMeasured?"software_observations":"unmeasured");
   Serial.printf("\"request_window\":{\"active\":%s,\"limit\":%u,\"retry_us\":%u,\"retry_limit\":%u,\"new_requests\":%lu,\"retry_requests\":%lu,\"clock_requests\":%lu,\"retry_exhausted\":%lu,\"pending\":%lu,\"high_water\":%lu,\"reply_age\":",
       s_case.pipelined?"true":"false",s_case.pipelined?4:0,s_case.pipelined?5000:0,s_case.pipelined?8:0,
@@ -283,14 +285,14 @@ void begin(const board::BoardProfile& board) {
       AnalogInputManager::configureFromConfig(s_cfg,500)==500 && SharedSpiBus::ready() &&
       AnalogInputManager::activeChannelCount(0)==1 && AnalogInputManager::activeChannelCount(1)==1 &&
       AnalogInputManager::configuredDataRateSps(0)==1000 && AnalogInputManager::configuredDataRateSps(1)==1000;
-  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v9\",\"type\":\"ready\",\"ready\":%s,\"bench_only\":true,\"logger_build\":\"%s\"}\n",s_ready?"true":"false",BODAQS_SPI_PROBE_BUILD);
+  Serial.printf("{\"schema\":\"bodaqs.spi-probe.v10\",\"type\":\"ready\",\"ready\":%s,\"bench_only\":true,\"logger_build\":\"%s\"}\n",s_ready?"true":"false",BODAQS_SPI_PROBE_BUILD);
 }
 void command(const char* line) {
   if(!line)return;
   if(strcmp(line,"stop")==0) {if(s_case.active)finish_("stopped","command");else error_("idle");return;}
   if(s_case.active) {++s_case.commandErrors;return;}
   if(strcmp(line,"status")==0) {
-    Serial.printf("{\"schema\":\"bodaqs.spi-probe.v9\",\"type\":\"status\",\"ready\":%s,\"blocked\":%s,\"logger_build\":\"%s\"}\n",s_ready?"true":"false",s_blocked?"true":"false",BODAQS_SPI_PROBE_BUILD);return;
+    Serial.printf("{\"schema\":\"bodaqs.spi-probe.v10\",\"type\":\"status\",\"ready\":%s,\"blocked\":%s,\"logger_build\":\"%s\"}\n",s_ready?"true":"false",s_blocked?"true":"false",BODAQS_SPI_PROBE_BUILD);return;
   }
   if(!s_ready || !s_board) {error_("not_ready");return;}
   if(s_blocked || !AnalogInputManager::probeWorkersStopped()) {error_("reboot_required");return;}
@@ -299,7 +301,7 @@ void command(const char* line) {
   char* tokens[13]={};char* save=nullptr;uint8_t n=0;
   for(char* t=strtok_r(copy," \t",&save);t && n<13;t=strtok_r(nullptr," \t",&save))tokens[n++]=t;
   uint32_t id=0,frame=0,hz=0,nodes=0,duration=0,interval=0,mask=3,core=0,cycle=0;
-  const bool ownerRowsMode=n>=3 && (strcmp(tokens[2],"owner_pipe")==0 || strcmp(tokens[2],"owner_rows")==0 || strcmp(tokens[2],"owner_adc")==0);
+  const bool ownerRowsMode=n>=3 && (strcmp(tokens[2],"owner_flow")==0 || strcmp(tokens[2],"owner_pipe")==0 || strcmp(tokens[2],"owner_rows")==0 || strcmp(tokens[2],"owner_adc")==0);
   const bool ownerMode=ownerRowsMode || (n>=3 && strcmp(tokens[2],"owner")==0);
   const bool executionMode=ownerMode || (n>=3 && strcmp(tokens[2],"workers")==0);
   if((n!=7 && n!=9 && n!=12) || strcmp(tokens[0],"case") || !decimal_(tokens[1],id) || !id ||
@@ -307,7 +309,7 @@ void command(const char* line) {
       !decimal_(tokens[4],hz) || (hz!=8000000 && hz!=16000000) ||
       !decimal_(tokens[5],nodes) || nodes<1 || nodes>4 ||
       !decimal_(tokens[6],duration) || duration<100 || duration>3600000 ||
-      (strcmp(tokens[2],"adc") && strcmp(tokens[2],"bulk") && strcmp(tokens[2],"mixed") && strcmp(tokens[2],"switch") && strcmp(tokens[2],"shape") && strcmp(tokens[2],"selected") && strcmp(tokens[2],"owner") && strcmp(tokens[2],"workers") && strcmp(tokens[2],"owner_rows") && strcmp(tokens[2],"owner_adc") && strcmp(tokens[2],"owner_pipe")) ||
+      (strcmp(tokens[2],"adc") && strcmp(tokens[2],"bulk") && strcmp(tokens[2],"mixed") && strcmp(tokens[2],"switch") && strcmp(tokens[2],"shape") && strcmp(tokens[2],"selected") && strcmp(tokens[2],"owner") && strcmp(tokens[2],"workers") && strcmp(tokens[2],"owner_rows") && strcmp(tokens[2],"owner_adc") && strcmp(tokens[2],"owner_pipe") && strcmp(tokens[2],"owner_flow")) ||
       (n>=9 && ((strcmp(tokens[7],"legacy") && strcmp(tokens[7],"cached")) || !decimal_(tokens[8],interval) || interval>5000)) ||
       (executionMode!=(n==12)) ||
       (n==12 && (!decimal_(tokens[9],mask) || mask<1 || mask>3 ||
@@ -319,8 +321,9 @@ void command(const char* line) {
   // A valid start attempt owns its ID even when rail/worker/peer startup fails.
   s_lastCaseId=id;
   s_case=Case{};s_case.id=id;s_case.frame=frame;s_case.hz=hz;s_case.nodes=nodes;s_case.durationMs=duration;
-  s_case.pipelined=strcmp(tokens[2],"owner_pipe")==0;
-  s_case.ownerRows=strcmp(tokens[2],"owner_pipe")==0 || strcmp(tokens[2],"owner_rows")==0 || strcmp(tokens[2],"owner_adc")==0;
+  s_case.clockOnly=strcmp(tokens[2],"owner_flow")==0;
+  s_case.pipelined=s_case.clockOnly || strcmp(tokens[2],"owner_pipe")==0;
+  s_case.ownerRows=s_case.pipelined || strcmp(tokens[2],"owner_rows")==0 || strcmp(tokens[2],"owner_adc")==0;
   s_case.owner=strcmp(tokens[2],"owner")==0 || s_case.ownerRows;s_case.workerControl=strcmp(tokens[2],"workers")==0;
   s_case.adcMask=mask;s_case.adcCore=core;s_case.cycleUs=cycle;
   if(!AnalogInputManager::probeWorkerProfile(mask,core,cycle)) {error_("worker_profile_busy");return;}
@@ -334,7 +337,7 @@ void command(const char* line) {
   if((s_case.adc || s_case.selected || s_case.workerControl) && (PowerManager::analogRailFaultActive() || PowerManager::analogRailFaultLatched() || !PowerManager::analogRailEnabled())) {emit_("failed","analog_rail_fault",true);return;}
   if(s_case.bulk) {
     s_case.transportAttempted=true;
-    if(!SpiProbeTransport::begin(*s_board,id,frame,hz,nodes,s_case.cached?SpiProbeTransport::CrcMode::Cached:SpiProbeTransport::CrcMode::Legacy,interval,s_case.switchMode,s_case.pipelined)) {finish_("failed","master_entry_failed");return;}
+    if(!SpiProbeTransport::begin(*s_board,id,frame,hz,nodes,s_case.cached?SpiProbeTransport::CrcMode::Cached:SpiProbeTransport::CrcMode::Legacy,interval,s_case.switchMode,s_case.pipelined,s_case.clockOnly)) {finish_("failed","master_entry_failed");return;}
   }
   if(s_case.adc || s_case.workerControl) {
     s_case.workerStartRequested=true;
