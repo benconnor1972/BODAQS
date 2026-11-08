@@ -35,7 +35,7 @@ struct Node {
 } s_nodeState[4];
 // One immutable selected object per node, at most four distinct requests total.
 // A request clocks an older reply; it does not synchronously return its own.
-constexpr uint32_t kRetryUs=5000;
+uint32_t s_retryUs=5000;
 struct Pending {
   bool used=false;
   uint8_t node=0,fragment=0,retries=0;
@@ -59,7 +59,7 @@ bool pipelineRequest_(BodaqsSpiProbeFrame& q) {
     if(!oldest || static_cast<uint32_t>(now-p.retryUs)>static_cast<uint32_t>(now-oldest->retryUs))oldest=&p;
   }
   Pending* selected=nullptr;
-  if(oldest && static_cast<uint32_t>(now-oldest->retryUs)>=kRetryUs) {
+  if(oldest && static_cast<uint32_t>(now-oldest->retryUs)>=s_retryUs) {
     if(oldest->retries==8){++s_stats.retryExhausted;s_healthy=false;return false;}
     selected=oldest;++selected->retries;selected->retryUs=now;++s_stats.retryRequests;
   } else if(free) {
@@ -244,14 +244,15 @@ bool requestDue() {
       (!s_haveTransfer || static_cast<uint32_t>(us_()-s_lastTransferUs)>=25) &&
       (!s_haveRequest || static_cast<uint32_t>(us_()-s_lastRequestUs)>=s_interval);
 }
-bool begin(const board::BoardProfile& board,uint32_t caseId,uint16_t bytes,uint32_t hz,uint8_t nodes,CrcMode crcMode,uint32_t startIntervalUs,bool switchMode,bool pipelined,bool clockOnly) {
+bool begin(const board::BoardProfile& board,uint32_t caseId,uint16_t bytes,uint32_t hz,uint8_t nodes,CrcMode crcMode,uint32_t startIntervalUs,bool switchMode,bool pipelined,bool clockOnly,uint32_t retryUs) {
   if(s_open || !board.can_fd_master.supported || board.can_fd_master.cs_pin<0)return false;
   const uint8_t profile=bodaqs_spi_probe_profile(bytes,hz,nodes);
-  if(profile==255 || !caseId || startIntervalUs>5000 || (pipelined && switchMode) || (clockOnly && !pipelined))return false;
+  if(profile==255 || !caseId || startIntervalUs>5000 || (pipelined && switchMode) || (clockOnly && !pipelined) ||
+      (retryUs!=5000 && retryUs!=10000 && retryUs!=20000) || (!pipelined && retryUs!=5000))return false;
   s_board=&board;s_caseId=caseId;s_bytes=bytes;s_hz=hz;s_nodes=nodes;s_node=0;s_profile=profile;
   s_stats=Stats{};for(auto& n:s_nodeState)n=Node{};
   s_stats.pipelined=pipelined;s_stats.clockOnly=clockOnly;s_pipeCursor=0;for(auto& p:s_pending)p=Pending{};
-  s_crcMode=crcMode;s_interval=startIntervalUs;s_switch=switchMode;s_switchDue=false;
+  s_crcMode=crcMode;s_interval=startIntervalUs;s_switch=switchMode;s_switchDue=false;s_retryUs=retryUs;
   s_haveStart=false;s_haveRequest=false; // Preserve the inter-CS guard across cases.
   s_lockFailures=0;s_noProgressSlots=0;s_open=true;s_entered=false;s_healthy=false;
   if(!control_(request_(BODAQS_PROBE_BEGIN)))return false;

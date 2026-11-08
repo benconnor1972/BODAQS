@@ -16,6 +16,32 @@ EMITTED_SWITCH = FIXTURE.with_name("round2-emitted-switch.jsonl")
 
 
 class ProbeAnalysisTests(unittest.TestCase):
+    def test_round11_retry_policy_and_matching(self):
+        for retry in (5000,10000,20000):
+            c=self.flow_sample();c['schema']='bodaqs.spi-probe.v11'
+            c['profile']['retry_us']=retry;c['request_window']['retry_us']=retry
+            run=self.invoke(json.dumps(c));self.assertEqual(run.returncode,0,run.stderr)
+            report=json.loads(run.stdout)
+            self.assertEqual(report['schema'],'bodaqs.spi-probe-report.v11')
+            self.assertEqual(report['cases'][0]['master_flow_control']['status'],'observed')
+            self.assertFalse(report['admission_authorized'])
+
+    def test_round11_rejects_missing_mismatched_or_unsupported_retry(self):
+        for mutation in range(7):
+            c=self.flow_sample();c['schema']='bodaqs.spi-probe.v11'
+            c['profile']['retry_us']=10000;c['request_window']['retry_us']=10000
+            if mutation==0:del c['profile']['retry_us']
+            if mutation==1:c['profile']['retry_us']=True
+            if mutation==2:c['profile']['retry_us']=5001
+            if mutation==3:c['request_window']['retry_us']=5000
+            if mutation==4:c['profile']['retry_us']=20001
+            if mutation==5:
+                c=self.round9_sample('baseline');c['schema']='bodaqs.spi-probe.v11'
+                c['profile']['retry_us']=10000
+                c['master'].update(flow_measured=False,flow_before=[0]*10,flow_after=[0]*10)
+            if mutation==6:c['schema']='bodaqs.spi-probe.v10'
+            self.assertEqual(self.invoke(json.dumps(c)).returncode,2,mutation)
+
     def flow_sample(self):
         c=self.round9_sample();c["schema"]="bodaqs.spi-probe.v10"
         c["profile"]["mode"]="owner_flow"

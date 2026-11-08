@@ -18,7 +18,7 @@
 #include <deque>
 static BodaqsSpiProbeEngine master;
 static bool masterEnabled=false,masterSilent=false,corruptPayload=false;
-static unsigned dropPollRequests=0,dropAckReplies=0;
+static unsigned dropPollRequests=0,dropPollReplies=0,dropAckReplies=0;
 static bool dropNodeZero=false;
 static unsigned rawFault=0,rawFaultsLeft=0;
 static std::vector<std::array<uint8_t,256>> injectedRx;
@@ -146,6 +146,9 @@ void SPIClass::transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
       prepared=replies.back(); // lost request: retain a valid older reply
     } else {
       if(!masterSilent)bodaqs_spi_probe_process(&master,tx,length,prepared.data(),prepared.size());
+      if(poll && dropPollReplies) {
+        --dropPollReplies;prepared=replies.back(); // Request applied; POLL reply lost.
+      }
       if(decodedRequest && dispatched.opcode==BODAQS_PROBE_ACK &&
           (dropAckReplies || (dropNodeZero && dispatched.node==0))) {
         if(dropAckReplies)--dropAckReplies;prepared=replies.back(); // ACK applied; its reply lost
@@ -443,7 +446,7 @@ int main() {
   puts("real ADC: same-microsecond ISR entry before START marker is ambiguous, later distinct-tick completion paired passed");
 #if TEST_CASE_RUNNER
   releaseWaiters=true;
-  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v10-")!=std::string::npos);
+  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v11-")!=std::string::npos);
   puts(Serial.output.c_str());Serial.output.clear();SpiMeasurementProbe::command("status");
   assert(Serial.output.find("\"logger_build\":")!=std::string::npos);puts(Serial.output.c_str());Serial.output.clear();
   // Public runner, deterministic clock boundary: 10 seconds has 5000 midpoints
@@ -798,10 +801,70 @@ int main() {
   SpiMeasurementProbe::command("case 56 owner_flow 128 8000000 4 100 cached 500 3 1 0");
   assert(Serial.output.find("master_entry_failed")!=std::string::npos && SpiProbeTransport::stats().slots==0);
   puts(Serial.output.c_str());Serial.output.clear();master.flow_stats[0]=1;
+  // Exercise each deadline through the public command seam. Independent loss
+  // injections distinguish lost request, lost POLL reply and applied ACK loss.
+  unsigned retryCase=57;
+  for(unsigned retryUs:{5000U,10000U,20000U}) {
+    for(unsigned fault=0;fault<4;++fault) {
+      char cmd[96];snprintf(cmd,sizeof(cmd),"case %u owner_flow 256 16000000 4 400 cached 500 3 1 0 %u",retryCase++,retryUs);
+      SpiMeasurementProbe::command(cmd);assert(Serial.output.empty());
+      if(fault==0)dropPollRequests=1;
+      if(fault==1)dropPollReplies=1;
+      if(fault==2)dropAckReplies=1;
+      if(fault==3)dropNodeZero=true;
+      const auto began=steppedUs.load();
+      while(Serial.output.empty()) {
+        delayMicroseconds(10);SpiMeasurementProbe::loop();
+        if(SpiProbeTransport::stats().retryRequests)
+          assert(steppedUs.load()-began>=retryUs); // No premature retry.
+      }
+      const auto& result=SpiProbeTransport::stats();
+      assert(!dropPollRequests && !dropPollReplies && !dropAckReplies);
+      assert(result.retryRequests>0 && result.retiredObjects>0);
+      if(fault==3) {
+        assert(result.retryExhausted==1 && Serial.output.find("\"outcome\":\"failed\"")!=std::string::npos);
+        assert(steppedUs.load()-began<300000); // Peer progress cannot hide permanent loss.
+      } else {
+        assert(!result.retryExhausted && Serial.output.find("\"fresh_both\":200")!=std::string::npos);
+      }
+      dropNodeZero=false;puts(Serial.output.c_str());Serial.output.clear();
+    }
+  }
+  for(const char* cmd:{
+      "case 69 owner_flow 256 16000000 4 400 cached 500 3 1 0 0",
+      "case 69 owner_flow 256 16000000 4 400 cached 500 3 1 0 5001",
+      "case 69 owner_flow 256 16000000 4 400 cached 500 3 1 0 20001",
+      "case 69 owner_flow 256 16000000 4 400 cached 500 3 1 0 -1",
+      "case 69 owner_flow 256 16000000 4 400 cached 500 3 1 0 4294967296",
+      "case 69 owner_adc 256 16000000 4 400 cached 500 3 1 0 10000",
+      "case 69 owner_flow 256 16000000 4 400 cached 500 3 1 0 10000 extra"}) {
+    SpiMeasurementProbe::command(cmd);assert(Serial.output.find("invalid_profile")!=std::string::npos);
+    Serial.output.clear();
+  }
+  // Omitted argument must reset to the old default, not inherit20ms.
+  SpiMeasurementProbe::command("case 69 owner_flow 256 16000000 4 100 cached 500 3 1 0");
+  while(Serial.output.empty()){delayMicroseconds(10);SpiMeasurementProbe::loop();}
+  assert(Serial.output.find("\"retry_us\":5000")!=std::string::npos);
+  puts(Serial.output.c_str());Serial.output.clear();
+  // Loss-free delayed replies: a short deadline must be observably different
+  // from20ms. The FIFO models latency only, not real adapter CPU/queue cost.
+  uint32_t delayedRetries[3]={};unsigned delayedCase=70;
+  for(unsigned index=0;index<3;++index) {
+    const unsigned retryUs=index==0?5000:index==1?10000:20000;
+    replies.assign(14,std::array<uint8_t,256>{});
+    char cmd[96];snprintf(cmd,sizeof(cmd),"case %u owner_flow 256 16000000 4 400 cached 500 3 1 0 %u",delayedCase++,retryUs);
+    SpiMeasurementProbe::command(cmd);assert(Serial.output.empty());
+    while(Serial.output.empty()){delayMicroseconds(10);SpiMeasurementProbe::loop();}
+    assert(!SpiProbeTransport::stats().retryExhausted && SpiProbeTransport::stats().retiredObjects>0);
+    assert(Serial.output.find("\"fresh_both\":200")!=std::string::npos);
+    delayedRetries[index]=SpiProbeTransport::stats().retryRequests;
+    puts(Serial.output.c_str());Serial.output.clear();
+  }
+  assert(delayedRetries[0]>delayedRetries[2]);
   replies.assign(2,std::array<uint8_t,256>{});
   rowValueFixture=false;forceReadyPin=true;steppedUs=-1;bulkLastHigh=0;
   puts("Public pipeline: real owner rows, loss recovery, bounded per-request exhaustion despite other nodes progressing, STOP, reuse and rail failure passed");
-  uint32_t caseId=57;
+  uint32_t caseId=73;
   for(uint16_t frame: {64,128,256})for(uint32_t hz: {8000000U,16000000U}) {
     assert(SpiProbeTransport::begin(board,caseId++,frame,hz,4));
     for(unsigned attempts=0;attempts<1000000 && SpiProbeTransport::stats().retiredObjects<4;++attempts)SpiProbeTransport::tick();

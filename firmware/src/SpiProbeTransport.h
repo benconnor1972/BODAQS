@@ -59,7 +59,7 @@ struct Stats {
 };
 bool begin(const board::BoardProfile& board,uint32_t caseId,uint16_t bytes,uint32_t hz,uint8_t nodes,
     CrcMode crcMode=CrcMode::Legacy,uint32_t startIntervalUs=0,bool switchMode=false,
-    bool pipelined=false,bool clockOnly=false);
+    bool pipelined=false,bool clockOnly=false,uint32_t retryUs=5000);
 void tick();
 // Owner-loop query for sequential controls; no locks, sleeps or transfers.
 bool requestDue();

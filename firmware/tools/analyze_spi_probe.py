@@ -17,7 +17,10 @@ SCHEMA_V7 = "bodaqs.spi-probe.v7"
 SCHEMA_V8 = "bodaqs.spi-probe.v8"
 SCHEMA_V9 = "bodaqs.spi-probe.v9"
 SCHEMA_V10 = "bodaqs.spi-probe.v10"
-COST_SCHEMAS = (SCHEMA_V8, SCHEMA_V9, SCHEMA_V10)
+SCHEMA_V11 = "bodaqs.spi-probe.v11"
+FLOW_SCHEMAS = (SCHEMA_V10,SCHEMA_V11)
+RECEIVE_SCHEMAS = (SCHEMA_V9,*FLOW_SCHEMAS)
+COST_SCHEMAS = (SCHEMA_V8, *RECEIVE_SCHEMAS)
 PROCESSING_SCHEMAS = (SCHEMA_V7, *COST_SCHEMAS)
 WINDOW_SCHEMAS = (SCHEMA_V6, *PROCESSING_SCHEMAS)
 ROW_SCHEMAS = (SCHEMA_V5, *WINDOW_SCHEMAS)
@@ -214,8 +217,11 @@ def validate(case):
             100 <= p["duration_ms"] <= 3600000 and p["row_hz"] == 500 and
             p["ain"] == [0, 4] and p["configured_sps"] == [1000, 1000],
             "unsupported profile")
-    require(p["mode"]!="owner_flow" or case["schema"]==SCHEMA_V10,"clock-only requires v10")
+    require(p["mode"]!="owner_flow" or case["schema"] in FLOW_SCHEMAS,"clock-only requires v10 or later")
     require(p["mode"] not in ("owner_pipe","owner_flow") or case["schema"] in WINDOW_SCHEMAS, "pipeline requires v6")
+    if case["schema"]==SCHEMA_V11:
+        counts(p,"retry_us")
+        require(p["retry_us"] in ((5000,10000,20000) if p["mode"] in ("owner_pipe","owner_flow") else (0,)),"unsupported retry profile")
     if v2:
         counts(p, "start_interval_us")
         require(p["crc_mode"] in ("legacy", "cached") and p["start_interval_us"] <= 5000,
@@ -285,13 +291,13 @@ def validate(case):
                 require(isinstance(master[name],list) and len(master[name])==10 and all(type(v) is int and 0<=v<=4294967295 for v in master[name]),"invalid processing page")
             if p["mode"] in ADC_ONLY_MODES:
                 require(not master["processing_measured"] and all(not any(master[n]) for n in ("processing_before","processing_after","processing_meta_before","processing_meta_after")),"ADC-only case has processing observations")
-        if case["schema"] in (SCHEMA_V9,SCHEMA_V10):
+        if case["schema"] in RECEIVE_SCHEMAS:
             require(type(master["receive_measured"]) is bool,"invalid receive measured flag")
             for name in ("receive_before","receive_after","turnover_before","turnover_after"):
                 require(isinstance(master[name],list) and len(master[name])==10 and all(type(v) is int and 0<=v<=4294967295 for v in master[name]),"invalid receive turnover page")
             if p["mode"] in ADC_ONLY_MODES:
                 require(not master["receive_measured"] and all(not any(master[n]) for n in ("receive_before","receive_after","turnover_before","turnover_after")),"ADC-only receive observations")
-        if case["schema"]==SCHEMA_V10:
+        if case["schema"] in FLOW_SCHEMAS:
             require(type(master["flow_measured"]) is bool,"invalid flow measured flag")
             for name in ("flow_before","flow_after"):
                 require(isinstance(master[name],list) and len(master[name])==10 and all(type(v) is int and 0<=v<=4294967295 for v in master[name]),"invalid flow page")
@@ -428,7 +434,8 @@ def window_counts(case):
     counts(w,"limit retry_us retry_limit new_requests retry_requests clock_requests retry_exhausted pending high_water")
     timing(w["reply_age"])
     if active:
-        require((w["limit"],w["retry_us"],w["retry_limit"])==(4,5000,8),"invalid request window policy")
+        retry=case["profile"]["retry_us"] if case["schema"]==SCHEMA_V11 else 5000
+        require((w["limit"],w["retry_us"],w["retry_limit"])==(4,retry,8),"invalid request window policy")
         require(0<=w["pending"]<=w["high_water"]<=4 and w["high_water"]<=w["new_requests"],"invalid pending window")
         require((w["high_water"]==0)==(w["new_requests"]==0) and
                 (w["new_requests"]>0 or w["retry_requests"]==w["clock_requests"]==w["retry_exhausted"]==0),"request activity lacks window occupancy")
@@ -767,13 +774,13 @@ def analyze(data, manifest=None):
         master, engine_delta, adapter_delta, adapter_states = master_diagnostics(case)
         components = component_timing(case)
         processing=processing_report(case) if case["schema"] in PROCESSING_SCHEMAS else None
-        receive=receive_report(case) if case["schema"] in (SCHEMA_V9,SCHEMA_V10) else None
+        receive=receive_report(case) if case["schema"] in RECEIVE_SCHEMAS else None
         if receive and receive["status"]=="invalid":master="failed"
         elif receive and receive["status"]=="observed" and any(receive["counter_deltas"][n] for n in ("full_reply_ready","full_other")):master="failed"
         elif receive and receive["status"]=="unknown" and master=="clean":master="unknown"
         if processing and processing["status"] == "invalid":master="failed"
         elif processing and processing["status"] == "unknown" and master=="clean":master="unknown"
-        flow=flow_report(case) if case["schema"]==SCHEMA_V10 else None
+        flow=flow_report(case) if case["schema"] in FLOW_SCHEMAS else None
         if flow and flow["status"]=="invalid":master="failed"
         elif flow and flow["clock_only"] and flow["status"]!="observed" and master=="clean":master="unknown"
         observations = diagnostic_observations(case)
@@ -856,7 +863,7 @@ def analyze(data, manifest=None):
             "pipeline_diagnostics": {k: case["errors"][k] for k in ("stale", "duplicate")},
             "candidate_evidence": "failed" if failed else "diagnostic_control" if control else "clean_measurement_candidate" if clean_candidate else "unknown",
             "raw_measurements": case})
-    return {"schema": "bodaqs.spi-probe-report.v10" if any(c["schema"]==SCHEMA_V10 for c in cases) else "bodaqs.spi-probe-report.v9" if any(c["schema"] == SCHEMA_V9 for c in cases) else "bodaqs.spi-probe-report.v8" if any(c["schema"] == SCHEMA_V8 for c in cases) else "bodaqs.spi-probe-report.v7" if any(c["schema"] == SCHEMA_V7 for c in cases) else "bodaqs.spi-probe-report.v6" if any(c["schema"] == SCHEMA_V6 for c in cases) else "bodaqs.spi-probe-report.v5" if any(c["schema"] == SCHEMA_V5 for c in cases) else "bodaqs.spi-probe-report.v4" if any(c["schema"] in EXECUTION_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v3" if any(c["schema"] in INTEGRITY_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v2" if any(c["schema"] in DIAGNOSTIC_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v1",
+    return {"schema": "bodaqs.spi-probe-report.v11" if any(c["schema"]==SCHEMA_V11 for c in cases) else "bodaqs.spi-probe-report.v10" if any(c["schema"]==SCHEMA_V10 for c in cases) else "bodaqs.spi-probe-report.v9" if any(c["schema"] == SCHEMA_V9 for c in cases) else "bodaqs.spi-probe-report.v8" if any(c["schema"] == SCHEMA_V8 for c in cases) else "bodaqs.spi-probe-report.v7" if any(c["schema"] == SCHEMA_V7 for c in cases) else "bodaqs.spi-probe-report.v6" if any(c["schema"] == SCHEMA_V6 for c in cases) else "bodaqs.spi-probe-report.v5" if any(c["schema"] == SCHEMA_V5 for c in cases) else "bodaqs.spi-probe-report.v4" if any(c["schema"] in EXECUTION_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v3" if any(c["schema"] in INTEGRITY_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v2" if any(c["schema"] in DIAGNOSTIC_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v1",
             "capture_sha256": digest,
             "run_identity": "declared_paired" if manifest else "unknown_without_manifest",
             "manifest": manifest, "serial_events": events,

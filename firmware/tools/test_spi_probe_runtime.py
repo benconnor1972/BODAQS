@@ -83,7 +83,7 @@ def main():
             cases = [event for event in events if event['type'] == 'case']
             if args.capture:
                 args.capture.write_text('\n'.join(json.dumps(event) for event in events) + '\n', encoding='utf-8')
-            assert [case['case_id'] for case in cases] == [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, *range(33,57)]
+            assert [case['case_id'] for case in cases] == [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, *range(33,73)]
             assert (cases[0]['rows'], cases[0]['missed_rows']) == (5000, 0)
             assert (cases[1]['rows'], cases[1]['missed_rows']) == (49, 1)
             assert (cases[2]['rows'], cases[2]['missed_rows']) == (1, 1)
@@ -93,7 +93,7 @@ def main():
                 assert case['workers_stopped'] and case['profile']['actual_sck_hz'] is None
                 assert case['accepted_bytes'] == case['unique_objects'] * 1008
                 assert case['valid_responses'] <= case['slots']
-                assert case['schema'] == 'bodaqs.spi-probe.v10'
+                assert case['schema'] == 'bodaqs.spi-probe.v11'
                 cost=case['logger_cost'];cadence=cost['cadence']
                 assert cost['crc_algorithm']==('bitwise' if args.crc_bitwise else 'table')
                 assert case['artifacts']['logger_build'].endswith('-crc'+str(int(not args.crc_bitwise)))
@@ -202,6 +202,17 @@ def main():
             for cid in (47,48,49,50):
                 result=next(c for c in report['cases'] if c['case_id']==cid)
                 assert result['candidate_evidence']=='failed'
+            for cid in range(57,69):
+                c=next(c for c in cases if c['case_id']==cid)
+                retry=(5000,10000,20000)[(cid-57)//4]
+                assert c['profile']['retry_us']==c['request_window']['retry_us']==retry
+                if (cid-57)%4==3:
+                    assert c['outcome']=='failed' and c['request_window']['retry_exhausted']==1
+                    assert c['elapsed_us']<300000
+                else:
+                    assert c['outcome']=='complete' and c['rows']==c['row_publication']['fresh_both']==200
+                    assert not c['request_window']['retry_exhausted']
+            assert next(c for c in cases if c['case_id']==69)['profile']['retry_us']==5000
             assert next(c for c in cases if c['case_id']==48)['request_window']['retry_exhausted']==1
             slow=next(c for c in report['cases'] if c['case_id']==36)
             assert slow['row_freshness_status']=='failed' and slow['raw_measurements']['row_publication']['fresh_both']<50
