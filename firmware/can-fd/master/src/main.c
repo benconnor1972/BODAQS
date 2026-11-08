@@ -1554,7 +1554,8 @@ static void service_spi_receive(void)
             volatile uint32_t *trace_words=NULL;
             const uint8_t *reply=gTransmitSlots[next_index];
             if(reply[3]==(BODAQS_PROBE_POLL|BODAQS_PROBE_RESPONSE) ||
-               reply[3]==(BODAQS_PROBE_ACK|BODAQS_PROBE_RESPONSE)) {
+               reply[3]==(BODAQS_PROBE_ACK|BODAQS_PROBE_RESPONSE) ||
+               reply[3]==(BODAQS_PROBE_ACK_FETCH|BODAQS_PROBE_RESPONSE)) {
                 ++gSpiProbeTraceSeen;
                 if(gSpiProbeTraceSeen>PROBE_TRACE_SKIP && gSpiProbeTraceCount<PROBE_TRACE_CAPACITY) {
                     const unsigned index=gSpiProbeTraceCount++;

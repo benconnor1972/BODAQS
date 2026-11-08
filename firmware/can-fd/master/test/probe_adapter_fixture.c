@@ -319,9 +319,9 @@ static void trace_lifecycle(void) {
     while(gSpiReceiveQueue.depth) {if(gSpiTransmitReady)physical(clock,256,0);service_spi_receive();}
     if(gSpiTransmitReady)physical(clock,256,0);
     for(unsigned i=1;i<=265;++i) {
-        q.opcode=i==262?BODAQS_PROBE_ACK:BODAQS_PROBE_POLL;
-        q.object_id=i>262?2:1;q.fragment=i==262?0:(uint8_t)(i%5);
-        q.logical_crc=i==262?bodaqs_spi_probe_known_crc(100,0,1):0;
+        q.opcode=i==262?BODAQS_PROBE_ACK:i==264?BODAQS_PROBE_ACK_FETCH:BODAQS_PROBE_POLL;
+        q.object_id=i>264?3:i>262?2:1;q.fragment=(i==262 || i==264)?0:(uint8_t)(i%5);
+        q.logical_crc=(i==262 || i==264)?bodaqs_spi_probe_known_crc(100,0,q.object_id):0;
         assert(bodaqs_spi_probe_encode(&q,work,256));
         if(i==257) {tick=0xfffffff0U;gSpiProbeBoundaryInfo.boundaries=0xfffffffeU;}
         physical(work,256,0);
@@ -349,8 +349,8 @@ static void trace_lifecycle(void) {
         physical(clock,256,3);
         if(i>256 && i<=264) {
             const volatile uint32_t *w=gSpiProbeTrace[i-257].words;
-            assert(w[0]==i && w[1]==(i>262?2U:1U) && w[3]==1 && w[4]==7 && w[15]==100);
-            assert((w[2]&255U)==(i==262?BODAQS_PROBE_ACK:BODAQS_PROBE_POLL));
+            assert(w[0]==i && w[1]==(i==264?3U:i>262?2U:1U) && w[3]==1 && w[4]==7 && w[15]==100);
+            assert((w[2]&255U)==q.opcode);
             assert((uint32_t)(w[12]-w[11])>=1 && (uint32_t)(w[13]-w[12])>=1);
             assert((uint32_t)(w[6]-w[5])<1000 && (uint32_t)(w[10]-w[5])<1000);
         }

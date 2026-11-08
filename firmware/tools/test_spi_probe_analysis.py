@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import analyze_spi_probe as probe
 
 
 TOOL = Path(__file__).with_name("analyze_spi_probe.py")
@@ -16,6 +17,18 @@ EMITTED_SWITCH = FIXTURE.with_name("round2-emitted-switch.jsonl")
 
 
 class ProbeAnalysisTests(unittest.TestCase):
+    def test_combined_master_trace_identity_and_version(self):
+        c=self.split_sample(0);c['schema']=probe.SCHEMA_V17
+        w=c['master']['reply_trace']['records'][0];w[2]=4|(1<<24);w[1]=2
+        r=probe.reply_trace_report(c)
+        self.assertEqual(r['status'],'observed')
+        self.assertEqual(r['records'][0]['kind'],'ack_fetch')
+        self.assertIn('ACK_FETCH',r['scope'])
+        w[2]|=1<<16
+        self.assertEqual(probe.reply_trace_report(c)['status'],'invalid')
+        w[2]=4|(1<<24);c['schema']=probe.SCHEMA_V13
+        self.assertEqual(probe.reply_trace_report(c)['status'],'invalid')
+
     def split_sample(self,flags):
         c=self.early_sample()
         c['master']['early_before']=[2,flags,0,0,0,0,0,0,1,0]

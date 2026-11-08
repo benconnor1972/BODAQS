@@ -53,6 +53,15 @@ def main():
         sources += [root / 'can-fd/common/protocol/bodaqs_control.c']
         if args.case_runner:
             sources += [root / 'src' / name for name in ('SpiMeasurementProbe.cpp', 'SpiProbeTransport.cpp', 'SpiProbeCodec.cpp')]
+            # Seed only the initial identity at the real client/engine seam for
+            # exhaustion coverage; target code always starts at object1.
+            transport=root/'src/SpiProbeTransport.cpp'
+            observed_transport=transport.read_text(encoding='utf-8')
+            assert observed_transport.count('uint32_t object=1,crc=0,mask=0;')==1
+            seeded_transport=temp/'SpiProbeTransport.cpp'
+            seeded_transport.write_text('extern unsigned int probeTestInitialObject;\n'+observed_transport.replace(
+                'uint32_t object=1,crc=0,mask=0;', 'uint32_t object=probeTestInitialObject,crc=0,mask=0;'),encoding='utf-8')
+            sources[sources.index(transport)]=seeded_transport
             # Simulate only the stop-status boundary, leaving finish_ and its real
             # transport call intact. Allows a red-capable unsafe-readout check.
             original=root/'src/SpiMeasurementProbe.cpp'
@@ -93,17 +102,17 @@ def main():
             cases = [event for event in events if event['type'] == 'case']
             if args.capture:
                 args.capture.write_text('\n'.join(json.dumps(event) for event in events) + '\n', encoding='utf-8')
-            assert [case['case_id'] for case in cases] == [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, *range(33,82)]
+            assert [case['case_id'] for case in cases] == [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, *range(33,93)]
             assert (cases[0]['rows'], cases[0]['missed_rows']) == (5000, 0)
             assert (cases[1]['rows'], cases[1]['missed_rows']) == (49, 1)
             assert (cases[2]['rows'], cases[2]['missed_rows']) == (1, 1)
             assert (cases[3]['rows'], cases[3]['missed_rows']) == (0, 50)
             assert cases[8]['outcome'] == 'failed' and cases[8]['elapsed_us'] < 100000
             for case in cases:
-                assert case['workers_stopped']==(case['case_id']!=81) and case['profile']['actual_sck_hz'] is None
+                assert case['workers_stopped']==(case['case_id']!=92) and case['profile']['actual_sck_hz'] is None
                 assert case['accepted_bytes'] == case['unique_objects'] * 1008
                 assert case['valid_responses'] <= case['slots']
-                assert case['schema'] == 'bodaqs.spi-probe.v15'
+                assert case['schema'] == 'bodaqs.spi-probe.v17'
                 cost=case['logger_cost'];cadence=cost['cadence']
                 assert cost['crc_algorithm']==('bitwise' if args.crc_bitwise else 'table')
                 assert case['artifacts']['logger_build'].endswith('-crc'+str(int(not args.crc_bitwise)))
@@ -143,6 +152,8 @@ def main():
             assert rail_fault['adc_status'] == 'failed' and rail_fault['candidate_evidence'] == 'failed'
             print('Public rail-fault capture through analyzer CLI: no observed ADC rows cannot report healthy passed')
             report = json.loads(analyzed.stdout)
+            fetch_trace=next(c for c in report['cases'] if c['case_id']==91)['logger_dispatch_trace']
+            assert fetch_trace['status']=='observed' and 4 in {r['request_opcode'] for r in fetch_trace['records']}
             for cid in (76,77,78,79,80):
                 c=next(c for c in report['cases'] if c['case_id']==cid)
                 trace=c['logger_dispatch_trace']

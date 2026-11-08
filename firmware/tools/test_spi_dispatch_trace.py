@@ -8,6 +8,13 @@ import analyze_spi_probe as probe
 
 
 class DispatchTraceTests(unittest.TestCase):
+    def test_combined_requests_require_v17(self):
+        c=self.sample();c['schema']=probe.SCHEMA_V17;c['profile']['mode']='owner_fetch'
+        c['dispatch_trace']['records'][1][probe.DISPATCH_COLUMNS.index('request_opcode')]=4
+        self.assertEqual(probe.dispatch_trace_report(c)['status'],'observed')
+        c['schema']=probe.SCHEMA_V15
+        with self.assertRaises(ValueError):probe.dispatch_trace_report(c)
+
     def sample(self):
         r=dict.fromkeys(probe.DISPATCH_COLUMNS,0)
         r.update(begin=1001100,ready_end=1001102,row_end=1001103,start_end=1001104,

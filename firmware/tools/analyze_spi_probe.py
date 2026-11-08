@@ -21,7 +21,8 @@ SCHEMA_V11 = "bodaqs.spi-probe.v11"
 SCHEMA_V13 = "bodaqs.spi-probe.v13"
 SCHEMA_V14 = "bodaqs.spi-probe.v14"
 SCHEMA_V15 = "bodaqs.spi-probe.v15"
-EARLY_SCHEMAS = (SCHEMA_V14,SCHEMA_V15)
+SCHEMA_V17 = "bodaqs.spi-probe.v17"
+EARLY_SCHEMAS = (SCHEMA_V14,SCHEMA_V15,SCHEMA_V17)
 TRACE_SCHEMAS = (SCHEMA_V13,*EARLY_SCHEMAS)
 RETRY_SCHEMAS = (SCHEMA_V11,*TRACE_SCHEMAS)
 FLOW_SCHEMAS = (SCHEMA_V10,*RETRY_SCHEMAS)
@@ -31,7 +32,7 @@ PROCESSING_SCHEMAS = (SCHEMA_V7, *COST_SCHEMAS)
 WINDOW_SCHEMAS = (SCHEMA_V6, *PROCESSING_SCHEMAS)
 ROW_SCHEMAS = (SCHEMA_V5, *WINDOW_SCHEMAS)
 EXECUTION_SCHEMAS = (SCHEMA_V4, *ROW_SCHEMAS)
-ROW_OWNER_MODES = ("owner_adc", "owner_rows", "owner_pipe", "owner_flow")
+ROW_OWNER_MODES = ("owner_adc", "owner_rows", "owner_pipe", "owner_flow", "owner_fetch")
 ADC_ONLY_MODES = ("adc", "owner_adc")
 INTEGRITY_SCHEMAS = (SCHEMA_V3, *EXECUTION_SCHEMAS)
 DIAGNOSTIC_SCHEMAS = (SCHEMA_V2, *INTEGRITY_SCHEMAS)
@@ -206,7 +207,7 @@ def validate(case):
     if case["schema"] in TRACE_SCHEMAS:
         reply_trace_report(case)  # validate representation before interpreting it
     if case["schema"] in EARLY_SCHEMAS:early_report(case)
-    if case["schema"]==SCHEMA_V15:dispatch_trace_report(case)
+    if case["schema"] in (SCHEMA_V15,SCHEMA_V17):dispatch_trace_report(case)
     counts(case, "case_id elapsed_us rows missed_rows slots valid_responses unique_objects accepted_bytes retired_objects")
     require(0 < case["case_id"] <= 4294967295, "invalid case ID")
     require(case["elapsed_us"] > 0 or (case["outcome"] != "complete" and case["rows"] == 0 and case["accepted_bytes"] == 0), "empty complete timed window")
@@ -227,11 +228,12 @@ def validate(case):
             100 <= p["duration_ms"] <= 3600000 and p["row_hz"] == 500 and
             p["ain"] == [0, 4] and p["configured_sps"] == [1000, 1000],
             "unsupported profile")
-    require(p["mode"]!="owner_flow" or case["schema"] in FLOW_SCHEMAS,"clock-only requires v10 or later")
-    require(p["mode"] not in ("owner_pipe","owner_flow") or case["schema"] in WINDOW_SCHEMAS, "pipeline requires v6")
+    require(p["mode"]!="owner_fetch" or case["schema"]==SCHEMA_V17,"ACK_FETCH requires v17")
+    require(p["mode"] not in ("owner_flow","owner_fetch") or case["schema"] in FLOW_SCHEMAS,"clock-only requires v10 or later")
+    require(p["mode"] not in ("owner_pipe","owner_flow","owner_fetch") or case["schema"] in WINDOW_SCHEMAS, "pipeline requires v6")
     if case["schema"] in RETRY_SCHEMAS:
         counts(p,"retry_us")
-        require(p["retry_us"] in ((5000,10000,20000) if p["mode"] in ("owner_pipe","owner_flow") else (0,)),"unsupported retry profile")
+        require(p["retry_us"] in ((5000,10000,20000) if p["mode"] in ("owner_pipe","owner_flow","owner_fetch") else (0,)),"unsupported retry profile")
     if v2:
         counts(p, "start_interval_us")
         require(p["crc_mode"] in ("legacy", "cached") and p["start_interval_us"] <= 5000,
@@ -366,7 +368,7 @@ def dispatch_trace_report(case):
         require(not t["records"] and not any(t[n] for n in ("closed","cycles","overflow","observed_end_us")),
                 "disabled dispatch trace contains observations")
     else:
-        require(case["profile"]["mode"]=="owner_flow","dispatch trace outside owner_flow")
+        require(case["profile"]["mode"] in ("owner_flow","owner_fetch"),"dispatch trace outside owner_flow")
     cutoff=t["start_us"]+t["duration_us"]
     window=t["window"]
     require(isinstance(window,list) and len(window)==6 and
@@ -414,7 +416,7 @@ def dispatch_trace_report(case):
         else:
             require(r["next_row"]>r["decision_at"]+800,"transport decision inside row reserve")
         if dispatched:
-            require(1<=r["reply_status"]<=4 and r["request_opcode"] in (2,3,7),"invalid traced exchange")
+            require(1<=r["reply_status"]<=4 and r["request_opcode"] in ((2,3,4,7) if case.get('schema')==SCHEMA_V17 else (2,3,7)),"invalid traced exchange")
             require(r["request_node"]<case["profile"]["nodes"] and r["request_fragment"]<26,"invalid traced request")
             if r["reply_status"]>=2:
                 require(r["decision_at"]<=r["cs"]<=r["release"]<=r["end"],"unordered exchange times")
@@ -560,6 +562,7 @@ def reply_trace_report(case):
             all(type(v) is int and 0<=v<=0xffffffff for v in w) for w in records),"invalid trace records")
     result={"status":"unknown","sample_count":len(records),"header":header,
         "scope":"master clock only; first 8 successful POLL/ACK preparations after skipping 256; software CS-retirement entry, not pad edge; full exchange is not valid MISO or logger acceptance; no cross-clock subtraction"}
+    if case['schema']==SCHEMA_V17:result['scope']=result['scope'].replace('POLL/ACK preparations','POLL/ACK/ACK_FETCH preparations')
     if not trace["measured"]:
         require(not records and not trace["read_complete"],"unmeasured trace has records")
         if case["profile"]["mode"] in ADC_ONLY_MODES:result["status"]="not_applicable"
@@ -575,8 +578,8 @@ def reply_trace_report(case):
     for i,w in enumerate(records):
         opcode,node,fragment,size_code=(w[2]>>(8*j)&255 for j in range(4))
         flags=w[4]
-        invalid=invalid or w[0]!=257+i or not w[1] or opcode not in (2,3) or node>=case["profile"]["nodes"] or size_code!=code
-        invalid=invalid or fragment>=((1008+case["profile"]["frame_bytes"]-25)//(case["profile"]["frame_bytes"]-24)) or (opcode==3 and fragment!=0)
+        invalid=invalid or w[0]!=257+i or not w[1] or opcode not in ((2,3,4) if case["schema"]==SCHEMA_V17 else (2,3)) or node>=case["profile"]["nodes"] or size_code!=code
+        invalid=invalid or fragment>=((1008+case["profile"]["frame_bytes"]-25)//(case["profile"]["frame_bytes"]-24)) or (opcode in (3,4) and fragment!=0)
         invalid=invalid or w[3]!=header[7] or flags not in (1,3,7) or not 1<=w[14]<=4 or w[15]!=case["case_id"] or any(w[16:])
         invalid=invalid or (not flags&2 and (w[9] or w[12])) or (not flags&4 and (w[10] or w[13]))
         durations={"arrival_to_process_us":(w[6]-w[5])&0xffffffff,"processing_us":(w[7]-w[6])&0xffffffff,
@@ -594,7 +597,7 @@ def reply_trace_report(case):
         for k,v in durations.items():stage_values[k].append(v)
         observations.append({"ordinal":w[0],"object_id":w[1],"opcode":opcode,"node":node,"fragment":fragment,
             "flags":flags,"queue_depth_at_pop":w[14],"receive_boundary":w[11],"publish_boundary":w[12],"full_exchange_boundary":w[13],
-            "kind":"ack" if opcode==3 else "poll_head" if fragment==0 else "poll_body",**durations})
+            "kind":"ack_fetch" if opcode==4 else "ack" if opcode==3 else "poll_head" if fragment==0 else "poll_body",**durations})
     result["status"]="invalid" if invalid else "incomplete" if not trace["read_complete"] else "disabled" if not header[1] else "observed" if records else "empty"
     if not invalid:
         result["records"]=observations
@@ -606,7 +609,7 @@ def reply_trace_report(case):
 
 def flow_report(case):
     result={"status":"not_applicable" if case["profile"]["mode"] in ADC_ONLY_MODES else "unknown",
-            "clock_only":case["profile"]["mode"]=="owner_flow","bypassed":None,
+            "clock_only":case["profile"]["mode"] in ("owner_flow","owner_fetch"),"bypassed":None,
             "scope":"STATS7 boot counter delta includes controls outside timed run; bypass is not response delivery/readiness or a work credit"}
     m=case["master"]
     if result["status"]=="not_applicable" or not m["flow_measured"]:return result
@@ -625,7 +628,7 @@ def flow_report(case):
 
 def window_counts(case):
     w=case["request_window"]
-    active=case["profile"]["mode"] in ("owner_pipe","owner_flow")
+    active=case["profile"]["mode"] in ("owner_pipe","owner_flow","owner_fetch")
     require(type(w["active"]) is bool and w["active"]==active,"invalid request window mode")
     counts(w,"limit retry_us retry_limit new_requests retry_requests clock_requests retry_exhausted pending high_water")
     timing(w["reply_age"])
@@ -1006,12 +1009,12 @@ def analyze(data, manifest=None):
             case["elapsed_us"] > p["duration_ms"] * 1000 + 2000) else "short" if (
             case["elapsed_us"] < p["duration_ms"] * 1000 - 2000) else "observed"
         failed = case["outcome"] != "complete" or case.get("workers_stopped") is False or adc == "failed" or transport == "failed" or (
-            p["mode"] not in ADC_ONLY_MODES and master == "failed") or (p["mode"] in ("mixed","owner_rows","owner_pipe","owner_flow") and baseline == "failed") or duration_status != "observed"
+            p["mode"] not in ADC_ONLY_MODES and master == "failed") or (p["mode"] in ("mixed","owner_rows","owner_pipe","owner_flow","owner_fetch") and baseline == "failed") or duration_status != "observed"
         clean_candidate = not failed and manifest is not None and case.get("workers_stopped") is True and (
             p["mode"] in ADC_ONLY_MODES or (master == "clean" and case["accepted_bytes"] > 0)) and (
             p["mode"] != "mixed" or baseline == "healthy") and (
             case["schema"] not in DIAGNOSTIC_SCHEMAS or observations in ("observed", "not_applicable"))
-        dispatch=dispatch_trace_report(case) if case["schema"]==SCHEMA_V15 else None
+        dispatch=dispatch_trace_report(case) if case["schema"] in (SCHEMA_V15,SCHEMA_V17) else None
         if dispatch and dispatch["status"]=="incomplete":failed=True
         control = case["schema"] in DIAGNOSTIC_SCHEMAS and (p["mode"] in ("switch", "shape", "selected", "owner", "workers", *ROW_OWNER_MODES) or
                   p["crc_mode"] == "cached" or p["start_interval_us"] > 0)
@@ -1069,7 +1072,7 @@ def analyze(data, manifest=None):
             "pipeline_diagnostics": {k: case["errors"][k] for k in ("stale", "duplicate")},
             "candidate_evidence": "failed" if failed else "diagnostic_control" if control else "clean_measurement_candidate" if clean_candidate else "unknown",
             "raw_measurements": case})
-    return {"schema": "bodaqs.spi-probe-report.v15" if any(c["schema"]==SCHEMA_V15 for c in cases) else "bodaqs.spi-probe-report.v14" if any(c["schema"]==SCHEMA_V14 for c in cases) else "bodaqs.spi-probe-report.v13" if any(c["schema"]==SCHEMA_V13 for c in cases) else "bodaqs.spi-probe-report.v11" if any(c["schema"]==SCHEMA_V11 for c in cases) else "bodaqs.spi-probe-report.v10" if any(c["schema"]==SCHEMA_V10 for c in cases) else "bodaqs.spi-probe-report.v9" if any(c["schema"] == SCHEMA_V9 for c in cases) else "bodaqs.spi-probe-report.v8" if any(c["schema"] == SCHEMA_V8 for c in cases) else "bodaqs.spi-probe-report.v7" if any(c["schema"] == SCHEMA_V7 for c in cases) else "bodaqs.spi-probe-report.v6" if any(c["schema"] == SCHEMA_V6 for c in cases) else "bodaqs.spi-probe-report.v5" if any(c["schema"] == SCHEMA_V5 for c in cases) else "bodaqs.spi-probe-report.v4" if any(c["schema"] in EXECUTION_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v3" if any(c["schema"] in INTEGRITY_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v2" if any(c["schema"] in DIAGNOSTIC_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v1",
+    return {"schema": "bodaqs.spi-probe-report.v17" if any(c["schema"]==SCHEMA_V17 for c in cases) else "bodaqs.spi-probe-report.v15" if any(c["schema"]==SCHEMA_V15 for c in cases) else "bodaqs.spi-probe-report.v14" if any(c["schema"]==SCHEMA_V14 for c in cases) else "bodaqs.spi-probe-report.v13" if any(c["schema"]==SCHEMA_V13 for c in cases) else "bodaqs.spi-probe-report.v11" if any(c["schema"]==SCHEMA_V11 for c in cases) else "bodaqs.spi-probe-report.v10" if any(c["schema"]==SCHEMA_V10 for c in cases) else "bodaqs.spi-probe-report.v9" if any(c["schema"] == SCHEMA_V9 for c in cases) else "bodaqs.spi-probe-report.v8" if any(c["schema"] == SCHEMA_V8 for c in cases) else "bodaqs.spi-probe-report.v7" if any(c["schema"] == SCHEMA_V7 for c in cases) else "bodaqs.spi-probe-report.v6" if any(c["schema"] == SCHEMA_V6 for c in cases) else "bodaqs.spi-probe-report.v5" if any(c["schema"] == SCHEMA_V5 for c in cases) else "bodaqs.spi-probe-report.v4" if any(c["schema"] in EXECUTION_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v3" if any(c["schema"] in INTEGRITY_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v2" if any(c["schema"] in DIAGNOSTIC_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v1",
             "capture_sha256": digest,
             "run_identity": "declared_paired" if manifest else "unknown_without_manifest",
             "manifest": manifest, "serial_events": events,
