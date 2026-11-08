@@ -164,7 +164,7 @@ void SPIClass::transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
                 traceEmulated==1?258U:0U,dispatched.case_id,1,0,0};
             memcpy(master.trace_stats,header,sizeof header);
           } else if(page==25) {
-            const uint32_t early[]={1,traceEmulated==1?1U:0U,
+            const uint32_t early[]={traceEmulated==3?2U:1U,traceEmulated==3?1U:traceEmulated==1?1U:0U,
                 traceEmulated==1?10U:0U,traceEmulated==1?10U:0U,0,0,0,
                 traceEmulated==1?12U:0U,1,0};
             memcpy(master.trace_stats,early,sizeof early);
@@ -897,7 +897,7 @@ int main() {
   replies.assign(2,std::array<uint8_t,256>{});
   for(unsigned cid=73;cid<=81;++cid) {
     if(cid>=76 && cid<=80) {
-      traceEmulated=traceFailPage=0;
+      traceEmulated=cid==80?3:0;traceFailPage=0;
       if(cid==80) {steppedUs=(INT64_C(1)<<32)-1020000;bulkLastHigh=0;}
       if(cid==76)for(const char* invalid:{
           "case 76 owner_flow 256 16000000 4 1200 cached 500 3 1 0 10000 2",

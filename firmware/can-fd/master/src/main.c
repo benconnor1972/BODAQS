@@ -132,6 +132,17 @@ static uint32_t gSpiProbePublishedTick,gSpiProbePublishedEpoch;
 #if BODAQS_SPI_PROBE_EARLY_PUBLISH != 0 && BODAQS_SPI_PROBE_EARLY_PUBLISH != 1
 #error "BODAQS_SPI_PROBE_EARLY_PUBLISH must be 0 or 1"
 #endif
+/* Round16 separates the gap reset/rearm from the active-reply ownership gate.
+ * The inherited EARLY flag continues to guard boundary ownership unchanged. */
+#ifndef BODAQS_SPI_PROBE_GAP_PUBLISH
+#define BODAQS_SPI_PROBE_GAP_PUBLISH BODAQS_SPI_PROBE_EARLY_PUBLISH
+#endif
+#if BODAQS_SPI_PROBE_GAP_PUBLISH != 0 && BODAQS_SPI_PROBE_GAP_PUBLISH != 1
+#error "BODAQS_SPI_PROBE_GAP_PUBLISH must be 0 or 1"
+#endif
+#if BODAQS_SPI_PROBE_GAP_PUBLISH && !BODAQS_SPI_PROBE_EARLY_PUBLISH
+#error "Gap publication requires active-reply ownership protection"
+#endif
 static volatile bool gSpiProbeActiveObserved=true,gSpiProbeQuarantine;
 static volatile uint16_t gSpiProbeActiveBytes;
 typedef struct {uint32_t attempts,published,busy,collisions,discarded,max_us,invalid;} ProbeEarly;
@@ -1178,7 +1189,7 @@ static void probe_publish_reply(uint32_t boundary_started,uint32_t boundary_epoc
 
 static void probe_early_publish(void)
 {
-#if BODAQS_SPI_PROBE_EARLY_PUBLISH
+#if BODAQS_SPI_PROBE_GAP_PUBLISH
     uint32_t mask=__get_PRIMASK();
     __disable_irq();
     if(!gSpiTransmitReady || gSpiRetiring || gSpiProbeQuarantine || !gSpiProbeActiveObserved) {
@@ -1495,7 +1506,9 @@ static void service_spi_receive(void)
 #endif
             }
             if(length>=20 && received[3]==BODAQS_PROBE_STATS && received[13]==25) {
-                const uint32_t early[]={1,BODAQS_SPI_PROBE_EARLY_PUBLISH,gSpiProbeEarly.attempts,
+                /* STATS25 schema2: bit0=ownership gate, bit1=gap publication.
+                 * The unchanged v15 logger transports these opaque words. */
+                const uint32_t early[]={2,BODAQS_SPI_PROBE_EARLY_PUBLISH|(BODAQS_SPI_PROBE_GAP_PUBLISH<<1),gSpiProbeEarly.attempts,
                     gSpiProbeEarly.published,gSpiProbeEarly.busy,gSpiProbeEarly.collisions,
                     gSpiProbeEarly.discarded,gSpiProbeEarly.max_us,epoch,gSpiProbeEarly.invalid};
                 memcpy(gSpiProbe.trace_stats,early,sizeof early);

@@ -16,6 +16,52 @@ EMITTED_SWITCH = FIXTURE.with_name("round2-emitted-switch.jsonl")
 
 
 class ProbeAnalysisTests(unittest.TestCase):
+    def split_sample(self,flags):
+        c=self.early_sample()
+        c['master']['early_before']=[2,flags,0,0,0,0,0,0,1,0]
+        c['master']['early_after']=[2,flags,0,0,0,0,0,0,1,0]
+        c['master']['reply_trace']['records'][0][12]=21
+        return c
+
+    def test_round16_independent_ownership_and_gap_flags(self):
+        for flags in (0,1,3):
+            c=self.split_sample(flags);run=self.invoke(json.dumps(c))
+            self.assertEqual(run.returncode,0,run.stderr)
+            out=json.loads(run.stdout)['cases'][0];early=out['master_early_publication']
+            self.assertEqual(early['status'],'observed')
+            self.assertEqual(early['configuration_schema'],2)
+            self.assertEqual(early['ownership_gate'],bool(flags&1))
+            self.assertEqual(early['gap_enabled'],bool(flags&2))
+            self.assertEqual(early['enabled'],early['gap_enabled'])
+            self.assertEqual(out['master_reply_trace']['status'],'observed')
+
+    def test_round16_same_boundary_requires_gap_not_only_ownership(self):
+        for flags in (0,1,3):
+            c=self.split_sample(flags);c['master']['reply_trace']['records'][0][12]=20
+            run=self.invoke(json.dumps(c));self.assertEqual(run.returncode,0,run.stderr)
+            out=json.loads(run.stdout)['cases'][0]
+            self.assertEqual(out['master_reply_trace']['status'],'observed' if flags==3 else 'invalid')
+
+    def test_round16_configuration_and_disabled_gap_activity_are_invalid(self):
+        for change in ('unprotected_gap','unknown_bit','changed_flags','changed_schema','disabled_activity','disabled_max'):
+            c=self.split_sample(1);a=c['master']['early_before'];b=c['master']['early_after']
+            if change=='unprotected_gap':a[1]=b[1]=2
+            if change=='unknown_bit':a[1]=b[1]=5
+            if change=='changed_flags':b[1]=3
+            if change=='changed_schema':b[0]=1
+            if change=='disabled_activity':b[2]=b[3]=1
+            if change=='disabled_max':b[7]=9
+            run=self.invoke(json.dumps(c));self.assertEqual(run.returncode,0,run.stderr)
+            out=json.loads(run.stdout)['cases'][0]
+            self.assertEqual(out['master_early_publication']['status'],'invalid',change)
+            self.assertEqual(out['candidate_evidence'],'failed')
+
+    def test_round16_enabled_gap_counters_remain_conserved(self):
+        c=self.split_sample(3);c['master']['early_after']=[2,3,2,1,1,0,0,9,1,0]
+        run=self.invoke(json.dumps(c));self.assertEqual(run.returncode,0,run.stderr)
+        out=json.loads(run.stdout)['cases'][0]['master_early_publication']
+        self.assertEqual(out['status'],'observed');self.assertEqual(out['counter_deltas']['published'],1)
+
     def trace_sample(self):
         c=self.flow_sample();c['schema']='bodaqs.spi-probe.v13'
         c['profile']['retry_us']=10000;c['request_window']['retry_us']=10000

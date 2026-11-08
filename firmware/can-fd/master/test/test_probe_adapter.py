@@ -36,12 +36,24 @@ with tempfile.TemporaryDirectory() as tmp:
     c=Path(tmp)/'adapter.c';exe=Path(tmp)/'adapter.exe'
     c.write_text(fixture.replace('/* ACTUAL_ADAPTER */',state+'\n'+queue_state+'\n'+functions))
     common=root/'firmware/can-fd/common'
-    for mode,trace in ((0,0),(1,0),(0,1),(1,1)):
-      for capacity in (1,4):
-       for early in (0,1):
-        subprocess.run([a.cc,'-std=c11','-Wall','-Wextra','-Werror','-O2','-DBODAQS_SPI_PROBE=1',
-            f'-DBODAQS_SPI_PROBE_RX_QUEUE_CAPACITY={capacity}',
-            f'-DBODAQS_SPI_PROBE_EARLY_PUBLISH={early}',
-            f'-DBODAQS_SPI_PROBE_CRC_TABLE={mode}',f'-DBODAQS_SPI_PROBE_TRACE={trace}','-Wno-pointer-to-int-cast','-I'+str(common/'protocol'),'-I'+str(common/'transport'),str(c),
-            str(common/'protocol/bodaqs_spi_probe.c'),'-o',str(exe)],check=True)
+    configurations=[(mode,trace,capacity,early,gap)
+        for mode,trace in ((0,0),(1,0),(0,1),(1,1))
+        for capacity in (1,4) for early,gap in ((0,0),(1,0),(1,1))]
+    configurations += [(1,1,4,early,None) for early in (0,1)]
+    def command(mode,trace,capacity,early,gap):
+        flags=[f'-DBODAQS_SPI_PROBE_EARLY_PUBLISH={early}']
+        if gap is not None:flags.append(f'-DBODAQS_SPI_PROBE_GAP_PUBLISH={gap}')
+        return [a.cc,'-std=c11','-Wall','-Wextra','-Werror','-O2','-DBODAQS_SPI_PROBE=1',
+            f'-DBODAQS_SPI_PROBE_RX_QUEUE_CAPACITY={capacity}',*flags,
+            f'-DBODAQS_SPI_PROBE_CRC_TABLE={mode}',f'-DBODAQS_SPI_PROBE_TRACE={trace}',
+            '-Wno-pointer-to-int-cast','-I'+str(common/'protocol'),'-I'+str(common/'transport'),str(c),
+            str(common/'protocol/bodaqs_spi_probe.c'),'-o',str(exe)]
+    for configuration in configurations:
+        subprocess.run(command(*configuration),check=True)
         subprocess.run([str(exe)],check=True)
+    for early,gap,message in ((0,1,'requires active-reply ownership'),
+                              (1,2,'GAP_PUBLISH must be 0 or 1'),
+                              (2,0,'EARLY_PUBLISH must be 0 or 1')):
+        invalid=subprocess.run(command(1,1,4,early,gap),capture_output=True,text=True)
+        assert invalid.returncode!=0 and message in invalid.stderr,invalid.stderr
+    print('actual adapter matrix:24 explicit +2 inherited defaults;3 invalid selections rejected PASS')

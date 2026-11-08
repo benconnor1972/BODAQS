@@ -119,7 +119,7 @@ static void early_lifecycle(void) {
     unsigned before=gTransmitIndex,boundaries=gSpiProbeBoundaryInfo.boundaries;
     unsigned rx=gReceiveIndex,queued=gSpiReceiveQueue.depth;
     probe_early_publish();
-#if BODAQS_SPI_PROBE_EARLY_PUBLISH
+#if BODAQS_SPI_PROBE_GAP_PUBLISH
     assert(!gSpiTransmitReady && gTransmitIndex==(before^1U));
     assert(gReceiveIndex==rx && gSpiReceiveQueue.depth==queued && gSpiProbeBoundaryInfo.boundaries==boundaries);
     assert(bodaqs_spi_probe_decode(gTransmitSlots[gTransmitIndex],256,&r) && r.opcode==129 && r.case_id==1000);
@@ -127,7 +127,7 @@ static void early_lifecycle(void) {
     assert(gSpiTransmitReady && gTransmitIndex==before);
     (void)rx;(void)queued;(void)boundaries;(void)r;
 #endif
-#if BODAQS_SPI_PROBE_EARLY_PUBLISH
+#if BODAQS_SPI_PROBE_GAP_PUBLISH
     /* Real next-exchange bytes must contain BEGIN, not an extra stale CLOCK. */
     assert(!gSpiProbeActiveObserved && gSpiProbeActiveBytes==256);
     q.opcode=BODAQS_PROBE_POLL;q.object_id=1;q.fragment=4;
@@ -232,7 +232,7 @@ static void early_lifecycle(void) {
     memcpy(gReceiveSlots[gReceiveIndex],work,256);remaining=0;
     retire_spi_boundary();service_spi_receive();
     assert(bodaqs_spi_probe_decode(gTransmitSlots[gTransmitIndex^1U],256,&r));
-    assert(r.opcode==133 && value(&r,0)==1 && value(&r,1)==1);
+    assert(r.opcode==133 && value(&r,0)==2 && value(&r,1)==3);
     assert(value(&r,5)==12 && value(&r,6)==12);
     assert(value(&r,9)==1);
 #endif
@@ -247,6 +247,41 @@ static void physical(const uint8_t *request,unsigned length,unsigned tail) {
     cs_high=1;prefetched=1;retire_spi_boundary();
     for(unsigned i=0;i<8;++i) assert(guarded_rx.before[i]==0xa5 && guarded_rx.after[i]==0xa5);
 }
+#if BODAQS_SPI_PROBE_EARLY_PUBLISH
+static void ownership_boundary_lifecycle(void) {
+    uint8_t clock[256],discarded[256];
+    BodaqsSpiProbeFrame q={.opcode=BODAQS_PROBE_CLOCK,.profile=2};
+    assert(bodaqs_spi_probe_encode(&q,clock,256));
+    bodaqs_record_queue_init(&gSpiReceiveQueue,storage,256,BODAQS_SPI_PROBE_RX_QUEUE_CAPACITY);
+    gSpiProbeActiveObserved=false;gSpiProbeActiveBytes=256;gSpiProbeQuarantine=false;
+    gSpiTransmitReady=true;cs_high=1;raw_cs=0;
+    unsigned active=gTransmitIndex;
+    /* A short transfer and an excess FIFO tail retain the unobserved active
+     * reply and its ready successor, including in the new gap-disabled mode. */
+    for(unsigned bytes=255;bytes<=257;bytes+=2) {
+        uint8_t request[257];memcpy(request,clock,256);request[256]=0;
+        physical(request,bytes,bytes==257?1:0);
+        assert(gTransmitIndex==active && gSpiTransmitReady && !gSpiProbeActiveObserved);
+        while(bodaqs_record_queue_pop(&gSpiReceiveQueue,discarded)){}
+    }
+    physical(clock,256,0);
+    assert(gTransmitIndex==(active^1U) && !gSpiTransmitReady && !gSpiProbeActiveObserved);
+#if !BODAQS_SPI_PROBE_GAP_PUBLISH
+    /* Even an eligible prepared successor cannot reset/rearm in a CS-high gap. */
+    gSpiProbeActiveObserved=true;gSpiTransmitReady=true;
+    active=gTransmitIndex;unsigned reset_before=resets,arm_before=arms;
+    uint32_t boundaries=gSpiProbeBoundaryInfo.boundaries;
+    remaining=256;fifo_count=0;cs_high=1;raw_cs=0;
+    probe_early_publish();
+    assert(gTransmitIndex==active && gSpiTransmitReady && gSpiProbeActiveObserved);
+    assert(resets==reset_before && arms==arm_before && gSpiProbeBoundaryInfo.boundaries==boundaries);
+    assert(!gSpiProbeEarly.attempts && !gSpiProbeEarly.published && !gSpiProbeEarly.busy &&
+           !gSpiProbeEarly.collisions && !gSpiProbeEarly.discarded && !gSpiProbeEarly.max_us);
+#endif
+    gSpiTransmitReady=false;
+    puts("ownership gate: short/excess hold; exact full exchange permits publication PASS");
+}
+#endif
 static BodaqsSpiProbeFrame wire_reply(BodaqsSpiProbeFrame q,uint8_t opcode,uint32_t object) {
     uint8_t request[256],observed[256];BodaqsSpiProbeFrame r;
     unsigned bytes=bodaqs_spi_probe_frame_bytes(q.profile);
@@ -260,6 +295,10 @@ static BodaqsSpiProbeFrame wire_reply(BodaqsSpiProbeFrame q,uint8_t opcode,uint3
             r.profile==q.profile && r.node==q.node && r.fragment==q.fragment &&
             r.opcode==opcode && (!object || r.object_id==object)) return r;
     }
+    fprintf(stderr,"missing reply: ownership=%u gap=%u bytes=%u opcode=%u case=%u node=%u fragment=%u object=%u active_bytes=%u observed=%u ready=%u depth=%u first=%02x%02x%02x%02x\n",
+        BODAQS_SPI_PROBE_EARLY_PUBLISH,BODAQS_SPI_PROBE_GAP_PUBLISH,bytes,opcode,(unsigned)q.case_id,
+        q.node,q.fragment,(unsigned)object,gSpiProbeActiveBytes,gSpiProbeActiveObserved,gSpiTransmitReady,
+        gSpiReceiveQueue.depth,observed[0],observed[1],observed[2],observed[3]);
     assert(!"no validated asynchronous reply");return (BodaqsSpiProbeFrame){0};
 }
 static uint32_t value(const BodaqsSpiProbeFrame *r,unsigned index) {
@@ -630,6 +669,7 @@ int legacy_main(void) {
 int main(void) {
 #if BODAQS_SPI_PROBE_EARLY_PUBLISH
     early_lifecycle();
+    ownership_boundary_lifecycle();
     for(unsigned bytes=64;bytes<=256;bytes*=2) {
         gSpiTransmitReady=false;gSpiProbeQuarantine=false;cs_high=1;raw_cs=0;remaining=256;fifo_count=0;
         bodaqs_spi_probe_init(&gSpiProbe);
@@ -664,10 +704,28 @@ int main(void) {
         }
         q.opcode=BODAQS_PROBE_STOP;q.node=0;q.object_id=0;q.fragment=0;
         (void)wire_reply(q,134,0);
+#if !BODAQS_SPI_PROBE_GAP_PUBLISH
+        /* Boundary-only ownership can leave an unobserved duplicate STOP and
+         * a ready successor. Drain using the OLD physical size before changing
+         * sizes; this fixed-profile bench control does not add a new override. */
+        BodaqsSpiProbeFrame old_clock={.opcode=BODAQS_PROBE_CLOCK,.profile=(uint8_t)(q.profile&3U)};
+        uint8_t old_wire[256];assert(bodaqs_spi_probe_encode(&old_clock,old_wire,bytes));
+        unsigned drain=0;
+        while((gSpiTransmitReady || gSpiReceiveQueue.depth || !gSpiProbeActiveObserved) && drain++<8) {
+            physical(old_wire,bytes,0);service_spi_receive();probe_early_publish();
+        }
+        assert(!gSpiTransmitReady && !gSpiReceiveQueue.depth && gSpiProbeActiveObserved);
+#endif
         q.opcode=BODAQS_PROBE_BEGIN;q.case_id+=1000;
         q.profile=bodaqs_spi_probe_profile(bytes==256?64:256,16000000,4);
         gSpiProbeActiveObserved=false; /* new case authorizes replacing old frame size */
         (void)wire_reply(q,129,0);
+        q.opcode=BODAQS_PROBE_STATS;q.fragment=25;
+        r=wire_reply(q,133,0);
+        assert(value(&r,0)==2 && value(&r,1)==(1U|(BODAQS_SPI_PROBE_GAP_PUBLISH?2U:0U)));
+#if !BODAQS_SPI_PROBE_GAP_PUBLISH
+        for(unsigned word=2;word<=7;++word)assert(value(&r,word)==0);
+#endif
     }
     puts("early candidate: full objects/four nodes/64,128,256/wrong,lost,repeated ACK/new case frame-size change PASS");
     return 0;

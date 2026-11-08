@@ -534,15 +534,18 @@ def early_report(case):
         "scope":"STATS25 boot counters include controls outside timed run; quarantine discards are separate from queue-full losses; rearm max includes IRQ-masked reset/arm; not a pad-level bound"}
     if case["profile"]["mode"] in ADC_ONLY_MODES:
         result["status"]="not_applicable";return result
-    if not m["early_measured"] or a[0]!=1 or b[0]!=1:return result
-    invalid=a[1] not in (0,1) or a[1]!=b[1] or not a[8] or a[8]!=b[8] or a[9] or b[9] or b[7]<a[7]
+    if not m["early_measured"] or a[0] not in (1,2) or b[0] not in (1,2):return result
+    split=a[0]==b[0]==2
+    enabled=bool(a[1]&2) if split else bool(a[1])
+    invalid=a[0]!=b[0] or a[1] not in ((0,1,3) if split else (0,1)) or a[1]!=b[1] or not a[8] or a[8]!=b[8] or a[9] or b[9] or b[7]<a[7]
     invalid=invalid or any(p[2]!=((p[3]+p[4])&0xffffffff) or
-        ((p[5]-p[6])&0xffffffff)>1 or (not p[1] and any(p[2:8])) for p in (a,b))
+        ((p[5]-p[6])&0xffffffff)>1 or (not enabled and any(p[2:8])) for p in (a,b))
     counters={name:(b[i]-a[i])&0xffffffff for name,i in (("attempts",2),("published",3),("busy_deferrals",4),("collisions",5),("quarantined_discards",6))}
     invalid=invalid or (counters["collisions"]>counters["published"] or
         counters["attempts"]!=((counters["published"]+counters["busy_deferrals"])&0xffffffff))
     result.update(status="invalid" if invalid else "failed" if counters["collisions"] or counters["quarantined_discards"] else "observed",
-        enabled=bool(a[1]),counter_deltas=counters,rearm_boot_max_before_us=a[7],rearm_boot_max_after_us=b[7])
+        enabled=enabled,counter_deltas=counters,rearm_boot_max_before_us=a[7],rearm_boot_max_after_us=b[7])
+    if split:result.update(configuration_schema=2,ownership_gate=bool(a[1]&1),gap_enabled=enabled)
     return result
 
 

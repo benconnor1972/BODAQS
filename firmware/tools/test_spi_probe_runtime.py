@@ -157,6 +157,11 @@ def main():
                     assert any(r['published'] for r in trace['records'])
                     assert {r['request_opcode'] for r in trace['records']} >= {2,3}
                 if cid in (78,79):assert c['candidate_evidence']=='failed'
+                if cid==80:
+                    early=c['master_early_publication']
+                    assert early['status']=='observed' and early['configuration_schema']==2
+                    assert early['ownership_gate'] and not early['gap_enabled']
+                    assert c['raw_measurements']['master']['early_measured']
             print('Dispatch trace: bounded window, off control, partial STOP, ADC/row/transfer events and Arduino clock wrap PASS')
             for cid in (53,54,55):
                 flow=next(c for c in report['cases'] if c['case_id']==cid)
