@@ -106,7 +106,14 @@ int main(void) {
             assert(r.payload[4*i]==i && r.payload[4*i+1]==0x56 &&
                 r.payload[4*i+2]==0x34 && r.payload[4*i+3]==0x12);
         }
-        q.fragment=5;r=exchange(&e,&q);
+        for(unsigned page=5;page<=6;++page) {
+            uint32_t *snapshot=page==5?e.receive_stats:e.turnover_stats;
+            for(unsigned i=0;i<10;++i)snapshot[i]=0x12345600U+i;
+            q.fragment=(uint8_t)page;r=exchange(&e,&q);
+            assert(r.opcode==133 && r.payload_length==40);
+            for(unsigned i=0;i<10;++i)assert(r.payload[4*i]==i && r.payload[4*i+1]==0x56 && r.payload[4*i+2]==0x34 && r.payload[4*i+3]==0x12);
+        }
+        q.fragment=7;r=exchange(&e,&q);
         assert(r.opcode==255 && r.payload[0]==BODAQS_PROBE_ARGUMENT);
         q.opcode=BODAQS_PROBE_BEGIN;q.fragment=0;
         q.case_id=2;r=exchange(&e,&q);assert(r.opcode==255 && r.payload[0]==BODAQS_PROBE_BUSY);q.case_id=1;

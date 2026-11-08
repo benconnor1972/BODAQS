@@ -15,6 +15,7 @@ uint8_t s_profile=255,s_node=0,s_nodes=0,s_lockFailures=0;
 bool s_open=false,s_entered=false,s_healthy=false,s_haveTransfer=false;
 bool s_beforeEngine=false,s_beforeAdapter=false,s_beforeDiagnostic=false;
 bool s_beforeProcessing=false;
+bool s_beforeReceive=false;
 SpiProbeTransport::CrcMode s_crcMode=SpiProbeTransport::CrcMode::Legacy;
 uint32_t s_interval=0,s_lastStartUs=0,s_lastRequestUs=0;
 bool s_haveRequest=false;
@@ -257,6 +258,9 @@ bool begin(const board::BoardProfile& board,uint32_t caseId,uint16_t bytes,uint3
   const bool processing=masterStats_(3,s_stats.processingBefore);
   const bool metadata=masterStats_(4,s_stats.processingMetaBefore);
   s_beforeProcessing=processing && metadata;
+  const bool receive=masterStats_(5,s_stats.receiveBefore);
+  const bool turnover=masterStats_(6,s_stats.turnoverBefore);
+  s_beforeReceive=receive && turnover;
   s_progressUs=us_();s_healthy=true;return true;
 }
 void tick() {
@@ -298,6 +302,9 @@ bool stop() {
     const bool processing=masterStats_(3,s_stats.processingAfter);
     const bool metadata=masterStats_(4,s_stats.processingMetaAfter);
     s_stats.processingMeasured=s_beforeProcessing && processing && metadata;
+    const bool receive=masterStats_(5,s_stats.receiveAfter);
+    const bool turnover=masterStats_(6,s_stats.turnoverAfter);
+    s_stats.receiveMeasured=s_beforeReceive && receive && turnover;
     s_stats.diagnosticMeasured=s_beforeDiagnostic && afterDiagnostic;
     s_stats.masterMeasured=s_beforeEngine && afterEngine;
     s_stats.adapterMeasured=s_beforeAdapter && afterAdapter;

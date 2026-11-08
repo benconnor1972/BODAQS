@@ -15,7 +15,9 @@ SCHEMA_V5 = "bodaqs.spi-probe.v5"
 SCHEMA_V6 = "bodaqs.spi-probe.v6"
 SCHEMA_V7 = "bodaqs.spi-probe.v7"
 SCHEMA_V8 = "bodaqs.spi-probe.v8"
-PROCESSING_SCHEMAS = (SCHEMA_V7, SCHEMA_V8)
+SCHEMA_V9 = "bodaqs.spi-probe.v9"
+COST_SCHEMAS = (SCHEMA_V8, SCHEMA_V9)
+PROCESSING_SCHEMAS = (SCHEMA_V7, *COST_SCHEMAS)
 WINDOW_SCHEMAS = (SCHEMA_V6, *PROCESSING_SCHEMAS)
 ROW_SCHEMAS = (SCHEMA_V5, *WINDOW_SCHEMAS)
 EXECUTION_SCHEMAS = (SCHEMA_V4, *ROW_SCHEMAS)
@@ -281,6 +283,12 @@ def validate(case):
                 require(isinstance(master[name],list) and len(master[name])==10 and all(type(v) is int and 0<=v<=4294967295 for v in master[name]),"invalid processing page")
             if p["mode"] in ADC_ONLY_MODES:
                 require(not master["processing_measured"] and all(not any(master[n]) for n in ("processing_before","processing_after","processing_meta_before","processing_meta_after")),"ADC-only case has processing observations")
+        if case["schema"]==SCHEMA_V9:
+            require(type(master["receive_measured"]) is bool,"invalid receive measured flag")
+            for name in ("receive_before","receive_after","turnover_before","turnover_after"):
+                require(isinstance(master[name],list) and len(master[name])==10 and all(type(v) is int and 0<=v<=4294967295 for v in master[name]),"invalid receive turnover page")
+            if p["mode"] in ADC_ONLY_MODES:
+                require(not master["receive_measured"] and all(not any(master[n]) for n in ("receive_before","receive_after","turnover_before","turnover_after")),"ADC-only receive observations")
         if v2:
             require(type(master["diagnostic_measured"]) is bool, "invalid diagnostic measured flag")
             for name in ("diagnostic_before", "diagnostic_after"):
@@ -309,7 +317,7 @@ def validate(case):
             row_counts(case)
         if case["schema"] in WINDOW_SCHEMAS:
             window_counts(case)
-        if case["schema"] == SCHEMA_V8:
+        if case["schema"] in COST_SCHEMAS:
             logger_cost_counts(case)
 
 
@@ -352,6 +360,38 @@ def logger_cost_report(case):
     return {**cost,"cycle_coverage_us":c["cycle"]["total_us"],
             "outside_completed_cycles_us":case["elapsed_us"]-c["cycle"]["total_us"],
             "scope":"completed owner-loop bodies only; disjoint phase totals fit inside cycles; outcome buckets partition the SAME cycles and include ADC work, not causal blocking time; object/expected CRC nest inside validation; excludes startup/shutdown; interrupts included"}
+
+
+def receive_report(case):
+    result={"status":"unknown","capacity":None,"queue_endpoints":None,"counter_deltas":None,"turnover":None,
+            "scope":"coherent STATS5 conservation and separate STATS6 software observations; endpoints include controls outside timed run; queue wait begins at CS retirement software entry; reply deferral is main observed; totals overlap processing/publication; boot maxima are endpoint states; no physical-ready or CPU-time claim"}
+    if case["profile"]["mode"] in ADC_ONLY_MODES:
+        result["status"]="not_applicable";return result
+    m=case.get("master")
+    if m is None or not m["receive_measured"]:return result
+    a,b=m["receive_before"],m["receive_after"];u,v=m["turnover_before"],m["turnover_after"]
+    result["raw_endpoints"]={n:m[n] for n in ("receive_before","receive_after","turnover_before","turnover_after")}
+    if any(p[0]!=1 for p in (a,b,u,v)) or a[1] not in (1,4) or b[1] not in (1,4):return result
+    invalid=a[1]!=b[1] or any(e==0 or e!=a[4] for e in (a[4],b[4],u[8],v[8])) or any((a[5],b[5],u[9],v[9]))
+    invalid=invalid or any(not (0<=p[2]<=p[3]<=p[1]) or ((p[6]-p[7])&4294967295)!=p[2] for p in (a,b)) or b[3]<a[3]
+    delta=lambda x,y:(y-x)&4294967295
+    counters={name:delta(a[i],b[i]) for name,i in (("enqueued",6),("dequeued",7),("full_reply_ready",8),("full_other",9))}
+    wait_calls,wait_total=delta(u[1],v[1]),delta(u[2],v[2])
+    blocked_calls,blocked_total=delta(u[4],v[4]),delta(u[5],v[5])
+    backlog=delta(u[7],v[7])
+    invalid=invalid or v[3]<u[3] or v[6]<u[6] or wait_total>wait_calls*v[3] or blocked_total>blocked_calls*v[6] or backlog>wait_calls
+    invalid=invalid or (a[1]==1 and (u[7]!=0 or v[7]!=0))
+    invalid=invalid or any((p[8] or p[9]) and p[3]!=p[1] for p in (a,b))
+    invalid=invalid or (case["outcome"]=="complete" and case["slots"]>0 and
+        (not counters["enqueued"] or not counters["dequeued"] or not wait_calls))
+    result.update(status="invalid" if invalid else "observed",capacity=a[1],counter_deltas=counters,
+        queue_endpoints={"depth_before":a[2],"depth_after":b[2],"high_water_before":a[3],"high_water_after":b[3]})
+    if not invalid:
+        result["turnover"]={"queue_wait_calls":wait_calls,"queue_wait_total_us":wait_total,"queue_wait_mean_us":wait_total/wait_calls if wait_calls else None,
+            "queue_wait_boot_max_before_us":u[3],"queue_wait_boot_max_after_us":v[3],"reply_deferred_episodes":blocked_calls,
+            "reply_deferred_total_us":blocked_total,"reply_deferred_mean_us":blocked_total/blocked_calls if blocked_calls else None,
+            "reply_deferred_boot_max_before_us":u[6],"reply_deferred_boot_max_after_us":v[6],"backlog_pops":backlog}
+    return result
 
 
 def window_counts(case):
@@ -700,6 +740,10 @@ def analyze(data, manifest=None):
         master, engine_delta, adapter_delta, adapter_states = master_diagnostics(case)
         components = component_timing(case)
         processing=processing_report(case) if case["schema"] in PROCESSING_SCHEMAS else None
+        receive=receive_report(case) if case["schema"]==SCHEMA_V9 else None
+        if receive and receive["status"]=="invalid":master="failed"
+        elif receive and receive["status"]=="observed" and any(receive["counter_deltas"][n] for n in ("full_reply_ready","full_other")):master="failed"
+        elif receive and receive["status"]=="unknown" and master=="clean":master="unknown"
         if processing and processing["status"] == "invalid":master="failed"
         elif processing and processing["status"] == "unknown" and master=="clean":master="unknown"
         observations = diagnostic_observations(case)
@@ -738,7 +782,8 @@ def analyze(data, manifest=None):
                 "master_receive_pressure": "not_applicable" if p["mode"] in ADC_ONLY_MODES else
                     "unknown" if adapter_delta is None else "drops_observed" if adapter_delta[1] else "no_spi_drops_observed"} if case["schema"] in ROW_SCHEMAS else {}),
             **({"master_processing_components":processing} if processing is not None else {}),
-            **({"logger_cost":logger_cost_report(case)} if case["schema"]==SCHEMA_V8 else {}),
+            **({"logger_cost":logger_cost_report(case)} if case["schema"] in COST_SCHEMAS else {}),
+            **({"master_receive_turnover":receive} if receive is not None else {}),
             **({"request_window": case["request_window"]} if case["schema"] in WINDOW_SCHEMAS else {}),
             **({"execution_control": execution_report(case)} if case["schema"] in EXECUTION_SCHEMAS else {}),
             "profile": p, "outcome": case["outcome"], "reason": case["reason"],
@@ -780,7 +825,7 @@ def analyze(data, manifest=None):
             "pipeline_diagnostics": {k: case["errors"][k] for k in ("stale", "duplicate")},
             "candidate_evidence": "failed" if failed else "diagnostic_control" if control else "clean_measurement_candidate" if clean_candidate else "unknown",
             "raw_measurements": case})
-    return {"schema": "bodaqs.spi-probe-report.v8" if any(c["schema"] == SCHEMA_V8 for c in cases) else "bodaqs.spi-probe-report.v7" if any(c["schema"] == SCHEMA_V7 for c in cases) else "bodaqs.spi-probe-report.v6" if any(c["schema"] == SCHEMA_V6 for c in cases) else "bodaqs.spi-probe-report.v5" if any(c["schema"] == SCHEMA_V5 for c in cases) else "bodaqs.spi-probe-report.v4" if any(c["schema"] in EXECUTION_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v3" if any(c["schema"] in INTEGRITY_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v2" if any(c["schema"] in DIAGNOSTIC_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v1",
+    return {"schema": "bodaqs.spi-probe-report.v9" if any(c["schema"] == SCHEMA_V9 for c in cases) else "bodaqs.spi-probe-report.v8" if any(c["schema"] == SCHEMA_V8 for c in cases) else "bodaqs.spi-probe-report.v7" if any(c["schema"] == SCHEMA_V7 for c in cases) else "bodaqs.spi-probe-report.v6" if any(c["schema"] == SCHEMA_V6 for c in cases) else "bodaqs.spi-probe-report.v5" if any(c["schema"] == SCHEMA_V5 for c in cases) else "bodaqs.spi-probe-report.v4" if any(c["schema"] in EXECUTION_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v3" if any(c["schema"] in INTEGRITY_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v2" if any(c["schema"] in DIAGNOSTIC_SCHEMAS for c in cases) else "bodaqs.spi-probe-report.v1",
             "capture_sha256": digest,
             "run_identity": "declared_paired" if manifest else "unknown_without_manifest",
             "manifest": manifest, "serial_events": events,

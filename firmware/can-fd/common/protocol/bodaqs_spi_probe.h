@@ -66,6 +66,8 @@ typedef struct {
     uint32_t (*component_clock)(void *,uint32_t *epoch);
     void *component_clock_arg;
     uint32_t component_epoch,component_invalid;
+    /* Adapter-owned coherent snapshots: additive STATS5/6, schema1. */
+    uint32_t receive_stats[10],turnover_stats[10];
 } BodaqsSpiProbeEngine;
 /* profile: size code 0/1/2 =>64/128/256; bit2 0/1 =>8/16MHz;
  * bits3..4 => node_count-1; all other bits zero. Guard fixed at25us. */

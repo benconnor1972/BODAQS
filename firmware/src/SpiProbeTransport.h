@@ -48,6 +48,9 @@ struct Stats {
   bool processingMeasured=false;
   uint32_t processingBefore[10]={},processingAfter[10]={};
   uint32_t processingMetaBefore[10]={},processingMetaAfter[10]={};
+  bool receiveMeasured=false;
+  uint32_t receiveBefore[10]={},receiveAfter[10]={};
+  uint32_t turnoverBefore[10]={},turnoverAfter[10]={};
   bool masterMeasured=false,adapterMeasured=false;
   uint32_t masterBefore[10]={},masterAfter[10]={};
   uint32_t adapterBefore[10]={},adapterAfter[10]={};

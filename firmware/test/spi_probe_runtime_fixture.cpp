@@ -23,6 +23,7 @@ static bool dropNodeZero=false;
 static unsigned rawFault=0,rawFaultsLeft=0;
 static std::vector<std::array<uint8_t,256>> injectedRx;
 static bool stats2Unsupported=false;
+static bool receivePagesUnsupported=false;
 static unsigned syntheticSwitchCount=0;
 static bool sequenceNeverReady=false;
 static std::deque<std::array<uint8_t,256>> replies(2);
@@ -149,7 +150,8 @@ void SPIClass::transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
       }
     }
     BodaqsSpiProbeFrame response;
-    if(stats2Unsupported && bodaqs_spi_probe_decode(prepared.data(),length,&response) && response.opcode==(BODAQS_PROBE_STATS|BODAQS_PROBE_RESPONSE) && response.fragment==2) {
+    if(bodaqs_spi_probe_decode(prepared.data(),length,&response) && response.opcode==(BODAQS_PROBE_STATS|BODAQS_PROBE_RESPONSE) &&
+        ((stats2Unsupported && response.fragment==2) || (receivePagesUnsupported && response.fragment>=5))) {
       response.opcode=BODAQS_PROBE_ERROR|BODAQS_PROBE_RESPONSE;response.payload_length=1;response.payload[0]=BODAQS_PROBE_ARGUMENT;
       assert(bodaqs_spi_probe_encode(&response,prepared.data(),length));
     }
@@ -439,7 +441,7 @@ int main() {
   puts("real ADC: same-microsecond ISR entry before START marker is ambiguous, later distinct-tick completion paired passed");
 #if TEST_CASE_RUNNER
   releaseWaiters=true;
-  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v8-")!=std::string::npos);
+  SpiMeasurementProbe::begin(board);assert(Serial.output.find("spi-probe-v9-")!=std::string::npos);
   puts(Serial.output.c_str());Serial.output.clear();SpiMeasurementProbe::command("status");
   assert(Serial.output.find("\"logger_build\":")!=std::string::npos);puts(Serial.output.c_str());Serial.output.clear();
   // Public runner, deterministic clock boundary: 10 seconds has 5000 midpoints
@@ -770,9 +772,14 @@ int main() {
   assert(!dropPollRequests && !dropAckReplies && SpiProbeTransport::stats().retryRequests>0);
   assert(!SpiProbeTransport::stats().retryExhausted && SpiProbeTransport::stats().retiredObjects>0);
   puts(Serial.output.c_str());Serial.output.clear();
+  receivePagesUnsupported=true;
+  SpiMeasurementProbe::command("case 52 owner_pipe 128 8000000 4 100 cached 500 3 1 0");
+  while(Serial.output.empty()){delayMicroseconds(10);SpiMeasurementProbe::loop();}
+  assert(!SpiProbeTransport::stats().receiveMeasured && SpiProbeTransport::stats().retiredObjects>0);
+  puts(Serial.output.c_str());Serial.output.clear();receivePagesUnsupported=false;
   rowValueFixture=false;forceReadyPin=true;steppedUs=-1;bulkLastHigh=0;
   puts("Public pipeline: real owner rows, loss recovery, bounded per-request exhaustion despite other nodes progressing, STOP, reuse and rail failure passed");
-  uint32_t caseId=52;
+  uint32_t caseId=53;
   for(uint16_t frame: {64,128,256})for(uint32_t hz: {8000000U,16000000U}) {
     assert(SpiProbeTransport::begin(board,caseId++,frame,hz,4));
     for(unsigned attempts=0;attempts<1000000 && SpiProbeTransport::stats().retiredObjects<4;++attempts)SpiProbeTransport::tick();

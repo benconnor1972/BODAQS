@@ -16,6 +16,87 @@ EMITTED_SWITCH = FIXTURE.with_name("round2-emitted-switch.jsonl")
 
 
 class ProbeAnalysisTests(unittest.TestCase):
+    def round9_sample(self,name="pipeline"):
+        return json.loads(FIXTURE.with_name(f"round9-{name}.jsonl").read_text(encoding="utf-8"))
+
+    def test_round9_worked_turnover_and_scope(self):
+        run=self.invoke(json.dumps(self.round9_sample("baseline"))+"\n"+json.dumps(self.round9_sample()))
+        self.assertEqual(run.returncode,0,run.stderr);r=json.loads(run.stdout)
+        self.assertEqual(r["schema"],"bodaqs.spi-probe-report.v9")
+        self.assertEqual(r["cases"][0]["master_receive_turnover"]["status"],"not_applicable")
+        p=r["cases"][1]["master_receive_turnover"]
+        self.assertEqual(p["status"],"observed");self.assertEqual(p["capacity"],4)
+        self.assertEqual(p["counter_deltas"],dict(enqueued=110,dequeued=109,full_reply_ready=1,full_other=2))
+        self.assertEqual(p["turnover"]["queue_wait_mean_us"],40)
+        self.assertEqual(p["turnover"]["reply_deferred_mean_us"],90)
+        self.assertEqual(r["cases"][1]["candidate_evidence"],"failed")
+        self.assertFalse(r["production_qualified"])
+
+    def test_round9_invalid_metadata_and_conservation_fail(self):
+        for mutation in range(13):
+            c=self.round9_sample();m=c["master"]
+            if mutation==0:m["receive_after"][1]=1
+            elif mutation==1:m["receive_after"][2]=3
+            elif mutation==2:m["receive_after"][3]=5
+            elif mutation==3:m["receive_after"][4]=2
+            elif mutation==4:m["turnover_after"][8]=0
+            elif mutation==5:m["turnover_before"][9]=1
+            elif mutation==6:m["receive_before"][5]=1
+            elif mutation==7:m["turnover_after"][3]=49
+            elif mutation==8:m["turnover_after"][6]=149
+            elif mutation==9:m["turnover_after"][7]=1000
+            elif mutation==10:
+                m["receive_before"][1:4]=[1,0,1];m["receive_after"][1:4]=[1,0,1]
+                m["receive_before"][6:8]=[100,100];m["receive_after"][6:8]=[210,210]
+            elif mutation==11:m["receive_after"][3]=3
+            else:
+                m["receive_before"]=[1,4,0,0,1,0,0,0,0,0];m["receive_after"]=m["receive_before"][:]
+                m["turnover_before"]=[1,0,0,0,0,0,0,0,1,0];m["turnover_after"]=m["turnover_before"][:]
+            run=self.invoke(json.dumps(c));self.assertEqual(run.returncode,0,run.stderr)
+            r=json.loads(run.stdout)["cases"][0]
+            self.assertEqual(r["master_receive_turnover"]["status"],"invalid",mutation)
+            self.assertIsNone(r["master_receive_turnover"]["turnover"])
+            self.assertEqual(r["candidate_evidence"],"failed")
+
+    def test_round9_missing_unsupported_pages_are_unknown(self):
+        for mutation in range(4):
+            c=self.round9_sample();m=c["master"]
+            if mutation==0:m["receive_measured"]=False
+            elif mutation==1:m["receive_before"][0]=0
+            elif mutation==2:m["turnover_after"][0]=2
+            else:m["receive_after"][1]=8
+            run=self.invoke(json.dumps(c));self.assertEqual(run.returncode,0,run.stderr)
+            r=json.loads(run.stdout)["cases"][0]["master_receive_turnover"]
+            self.assertEqual(r["status"],"unknown");self.assertIsNone(r["turnover"])
+
+    def test_round9_modular_counters_endpoint_states_and_capacity1(self):
+        for cap in (1,4):
+            c=self.round9_sample();m=c["master"]
+            if cap==1:
+                m["receive_before"][1:4]=[1,0,1];m["receive_after"][1:4]=[1,0,1]
+                m["receive_before"][6:8]=[100,100];m["receive_after"][6:8]=[210,210]
+                m["turnover_before"][7]=m["turnover_after"][7]=0
+            else:
+                m["receive_before"][6:8]=[4294967294,4294967293]
+                m["receive_after"][6:8]=[108,106]
+                m["turnover_before"][1:3]=[4294967293,4294967000]
+                m["turnover_after"][1:3]=[107,4104]
+            run=self.invoke(json.dumps(c));self.assertEqual(run.returncode,0,run.stderr)
+            p=json.loads(run.stdout)["cases"][0]["master_receive_turnover"]
+            self.assertEqual(p["status"],"observed");self.assertEqual(p["capacity"],cap)
+            self.assertEqual(p["counter_deltas"]["enqueued"],110)
+            self.assertEqual(p["turnover"]["queue_wait_mean_us"],40)
+            self.assertEqual(p["turnover"]["queue_wait_boot_max_after_us"],75)
+
+    def test_round9_rejects_malformed_or_adc_observations(self):
+        for mutation in range(4):
+            c=self.round9_sample("baseline" if mutation==3 else "pipeline");m=c["master"]
+            if mutation==0:m["receive_after"][0]=True
+            elif mutation==1:m["turnover_after"]=[0]*9
+            elif mutation==2:m["receive_measured"]=1
+            else:m["receive_measured"]=True
+            self.assertEqual(self.invoke(json.dumps(c)).returncode,2)
+
     def round8_sample(self,name="pipeline"):
         return json.loads(FIXTURE.with_name(f"round8-{name}.jsonl").read_text(encoding="utf-8"))
 

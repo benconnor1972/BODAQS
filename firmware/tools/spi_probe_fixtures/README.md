@@ -51,3 +51,16 @@ delay are simulated. They exercise cadence/CRC reporting and analyzer rejection;
 their source identities precede the final committed target images. They are not
 physical captures or admission evidence. Final target identities and offline
 validation captures are retained with the sealed round8 bundle.
+# Round9 fixtures
+
+`round9-baseline.jsonl` is emitted by the development v9 public host runner.
+`round9-pipeline/stop.jsonl` start from its actual emitted cases, with explicitly
+worked STATS5/6 literals added for the adapter-report seam. Their page5 enqueued/
+dequeued deltas are110/109 and depth moves1 to2 at capacity4; full-drop deltas1/2
+require boot high water4. Page6 wait delta4400us/110 calls gives40us, and reply
+deferral1800us/20 episodes gives90us. These are independent worked observations,
+not target captures. The runtime peer itself has no hardware adapter and leaves
+these pages schema0; its report correctly remains unknown for this component.
+Actual adapter lifecycle/IRQ tests independently exercise the real master bodies.
+Clocks, GPIO, SPI, RTOS and IRQ delivery in host tests remain simulated. No fixture
+is physical capacity or production admission evidence.

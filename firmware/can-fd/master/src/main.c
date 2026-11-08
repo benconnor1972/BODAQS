@@ -14,6 +14,12 @@
 
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
 #define BODAQS_SPI_ADAPTER_CAPACITY BODAQS_SPI_PROBE_CAPACITY
+#ifndef BODAQS_SPI_PROBE_RX_QUEUE_CAPACITY
+#define BODAQS_SPI_PROBE_RX_QUEUE_CAPACITY 1
+#endif
+#if BODAQS_SPI_PROBE_RX_QUEUE_CAPACITY != 1 && BODAQS_SPI_PROBE_RX_QUEUE_CAPACITY != 4
+#error "Probe receive queue capacity must be 1 or 4"
+#endif
 #else
 #define BODAQS_SPI_ADAPTER_CAPACITY BODAQS_MASTER_SLOT_BYTES
 #endif
@@ -184,8 +190,26 @@ static uint8_t gTransmitSlots[2][BODAQS_SPI_ADAPTER_CAPACITY];
 static uint8_t gReceiveSlots[2][BODAQS_SPI_ADAPTER_CAPACITY];
 static uint8_t gTransmitIndex;
 static uint8_t gReceiveIndex;
-/* DMA rearms immediately; one queued request may await main-loop ownership. */
+/* DMA rearms immediately. Each probe queue cell retains its own length/time;
+ * the production adapter retains its existing single-cell representation. */
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+static uint8_t gSpiReceiveStorage[BODAQS_SPI_PROBE_RX_QUEUE_CAPACITY][BODAQS_SPI_ADAPTER_CAPACITY];
+/* Probe receive turnover state. Each field has one writer, except epoch/invalid
+ * which all callers serialize against the boundary ISR. No DMA pointers retained. */
+typedef struct {uint32_t tick,epoch;uint16_t length;} ProbeReceiveMeta;
+static ProbeReceiveMeta gSpiProbeReceiveMeta[BODAQS_SPI_PROBE_RX_QUEUE_CAPACITY];
+typedef struct {
+    uint32_t enqueued,dequeued,full_ready,full_other;
+    uint32_t wait_calls,wait_total,wait_max,backlog_pops;
+    uint32_t blocked_calls,blocked_total,blocked_max;
+    uint32_t epoch,invalid,blocked_tick,blocked_epoch;
+    bool blocked;
+} ProbeTurnover;
+static volatile ProbeTurnover gSpiProbeTurnover;
+/* End probe receive turnover state. */
+#else
 static uint8_t gSpiReceiveStorage[1][BODAQS_SPI_ADAPTER_CAPACITY];
+#endif
 static BodaqsRecordQueue gSpiReceiveQueue;
 /* Main publishes requests and consumes proof under a short IRQ fence. Only
  * the ISR adapter touches hardware; it never mutates the protocol service. */
@@ -193,7 +217,9 @@ typedef struct { uint32_t generation; uint64_t context; } SpiRetirement;
 static volatile SpiRetirement gSpiRetirementRequest, gSpiRetirementProof;
 static volatile bool gSpiRetiring;
 static volatile bool gSpiTransmitReady;
+#if !defined(BODAQS_SPI_PROBE) || !BODAQS_SPI_PROBE
 static volatile uint16_t gSpiReceiveLength;
+#endif
 static volatile uint32_t gUptimeMs;
 static volatile bool gDiscoveryDue;
 static uint16_t gDiscoveryTransaction;
@@ -203,6 +229,37 @@ static volatile uint32_t gCanRecoveryDueMs;
 static bool gCanWasBusOff;
 static bool gCanLinkReady;
 static bool gLoggerCommunicationEstablished;
+
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+/* Called with the boundary owner or PRIMASK fence; uint32 tick wrap is valid
+ * within one nonzero epoch. A changed epoch remains invalid until reboot. */
+static void probe_turnover_epoch(uint32_t epoch)
+{
+    if(!epoch || (gSpiProbeTurnover.epoch && epoch!=gSpiProbeTurnover.epoch))
+        gSpiProbeTurnover.invalid=1;
+    gSpiProbeTurnover.epoch=epoch;
+}
+/* Main-owner observed deferral episode, not a physical-ready edge duration.
+ * No clock read or counter increment on repeated busy-loop observations. */
+static void probe_turnover_blocked(bool ready)
+{
+    if(ready==gSpiProbeTurnover.blocked)return;
+    uint32_t mask=__get_PRIMASK(),epoch;
+    __disable_irq();
+    uint32_t now=bodaqs_master_timing_clock(NULL,&epoch);
+    probe_turnover_epoch(epoch);
+    if(ready) {
+        gSpiProbeTurnover.blocked_tick=now;gSpiProbeTurnover.blocked_epoch=epoch;
+        ++gSpiProbeTurnover.blocked_calls;
+    } else if(epoch && epoch==gSpiProbeTurnover.blocked_epoch) {
+        uint32_t elapsed=now-gSpiProbeTurnover.blocked_tick;
+        gSpiProbeTurnover.blocked_total+=elapsed;
+        if(elapsed>gSpiProbeTurnover.blocked_max)gSpiProbeTurnover.blocked_max=elapsed;
+    } else gSpiProbeTurnover.invalid=1;
+    gSpiProbeTurnover.blocked=ready;
+    __set_PRIMASK(mask);
+}
+#endif
 
 static uint32_t drain_clock(void)
 {
@@ -843,7 +900,7 @@ int main(void)
         sizeof(gCanReceiveStorage[0]), CAN_RX_CAPACITY);
     gHealthDue = true;
     bodaqs_record_queue_init(&gSpiReceiveQueue, gSpiReceiveStorage,
-        BODAQS_SPI_ADAPTER_CAPACITY, 1U);
+        BODAQS_SPI_ADAPTER_CAPACITY, sizeof(gSpiReceiveStorage)/sizeof(gSpiReceiveStorage[0]));
     gDiscoveryTransaction = 0U;
     gDiscoveryNonce = (uint32_t) identity.hardware_uid ^
         (uint32_t) (identity.hardware_uid >> 32);
@@ -1085,12 +1142,26 @@ static void retire_spi_boundary(void)
     length += DL_SPI_drainRXFIFO8(SPI_A8_INST,
         &gReceiveSlots[gReceiveIndex][length], (uint32_t)remaining);
     if (DL_SPI_drainRXFIFO8(SPI_A8_INST, &excess, 1U)) length = BODAQS_SPI_ADAPTER_CAPACITY+1U;
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+    probe_turnover_epoch(boundary_epoch);
+    if(gSpiReceiveQueue.depth<gSpiReceiveQueue.capacity) {
+        ProbeReceiveMeta *meta=&gSpiProbeReceiveMeta[gSpiReceiveQueue.tail];
+        meta->length=(uint16_t)length;meta->tick=boundary_started;meta->epoch=boundary_epoch;
+        (void)bodaqs_record_queue_push(&gSpiReceiveQueue,gReceiveSlots[gReceiveIndex]);
+        ++gSpiProbeTurnover.enqueued;
+    } else {
+        ++gSpiReceiveQueue.dropped;
+        if(gSpiTransmitReady)++gSpiProbeTurnover.full_ready;
+        else ++gSpiProbeTurnover.full_other;
+    }
+#else
     if (gSpiReceiveQueue.depth == 0U) {
         gSpiReceiveLength = (uint16_t)length;
         (void)bodaqs_record_queue_push(&gSpiReceiveQueue,gReceiveSlots[gReceiveIndex]);
     } else {
         ++gSpiReceiveQueue.dropped;
     }
+#endif
     /* Publish only a fully prepared response at a physical boundary. Parsing,
      * control dispatch and all ownership changes remain in the main loop. */
     if (gSpiTransmitReady) {
@@ -1150,13 +1221,39 @@ static void service_spi_receive(void)
     uint16_t ack_records=0;
     BodaqsMasterSlotResult result;
 #endif
-    if (gSpiTransmitReady) return;
+    if (gSpiTransmitReady) {
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+        probe_turnover_blocked(true);
+#endif
+        return;
+    }
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+    probe_turnover_blocked(false);
+#endif
     primask=__get_PRIMASK();
     __disable_irq();
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+    ProbeReceiveMeta meta=gSpiProbeReceiveMeta[gSpiReceiveQueue.head];
+    uint16_t queued_depth=gSpiReceiveQueue.depth;
+    length=meta.length;
+#else
     length=gSpiReceiveLength;
+#endif
     if (!bodaqs_record_queue_pop(&gSpiReceiveQueue,received)) {
         __set_PRIMASK(primask); return;
     }
+#if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
+    uint32_t dequeue_epoch;
+    uint32_t dequeue_tick=bodaqs_master_timing_clock(NULL,&dequeue_epoch);
+    probe_turnover_epoch(dequeue_epoch);
+    ++gSpiProbeTurnover.dequeued;++gSpiProbeTurnover.wait_calls;
+    if(queued_depth>1)++gSpiProbeTurnover.backlog_pops;
+    if(dequeue_epoch && dequeue_epoch==meta.epoch) {
+        uint32_t wait=dequeue_tick-meta.tick;
+        gSpiProbeTurnover.wait_total+=wait;
+        if(wait>gSpiProbeTurnover.wait_max)gSpiProbeTurnover.wait_max=wait;
+    } else gSpiProbeTurnover.invalid=1;
+#endif
     __set_PRIMASK(primask);
     next_index=gTransmitIndex^1U;
 #if defined(BODAQS_SPI_PROBE) && BODAQS_SPI_PROBE
@@ -1191,6 +1288,18 @@ static void service_spi_receive(void)
             gSpiProbe.diagnostic_stats[7]=gSpiProbeBoundaryInfo.publish_wait_total_us;
             gSpiProbe.diagnostic_stats[8]=gSpiProbeBoundaryInfo.publish_wait_max_us;
             gSpiProbe.diagnostic_stats[9]=invalid;
+            probe_turnover_epoch(epoch);
+            const uint32_t receive_page[]={1,gSpiReceiveQueue.capacity,
+                gSpiReceiveQueue.depth,gSpiReceiveQueue.high_water,epoch,gSpiProbeTurnover.invalid,
+                gSpiProbeTurnover.enqueued,gSpiProbeTurnover.dequeued,
+                gSpiProbeTurnover.full_ready,gSpiProbeTurnover.full_other};
+            const uint32_t turnover_page[]={1,gSpiProbeTurnover.wait_calls,
+                gSpiProbeTurnover.wait_total,gSpiProbeTurnover.wait_max,
+                gSpiProbeTurnover.blocked_calls,gSpiProbeTurnover.blocked_total,
+                gSpiProbeTurnover.blocked_max,gSpiProbeTurnover.backlog_pops,
+                epoch,gSpiProbeTurnover.invalid};
+            memcpy(gSpiProbe.receive_stats,receive_page,sizeof receive_page);
+            memcpy(gSpiProbe.turnover_stats,turnover_page,sizeof turnover_page);
             gMasterSpiProbeInfo.boundaries=gSpiProbeBoundaryInfo.boundaries;
             __set_PRIMASK(mask);
         }
