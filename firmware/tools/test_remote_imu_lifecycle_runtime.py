@@ -25,7 +25,7 @@ def fixture_source(root):
     coordinator = (root / "src/RemoteImuRecording.cpp").read_text()
     for header in ('#include <Arduino.h>', '#include <esp_timer.h>', '#include <esp_system.h>', '#include "SensorManager.h"', '#include "DebugLog.h"'):
         coordinator = coordinator.replace(header, '')
-    fixture += '\nnamespace AnalogInputManager { uint8_t activeChannelCount(uint8_t) {return 0;} uint16_t configuredDataRateSps(uint8_t) {return 0;} }\n'
+    fixture += '\nstatic uint8_t fixtureAdcChannels=0;\nnamespace AnalogInputManager { uint8_t activeChannelCount(uint8_t) {return fixtureAdcChannels;} uint16_t configuredDataRateSps(uint8_t) {return 100;} }\n'
     fixture = fixture.replace('static SensorSpec saved;', 'static SensorSpec saved; static unsigned fixtureSensorCount=1; static SensorSpec extra[3]; static ParamStore extraParams[3];')
     fixture = fixture.replace('return 1; }\nbool LoggerConfig::getSensorSpec', 'return fixtureSensorCount; }\nbool LoggerConfig::getSensorSpec')
     fixture = fixture.replace('if(i) return false; spec=saved;', 'if(i>=fixtureSensorCount) return false; spec=i?extra[i-1]:saved;')
@@ -60,6 +60,8 @@ def main():
         subprocess.run([str(exe), "entry-timeout"], check=True)
         subprocess.run([str(exe), "entry-offline"], check=True)
         if args.smoke:
+            for scenario in ("scope-two", "scope-other", "scope-adc"):
+                subprocess.run([str(exe), scenario], check=True)
             return
         subprocess.run([str(exe), "four"], check=True)
         for scenario in ("node-reboot", "master-reboot", "bus-off", "lease-expiry", "four-bus-off"):

@@ -37,6 +37,8 @@ int main(int argc,char** argv) {
   assert(savedParams.set("profile","imu6_3333_32g_2000dps_v1"));
   saved.params.bind(&savedParams);
   fixtureSensorCount=argc>1 && (!std::strcmp(argv[1],"four") || !std::strcmp(argv[1],"four-bus-off"))?4:1;
+  const bool scopeRejected=argc>1 && (!std::strcmp(argv[1],"scope-two") || !std::strcmp(argv[1],"scope-other") || !std::strcmp(argv[1],"scope-adc"));
+  if(scopeRejected && std::strcmp(argv[1],"scope-adc")) fixtureSensorCount=2;
   for(unsigned n=1;n<fixtureSensorCount;++n) {
     extra[n-1]=saved;extraParams[n-1]=savedParams;
     char provider[8];std::snprintf(provider,sizeof provider,"can:%u",n);
@@ -71,6 +73,20 @@ int main(int argc,char** argv) {
   // pinned effective snapshot makes the next acquisition snapshot reject BUSY.
   CanMasterManager::beginRecordingHandoff();advance(4000);
   assert(CanMasterManager::recordingHandoffReady());
+  if(scopeRejected) {
+    assert(ImuAdmission::singleNodeSmokeBuild());
+    if(!std::strcmp(argv[1],"scope-other")) extra[0].type=SensorType::BMI270ImuI2C;
+    if(!std::strcmp(argv[1],"scope-adc")) {
+      profile.external_adc_count=1;profile.external_adcs[0].spi_hz=1000000;
+      fixtureAdcChannels=1;
+    }
+    assert(RemoteImuRecording::configure(config));
+    assert(!RemoteImuRecording::configured());
+    assert(RemoteImuRecording::admission().reason==ImuAdmission::Reason::SmokeScope);
+    assert(RemoteImuRecording::admission().benchOnly && !RemoteImuRecording::admission().qualified);
+    assert(!AcquisitionControl::active() && DynamicSpscQueueDetail::liveAllocations==0);
+    puts("restricted workload rejected before authorization: PASS");return 0;
+  }
   if(argc>1 && !std::strcmp(argv[1],"legacy-rx-overrun")) {
     alternateRxLoss=true;physicalSlots=1; // First command is lost, fetches continue.
     bool observed=false;
