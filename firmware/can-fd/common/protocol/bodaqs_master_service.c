@@ -483,6 +483,46 @@ static void transfer_error(const BodaqsMeasurementSlot *r,BodaqsMeasurementSlot 
     out->body[0]=(r->kind==1 || r->kind==5)?r->body[0]:bodaqs_fragment_class(r->kind);
     out->body[1]=reason;
 }
+static bool measurement_ack_matches(const BodaqsFragmentState *state,
+    const BodaqsMeasurementSlot *r,bool combined) {
+    if(!combined) return bodaqs_fragment_ack_matches(state,r);
+    /* The combined caller has validated the fetch fields/reserved tail. These
+     * are exactly the identity/disposition checks on its normalized ACK view;
+     * fetch fields are not part of that view and need no large slot copy. */
+    return state->complete && r->kind==14 && !r->index &&
+        r->context==state->context && r->object==state->object &&
+        r->node==state->node && r->total==state->total && r->body[0]==state->cls &&
+        (r->body[1]==1 || r->body[1]==2) &&
+        bodaqs_measurement_get(r->body+4,4)==state->checksum;
+}
+/* 0 malformed, 1 retired/already retired, 2 explicit proof error. The caller
+ * owns context validation and initializes its response if one is required. */
+static unsigned measurement_retire(BodaqsMasterService *s,const BodaqsMeasurementSlot *r,
+    uint32_t now,BodaqsMeasurementSlot *out,bool combined) {
+    const uint8_t cls=r->body[0];
+    if(cls<1 || cls>5 || (cls==5?r->node!=255:r->node>3)) return 0;
+    if(measurement_ack_matches(&s->acknowledged[cls-1][cls==5?0:r->node],r,combined)) return 1;
+    if(cls==1 || cls==2) {
+        BodaqsReceptionBatch *b=&s->receptions[r->node];
+        if(!measurement_ack_matches(&b->object,r,combined)) goto proof_error;
+        s->acknowledged[cls-1][r->node]=b->object;
+        b->count=0;memset(&b->object,0,sizeof(b->object));
+        advance_receptions(s,r->node,now);
+    } else if(cls==3 || cls==4) {
+        BodaqsMeasurementControlLane *lane=&s->lanes[cls-3][r->node];
+        if(!measurement_ack_matches(&lane->tx,r,combined)) goto proof_error;
+        s->acknowledged[cls-1][r->node]=lane->tx;
+        lane->tx.complete=0;
+    } else if(measurement_ack_matches(&s->master_evidence,r,combined)) {
+        s->acknowledged[4][0]=s->master_evidence;
+        s->master_evidence.complete=0;
+    } else return 0;
+    ++s->objects_acked;return 1;
+proof_error:
+    transfer_error(r,out,5);
+    out->body[0]=cls; /* Same error bytes as the normalized kind5 request. */
+    return 2;
+}
 static bool measurement_transfer_core(BodaqsMasterService *s,const BodaqsMeasurementSlot *r,
     uint32_t now,BodaqsMeasurementSlot *out) {
     uint8_t cls=bodaqs_fragment_class(r->kind); unsigned i;
@@ -586,31 +626,7 @@ static bool measurement_transfer_core(BodaqsMasterService *s,const BodaqsMeasure
         return true;
     }
     if(r->kind==0) return r->node==255 && !r->object && !r->index && !r->total && bodaqs_measurement_zero(r->body,40);
-    if(r->kind==5) {
-        cls=r->body[0];
-        if(cls<1 || cls>5 || (cls==5?r->node!=255:r->node>3)) return false;
-        if(bodaqs_fragment_ack_matches(&s->acknowledged[cls-1][cls==5?0:r->node],r)) return true;
-        if(cls==1 || cls==2) {
-            BodaqsReceptionBatch *b;
-            if(r->node>3) return false;
-            b=&s->receptions[r->node];
-            if(!bodaqs_fragment_ack_matches(&b->object,r)) { transfer_error(r,out,5); return true; }
-            s->acknowledged[cls-1][r->node]=b->object;
-            b->count=0; memset(&b->object,0,sizeof(b->object));
-            advance_receptions(s,r->node,now);
-        } else if(cls==3 || cls==4) {
-            BodaqsMeasurementControlLane *lane;
-            if(r->node>3) return false;
-            lane=&s->lanes[cls-3][r->node];
-            if(!bodaqs_fragment_ack_matches(&lane->tx,r)) { transfer_error(r,out,5); return true; }
-            s->acknowledged[cls-1][r->node]=lane->tx;
-            lane->tx.complete=0;
-        } else if(cls==5 && r->node==255 && bodaqs_fragment_ack_matches(&s->master_evidence,r)) {
-            s->acknowledged[4][0]=s->master_evidence;
-            s->master_evidence.complete=0;
-        } else return false;
-        ++s->objects_acked; return true;
-    }
+    if(r->kind==5) return measurement_retire(s,r,now,out,false)!=0;
     if(r->kind!=1 || r->total || (!r->object && r->index) || !bodaqs_measurement_zero(r->body+1,39)) return false;
     cls=r->body[0]; if(cls<1 || cls>5) return false;
     if(cls==5) {
@@ -690,19 +706,23 @@ static bool measurement_transfer(BodaqsMasterService *s,const BodaqsMeasurementS
 #if BODAQS_MEASUREMENT_VERSION == 2
     if(r->retired || r->available) return false; /* requests carry no response proof */
     if(r->kind==14) {
-        BodaqsMeasurementSlot command=*r;
         if(r->index || r->body[2]<1 || r->body[2]>5 ||
            (r->body[2]==5?r->body[3]!=255:r->body[3]>3) ||
            r->body[12]>=BODAQS_MEASUREMENT_FRAGMENT_COUNT ||
            (!bodaqs_measurement_get(r->body+8,4) && r->body[12]) ||
            !bodaqs_measurement_zero(r->body+13,BODAQS_MEASUREMENT_BODY_BYTES-13)) return false;
-        command.kind=5;memset(command.body+2,0,2);
-        memset(command.body+8,0,BODAQS_MEASUREMENT_BODY_BYTES-8);
-        if(!measurement_transfer_core(s,&command,now,out)) return false;
-        if(out->kind==7) return true; /* invalid proof never retires */
-        command.kind=1;command.node=r->body[3];command.total=0;
+        transfer_context(s);
+        if(r->context!=s->transfer_context) {
+            transfer_error(r,out,4);out->body[0]=r->body[0];return true;
+        }
+        const unsigned retired=measurement_retire(s,r,now,out,true);
+        if(!retired) return false;
+        if(retired==2) return true; /* invalid proof never retires */
+        BodaqsMeasurementSlot command;
+        memset(&command,0,sizeof command);
+        command.kind=1;command.context=r->context;command.node=r->body[3];
         command.object=(uint32_t)bodaqs_measurement_get(r->body+8,4);command.index=r->body[12];
-        memset(command.body,0,sizeof command.body);command.body[0]=r->body[2];
+        command.body[0]=r->body[2];
         if(!measurement_transfer_core(s,&command,now,out)) return false;
         out->retired=true;out->retiredClass=r->body[0];out->retiredNode=r->node;
         out->retiredObject=r->object;out->retiredTotal=r->total;
