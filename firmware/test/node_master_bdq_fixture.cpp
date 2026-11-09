@@ -12,6 +12,7 @@ static BodaqsMasterService master;
 static RemoteImuStream stream;
 static bool duplicatePacket=false;
 static bool deferredDuplicate=false;
+static bool duplicateAfterFloor=false;
 static uint8_t replayRecord[76];
 static uint64_t replayOrder=0;
 static BodaqsMeasurementSlot exchange(const BodaqsMeasurementSlot& request,unsigned now) {
@@ -41,7 +42,7 @@ static bool drain(unsigned cls,unsigned now) {
       // Replay at the public recording seam, after actual master reassembly.
       // This tests persistence/decode deduplication, not transport RAM-ACK logic.
       if(deferredDuplicate && !replayOrder) {std::memcpy(replayRecord,r,76);replayOrder=order;}
-      else {
+      else if(!duplicateAfterFloor || BdqV2Format::getU16(r+12)>=300) {
         const uint8_t* replay=deferredDuplicate?replayRecord:r;
         assert(stream.accept(0x100,replay+12,replay[2],BdqV2Format::getU32(replay+4),deferredDuplicate?replayOrder:order,5000+now)==RemoteImuStream::Accepted);
         duplicatePacket=false;
@@ -62,6 +63,8 @@ int main(int argc,char** argv) {
   assert(argc>=3 && argc<=5);
   duplicatePacket=argc==5;
   deferredDuplicate=argc==5 && !std::strcmp(argv[4],"nonadjacent");
+  duplicateAfterFloor=argc==5 && !std::strcmp(argv[4],"after-floor");
+  deferredDuplicate|=duplicateAfterFloor;
   BodaqsMasterIdentity identity={};bodaqs_master_service_init(&master,&identity);
   bodaqs_control_exchange_init(&master.control,99);
   master.measurement.mode.phase=2;master.measurement.mode.context=9;master.measurement.mode.recording=77;

@@ -159,6 +159,9 @@ def main():
         periodic=temporary / "periodic.txt";periodic.write_text("\n".join(periodic_lines)+"\n")
         subprocess.run([str(consumer), str(periodic), str(bdq), "compact"], check=True)
         assert [r["sequence"] for r in read_can_imu_packets(bdq,"can0_imu6")["readings"]] == list(range(1000))
+        subprocess.run([str(consumer),str(periodic),str(bdq),"compact","after-floor"],check=True)
+        later_replay=read_can_imu_packets(bdq,"can0_imu6")
+        assert later_replay["duplicates"]==5 and len(later_replay["readings"])==1000
         # Two missing low16 cycles cannot be reconstructed from the same raw
         # low bits. Keep the axes and distinguish uncertainty from known loss.
         struct.pack_into("<I",anchor,12,131072);struct.pack_into("<I",snapshot,20,131072)

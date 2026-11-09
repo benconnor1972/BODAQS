@@ -47,7 +47,10 @@ def read_can_imu_packets(path: str | Path, stream_key: str) -> dict:
             raise ValueError("invalid compact packet identity or length")
         packet["count"] = count
         order = (packet["master_receive_ordinal_high"] << 32) | packet["master_receive_ordinal_low"]
-        identity = {key: value for key, value in packet.items() if key not in ("sequence", "native_tick")}
+        # The floor is current logger interpretation state, not immutable
+        # master reception content. A replay can arrive after a newer floor.
+        identity = {key: value for key, value in packet.items()
+                    if key not in ("sequence", "native_tick", "sequence_floor")}
         if order in receptions:
             if receptions[order] != identity:
                 raise ValueError("conflicting immutable reception replay")
