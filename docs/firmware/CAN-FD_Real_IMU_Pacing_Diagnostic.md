@@ -4,7 +4,8 @@ This logger-only experiment follows the completed `261109_160153.bdq` capture
 with logger commit6718cf6 and the original r3 acquisition master/node images.
 The file closes cleanly, but its resolved sequence prefix contains32135 missing
 samples (31.10%). The matching master snapshot freezes on its first ingress loss
-after767541us: ingress depth128, three ingress drops,561 SPI request drops,
+after767541us: ingress depth128, three ingress drops,426 new SPI request drops
+(raw561 minus baseline135),
 843 processed requests and no CAN software/hardware loss. Prepared sample replies
 include246 repeated fragments out of385. Those counts suggest excessive request
 pressure/replay amplification; they do not establish a physical root cause.
