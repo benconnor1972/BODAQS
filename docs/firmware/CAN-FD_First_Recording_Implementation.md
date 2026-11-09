@@ -79,3 +79,15 @@ now fetches partial control predecessors before sending that lane's successor;
 other lanes and terminal STOP remain serviceable. Existing end-to-end production
 lifecycle regression reproduces the failure before this correction. Deadlines
 are unchanged. Fresh lifetime/transport review is required before S4 proceeds.
+
+Fresh review of `d9498ad..38f423f` found a stranded predecessor could override
+healthy polling indefinitely, and a stale-success STOP test only replayed the
+node request. Fix `6c7c933` bounds that override to a live successor's original
+300ms outbox lifetime and tests actual encoded master/MISO success fragments
+after STOP (whole replay and split across STOP). The production transport test
+keeps node0's second ordinary fragment permanently lost while node1 data/control
+progress; restoring the old condition fails that regression. Follow-up review
+accepted both fixes. Additional passing owner cases inject matched errors
+7/10/20/26, proof rejection reason20, and stale success while a newer retry is
+pending: none creates extra authority. The reviewer inspected sources and
+supplied results; physical CAN adapter/timing qualification remains deferred.

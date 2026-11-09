@@ -10,6 +10,8 @@ static bool holdCommit=false, commitHeld=false;
 static BodaqsControlRecord heldCommit;
 static bool loseRenewalChallenges=false, loseRenewalResults=false;
 static unsigned lostRenewals=0;
+static uint8_t renewalError=0;
+static bool renewalErrorOnProof=false;
 static BodaqsControlRecord heldRenewal;
 static bool holdControl(uint8_t address,const BodaqsControlRecord& request) {
  if(address) return false;
@@ -36,6 +38,12 @@ static void backendEvent(void* context,uint8_t command,uint32_t generation,uint6
 }
 static bool dispatchControl(uint8_t n,const BodaqsControlRecord& request,BodaqsControlRecord& reply) {
  if(!lifecycleEnabled) return bodaqs_control_node_process(&node.view,&request,&reply);
+ if(!n && renewalError && (renewalErrorOnProof ? request.opcode==0x27 : (request.opcode==0x26 && request.data[12]==1))) {
+  reply=request;reply.opcode=BODAQS_CONTROL_ERROR;reply.data_length=24;
+  std::memset(reply.data,0,24);reply.data[0]=1;reply.data[1]=renewalError;
+  reply.data[2]=renewalError==20?17:1;reply.data[3]=request.opcode;
+  bodaqs_control_put_u32(reply.data+4,request.operation);++lostRenewals;return true;
+ }
  auto& f=peerFixture(n);auto& a=acquisitions[n];
  bodaqs_control_acquisition_tick(&a,clockMs);
  bool handled=bodaqs_control_authority_process(&f.authority,&f.view,&request,clockMs,fixtureRandom,nullptr,&reply) ||
@@ -115,9 +123,27 @@ int main(int argc,char** argv) {
   assert(acquisitions[n].phase==2 && acquisitions[n].renewal_sequence>=2 && acquisitions[n].renewal_sequence<=3);
  }
  if(argc>1) {
-  if(!std::strcmp(argv[1],"late-renewal-wire") || !std::strcmp(argv[1],"split-renewal-stop")) {
+  if(!std::strncmp(argv[1],"retryable-error-",16) || !std::strcmp(argv[1],"expired-proof-error")) {
+   renewalErrorOnProof=!std::strcmp(argv[1],"expired-proof-error");
+   renewalError=renewalErrorOnProof?20:static_cast<uint8_t>(std::atoi(argv[1]+16));
+   controlSteps(1600);assert(lostRenewals);
+   assert(AcquisitionControl::outcome(0,result) && !result.excluded && result.leaseAcknowledged);
+   renewalError=0;controlSteps(1600);
+   assert(AcquisitionControl::outcome(0,result) && !result.excluded && result.leaseAcknowledged);
+   puts("matched retryable node error preserves confirmed authority: PASS");return 0;
+  }
+  if(!std::strcmp(argv[1],"late-renewal-wire") || !std::strcmp(argv[1],"split-renewal-stop") || !std::strcmp(argv[1],"late-renewal-retry")) {
+   const uint32_t confirmedUpper=acquisitions[0].lease_deadline;
    delayRenewalWire=true;
    controlSteps(1400);assert(renewalWire.size()==2);
+   if(!std::strcmp(argv[1],"late-renewal-retry")) {
+    delayRenewalWire=false;loseRenewalChallenges=true;controlSteps(800);
+    replayRenewalWire=true;
+    while(int32_t(clockMs-(confirmedUpper+1))<0) controlSteps(1);
+    assert(renewalWire.empty());
+    assert(AcquisitionControl::outcome(0,result) && result.excluded && !result.leaseAcknowledged);
+    puts("old successful reply cannot confirm a newer pending retry: PASS");return 0;
+   }
    request.node=0;request.action=AcquisitionControl::Action::Stop;request.recording=123;
    assert(AcquisitionControl::enqueue(request));controlSteps(500);
    assert(acquisitions[0].terminal && !acquisitions[0].lease_valid);
