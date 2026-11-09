@@ -16,21 +16,21 @@ static bool duplicateAfterFloor=false;
 static uint8_t replayRecord[76];
 static uint64_t replayOrder=0;
 static BodaqsMeasurementSlot exchange(const BodaqsMeasurementSlot& request,unsigned now) {
-  uint8_t wire[64],response[84];BodaqsMeasurementSlot reply={};
-  assert(bodaqs_measurement_encode(&request,wire,64));
-  assert(bodaqs_master_service_process_transfer(&master,wire,64,now,response)==0);
-  assert(bodaqs_measurement_decode(response,64,&reply));return reply;
+  uint8_t wire[BODAQS_MEASUREMENT_BYTES],response[BODAQS_MASTER_TRANSFER_BYTES];BodaqsMeasurementSlot reply={};
+  assert(bodaqs_measurement_encode(&request,wire,BODAQS_MEASUREMENT_BYTES));
+  assert(bodaqs_master_service_process_transfer(&master,wire,BODAQS_MEASUREMENT_BYTES,now,response)==0);
+  assert(bodaqs_measurement_decode(response,BODAQS_MEASUREMENT_BYTES,&reply));return reply;
 }
 static bool drain(unsigned cls,unsigned now) {
   BodaqsMeasurementSlot poll={};poll.kind=1;poll.context=9;poll.node=0;poll.body[0]=cls;
   auto first=exchange(poll,now);if(first.kind==0) return false;
   assert(first.kind==(cls==1?2:3));
   uint8_t bytes[1024]={};BodaqsFragmentState assembly={};BodaqsMeasurementSlot ack={};
-  for(unsigned i=0;i<(first.total+39u)/40u;++i) {
+  for(unsigned i=0;i<(first.total+BODAQS_MEASUREMENT_BODY_BYTES-1u)/BODAQS_MEASUREMENT_BODY_BYTES;++i) {
     poll.object=first.object;poll.index=i;
     const auto fragment=exchange(poll,now);
     const int result=bodaqs_fragment_accept(&assembly,bytes,sizeof bytes,&fragment,1,&ack);
-    assert(result==(i+1==(first.total+39u)/40u?1:0));
+    assert(result==(i+1==(first.total+BODAQS_MEASUREMENT_BODY_BYTES-1u)/BODAQS_MEASUREMENT_BODY_BYTES?1:0));
   }
   const unsigned count=BdqV2Format::getU16(bytes+12);
   for(unsigned i=0;i<count;++i) {

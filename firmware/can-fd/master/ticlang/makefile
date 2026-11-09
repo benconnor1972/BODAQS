@@ -24,6 +24,17 @@ else
 $(error CAN_LINK_PROFILE must be bringup or acquisition)
 endif
 
+SPI_MEASUREMENT_PROFILE ?= legacy
+ifeq ($(SPI_MEASUREMENT_PROFILE),legacy)
+MEASUREMENT_DEFINE := 0
+MASTER_STACK_BYTES := 2048
+else ifeq ($(SPI_MEASUREMENT_PROFILE),first-recording)
+MEASUREMENT_DEFINE := 1
+MASTER_STACK_BYTES := 4096
+else
+$(error SPI_MEASUREMENT_PROFILE must be legacy or first-recording)
+endif
+
 NAME := bodaqs_can_master
 SOURCES := ../src/main.c ../src/master_timing.c \
     ../../common/protocol/bodaqs_control.c \
@@ -60,6 +71,7 @@ CFLAGS := -I../include \
     -Wall \
     -Wextra \
     -DBODAQS_CAN_LINK_PROFILE=$(CAN_LINK_DEFINE) \
+    -DBODAQS_SPI_MEASUREMENT_V2=$(MEASUREMENT_DEFINE) \
     -Werror \
     $(CFLAGS_EXTRA)
 
@@ -67,7 +79,8 @@ LFLAGS := -ldevice.cmd.genlibs \
     "-L$(MSPM0_SDK_INSTALL_DIR)/source" \
     -L. \
     device_linker.cmd \
-    -Wl,--stack_size=2048 \
+    spi_buffers.cmd \
+    -Wl,--stack_size=$(MASTER_STACK_BYTES) \
     "-Wl,-m,$(NAME).map" \
     -Wl,--rom_model \
     -Wl,--warn_sections \
@@ -118,3 +131,8 @@ main.obj bodaqs_master_service.obj: ../../common/protocol/bodaqs_master_service.
 can-link-profile:
 main.obj: can-link-profile ../../common/network/bodaqs_can_link.h ../../common/network/bodaqs_can_link_ti.h
 master_identity.obj: can-link-profile ../../common/network/bodaqs_can_link.h ../../common/network/bodaqs_can_link_ti.h
+
+.PHONY: measurement-profile
+measurement-profile:
+main.obj bodaqs_master_service.obj: measurement-profile
+$(NAME).out: spi_buffers.cmd

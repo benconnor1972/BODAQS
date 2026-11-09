@@ -305,7 +305,7 @@ RemoteImuStream::Acceptance RemoteImuStream::accept(uint16_t id,const uint8_t* p
   return evidence(p[1],p+8,tick,order,logger,false,receptionFlags);
 }
 RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t* b,uint32_t tick,uint64_t order,uint32_t logger,bool local,uint8_t receptionFlags) {
-  if(type==0x23 && evidence_.size()>=evidence_.capacity()-8) {
+  if((type==0x23 || (binding_.compactPackets && type==0x24)) && evidence_.size()>=evidence_.capacity()-8) {
     return drop(1,1,0,logger)?Accepted:Invalid;
   }
   if(!flushLoss(logger)) return Invalid;

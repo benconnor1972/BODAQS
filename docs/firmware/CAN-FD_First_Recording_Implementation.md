@@ -51,8 +51,8 @@ closure authorization.
 
 ## Pending implementation
 
-S2 #180 authorization; S3 #178 compact recording; S4 #179 real ACK/fetch;
-S5 #182 raw observations; S6 #185 STOP/tail isolation; S7 #189 reviewed candidate.
+S4 #179 real ACK/fetch boundary review; S6 #185 STOP/tail isolation;
+S7 #189 reviewed candidate. S1/S2/S3/S5 are locally implemented and reviewed.
 S8 #190 is the subsequent manual physical capture. No physical results are claimed.
 
 ## S2 / #180: authorization implementation
@@ -148,3 +148,34 @@ evidence. Added production adapter scenarios17..19 now demonstrate STOP during
 recovery retains the previous associated raw pair, sustained TX pressure skips
 the optional final snapshot with evidence-loss accounting, and an empty successor
 STOP emits no stale previous-recording snapshot. The full node suite passes.
+
+Fresh reviewer independently reran modes17..19 and closed the S5 boundary
+checkpoint at `5cf696a`, with no remaining source/evidence findings in scope.
+
+## S4 / #179: real v2 ACK/fetch and adapter integration
+
+Protocol commit `290a1f2` passed fresh wire/ownership review with no blocking
+source findings. Additional requested hostile-proof/exhaustion/CRC cases now
+pass. The selected candidate explicitly builds real measurement version2 at
+256 bytes/requested16MHz/25us; legacy defaults are retained. See the
+[wire, ownership and memory contract](CAN-FD_Measurement_v2.md).
+
+The adapter adds four queued RX extents and explicit BANK1 wire storage. The
+actual TI map and compiler stack reports are retained outside the source tree
+under `drain-capacity-evidence/first-real-imu-implementation/s4-target`.
+Compiler stack evidence required a4KB reservation for v2; both banks fit. Final
+candidate builds will replace these interim working-source artifacts.
+
+Actual logger/master tests keep an unadmitted real immutable batch pinned,
+then admit it into RAM; lose its retirement reply; assemble a shorter successor
+without confirmation; and withhold it until an exact proof arrives. Wrong proof
+fields and a late predecessor proof cannot clear the pending ACK. Empty probes
+stay bounded. The actual node/master/writer/reader path now runs at both wire
+profiles, including v2 with optional models, clock snapshots and model-origin
+anchors omitted. It preserves sample identity through START/STOP bounds.
+
+V2 also removes legacy low16 inference from retained source sequencing and
+keeps master loss reports count-known/interval-unknown. Raw ISR epoch extraction
+and optional timing classification are covered by production adapter tests.
+Full queue/partial consumer progress and final STOP/fence/restart remain S6
+integration obligations. Fresh adapter/wire/lifetime review precedes S6.

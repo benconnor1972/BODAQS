@@ -148,7 +148,7 @@ void bodaqs_master_service_set_inventory(BodaqsMasterService *service,
 /* Actual CS-bounded length: short or oversized transfers never change mode. */
 BodaqsMasterSlotResult bodaqs_master_service_process_transfer(
     BodaqsMasterService *service, const uint8_t *received, size_t length,
-    uint32_t now_ms, uint8_t next_transmit[BODAQS_MASTER_SLOT_BYTES]);
+    uint32_t now_ms, uint8_t next_transmit[BODAQS_MASTER_TRANSFER_BYTES]);
 void bodaqs_master_service_measurement_fence(BodaqsMasterService *service,
     bool stopped_authorization_invalid, bool data_retired);
 

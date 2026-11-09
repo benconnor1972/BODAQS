@@ -37,13 +37,9 @@ static uint32_t bodaqs_master_timing_clock(void *c,uint32_t *epoch) {(void)c;*ep
 #define SPI_A8_INST 0
 #define POWER_STARTUP_DELAY 0
 static BodaqsMasterService gService;
-static uint8_t gTransmitSlots[2][84],gReceiveSlots[2][84],gTransmitIndex,gReceiveIndex;
-static uint8_t receive_storage[1][84];
-static BodaqsRecordQueue gSpiReceiveQueue;
-typedef struct {uint32_t generation; uint64_t context;} SpiRetirement;
-static volatile SpiRetirement gSpiRetirementRequest,gSpiRetirementProof;
-static bool gSpiRetiring,gSpiTransmitReady;
-static uint16_t gSpiReceiveLength;
+/* SPI_ADAPTER_STORAGE */
+#define receive_storage gSpiReceiveStorage
+#define gSpiReceiveLength gSpiReceiveLengths[gSpiReceiveQueue.head]
 #define BODAQS_ENABLE_BUCK 0
 #define BODAQS_ENABLE_FRONT_BRANCH 0
 #define GPIO_BOARD_PORT 0
@@ -62,7 +58,8 @@ static unsigned DL_GPIO_readPins(int p,int m) {(void)p;(void)m;return cs_high;}
 /* TI STAT.BUSY includes a nonempty TX FIFO, even with CS inactive. */
 static inline bool DL_SPI_isBusy(int d) {(void)d;return !cs_high || prefetched_tx!=0;}
 static void DL_DMA_disableChannel(int d,int c) {(void)d;disabled|=1U<<c;}
-static unsigned DL_SPI_drainRXFIFO8(int d,uint8_t *p,unsigned n) {(void)d;(void)p;(void)n;return 0;}
+static bool extra_rx_byte;
+static unsigned DL_SPI_drainRXFIFO8(int d,uint8_t *p,unsigned n) {(void)d;if(n==1 && extra_rx_byte) {extra_rx_byte=false;*p=0xff;return 1;}return 0;}
 static void DL_SPI_disable(int d) {(void)d;}
 static void DL_SPI_reset(int d) {(void)d;assert(disabled==3);prefetched_tx=0;++reset_count;}
 static void DL_SPI_enablePower(int d) {(void)d;}

@@ -12,6 +12,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--compiler", default="g++")
     parser.add_argument("--cc", default="gcc")
+    parser.add_argument("--v2", action="store_true")
     args = parser.parse_args()
     firmware = Path(__file__).resolve().parents[1]
     node = firmware / "can-fd/node"
@@ -32,7 +33,7 @@ def main():
         environment = dict(os.environ, BODAQS_NODE_FIXTURE_OUT=str(can))
         subprocess.run([str(producer)], env=environment, check=True)
         subprocess.run([
-            args.compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
+            args.compiler, "-std=c++17", *(["-DBODAQS_SPI_MEASUREMENT_V2=1"] if args.v2 else []), "-Wall", "-Wextra", "-Werror",
             "-I", str(firmware / "src"), "-I", str(common),
             str(firmware / "test/node_master_bdq_fixture.cpp"),
             *[str(firmware / "src" / name) for name in ("RemoteImuStream.cpp", "BdqV2Catalog.cpp", "BdqV2Writer.cpp")],
@@ -90,6 +91,12 @@ def main():
             if not (line.split()[0]=="144" and line.split()[2][2:4]=="23"))+"\n")
         subprocess.run([str(consumer), str(no_clock), str(bdq), "compact"], check=True)
         assert [r["sequence"] for r in read_can_imu_packets(bdq,"can0_imu6")["readings"]] == list(range(65))
+        if args.v2:
+            no_anchors=temporary / "without-model-origins.txt"
+            no_anchors.write_text("\n".join(line for line in no_clock.read_text().splitlines()
+                if not (line.split()[0]=="144" and line.split()[2][2:4]=="22"))+"\n")
+            subprocess.run([str(consumer),str(no_anchors),str(bdq),"compact"],check=True)
+            assert [r["sequence"] for r in read_can_imu_packets(bdq,"can0_imu6")["readings"]]==list(range(65))
         saved=bdq.read_bytes()
         subprocess.run([str(consumer), str(no_clock), str(bdq), "compact", "duplicate"], check=True)
         repeated=read_can_imu_packets(bdq,"can0_imu6")

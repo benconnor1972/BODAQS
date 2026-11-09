@@ -48,6 +48,27 @@ int main(int argc,char** argv) {
   uint8_t packet[16]={65,0,1,1};
   assert(bodaqs_master_service_receive_can(&service,0,1,0x100,packet,16,0,100,20));
   BodaqsMeasurementSlot fetch=ack;fetch.kind=14;fetch.body[2]=1;fetch.body[3]=0;
+  const uint32_t acknowledged=service.objects_acked;
+  for(unsigned fault=0;fault<6;++fault) {
+    auto wrong=fetch;
+    if(fault==0) ++wrong.context;
+    if(fault==1) wrong.body[0]=2;
+    if(fault==2) wrong.node=1;
+    if(fault==3) ++wrong.object;
+    if(fault==4) --wrong.total;
+    if(fault==5) wrong.body[1]=3;
+    assert(!transfer(wrong).retired);
+    assert(service.objects_acked==acknowledged && service.receptions[0].object.complete);
+  }
+  for(unsigned fault=0;fault<3;++fault) {
+    auto wrong=fetch;
+    if(fault==0) wrong.body[2]=0;
+    if(fault==1) wrong.index=1;
+    if(fault==2) {wrong.retired=true;wrong.retiredClass=1;wrong.retiredObject=first.object;wrong.retiredTotal=1008;wrong.retiredChecksum=assembled.checksum;}
+    uint8_t tx[256],rx[256];assert(bodaqs_measurement_encode(&wrong,tx,256));
+    assert(bodaqs_master_service_process_transfer(&service,tx,256,100,rx)==BODAQS_MASTER_SLOT_MALFORMED);
+    assert(service.objects_acked==acknowledged && service.receptions[0].object.complete);
+  }
   fetch.body[4]^=1;
   auto bad=transfer(fetch);assert(!bad.retired && service.receptions[0].object.complete);
   fetch.body[4]^=1;
@@ -60,9 +81,43 @@ int main(int argc,char** argv) {
   fetch=ack;fetch.kind=14;fetch.body[2]=1;fetch.body[3]=0;
   auto empty=transfer(fetch);assert(empty.kind==0 && empty.retired && empty.retiredObject==next.object);
   auto replay=transfer(fetch);assert(replay.kind==0 && replay.retired && replay.retiredObject==next.object);
+  service.receptions[0].next_id[0]=UINT32_MAX-1;
+  for(unsigned i=0;i<13;++i) {
+    uint8_t p[64]={};p[0]=66+i*5;p[2]=1;p[3]=5;
+    assert(bodaqs_master_service_receive_can(&service,0,1,0x100,p,64,0,200+i,200+i));
+  }
+  poll.object=0;poll.index=0;
+  auto last=transfer(poll,300);assert(last.object==UINT32_MAX);
+  assembled={};
+  for(unsigned i=0;i<5;++i) {
+    poll.object=last.object;poll.index=i;
+    const auto part=transfer(poll,300);
+    assert(bodaqs_fragment_accept(&assembled,bytes,sizeof bytes,&part,1,&ack)==(i==4?1:0));
+  }
+  packet[0]=131;
+  assert(bodaqs_master_service_receive_can(&service,0,1,0x100,packet,16,0,300,300));
+  fetch=ack;fetch.kind=14;fetch.body[2]=1;
+  auto exhausted=transfer(fetch,400);
+  assert(exhausted.retired && exhausted.retiredObject==UINT32_MAX && exhausted.kind==7 && exhausted.body[1]==14);
+  auto repeatedLast=transfer(fetch,400);
+  assert(repeatedLast.retired && repeatedLast.retiredObject==UINT32_MAX);
+  assert(service.receptions[0].next_id[0]==UINT32_MAX && service.receptions[0].count==1);
   uint8_t wire[256];assert(bodaqs_measurement_encode(&next,wire,sizeof wire));
   FILE* out=std::fopen(argv[1],"wb");assert(out);assert(std::fwrite(wire,1,256,out)==256);std::fclose(out);
   wire[235]^=1;BodaqsMeasurementSlot decoded={};assert(!bodaqs_measurement_decode(wire,256,&decoded));
   assert(!bodaqs_measurement_decode(wire,64,&decoded));
+  assert(bodaqs_measurement_encode(&next,wire,sizeof wire));wire[239]=1;
+  bodaqs_measurement_put(wire+252,bodaqs_measurement_crc(wire,252),4);
+  assert(!bodaqs_measurement_decode(wire,256,&decoded));
+  // A source START boundary supplies identity without a timing-model anchor.
+  // A long low16 jump remains raw data for offline bounds, not a guessed high word.
+  bodaqs_master_service_init(&service,&identity);bodaqs_control_exchange_init(&service.control,99);
+  service.measurement.mode.phase=2;service.measurement.mode.context=9;service.measurement.mode.recording=77;
+  service.discovery[0].flags=1;service.discovery[0].boot_id=17;
+  service.acquisition_record[0]=77;service.acquisition_boot[0]=17;
+  uint8_t start[64]={1,0x25,1,0,0,0,56,0,17};start[13]=1;start[14]=2;start[54]=1;start[55]=1;
+  assert(bodaqs_master_service_receive_can(&service,0,2,0x90,start,64,0,10,1));
+  uint8_t raw[16]={0xff,0xff,1,1};
+  assert(bodaqs_master_service_receive_can(&service,0,1,0x100,raw,16,0,20,2));
   puts("versioned real 256-byte variable/empty ACK-fetch retirement passed");
 }

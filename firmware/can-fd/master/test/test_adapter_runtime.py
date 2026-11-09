@@ -11,6 +11,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[4]
 parser = argparse.ArgumentParser()
 parser.add_argument("--cc", required=True)
+parser.add_argument("--v2", action="store_true")
 args = parser.parse_args()
 source = (ROOT / "firmware/can-fd/master/src/main.c").read_text()
 assert "volatile MasterDrainInfo gMasterDrainInfo;" in source, "missing START-scoped drain diagnostics"
@@ -41,11 +42,17 @@ assert result.count("s->acquisition_retirement_pending=true;") == 1
 functions += "\n" + result.replace("s->acquisition_retirement_pending=true;",
     "s->acquisition_retirement_pending=true; injected_cs_preemption();")
 fixture = Path(__file__).with_name("adapter_fixture.c").read_text().replace("/* DRAIN_TYPES */", drain_types)
+owned=source[source.index("/* SPI adapter ownership storage. */"):source.index("/* End SPI adapter ownership storage. */")]
+fixture=fixture.replace("/* SPI_ADAPTER_STORAGE */",owned)
+if args.v2:
+    assert "/* SPI adapter ownership storage. */" in source, "v2 DMA storage must match production"
+    fixture=fixture[:fixture.index("int main(void) {")]+Path(__file__).with_name("adapter_v2_cases.c").read_text()
 with tempfile.TemporaryDirectory() as temp:
     c = Path(temp) / "adapter.c"
     exe = Path(temp) / "adapter.exe"
     c.write_text(fixture.replace("/* PRODUCTION_FUNCTIONS */", functions))
-    subprocess.run([args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-O2",
+    flags=["-DBODAQS_SPI_MEASUREMENT_V2=1", "-Wno-unused-function", "-Wno-unused-variable"] if args.v2 else []
+    subprocess.run([args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-O2",*flags,
         "-I" + str(ROOT / "firmware/can-fd/common/protocol"),
         "-I" + str(ROOT / "firmware/can-fd/common/network"),
         "-I" + str(ROOT / "firmware/can-fd/common/transport"),

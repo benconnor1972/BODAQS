@@ -1,0 +1,61 @@
+int main(void) {
+    assert(BODAQS_MASTER_TRANSFER_BYTES==256 && BODAQS_MASTER_SPI_RX_CAPACITY==4);
+    bodaqs_record_queue_init(&gSpiReceiveQueue,gSpiReceiveStorage,256,4);
+    bodaqs_master_service_init(&gService,NULL);
+    bodaqs_record_queue_init(&gCanReceiveQueue,storage,sizeof storage[0],8);
+    hardware=(DL_MCAN_RxBufElement){.id=0x100U<<18,.fdf=1,.brs=1,.dlc=15};
+    hardware.data[2]=3;hardware.data[3]=5;hardware_depth=8;capture_can_receive_fifo();
+    hardware_depth=1;capture_can_receive_fifo();
+    hardware.id=0x90U<<18;hardware.dlc=13;hardware.data[1]=0x22;hardware.data[10]=3;hardware.data[13]=0xaa;
+    hardware_depth=1;capture_can_receive_fifo();
+    hardware.dlc=15;hardware.data[1]=0x24;hardware.data[13]=3;
+    hardware_depth=1;capture_can_receive_fifo();
+    hardware.dlc=12;hardware.data[1]=0x21;hardware.data[13]=0xab;
+    hardware_depth=1;capture_can_receive_fifo();
+    assert(gRejectedCan[0].source==5 && gRejectedCan[0].evidence==3 && gRejectedCan[0].epoch==3);
+    assert(!gRejectedCan[0].essential); // raw tick/sequence bytes are not stream epochs
+    hardware.dlc=15;hardware.data[1]=0x25;hardware.data[13]=3;hardware.data[14]=2;
+    hardware_depth=1;capture_can_receive_fifo();assert(gRejectedCan[0].essential);
+    gService.measurement.mode.phase=2;gService.measurement.mode.context=77;
+    const unsigned lengths[4]={84,256,255,256};
+    for(unsigned i=0;i<4;++i) {
+        memset(gReceiveSlots[gReceiveIndex],i+1,256);
+        remaining=256-lengths[i];retire_spi_boundary();
+    }
+    assert(gSpiReceiveQueue.depth==4 && !gSpiReceiveQueue.dropped);
+    remaining=0;retire_spi_boundary();
+    assert(gSpiReceiveQueue.depth==4 && gSpiReceiveQueue.dropped==1);
+    for(unsigned i=0;i<4;++i) {
+        assert(gSpiReceiveLengths[gSpiReceiveQueue.head]==lengths[i]);
+        uint8_t bytes[256];assert(bodaqs_record_queue_pop(&gSpiReceiveQueue,bytes));
+        assert(bytes[0]==i+1 && bytes[255]==i+1);
+    }
+    /* Exact physical extent: valid 256, short255 and excess257. */
+    BodaqsMeasurementSlot idle={0};idle.node=255;idle.context=77;
+    assert(bodaqs_measurement_encode(&idle,gReceiveSlots[gReceiveIndex],256));
+    remaining=0;retire_spi_boundary();gSpiTransmitReady=false;
+    service_spi_receive();assert(gSpiTransmitReady && gService.slots_received==1);
+    assert(bodaqs_measurement_encode(&idle,gReceiveSlots[gReceiveIndex],256));
+    remaining=1;retire_spi_boundary();gSpiTransmitReady=false;
+    service_spi_receive();assert(!gSpiTransmitReady && gService.malformed_slots==1);
+    assert(bodaqs_measurement_encode(&idle,gReceiveSlots[gReceiveIndex],256));
+    remaining=0;extra_rx_byte=true;retire_spi_boundary();gSpiTransmitReady=false;
+    service_spi_receive();assert(!gSpiTransmitReady && gService.malformed_slots==2);
+    /* Fully prepared data is scrubbed at the exact captured fence generation;
+     * ISR proof alone never edits retained service rings. */
+    BodaqsMeasurementSlot data={0};data.kind=2;data.context=77;data.node=0;
+    assert(bodaqs_measurement_encode(&data,gTransmitSlots[0],256));
+    assert(bodaqs_measurement_encode(&data,gTransmitSlots[1],256));
+    gSpiTransmitReady=true;gService.receptions[0].count=2;
+    gService.acquisition_retirement_pending=true;gService.acquisition_retirement_generation=1;
+    service_spi_retirement();
+    assert(bodaqs_measurement_encode(&idle,gReceiveSlots[gReceiveIndex],256));
+    remaining=0;retire_spi_boundary();
+    BodaqsMeasurementSlot decoded;
+    assert(bodaqs_measurement_decode(gTransmitSlots[0],256,&decoded) && !decoded.kind);
+    assert(bodaqs_measurement_decode(gTransmitSlots[1],256,&decoded) && !decoded.kind);
+    assert(gService.receptions[0].count==2 && gSpiRetirementProof.generation==1);
+    service_spi_retirement();
+    assert(!gService.receptions[0].count && !gService.acquisition_retirement_pending);
+    puts("production v2 CS/DMA extent, four-cell length ownership and fence retirement: PASS");
+}

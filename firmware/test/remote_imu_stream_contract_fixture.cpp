@@ -98,4 +98,11 @@ int main() {
   assert(BdqV2Format::getU32(record)==0 && BdqV2Format::getU16(record+32)==0);
   assert(packets.accept(0x108,compact,16,53,2050,103)==RemoteImuStream::Accepted);
   assert(packetSource.pendingRecords(packetSource.context)==2048 && !packets.failed());
+  for(unsigned i=0;i<1000;++i) {
+    BdqV2Format::putU32(model+16,i+1);BdqV2Format::putU32(model+28,i*500);
+    assert(packets.accept(0x91,model,64,53,3000+i,103)==RemoteImuStream::Accepted);
+  }
+  assert(!packets.failed()); // optional model pressure cannot end interpretable axes
+  assert(packetSource.popRecord(packetSource.context,record,sizeof record));
+  assert(packets.accept(0x108,compact,16,53,5000,104)==RemoteImuStream::Accepted);
 }

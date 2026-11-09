@@ -27,6 +27,12 @@ def main():
         assert zlib.crc32(data[:252]) & 0xffffffff == struct.unpack_from("<I",data,252)[0]
         assert data[236:240]==bytes((1,0,1,0))
         assert struct.unpack_from("<H",data,244)[0]==1008
+        # Independent logical CRC includes the immutable identity prefix.
+        context,object_id=struct.unpack_from("<QI",data,4)
+        total=struct.unpack_from("<H",data,18)[0]
+        prefix=struct.pack("<QIBBBBHH",context,object_id,data[16],1,1,0,total,0)
+        payload=data[20:20+total]
+        assert zlib.crc32(prefix+payload[:-4]) & 0xffffffff == struct.unpack_from("<I",payload,total-4)[0]
         fixture=fixture_source(root)
         fixture=fixture.replace("static ParamStore extraParams[3];", "[[maybe_unused]] static ParamStore extraParams[3];")
         # No acquisition owner is required for this transport/RAM test.

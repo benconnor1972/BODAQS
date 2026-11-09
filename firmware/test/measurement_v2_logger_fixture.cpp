@@ -28,19 +28,41 @@ int main() {
     ++clockMs;
     if(CanMasterManager::serviceMeasurementTransport(transport,1,0,completed)==1) {
       assert(completed->state.total==1008);
-      retainedRam.emplace_back(completed->bytes,completed->bytes+completed->state.total);
-      CanMasterManager::releaseMeasurementObject(*completed);full=true;
+      full=true;
     }
   }
   assert(full);auto& inbox=transport.inboxes[0][0];
+  const uint32_t pinned=inbox.state.object,acceptedBefore=master.objects_acked;
+  const std::vector<uint8_t> pinnedBytes(inbox.bytes,inbox.bytes+inbox.state.total);
+  for(unsigned i=0;i<100;++i) {
+    ++clockMs;CanMasterManager::serviceMeasurementTransport(transport,1,0,completed);
+  }
+  assert(master.objects_acked==acceptedBefore && master.receptions[0].object.object==pinned);
+  assert(!inbox.admitted && !inbox.ackPending);
+  assert(std::equal(pinnedBytes.begin(),pinnedBytes.end(),inbox.bytes));
+  retainedRam.push_back(pinnedBytes);CanMasterManager::releaseMeasurementObject(inbox);
   const uint32_t oldObject=inbox.pendingAck.object;
   clockMs+=30;
   CanMasterManager::serviceMeasurementTransport(transport,1,0,completed); // ACK/fetch dispatched
   BodaqsMeasurementSlot poll={},lost={};poll.kind=1;poll.context=456;poll.node=0;poll.body[0]=1;
   assert(CanMasterManager::exchangeMeasurementSlot(poll,lost));
   assert(lost.retired && lost.retiredObject==oldObject); // whole confirmation lost to caller
+  for(unsigned fault=0;fault<5;++fault) {
+    auto wrong=lost;
+    if(fault==0) wrong.retiredClass=2;
+    if(fault==1) wrong.retiredNode=1;
+    if(fault==2) ++wrong.retiredObject;
+    if(fault==3) --wrong.retiredTotal;
+    if(fault==4) wrong.retiredChecksum^=1;
+    assert(bodaqs_measurement_encode(&wrong,preloaded,sizeof preloaded));
+    const int ignored=CanMasterManager::serviceMeasurementTransport(transport,1,0,completed);
+    assert(ignored>=0 && ignored!=1);
+    assert(inbox.ackPending && inbox.pendingAck.object==oldObject);
+    assert(!CanMasterManager::measurementObjectReady(inbox));
+  }
+  assert(CanMasterManager::exchangeMeasurementSlot(poll,lost)); // discard the real confirmation once more
   int response=CanMasterManager::serviceMeasurementTransport(transport,1,0,completed);
-  assert(response==0 && inbox.state.complete && inbox.state.total==96);
+  assert(response!=1 && inbox.state.complete && inbox.state.total==96);
   assert(inbox.ackPending && inbox.pendingAck.object==oldObject);
   assert(!CanMasterManager::measurementObjectReady(inbox));
   response=CanMasterManager::serviceMeasurementTransport(transport,1,0,completed);

@@ -63,3 +63,45 @@ production logger/master pipelined fixture demonstrates RAM acceptance waits for
 explicit confirmation after a lost reply and bounded idle polls. Production
 lifecycle tests pass at both compile-time profiles. Adapter memory placement,
 DMA/CS regressions and target builds are still required before packaging.
+
+## Adapter and target evidence
+
+The v2 master has four receive cells, each retaining its own measured length.
+SPI RX/TX DMA buffers, queue storage and main-owned wire copy occupy an explicit
+`.bodaqs_spi_buffers` section in SRAM_BANK1. The master remains awake; this does
+not authorize STOP/STANDBY bank-retention assumptions. Main/ISR ownership and
+generation/context fence proof remain distinct from logical ACK retirement.
+Only complete prepared TX frames publish, at CS boundaries.
+
+TI ARM Clang5.1.1 acquisition-profile build succeeds. The checked map uses
+64357/65536 bytes of BANK0 (1179 free), with an explicit4096-byte stack, and
+2304 bytes of BANK1. Compiler `-fstack-usage` reports individual frames of
+376 bytes for main,856 for process_transfer,312 for the ACK/fetch wrapper,
+304 for the core, and344 for retirement scrubbing. Their call/interrupt paths
+motivated raising the v2 stack from2048 to4096. Legacy retains2048. These are
+compiler/static evidence, not physical stack watermarks or timing qualification.
+The logger restricted/v2 target also compiles (265084/327680 static RAM bytes
+at this stage; final packaging rebuilds exact source).
+
+The production CS/DMA adapter fixture tests four queued cells and exact lengths,
+full256, short255 and excess257 transfers, immutable fence generation/context,
+and retirement before ring release. It imports the actual production storage
+declarations as well as function bodies. Existing legacy adapter regressions
+remain passing. Full physical TX shifting and actual25us readiness remain manual
+qualification debt.
+
+V2 uses the same-boot START boundary to establish source epoch/origin even if
+optional timing anchors/models are absent. It retains raw low16 data across
+large gaps for offline resolution; it does not infer a full sequence from those
+low bits. Master/ISR loss counters retain known counts without claiming a full
+interval. Timing21/22/23/24 records are optional under pressure; source boundaries
+remain essential. The raw CAN ISR distinguishes each type's epoch layout and
+does not interpret SYNC timestamp bytes as an epoch. Compact logger model-queue
+pressure likewise records evidence loss without ending interpretable axes.
+
+Additional wire tests cover mismatched old context/class/node/object/total/
+disposition, malformed next selection, response proof on requests, reserved
+trailer bytes, individually mismatched logger confirmation fields, and identity
+exhaustion with a retirement still outstanding. At exhaustion, the final valid
+retirement remains confirmed but new batch publication fails explicitly instead
+of wrapping. Python checks both physical and identity-bound logical CRCs.

@@ -170,7 +170,7 @@ static inline bool bodaqs_measurement_decode(const uint8_t *p,size_t n,BodaqsMea
 #if BODAQS_MEASUREMENT_VERSION == 2
     if(p[239] || p[238]>1 || (bodaqs_measurement_get(p+246,2)&~255ULL)) return false;
     if(p[238]) {
-        if(p[236]<1 || p[236]>5 || (p[237]>3 && !(p[236]==5 && p[237]==255)) ||
+        if(p[236]<1 || p[236]>5 || (p[236]==5?p[237]!=255:p[237]>3) ||
            !bodaqs_measurement_get(p+240,4) || bodaqs_measurement_get(p+244,2)<4 || bodaqs_measurement_get(p+244,2)>1024) return false;
     } else if(!bodaqs_measurement_zero(p+236,10) || !bodaqs_measurement_zero(p+248,4)) return false;
     s->retired=p[238]!=0;s->retiredClass=p[236];s->retiredNode=p[237];

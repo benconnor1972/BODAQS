@@ -153,12 +153,21 @@ BodaqsNodeInventory gNodeInventory;
 static BodaqsMasterService gService;
 static BodaqsMasterDiscoveryRecord
     gDiscoveryRecords[BODAQS_MASTER_DISCOVERY_NODE_COUNT];
-static uint8_t gTransmitSlots[2][BODAQS_MASTER_SLOT_BYTES];
-static uint8_t gReceiveSlots[2][BODAQS_MASTER_SLOT_BYTES];
+/* SPI adapter ownership storage. */
+#if BODAQS_MEASUREMENT_VERSION == 2
+#define BODAQS_MASTER_SPI_RX_CAPACITY 4U
+#define BODAQS_SPI_BUFFER_STORAGE __attribute__((section(".bodaqs_spi_buffers"),aligned(4)))
+#else
+#define BODAQS_MASTER_SPI_RX_CAPACITY 1U
+#define BODAQS_SPI_BUFFER_STORAGE
+#endif
+static uint8_t gTransmitSlots[2][BODAQS_MASTER_TRANSFER_BYTES] BODAQS_SPI_BUFFER_STORAGE;
+static uint8_t gReceiveSlots[2][BODAQS_MASTER_TRANSFER_BYTES] BODAQS_SPI_BUFFER_STORAGE;
 static uint8_t gTransmitIndex;
 static uint8_t gReceiveIndex;
-/* DMA stays unarmed until this completed slot has been serviced. */
-static uint8_t gSpiReceiveStorage[1][BODAQS_MASTER_SLOT_BYTES];
+/* Each queued physical transaction owns its exact extent until the main pop. */
+static uint8_t gSpiReceiveStorage[BODAQS_MASTER_SPI_RX_CAPACITY][BODAQS_MASTER_TRANSFER_BYTES] BODAQS_SPI_BUFFER_STORAGE;
+static uint16_t gSpiReceiveLengths[BODAQS_MASTER_SPI_RX_CAPACITY];
 static BodaqsRecordQueue gSpiReceiveQueue;
 /* Main publishes requests and consumes proof under a short IRQ fence. Only
  * the ISR adapter touches hardware; it never mutates the protocol service. */
@@ -166,7 +175,7 @@ typedef struct { uint32_t generation; uint64_t context; } SpiRetirement;
 static volatile SpiRetirement gSpiRetirementRequest, gSpiRetirementProof;
 static volatile bool gSpiRetiring;
 static volatile bool gSpiTransmitReady;
-static volatile uint16_t gSpiReceiveLength;
+/* End SPI adapter ownership storage. */
 static volatile uint32_t gUptimeMs;
 static volatile bool gDiscoveryDue;
 static uint16_t gDiscoveryTransaction;
@@ -421,8 +430,16 @@ static void capture_can_receive_fifo(void)
                 uint8_t *p=record.message.data;
                 size_t length=bodaqs_can_dlc_to_length((uint8_t)record.message.dlc);
                 uint8_t epoch=sample&&length>=4?p[2]:!sample&&length>=14?p[13]:0;
+#if BODAQS_MEASUREMENT_VERSION == 2
+                if(!sample) epoch=length>=14 && (p[1]==0x23 || p[1]==0x24 || p[1]==0x25)?p[13]:
+                    length>=14 && p[1]==0x22?p[10]:0;
+                if(epoch && r->epoch && (r->source || r->evidence) && r->epoch!=epoch) r->essential=true;
+                if(epoch) r->epoch=epoch;
+#else
                 if((r->source || r->evidence) && r->epoch!=epoch) r->essential=true;
-                r->epoch=epoch;r->tick=record.received_tick;r->ordinal=record.ordinal;
+                r->epoch=epoch;
+#endif
+                r->tick=record.received_tick;r->ordinal=record.ordinal;
                 if(sample) {
                     uint32_t n=p[3]&7;
                     if(!n || n>5 || length<4+12*n || UINT32_MAX-r->source<n) r->essential=true;
@@ -433,7 +450,13 @@ static void capture_can_receive_fifo(void)
                     }
                 } else {
                     if(r->evidence==UINT32_MAX) r->essential=true; else ++r->evidence;
+#if BODAQS_MEASUREMENT_VERSION == 2
+                    const bool optional=(p[1]==0x21 && length==24) || (p[1]==0x22 && length==32) ||
+                        ((p[1]==0x23 || p[1]==0x24) && length==64);
+                    if(!optional) r->essential=true;
+#else
                     if(length!=64 || p[1]!=0x23) r->essential=true;
+#endif
                 }
             }
         }
@@ -566,14 +589,14 @@ static void arm_spi_slot(void)
     DL_DMA_setDestAddr(DMA, DMA_SPI_TX_CHAN_ID,
         (uint32_t) &SPI_A8_INST->TXDATA);
     DL_DMA_setTransferSize(
-        DMA, DMA_SPI_TX_CHAN_ID, BODAQS_MASTER_SLOT_BYTES);
+        DMA, DMA_SPI_TX_CHAN_ID, BODAQS_MASTER_TRANSFER_BYTES);
 
     DL_DMA_setSrcAddr(DMA, DMA_SPI_RX_CHAN_ID,
         (uint32_t) &SPI_A8_INST->RXDATA);
     DL_DMA_setDestAddr(DMA, DMA_SPI_RX_CHAN_ID,
         (uint32_t) &gReceiveSlots[gReceiveIndex][0]);
     DL_DMA_setTransferSize(
-        DMA, DMA_SPI_RX_CHAN_ID, BODAQS_MASTER_SLOT_BYTES);
+        DMA, DMA_SPI_RX_CHAN_ID, BODAQS_MASTER_TRANSFER_BYTES);
 
     DL_DMA_enableChannel(DMA, DMA_SPI_RX_CHAN_ID);
     DL_DMA_enableChannel(DMA, DMA_SPI_TX_CHAN_ID);
@@ -806,7 +829,8 @@ int main(void)
         sizeof(gCanReceiveStorage[0]), CAN_RX_CAPACITY);
     gHealthDue = true;
     bodaqs_record_queue_init(&gSpiReceiveQueue, gSpiReceiveStorage,
-        BODAQS_MASTER_SLOT_BYTES, 1U);
+        BODAQS_MASTER_TRANSFER_BYTES, BODAQS_MASTER_SPI_RX_CAPACITY);
+    memset(gTransmitSlots,0,sizeof gTransmitSlots);
     gDiscoveryTransaction = 0U;
     gDiscoveryNonce = (uint32_t) identity.hardware_uid ^
         (uint32_t) (identity.hardware_uid >> 32);
@@ -924,7 +948,7 @@ static void drain_transfer(const uint8_t *request,size_t length,const uint8_t *r
 {
     uint8_t cls,node,index;
     uint32_t object,bit;
-    if(gMasterDrainInfo.state!=1 || length!=64) return;
+    if(gMasterDrainInfo.state!=1 || length!=BODAQS_MEASUREMENT_BYTES) return;
     /* Caller has completed protocol validation; never repeat a wire CRC here.
      * Both byte arrays are still owned by main, before response publication. */
     cls=request[20];
@@ -963,10 +987,10 @@ static void drain_transfer(const uint8_t *request,size_t length,const uint8_t *r
 static void retire_measurement_slot(uint8_t *bytes,uint64_t context)
 {
     BodaqsMeasurementSlot object;
-    if(bodaqs_measurement_decode(bytes,64,&object) &&
+    if(bodaqs_measurement_decode(bytes,BODAQS_MEASUREMENT_BYTES,&object) &&
        (object.kind==2 || object.kind==3 || object.kind==13)) {
         memset(&object,0,sizeof object);object.context=context;object.node=255;
-        (void)bodaqs_measurement_encode(&object,bytes,64);
+        (void)bodaqs_measurement_encode(&object,bytes,BODAQS_MEASUREMENT_BYTES);
     }
 }
 
@@ -992,8 +1016,8 @@ static void service_spi_retirement(void)
 }
 
 /* Retire from the CS boundary and remaining RX DMA count, not DMA completion.
- * Keeping the 84-byte capacity permits observational legacy MODE_INFO while
- * the active protocol uses 64 bytes. SPI reset empties prefetched TX FIFO bytes
+ * The selected capacity also permits legacy 84-byte MODE_INFO.
+ * Each queued cell retains the measured physical extent. SPI reset empties prefetched TX FIFO bytes
  * so a short transaction cannot shift the next response. */
 static void retire_spi_boundary(void)
 {
@@ -1006,11 +1030,10 @@ static void retire_spi_boundary(void)
     gSpiRetiring = true;
     __set_PRIMASK(primask);
     remaining = DL_DMA_getTransferSize(DMA, DMA_SPI_RX_CHAN_ID);
-    /* In peripheral mode CS high ends the physical transaction. STAT.BUSY
-     * also includes unsent TX FIFO bytes: a 64-byte measurement slot leaves
-     * prefetched bytes from the 84-byte DMA capacity, so waiting for !BUSY
-     * would prevent the reset below from ever retiring that short slot. */
-    if (remaining == BODAQS_MASTER_SLOT_BYTES ||
+    /* CS high ends the physical transaction. STAT.BUSY also includes unsent
+     * TX FIFO bytes after a short transfer, so waiting for !BUSY would prevent
+     * the reset below from retiring it. DMA completion alone is not CS proof. */
+    if (remaining == BODAQS_MASTER_TRANSFER_BYTES ||
         DL_GPIO_readPins(GPIO_SPI_A8_CS_PORT, GPIO_SPI_A8_CS_PIN) == 0U) {
         gSpiRetiring=false; return;
     }
@@ -1025,16 +1048,13 @@ static void retire_spi_boundary(void)
             retire_measurement_slot(gTransmitSlots[gTransmitIndex^1U],retirement.context);
     }
     remaining = DL_DMA_getTransferSize(DMA, DMA_SPI_RX_CHAN_ID);
-    length = BODAQS_MASTER_SLOT_BYTES - remaining;
+    length = BODAQS_MASTER_TRANSFER_BYTES - remaining;
     length += DL_SPI_drainRXFIFO8(SPI_A8_INST,
         &gReceiveSlots[gReceiveIndex][length], (uint32_t)remaining);
-    if (DL_SPI_drainRXFIFO8(SPI_A8_INST, &excess, 1U)) length = 85U;
-    if (gSpiReceiveQueue.depth == 0U) {
-        gSpiReceiveLength = (uint16_t)length;
-        (void)bodaqs_record_queue_push(&gSpiReceiveQueue,gReceiveSlots[gReceiveIndex]);
-    } else {
-        ++gSpiReceiveQueue.dropped;
-    }
+    if (DL_SPI_drainRXFIFO8(SPI_A8_INST, &excess, 1U)) length = BODAQS_MASTER_TRANSFER_BYTES+1U;
+    if(gSpiReceiveQueue.depth<gSpiReceiveQueue.capacity)
+        gSpiReceiveLengths[gSpiReceiveQueue.tail]=(uint16_t)length;
+    (void)bodaqs_record_queue_push(&gSpiReceiveQueue,gReceiveSlots[gReceiveIndex]);
     /* Publish only a fully prepared response at a physical boundary. Parsing,
      * control dispatch and all ownership changes remain in the main loop. */
     if (gSpiTransmitReady) {
@@ -1061,7 +1081,7 @@ static void retire_spi_boundary(void)
 
 static void service_spi_receive(void)
 {
-    uint8_t received[84];
+    static uint8_t received[BODAQS_MASTER_TRANSFER_BYTES] BODAQS_SPI_BUFFER_STORAGE;
     uint16_t length;
     uint8_t next_index;
     uint32_t primask;
@@ -1073,7 +1093,7 @@ static void service_spi_receive(void)
     if (gSpiTransmitReady) return;
     primask=__get_PRIMASK();
     __disable_irq();
-    length=gSpiReceiveLength;
+    length=gSpiReceiveLengths[gSpiReceiveQueue.head];
     if (!bodaqs_record_queue_pop(&gSpiReceiveQueue,received)) {
         __set_PRIMASK(primask); return;
     }
@@ -1085,7 +1105,7 @@ static void service_spi_receive(void)
     drain_cost(0,started);
     started=gMasterDrainInfo.state==1?drain_clock():0;
     acked_before=gService.objects_acked;
-    if(length==64 && received[3]==5 && received[16]<4 &&
+    if(length==BODAQS_MEASUREMENT_BYTES && received[3]==5 && received[16]<4 &&
        (received[20]==1 || received[20]==2))
         ack_records=gService.receptions[received[16]].count;
     result=bodaqs_master_service_process_transfer(&gService,received,length,
@@ -1104,7 +1124,7 @@ static void service_spi_receive(void)
     /* Count only the already validated slot; do not run another wire CRC. */
     if(gMasterDrainInfo.state==1) {
         if(result!=BODAQS_MASTER_SLOT_PROCESSED) ++gMasterDrainInfo.malformed_slots;
-        else if(length==64) {
+        else if(length==BODAQS_MEASUREMENT_BYTES) {
             uint8_t cls=bodaqs_fragment_class(reply_kind);
             if(received[3]==1 && received[20]>=1 && received[20]<=5)
                 ++gMasterDrainInfo.polls[received[20]-1];
