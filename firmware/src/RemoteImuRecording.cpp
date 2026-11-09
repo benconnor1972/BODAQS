@@ -271,6 +271,16 @@ void logDiagnostics() {
    LOGW_TAG("REMOTEIMU","node=%u cleanupPhase=%u action=%u result=%u reason=%u excluded=%u localFence=%u\n",
      n,static_cast<unsigned>(peers[n].phase.load()),static_cast<unsigned>(out.action),static_cast<unsigned>(out.result),out.reason,out.excluded,out.localFenceComplete);
  }
+ AcquisitionControl::FenceDiagnostics f;AcquisitionControl::fenceDiagnostics(f);
+ LOGW_TAG("REMOTEIMU","fence observed_ms=%lu attempts=%lu observations=%lu flags=0x%x all=%u verified=%u recording=0x%x confirmed=0x%x ordinary=0x%x protected=0x%x mutation=0x%x mailbox=0x%x recovering=%u failed=%u\n",
+   (unsigned long)f.observedMs,(unsigned long)f.inspections,(unsigned long)f.observations,f.modeFlags,f.allFenced,f.verified,
+   f.recordingMask,f.confirmedMask,f.ordinaryMask,f.protectedMask,f.mutationMask,f.mailboxMask,f.recovering,f.failed);
+ for(uint8_t node=0;node<4;++node) if(selected&(1u<<node)) for(uint8_t lane=0;lane<3;++lane) {
+   [[maybe_unused]] const auto& in=f.data[lane][lane==2?0:node];
+   LOGW_TAG("REMOTEIMU","retained class=%u node=%u object=%lu ack_object=%lu flags=0x%x\n",
+     lane==2?5:lane+1,lane==2?255:node,(unsigned long)in.object,(unsigned long)in.ackObject,in.flags);
+ }
+
 }
 bool setAdmissionProfile(const ImuAdmission::Profile& p) {
  if(selected || AcquisitionControl::active()) return false;

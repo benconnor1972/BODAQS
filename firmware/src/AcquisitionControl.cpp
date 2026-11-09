@@ -54,6 +54,8 @@ static bool cleanupRequested=false;
 static uint8_t cursor;
 static bool physicalFenceVerified=false;
 static uint32_t nextFenceInspection=0;
+static FenceDiagnostics fenceSnapshot;
+static uint32_t nextFenceSnapshot=0, fenceInspections=0, fenceObservations=0;
 static DataConsumer dataConsumer=nullptr;
 static uint8_t dataMask=0,dataCursor=0,serviceCursor=0;
 static uint32_t nextHealthObservation=0;
@@ -68,6 +70,33 @@ struct Lock { Lock() {} ~Lock() {} };
 static bool isOwner() { return servicing; }
 #endif
 static bool due(uint32_t now,uint32_t deadline) { return static_cast<int32_t>(now-deadline)>=0; }
+static void publishFenceDiagnostics(uint32_t now) {
+  if(!due(now,nextFenceSnapshot)) return;
+  nextFenceSnapshot=now+100;
+  FenceDiagnostics snapshot;
+  snapshot.observedMs=now;snapshot.inspections=fenceInspections;snapshot.observations=fenceObservations;
+  snapshot.modeFlags=CanMasterManager::diagnostics().measurement.flags;
+  snapshot.verified=physicalFenceVerified;snapshot.recovering=transport.recovering;snapshot.failed=transport.failed;
+  snapshot.allFenced=true;
+  for(uint8_t n=0;n<4;++n) {
+    const auto& p=peers[n];
+    if(p.recording) {snapshot.recordingMask|=1u<<n;snapshot.allFenced &= p.fenceConfirmed;}
+    if(p.fenceConfirmed) snapshot.confirmedMask|=1u<<n;
+    if(p.ordinary.pending) snapshot.ordinaryMask|=1u<<n;
+    if(p.protectedLane.pending) snapshot.protectedMask|=1u<<n;
+    if(p.pendingMutation) snapshot.mutationMask|=1u<<n;
+    for(uint8_t lane=0;lane<3;++lane) {
+      if(lane==2 && n) continue;
+      const auto& in=transport.inboxes[lane==2?4:lane][n];
+      auto& out=snapshot.data[lane][n];out.object=in.state.object;out.ackObject=in.pendingAck.object;
+      out.flags=(in.state.complete?1u:0u)|(in.admitted?2u:0u)|(in.ackPending?4u:0u);
+    }
+  }
+  Lock lock;
+  for(uint8_t n=0;n<4;++n) if(mailboxes[n].pending) snapshot.mailboxMask|=1u<<n;
+  snapshot.allFenced &= snapshot.recordingMask && !snapshot.ordinaryMask && !snapshot.protectedMask && !snapshot.mutationMask && !snapshot.mailboxMask;
+  fenceSnapshot=snapshot;
+}
 static uint32_t allocate(uint32_t& value) {
   if (!value || value==UINT32_MAX) {value=0;return 0;}
   return value++;
@@ -354,11 +383,13 @@ bool begin(uint64_t recording,uint64_t context) {
   for(uint8_t n=0;n<4;++n) {peers[n]=Peer{};peers[n].mutation=d.authority.nodes[n].next_mutation;mailboxes[n]=Mailbox{};outcomes[n]=Outcome{};}
   memset(&transport,0,sizeof transport);recordingId=recording;contextId=context;cursor=0;
   nextHealthObservation=millis()+2000;healthCursor=0;physicalFenceVerified=false;nextFenceInspection=0;
+  fenceInspections=fenceObservations=0;nextFenceSnapshot=millis();
+  {Lock lock;fenceSnapshot={};}
   {Lock lock;owned=true;enterPending=true;exitPending=false;cleanupRequested=false;}
   return true;
 }
 size_t reservedBytes() {
- return sizeof(peers)+sizeof(mailboxes)+sizeof(outcomes)+sizeof(transport)+
+ return sizeof(peers)+sizeof(mailboxes)+sizeof(outcomes)+sizeof(transport)+sizeof(fenceSnapshot)+3*sizeof(uint32_t)+
         sizeof(recordingId)+sizeof(contextId)+sizeof(session)+sizeof(masterBoot)+sizeof(nextTransfer)+
         sizeof(nextRead)+sizeof(cursor)+sizeof(dataConsumer)+sizeof(dataMask)+sizeof(dataCursor)+sizeof(serviceCursor)+
         4096; // configured control task stack; watermark qualification remains deferred
@@ -375,6 +406,7 @@ bool enqueue(const Request& request) {
   if(!owned || (exitPending && request.action!=Action::Stop && request.action!=Action::Fence && request.action!=Action::Release && request.action!=Action::Snapshot) || (mailboxes[request.node].pending && request.action!=Action::Stop)) return false;
   mailboxes[request.node].request=request;mailboxes[request.node].pending=true;return true;
 }
+void fenceDiagnostics(FenceDiagnostics& out) {Lock lock;out=fenceSnapshot;}
 bool outcome(uint8_t n,Outcome& out) {if(n>3) return false;Lock lock;out=outcomes[n];return true;}
 bool requestExit() {Lock lock;if(!owned || exitPending) return false;exitPending=true;return true;}
 void service() {
@@ -404,10 +436,12 @@ void service() {
         peers[n].phase=Phase::Idle;peers[n].pendingMutation=0;
         {Lock lock;mailboxes[n].pending=false;outcomes[n].localFenceComplete=true;}
       }
+      nextFenceSnapshot=millis();publishFenceDiagnostics(millis());
       CanMasterManager::releaseMeasurementControl();
       {Lock lock;owned=false;exitPending=false;cleanupRequested=false;}
+      servicing=false;return;
     }
-    servicing=false;return;
+    publishFenceDiagnostics(millis());servicing=false;return;
   }
   if(enter && !CanMasterManager::enterMeasurementMode(recordingId,contextId)) {
     // Entry can fail after the master changed mode but before confirmation.
@@ -422,12 +456,13 @@ void service() {
     if(!live && CanMasterManager::exitMeasurementMode()) {
       uint32_t mutations[4];for(uint8_t n=0;n<4;++n) mutations[n]=peers[n].mutation;
       CanMasterManager::retainMeasurementAllocators(nextRead,mutations,nextTransfer);
+      nextFenceSnapshot=millis();publishFenceDiagnostics(millis());
       CanMasterManager::releaseMeasurementControl();
       {Lock lock;owned=false;exitPending=false;}
       servicing=false;return;
     }
   }
-  if(!CanMasterManager::measurementReady()) {servicing=false;return;}
+  if(!CanMasterManager::measurementReady()) {publishFenceDiagnostics(millis());servicing=false;return;}
   const uint32_t now=millis();
   for(uint8_t n=0;n<4;++n) {
     auto& p=peers[n];Request intent;bool have=false;
@@ -491,11 +526,14 @@ void service() {
   }
   if(anyRecording && allFenced && !physicalFenceVerified && due(now,nextFenceInspection)) {
     nextFenceInspection=now+20;
-    if(CanMasterManager::inspectMeasurementMode() && CanMasterManager::measurementReady() &&
+    if(fenceInspections!=UINT32_MAX) ++fenceInspections;
+    const bool observed=CanMasterManager::inspectMeasurementMode();
+    if(observed && fenceObservations!=UINT32_MAX) ++fenceObservations;
+    if(observed && CanMasterManager::measurementReady() &&
        (CanMasterManager::diagnostics().measurement.flags&BODAQS_MODE_FLAG_FENCED)) {
       // Fully bound fresh status follows adapter FIFO/DMA retirement. Cancel
       // local data state administratively, without a RAM-accepted ACK.
-      physicalFenceVerified=true;
+      physicalFenceVerified=true;nextFenceSnapshot=now;
       for(uint8_t node=0;node<4;++node) for(uint8_t cls:{1,2,5}) {
         if(cls==5 && node) continue;
         auto& data=transport.inboxes[cls-1][node];
@@ -575,6 +613,7 @@ void service() {
     }
     Lock lock;outcomes[node].localFenceComplete=retired;
   }
+  publishFenceDiagnostics(millis());
   servicing=false;
 }
 } // namespace AcquisitionControl

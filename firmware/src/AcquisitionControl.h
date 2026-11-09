@@ -27,6 +27,20 @@ struct Outcome {
   bool terminal = false; // STOP intent also forbids rejoining without discarding a valid tail.
   uint8_t snapshot[128] = {};
 };
+// Observational only. Published by the transport owner every100ms and at fence/exit transitions;
+// consumers copy under the existing outcome lock, never inspect live inboxes.
+struct FenceDiagnostics {
+  struct Retained {
+    uint32_t object=0, ackObject=0;
+    uint8_t flags=0; // bit0 complete, bit1 admitted, bit2 ACK pending
+  } data[3][4]; // sample, evidence, shared (shared uses node0 only)
+  uint32_t observedMs=0, inspections=0, observations=0;
+  uint16_t modeFlags=0;
+  uint8_t recordingMask=0, confirmedMask=0;
+  uint8_t ordinaryMask=0, protectedMask=0, mutationMask=0, mailboxMask=0;
+  bool allFenced=false, verified=false, recovering=false, failed=false;
+};
+void fenceDiagnostics(FenceDiagnostics&);
 // Explicit main-task handoff, after the configuration handoff has drained.
 // Entry/exit run in the owner task; failure retains ownership for inspection.
 bool begin(uint64_t recording, uint64_t context);

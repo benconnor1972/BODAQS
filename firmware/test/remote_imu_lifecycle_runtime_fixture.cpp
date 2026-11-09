@@ -232,6 +232,12 @@ int main(int argc,char** argv) {
     AcquisitionControl::Outcome pendingFence;AcquisitionControl::outcome(0,pendingFence);
     assert(!pendingFence.localFenceComplete && AcquisitionControl::active());
     assert(master.acquisition_retirement_pending && !master.measurement.fenced);
+    AcquisitionControl::FenceDiagnostics diagnostic;
+    AcquisitionControl::fenceDiagnostics(diagnostic);
+    assert(diagnostic.confirmedMask==1 && !diagnostic.verified);
+    assert(diagnostic.inspections && diagnostic.observations);
+    assert(!(diagnostic.modeFlags&2));
+    assert(diagnostic.data[0][0].object && !(diagnostic.data[0][0].flags&2));
     bodaqs_master_service_measurement_fence(&master,true,true);
     assert(master.measurement.fenced && master.measurement.mode.phase==2 && !master.master_evidence.complete);
     uint8_t timing[24]={};timing[0]=1;timing[2]=1;timing[4]=1;timing[8]=1;
@@ -246,6 +252,9 @@ int main(int argc,char** argv) {
       assert(BdqV2Format::getU16(row+40)==0x1234);
     }
     assert(count==2048);
+    AcquisitionControl::fenceDiagnostics(diagnostic);
+    assert(diagnostic.verified && (diagnostic.modeFlags&2));
+    assert(!diagnostic.data[0][0].object);
     assert(!RemoteImuRecording::failed());
     AcquisitionControl::Outcome outcome;AcquisitionControl::outcome(0,outcome);
     assert(outcome.tailDiscarded && outcome.sampleTailDiscarded);
