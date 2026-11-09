@@ -64,6 +64,8 @@ def main():
         subprocess.run([str(exe), "entry-offline"], check=True)
         subprocess.run([str(exe), "lost-stop-result"], check=True)
         subprocess.run([str(exe), "uncertain-stop"], check=True)
+        for scenario in ("lost-exit-request", "lost-exit-stage", "lost-exit-confirm", "expired-exit-stage"):
+            subprocess.run([str(exe), scenario], check=True)
         if args.smoke and args.v2:
             subprocess.run([str(exe), "tail-pressure"], check=True)
             subprocess.run([str(exe), "tail-pressure-deferred-status"], check=True)

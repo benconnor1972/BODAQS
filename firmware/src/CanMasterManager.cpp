@@ -47,6 +47,11 @@ struct ModeInspection {
   uint64_t boot=0,context=0;
   bool ready=false;
 } s_modeInspection;
+struct ExitRecovery {
+  BodaqsMeasurementMode binding={};
+  uint32_t sequence=0;
+  bool pending=false;
+} s_exitRecovery;
 uint32_t s_nextProbeMs = 0;
 bool s_started = false;
 bool s_probeRequested = false;
@@ -1232,6 +1237,8 @@ static bool transitionMode_(BodaqsMeasurementMode requested, bool exitMode) {
   const uint32_t started=millis();
   if(!s_nextSequence || s_nextSequence==UINT32_MAX) return false;
   const uint32_t sequence=nextSequence_();
+  if(exitMode && s_exitRecovery.pending && bodaqs_measurement_binding(&s_exitRecovery.binding,&requested))
+    s_exitRecovery.sequence=sequence;
   CanMasterProtocol::Frame stage, staged;
   stage.type=static_cast<CanMasterProtocol::MessageType>(exitMode?9:8);
   stage.sequence=sequence; stage.payloadLength=64; requested.phase=exitMode?3:0;
@@ -1265,7 +1272,7 @@ static bool transitionMode_(BodaqsMeasurementMode requested, bool exitMode) {
 }
 
 bool enterMeasurementMode(uint64_t recording, uint64_t context) {
-  if (!measurementAccess_()) return false;
+  if (!measurementAccess_() || s_exitRecovery.pending) return false;
   if(!recording || !context || !present() || !s_diagnostics.controlInfoValid ||
      !s_diagnostics.authority.session || s_diagnostics.measurementUnavailable ||
      s_diagnostics.measurement.phase!=0 ||
@@ -1281,14 +1288,50 @@ bool enterMeasurementMode(uint64_t recording, uint64_t context) {
 
 bool exitMeasurementMode() {
   if (!measurementAccess_()) return false;
+  if(s_exitRecovery.pending) {
+    // A lost stage/confirmation reply leaves the result uncertain, not a new
+    // active recording. Observe the original binding before resuming its close.
+    if(!inspectMeasurementMode()) return false;
+    const auto observed=s_diagnostics.measurement;
+    const auto expected=s_exitRecovery.binding;
+    if(!bodaqs_measurement_binding(&observed,&expected) ||
+       !(observed.flags&BODAQS_MODE_FLAG_FENCED) || (observed.flags&BODAQS_MODE_FLAG_CLEANUP)) return false;
+    if(observed.phase==0 && !observed.reason) {
+      s_diagnostics.measurementConfirmed=false;s_diagnostics.measurementUnavailable=false;
+      s_exitRecovery={};return true;
+    }
+    if(observed.phase==3 && !observed.reason) {
+      // Retry only the confirmation of this exact staged identity. The master
+      // retains its original reservation deadline; this grants no acquisition.
+      BodaqsMeasurementSlot confirm={},response={};
+      confirm.kind=9;confirm.node=255;confirm.context=expected.context;confirm.object=s_exitRecovery.sequence;
+      bodaqs_measurement_confirm_body(&expected,confirm.body);
+      for(uint8_t attempt=0;attempt<4;++attempt) {
+        if(exchangeMeasurementSlot(confirm,response) &&
+           modeObservation_(response,s_exitRecovery.sequence,expected.context,&expected) &&
+           s_diagnostics.measurement.phase==0 && !s_diagnostics.measurement.reason) {
+          s_diagnostics.measurementConfirmed=false;s_diagnostics.measurementUnavailable=false;
+          s_exitRecovery={};return true;
+        }
+      }
+      return false;
+    }
+    // An unreceived stage is still active; a timed-out reservation is failed.
+    // Only fresh bound, quiescent/fenced evidence allows a new administrative
+    // close reservation. STOP and acquisition authority remain terminal.
+    if(!((observed.phase==2 && !observed.reason) || (observed.phase==4 && observed.reason==12))) return false;
+    if(transitionMode_(expected,true)) {s_exitRecovery={};return true;}
+    return false;
+  }
   if(!s_diagnostics.measurementConfirmed) return false;
-  // Node RELEASE can precede the master's next physical CS retirement. Remain
-  // in the trustworthy bound context until a fresh status proves both gates;
-  // staging a known-premature exit would otherwise destroy local confirmation.
+  // Node RELEASE can precede physical retirement; retain the confirmed active
+  // context until a fresh observation proves both gates before staging exit.
   if(!inspectMeasurementMode() || !s_diagnostics.measurementConfirmed ||
      s_diagnostics.measurement.phase!=2 ||
      !(s_diagnostics.measurement.flags&2u) || (s_diagnostics.measurement.flags&4u)) return false;
-  return transitionMode_(s_diagnostics.measurement,true);
+  s_exitRecovery.binding=s_diagnostics.measurement;s_exitRecovery.pending=true;
+  if(transitionMode_(s_exitRecovery.binding,true)) {s_exitRecovery={};return true;}
+  return false;
 }
 
 bool measurementReady() {
@@ -1409,7 +1452,7 @@ void begin(const board::BoardProfile& profile, const LoggerConfig& cfg) {
   s_board = &profile;
   s_profile = profile.can_fd_master;
   s_diagnostics = Diagnostics{};
-  s_modeInspection={};
+  s_modeInspection={};s_exitRecovery={};
   s_restartCleanupNeeded=false;
   s_diagnostics.mode = cfg.canMasterMode;
   s_diagnostics.profileSupported = s_profile.supported;

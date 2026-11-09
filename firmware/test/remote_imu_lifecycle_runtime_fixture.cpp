@@ -210,6 +210,50 @@ int main(int argc,char** argv) {
   RemoteImuRecording::start();recordingSteps(2000);
   assert(RemoteImuRecording::recording());
   assert(!RemoteImuRecording::failed());
+  if(argc>1 && (!std::strcmp(argv[1],"lost-exit-request") || !std::strcmp(argv[1],"lost-exit-stage") || !std::strcmp(argv[1],"lost-exit-confirm") || !std::strcmp(argv[1],"expired-exit-stage"))) {
+    loseExitStageRequest=!std::strcmp(argv[1],"lost-exit-request");
+    const bool expired=!std::strcmp(argv[1],"expired-exit-stage");
+    loseExitStageReply=expired || !std::strcmp(argv[1],"lost-exit-stage");
+    loseExitConfirmRequest=expired;
+    loseExitConfirmReply=!std::strcmp(argv[1],"lost-exit-confirm");
+    bool uncertain=false,failedReservation=false;uint32_t uncertainAt=0,firstStage=0;RemoteImuRecording::stop();
+    for(unsigned i=0;i<30000 && !RemoteImuRecording::stopped();++i) {
+      recordingSteps(1);
+      const auto& mode=CanMasterManager::diagnostics();
+      if(mode.measurementUnavailable && mode.measurement.phase==3) {
+        uncertain=true;if(!uncertainAt) {uncertainAt=clockMs;firstStage=master.measurement.sequence;}
+      }
+      failedReservation |= master.measurement.mode.phase==4;
+      if(uncertain && (!expired || uint32_t(clockMs-uncertainAt)>=1300))
+        loseExitStageRequest=loseExitStageReply=loseExitConfirmReply=loseExitConfirmRequest=false;
+    }
+    if(expired) assert(failedReservation || expiredExitReservations);
+    assert(uncertain && (lostExitStages || lostExitReplies || lostExitConfirms));
+    if(!RemoteImuRecording::stopped()) {
+      AcquisitionControl::Outcome o;AcquisitionControl::outcome(0,o);
+      std::fprintf(stderr,"exit stall: local_phase=%u unavailable=%d master_phase=%u release_result=%u local_fence=%d\n",
+        CanMasterManager::diagnostics().measurement.phase,CanMasterManager::diagnostics().measurementUnavailable,
+        master.measurement.mode.phase,unsigned(o.result),o.localFenceComplete);
+    }
+    assert(RemoteImuRecording::stopped() && !AcquisitionControl::active());
+    assert(!master.measurement.mode.phase);
+    if(!std::strcmp(argv[1],"lost-exit-stage") || !std::strcmp(argv[1],"lost-exit-confirm"))
+      assert(master.measurement.sequence==firstStage);
+    if(expired) assert(master.measurement.sequence>firstStage);
+    assert(!acquisitions[0].lease_valid && !acquisitions[0].recording);
+    const uint64_t oldContext=master.measurement.mode.context,oldRecording=master.measurement.mode.recording;
+    simulatedStorage.clear();RemoteImuRecording::release();CanMasterManager::endRecordingHandoff();
+    advance(12000);CanMasterManager::beginRecordingHandoff();advance(4000);
+    assert(RemoteImuRecording::configure(config) && RemoteImuRecording::resourcesReady());
+    recordingSteps(8000);assert(RemoteImuRecording::prepared() && !RemoteImuRecording::failed());
+    RemoteImuRecording::start();recordingSteps(1000);
+    assert(RemoteImuRecording::recording() && !RemoteImuRecording::failed());
+    assert(master.measurement.mode.context!=oldContext && master.measurement.mode.recording!=oldRecording);
+    RemoteImuRecording::stop();
+    for(unsigned i=0;i<20000 && !RemoteImuRecording::stopped();++i) recordingSteps(1);
+    assert(RemoteImuRecording::stopped() && !AcquisitionControl::active());
+    puts("uncertain exit resumes after bounded loss and permits a fresh explicit recording: PASS");return 0;
+  }
   if(argc>1 && (!std::strcmp(argv[1],"tail-pressure") || !std::strcmp(argv[1],"tail-pressure-deferred-status"))) {
     deferFenceStatus=!std::strcmp(argv[1],"tail-pressure-deferred-status");
     assert(ImuAdmission::singleNodeSmokeBuild() && BODAQS_MEASUREMENT_VERSION==2);

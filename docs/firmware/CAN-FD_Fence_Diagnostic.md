@@ -70,3 +70,32 @@ consumption. Fresh boundary review independently ran these tests and found no
 remaining findings. The physical DMA/FIFO proof mechanism is unchanged. This
 software fix matches the observed failure, but still needs the operator to
 confirm finalization on the hardware. Sustained sample loss remains separate.
+
+## Uncertain measurement-exit recovery
+
+The r2 hardware diagnostic progressed through the repaired fence step:verified1,
+localFence1, nodeReleaseSucceeded and all retained inboxes zero. It then stayed
+at logger Exit phase11 with local mode3/unavailable1. Normal exit previously
+cleared measurementConfirmed before staging, but every subsequent exit call
+refused an unconfirmed mode. A lost request/stage reply/confirmation reply could
+therefore permanently strand the administrative close.
+
+Actual production-owner/master regressions reproduce the lock after dropping
+an exit-stage request, then cover lost stage replies, lost final confirmations
+and an expired reservation. Recovery now retains the original full binding and
+stage sequence. A fresh matching status must prove fenced and quiescent before
+progress. An already-closed matching context completes locally; a pending stage
+retries its original confirmation without extending its deadline; an unreceived
+stage or reason12 expiry permits a fresh administrative-close reservation.
+No acquisition authority is granted. Manager initialization clears local recovery;
+a new measurement entry is refused while exit recovery is pending.
+
+Tests prove unchanged sequence for pending-stage/confirmation retry, a newer
+sequence after expiry, no wrap/restage/entry at terminal allocator exhaustion,
+rejection of changed boot/session/record/context or missing fence/quiescence,
+and rejection of entry-pending or a non-expiry failure. Each loss scenario then
+performs another explicit recording with a fresh recording/context and successful
+normal cleanup. The reviewer independently reran smoke/v2 lifecycle and v2 proof
+suites and accepted the ownership/finite-identity checkpoint with no remaining
+findings. Full firmware host and target results are in the new r3 fix bundle.
+Hardware finalization and sustained delivery still require operator evidence.

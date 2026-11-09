@@ -37,8 +37,49 @@ static void asynchronousInspectionProofs() {
   deferFenceStatus=false;haveDeferredFenceStatus=false;
   puts("asynchronous mode proofs preserve nonce, binding, freshness and one-time consumption: PASS");
 }
+static void uncertainExitBindingGates() {
+  for(unsigned variant=0;variant<8;++variant) {
+    reset();fixedMeasurementClock=false;fastMeasurementClock=true;
+    assert(CanMasterManager::enterMeasurementMode(123,456));
+    loseExitStageRequest=true;
+    assert(!CanMasterManager::exitMeasurementMode());
+    assert(CanMasterManager::diagnostics().measurement.phase==3);
+    loseExitStageRequest=false;
+    const uint32_t sequence=master.measurement.sequence;
+    if(variant==0) ++master.control.master_boot_id;
+    if(variant==1) ++master.measurement.mode.session;
+    if(variant==2) ++master.measurement.mode.recording;
+    if(variant==3) ++master.measurement.mode.context;
+    if(variant==4) master.measurement.fenced=false;
+    if(variant==5) master.measurement.quiescent=false;
+    if(variant==6) master.measurement.mode.phase=1;
+    if(variant==7) {master.measurement.mode.phase=4;master.measurement.mode.reason=13;}
+    const unsigned expectedPhase=variant==6?1:variant==7?4:2;
+    for(unsigned i=0;i<10;++i) {
+      assert(!CanMasterManager::exitMeasurementMode());
+      assert(!CanMasterManager::enterMeasurementMode(321,654));
+    }
+    assert(master.measurement.mode.phase==expectedPhase && master.measurement.sequence==sequence);
+  }
+  reset();fixedMeasurementClock=false;fastMeasurementClock=true;
+  assert(CanMasterManager::enterMeasurementMode(123,456));
+  loseExitStageRequest=true;assert(!CanMasterManager::exitMeasurementMode());loseExitStageRequest=false;
+  const uint32_t savedAllocator=s_nextSequence,oldStage=master.measurement.sequence;
+  s_nextSequence=UINT32_MAX-1;
+  assert(!CanMasterManager::exitMeasurementMode());
+  assert(s_nextSequence==UINT32_MAX);
+  for(unsigned i=0;i<4;++i) {
+    assert(!CanMasterManager::exitMeasurementMode());
+    assert(!CanMasterManager::enterMeasurementMode(321,654));
+    assert(s_nextSequence==UINT32_MAX && master.measurement.sequence==oldStage);
+    assert(CanMasterManager::diagnostics().measurementUnavailable);
+  }
+  s_nextSequence=savedAllocator; // Test-only exhausted allocator injection ends with this fixture reset.
+  puts("uncertain exit refuses changed binding or absent physical fence/quiescence: PASS");
+}
 int main() {
   asynchronousInspectionProofs();
+  uncertainExitBindingGates();
   reset();fixedMeasurementClock=true;
   assert(CanMasterManager::enterMeasurementMode(123,456));
   master.acquisition_record[0]=123;master.acquisition_boot[0]=node.view.boot_id;
