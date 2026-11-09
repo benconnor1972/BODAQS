@@ -18,7 +18,7 @@ def main():
     hooks = '''
 #include "bodaqs_master_profile.h"
 static unsigned profileRecords, ackFetchRecords, emptyRecords, dataRecords;
-static uint32_t profileClock=0xfffffff0u;
+static uint32_t profileClock=0xffffffd0u;
 extern "C" uint32_t bodaqs_master_profile_clock(void) {profileClock+=17;return profileClock;}
 extern "C" void bodaqs_master_profile_record(uint32_t decode,uint32_t dispatch,uint32_t encode,
  uint8_t request,uint8_t reply) {
