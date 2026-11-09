@@ -277,9 +277,12 @@ int main(int argc,char** argv) {
   assert(acquisitions[0].terminal && acquisitions[0].stopped && !acquisitions[0].lease_valid);
   assert(!RemoteImuRecording::failed());
   assert(!RemoteImuRecording::tailDrained());
+  // Keep control/transport service running while testing the normal tail.
+  // Jumping wall time with an in-flight STOP result fabricates a transport
+  // timeout unrelated to the coordinator's five-second tail deadline.
+  while(int32_t(clockMs-(stoppedAt+4999))<0) recordingSteps(1);
   // No storage calls participate in this deadline. A repeated STOP cannot
   // restart the five-second normal tail interval.
-  clockMs=stoppedAt+4999;
   RemoteImuRecording::stop();RemoteImuRecording::service();
   assert(!RemoteImuRecording::tailDrained());
   clockMs=stoppedAt+5000;RemoteImuRecording::service();

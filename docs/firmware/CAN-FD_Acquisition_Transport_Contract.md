@@ -9,7 +9,20 @@ accepted 192 bytes; Q143 extends the companion schema to 224 bytes. Q144-Q146
 complete cleanup transport, protected classes and emission budgets. The user
 confirmed shared understanding at Q147. No implementation or qualification is implied.
 Existing Q1-Q70 [control allocations](CAN-FD_Node_Control_Contract.md) remain
-binding. Preserve the initial numerical profile and deferred bench tests.
+binding. Preserve historical numerical profiles and deferred bench tests.
+
+9 November authorization update (#180): the coordinated node/logger acquisition
+lease is now 5000ms, with normal fresh renewal attempts once per 1000ms.
+Challenge validity stays 300ms. The node derives its deadlines from challenge
+issuance; the logger confirms a conservative deadline of local request dispatch
+plus 5000ms, never reply arrival plus 5000ms. Lost challenges/results and explicitly
+retryable busy/aged/timeout outcomes allow another bounded fresh attempt while
+the previous confirmed lease remains valid. Neither sending a request nor an
+unmatched/stale response extends local authority. STOP, expiry, identity faults
+and terminal node responses remain terminal, with no automatic rejoin. Initial
+PREPARE still requires a successful fresh proof. This update does not establish
+physical STOP/expiry latency or authorize a workload. The longer fallback tail
+must be reconciled separately in the first-recording lifecycle implementation.
 
 ## 1. Accepted architecture and boundaries
 

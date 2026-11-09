@@ -9,12 +9,12 @@ def fixture_source(root):
     """Real control/master/coordinator composition shared with acceptance."""
     fixture = (root / "test/measurement_runtime_fixture.cpp").read_text()
     fixture = fixture[:fixture.index("int main() {")]
-    fixture = fixture.replace("namespace SharedSpiBus {", "static bool dispatchControl(uint8_t,const BodaqsControlRecord&,BodaqsControlRecord&);\nstatic bool holdControl(const BodaqsControlRecord&);\nnamespace SharedSpiBus {")
-    fixture = fixture.replace("assert(bodaqs_control_node_process(&node.view,&request,&reply));", "if(holdControl(request)) return true;\n  assert(dispatchControl(address,request,reply));")
+    fixture = fixture.replace("namespace SharedSpiBus {", "static bool dispatchControl(uint8_t,const BodaqsControlRecord&,BodaqsControlRecord&);\nstatic bool holdControl(uint8_t,const BodaqsControlRecord&);\nnamespace SharedSpiBus {")
+    fixture = fixture.replace("assert(bodaqs_control_node_process(&node.view,&request,&reply));", "if(holdControl(address,request)) return true;\n  assert(dispatchControl(address,request,reply));")
     acquisition = (root / "test/acquisition_control_runtime_fixture.cpp").read_text()
     fixture = fixture.replace('static void advance(unsigned ms)', 'static void tickFixtureApplications();\nstatic void advance(unsigned ms)')
     fixture = fixture.replace('bodaqs_control_apply_tick(&node.apply,clockMs);','tickFixtureApplications();')
-    fixture += acquisition[:acquisition.index("int main() {")]
+    fixture += acquisition[:acquisition.index("int main(")]
     fixture += '\nstatic void tickFixtureApplications() {for(unsigned n=0;n<4;++n) {peerFixture(n).now=clockMs; bodaqs_control_apply_tick(&peerFixture(n).apply,clockMs);} }\n' 
     manager = (root / "src/CanMasterManager.cpp").read_text()
     headers = ("Arduino.h", "SPI.h", "esp_system.h", "DebugLog.h", "LoggingManager.h", "SensorManager.h", "SharedSpiBus.h")

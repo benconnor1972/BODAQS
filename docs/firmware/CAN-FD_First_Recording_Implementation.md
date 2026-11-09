@@ -54,3 +54,28 @@ closure authorization.
 S2 #180 authorization; S3 #178 compact recording; S4 #179 real ACK/fetch;
 S5 #182 raw observations; S6 #185 STOP/tail isolation; S7 #189 reviewed candidate.
 S8 #190 is the subsequent manual physical capture. No physical results are claimed.
+
+## S2 / #180: authorization implementation
+
+The separately committed numeric change uses shared 5000ms lease, 1000ms renewal
+and unchanged 300ms challenge constants in the real node issuer/expiry and logger
+validator/scheduler. Focused node and actual logger-owner regressions pass.
+Retryable renewal failures keep the previous confirmed deadline; retries are
+bounded to one fresh attempt per second, without catch-up bursts. Initial proof,
+terminal errors and identity/integrity failures retain terminal behavior.
+
+Actual-owner tests cover lost challenge, proof accepted remotely with lost
+result, repeated failed renewals through confirmed expiry, STOP during retry,
+late proof after STOP, and millisecond/native-tick rollover. The disabled bind
+loss injector needs its deadline initialized in the past at rollover; otherwise
+it injects unintended loss. Node protocol tests preserve the separate freshness
+window and readiness timeout. Both ordinary and restricted lifecycle fixtures
+pass, including four-peer host regressions (not physical qualification).
+
+The changed cadence exposed a real predecessor-result starvation during STOP
+over an optional snapshot. A successor ordinary request could occupy every TX
+turn while its pinned predecessor still lacked a response fragment. Transport
+now fetches partial control predecessors before sending that lane's successor;
+other lanes and terminal STOP remain serviceable. Existing end-to-end production
+lifecycle regression reproduces the failure before this correction. Deadlines
+are unchanged. Fresh lifetime/transport review is required before S4 proceeds.

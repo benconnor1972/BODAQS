@@ -112,6 +112,16 @@ static void exclude(uint8_t n,uint8_t reason) {
   {Lock lock;outcomes[n].excluded=true;}
   fail(n,Result::Unavailable,reason);
 }
+static bool retryRenewal(uint8_t n) {
+  auto& p=peers[n];const auto& q=p.protectedLane.request.record;
+  if(!p.leased || p.excluded || due(millis(),p.leaseDeadline) ||
+     !(q.opcode==0x27 || (q.opcode==0x26 && q.data[12]==1))) return false;
+  p.protectedLane.pending=false;
+  p.nextRenewal=millis()+BODAQS_ACQ_RENEW_MS;
+  // Only a matched confirmation changes leaseDeadline. A node may have
+  // accepted a proof whose reply was lost; the next fresh attempt is safe.
+  return true;
+}
 static void challenge(uint8_t n,bool initial) {
   auto& p=peers[n];
   if(p.renewal==UINT32_MAX) {exclude(n,22);return;}
@@ -121,7 +131,11 @@ static void challenge(uint8_t n,bool initial) {
   bodaqs_control_put_u64(q.record.data,p.recording);
   bodaqs_control_put_u32(q.record.data+8,++p.renewal);
   q.record.data[12]=initial?0:1;q.record.data[13]=1;
-  if(!send(n,p.protectedLane,q,true)) exclude(n,26);
+  if(!send(n,p.protectedLane,q,true)) {
+    if(!initial && p.leased && !due(millis(),p.leaseDeadline))
+      p.nextRenewal=millis()+BODAQS_ACQ_RENEW_MS;
+    else exclude(n,26);
+  }
 }
 static void beginRequest(uint8_t n,const Request& intent,bool observing=false) {
   auto& p=peers[n];p.intent=intent;p.began=millis();p.observing=observing;
@@ -183,6 +197,7 @@ static void accept(uint8_t n,bool protectedLane,const BodaqsControlWrapped& wrap
   const auto q=x.request;const auto& r=wrapped.record;x.pending=false;
   if(r.opcode==BODAQS_CONTROL_ERROR || (r.data_length==24 && r.data[0]==1 &&
       q.record.opcode!=0x26 && q.record.opcode!=0x27 && q.record.opcode!=0x28 && q.record.opcode!=7)) {
+    if(protectedLane && (r.data[1]==7 || r.data[1]==10 || r.data[1]==20 || r.data[1]==26) && retryRenewal(n)) return;
     if(p.recording && (r.data[1]==4 || r.data[1]==27 || r.data[1]==29 || protectedLane)) {
       exclude(n,r.data[1]);return;
     }
@@ -202,14 +217,18 @@ static void accept(uint8_t n,bool protectedLane,const BodaqsControlWrapped& wrap
       exclude(n,1);return;
     }
     // Node ticks are not logger ticks. Bound transit by local request age.
-    if(static_cast<uint32_t>(millis()-x.started)>=BODAQS_ACQ_RESPONSE_MS) {exclude(n,26);return;}
+    if(static_cast<uint32_t>(millis()-x.started)>=BODAQS_ACQ_RESPONSE_MS) {
+      if(!retryRenewal(n)) exclude(n,26);
+      return;
+    }
     p.proposedDeadline=x.started+BODAQS_ACQ_LEASE_MS;
     p.proposedWireDeadline=bodaqs_control_get_u32(r.data+16);
     auto proof=request(n,initial?0x22:0x27,initial?p.ordinary.request.record.operation:q.record.operation,initial?p.transfer:0);
     proof.record.data_length=24;bodaqs_control_put_u64(proof.record.data,p.recording);
     memcpy(proof.record.data+8,r.data,8);bodaqs_control_put_u32(proof.record.data+16,p.renewal);
     if(initial) p.phase=Phase::Commit;
-    if(!send(n,initial?p.ordinary:p.protectedLane,proof,!initial)) {p.leased=false;fail(n,Result::Uncertain,26);}
+    if(!send(n,initial?p.ordinary:p.protectedLane,proof,!initial) &&
+       (initial || !retryRenewal(n))) {p.leased=false;fail(n,Result::Uncertain,26);}
     return;
   }
   if(q.record.opcode==0x27) {
@@ -389,8 +408,8 @@ void service() {
       const uint32_t deadline=x==&p.protectedLane?BODAQS_ACQ_RESPONSE_MS:3500;
       // A request may have been queued after the service-level 'now' snapshot.
       if(x->pending && static_cast<uint32_t>(millis()-x->started)>=deadline) {
-        x->pending=false;if(x==&p.protectedLane) p.leased=false;
-        if(x==&p.protectedLane) {exclude(n,26);continue;}
+        x->pending=false;
+        if(x==&p.protectedLane) {if(!retryRenewal(n)) exclude(n,26);continue;}
         if(x==&p.ordinary && p.observing) {p.observing=false;p.phase=Phase::Idle;continue;}
         fail(n,Result::Uncertain,26);
         if(p.leased) {

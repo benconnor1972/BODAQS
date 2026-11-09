@@ -8,8 +8,17 @@ static uint8_t pendingCommand[4];
 static bool delayNodeZero=false;
 static bool holdCommit=false, commitHeld=false;
 static BodaqsControlRecord heldCommit;
-static bool holdControl(const BodaqsControlRecord& request) {
+static bool loseRenewalChallenges=false, loseRenewalResults=false;
+static unsigned lostRenewals=0;
+static BodaqsControlRecord heldRenewal;
+static bool holdControl(uint8_t address,const BodaqsControlRecord& request) {
+ if(address) return false;
  if(holdCommit && request.opcode==0x22) {heldCommit=request;commitHeld=true;return true;}
+ if(loseRenewalChallenges && request.opcode==0x26 && request.data[12]==1) {++lostRenewals;return true;}
+ if(loseRenewalResults && request.opcode==0x27) {
+  heldRenewal=request;BodaqsControlRecord ignored;
+  assert(dispatchControl(0,request,ignored));++lostRenewals;return true;
+ }
  return false;
 }
 static Fixture& peerFixture(uint8_t n) {return n?otherNodes[n-1]:node;}
@@ -43,7 +52,7 @@ static void controlSteps(unsigned duration) {
   AcquisitionControl::service();
  }
 }
-int main() {
+int main(int argc,char** argv) {
  fastMeasurementClock=true;
  reset();
  CanMasterManager::beginRecordingHandoff();
@@ -68,7 +77,9 @@ int main() {
  assert(!AcquisitionControl::active());
  assert(!CanMasterManager::measurementReady());
  // Real authority and acquisition dispatch, four independent hardware fixtures.
+ if(argc>1 && !std::strcmp(argv[1],"renewal-wrap")) clockMs=UINT32_MAX-5000U;
  reset();lifecycleEnabled=true;
+ dropBindReplyUntil=clockMs; // Disabled injection must also be past at wrap.
  BodaqsMasterDiscoveryRecord records[4]={};
  for(uint8_t n=0;n<4;++n) {
   auto& f=peerFixture(n);f.view.active_session=0;f.authority={};f.view.flags=0;
@@ -102,6 +113,45 @@ int main() {
   assert(AcquisitionControl::outcome(n,result));
   assert(result.result==AcquisitionControl::Result::Succeeded && result.leaseAcknowledged);
   assert(acquisitions[n].phase==2 && acquisitions[n].renewal_sequence>=2 && acquisitions[n].renewal_sequence<=3);
+ }
+ if(argc>1) {
+  if(!std::strcmp(argv[1],"renewal-wrap")) {
+   controlSteps(7000);
+   assert(AcquisitionControl::outcome(0,result) && !result.excluded && result.leaseAcknowledged);
+   assert(acquisitions[0].lease_valid && acquisitions[0].renewal_sequence>=8);
+   puts("confirmed leases survive millisecond and native tick wrap: PASS");return 0;
+  }
+  const bool resultLoss=!std::strcmp(argv[1],"lost-renewal-result");
+  const bool stopRetry=!std::strcmp(argv[1],"stop-renewal-retry");
+  const bool exhaustion=!std::strcmp(argv[1],"renewal-expiry");
+  const uint32_t oldRemoteDeadline=acquisitions[0].lease_deadline;
+  loseRenewalChallenges=!(resultLoss || stopRetry);loseRenewalResults=resultLoss || stopRetry;
+  controlSteps(exhaustion?6000:1600);
+  assert(lostRenewals);
+  assert(AcquisitionControl::outcome(0,result));
+  if(exhaustion) {
+   assert(result.excluded && !result.leaseAcknowledged && acquisitions[0].terminal);
+   loseRenewalChallenges=false;controlSteps(1600);
+   assert(AcquisitionControl::outcome(0,result) && result.excluded);
+   puts("unconfirmed retries cannot extend authority or rejoin: PASS");return 0;
+  }
+  assert(!result.excluded && result.leaseAcknowledged);
+  if(stopRetry) {
+   request.node=0;request.action=AcquisitionControl::Action::Stop;request.recording=123;
+   assert(AcquisitionControl::enqueue(request));controlSteps(500);
+   assert(acquisitions[0].terminal && !acquisitions[0].lease_valid);
+   BodaqsControlRecord stale;
+   assert(dispatchControl(0,heldRenewal,stale));assert(stale.data[0]==1 && stale.data[1]==30);
+   loseRenewalResults=false;controlSteps(1600);
+   assert(AcquisitionControl::outcome(0,result) && !result.leaseAcknowledged);
+   assert(!acquisitions[0].lease_valid);
+   puts("STOP overtakes a retry and late renewal cannot revive it: PASS");return 0;
+  }
+  if(resultLoss) assert(int32_t(acquisitions[0].lease_deadline-oldRemoteDeadline)>0);
+  loseRenewalChallenges=loseRenewalResults=false;controlSteps(1600);
+  assert(AcquisitionControl::outcome(0,result) && !result.excluded && result.leaseAcknowledged);
+  assert(int32_t(acquisitions[0].lease_deadline-oldRemoteDeadline)>0);
+  puts("bounded renewal retry recovers within confirmed authority: PASS");return 0;
  }
  // A pending ordinary START on one node does not suppress its own renewals or
  // other nodes' one-second lease attempts. STOP then supersedes that operation.

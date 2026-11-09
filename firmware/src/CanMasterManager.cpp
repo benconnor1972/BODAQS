@@ -818,6 +818,16 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
   }
   BodaqsMeasurementSlot request={},response={};MeasurementInbox* acked=nullptr;
   MeasurementOutbox* outgoing=nullptr;
+  bool partialControl=false;
+  for(int lane=1;lane>=0 && !partialControl;--lane) for(uint8_t n=0;n<4;++n) {
+    const auto& retained=transport.inboxes[lane+2][n].state;
+    if(retained.object && !retained.complete) {
+      // Fetch and retire the predecessor before transmitting a successor.
+      // The master cannot replace a pinned result, so fragment retries alone
+      // would starve the missing predecessor fragment and deadlock this lane.
+      cls=static_cast<uint8_t>(lane+3);node=n;partialControl=true;break;
+    }
+  }
   for(int lane=1;lane>=0;--lane) for(uint8_t i=0;i<4;++i) {
     uint8_t n=(transport.nextControlNode[lane]+i)%4;
     auto& candidate=transport.controls[lane][n];
@@ -831,7 +841,9 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
     // ACK and the master correctly refuses to replace its pinned result.
     const bool retireFirst=retained.admitted && retained.ackPending &&
         !(lane==1 && candidate.bytes[12]==0x25);
-    if(!outgoing && candidate.state.complete && !retireFirst) {
+    const bool fetchFirst=retained.state.object && !retained.state.complete &&
+        !(lane==1 && candidate.bytes[12]==0x25);
+    if(!outgoing && candidate.state.complete && !retireFirst && !fetchFirst) {
       outgoing=&candidate;
       // Reverse the two-fragment order on each retry round (0,1,1,0).
       // A fixed 0,1 pattern can starve one fragment forever if the master's
