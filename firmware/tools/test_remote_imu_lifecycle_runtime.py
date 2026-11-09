@@ -45,6 +45,13 @@ def main():
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     fixture = fixture_source(root)
+    if args.flow_diagnostics:
+        fixture=fixture.replace('#include "RemoteImuRecording.h"', '''
+static unsigned flowLogCalls=0;
+static void captureFlowLog(const char* tag,const char*,...) {if(!std::strcmp(tag,"FLOW")) ++flowLogCalls;}
+#undef LOGW_TAG
+#define LOGW_TAG(tag,...) captureFlowLog(tag,__VA_ARGS__)
+#include "RemoteImuRecording.h"''')
     fixture += (root / "test/remote_imu_lifecycle_runtime_fixture.cpp").read_text()
     protocol = root / "can-fd/common/protocol"
     sources = [*protocol.glob("bodaqs_control*.c"), protocol / "bodaqs_imu_disabled.c", protocol / "bodaqs_master_service.c", protocol / "bodaqs_master_protocol.c"]
@@ -61,6 +68,8 @@ def main():
             flags.append("-DBODAQS_IMU_FLOW_DIAGNOSTICS=1")
         subprocess.run([args.compiler, "-std=c++17", *flags, "-DBODAQS_QUEUE_ALLOCATION_TEST", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-I", str(root/"test/stubs"), "-I", str(root/"src"), "-I", str(protocol), "-I", str(root/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
+        if args.flow_diagnostics:
+            subprocess.run([str(exe), "flow-cancel-scope"], check=True)
         subprocess.run([str(exe), "start-clock-boundary"], check=True)
         subprocess.run([str(exe), "lost-control-ack"], check=True)
         subprocess.run([str(exe), "rx-overrun"], check=True)

@@ -104,6 +104,19 @@ int main(int argc,char** argv) {
   DynamicSpscQueueDetail::allocationsBeforeFailure=-1;
   assert(RemoteImuRecording::configure(config));
   assert(RemoteImuRecording::configured());
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+  if(argc>1 && !std::strcmp(argv[1],"flow-cancel-scope")) {
+    // Simulate a prior completed observation, then cancel this new allocation
+    // before resourcesReady begins a new acquisition-owned diagnostic scope.
+    ImuFlowDiagnostics::reset(9999,clockMs);ImuFlowDiagnostics::finish(clockMs,micros());
+    assert(!AcquisitionControl::active());
+    RemoteImuRecording::stop();assert(RemoteImuRecording::stopped());
+    flowLogCalls=0;RemoteImuRecording::release();
+    assert(flowLogCalls==0); // Never attribute prior-context FLOW to this cancellation.
+    assert(ImuFlowDiagnostics::finished.context==9999);
+    puts("allocated cancellation excludes prior-context FLOW snapshot: PASS");return 0;
+  }
+#endif
   if(ImuAdmission::singleNodeSmokeBuild()) {
     assert(RemoteImuRecording::admission().benchOnly);
     assert(!RemoteImuRecording::admission().qualified);

@@ -417,8 +417,9 @@ void release() {
  if(!stopped()) return;
 #if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
  // stopped() acquires inactive owner state before reading owner-written snapshots.
- if(selected && ImuFlowDiagnostics::haveFinished) {
-  if(ImuFlowDiagnostics::haveFirstLoss) logFlowSnapshot("first_loss",ImuFlowDiagnostics::firstLoss);
+ if(selected && ImuFlowDiagnostics::haveFinished && ImuFlowDiagnostics::finished.context==context) {
+  if(ImuFlowDiagnostics::haveFirstLoss && ImuFlowDiagnostics::firstLoss.context==context)
+    logFlowSnapshot("first_loss",ImuFlowDiagnostics::firstLoss);
   logFlowSnapshot("finished",ImuFlowDiagnostics::finished);
  }
 #endif

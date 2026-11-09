@@ -80,6 +80,9 @@ state; producer callback gate ownership is unchanged. Queue accessors read atomi
 indices; allocation/capacity changes remain outside acquisition ownership.
 Main-thread stream.finish does not mutate these owner-only counters. Reserved
 diagnostic storage is included in AcquisitionControl::reservedBytes.
+Printing also requires the snapshot's context to match the current allocation.
+A recording canceled before resourcesReady cannot print a previous recording's
+observations, even though no new diagnostic owner reset has occurred.
 
 Only concise bounded lines are emitted, respecting the existing256-byte log
 formatting buffer. The hooks add counters, sampled atomic reads and a few clock
