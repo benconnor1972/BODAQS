@@ -142,3 +142,9 @@ and capture/slot increments64 from the start observation. Full node capture,
 SPI and acquisition host suite (including recovery, wrap/fault, queue pressure,
 FIFO ordering and repeated recording turnovers) passes. These are deterministic
 host clock values, not measured physical timing or a fitted timing model.
+
+Fresh S5 reviewer found no source defect, but required STOP-specific boundary
+evidence. Added production adapter scenarios17..19 now demonstrate STOP during
+recovery retains the previous associated raw pair, sustained TX pressure skips
+the optional final snapshot with evidence-loss accounting, and an empty successor
+STOP emits no stale previous-recording snapshot. The full node suite passes.

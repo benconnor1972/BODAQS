@@ -33,6 +33,8 @@ static uint32_t next_tx_tick, tx_blocked_until;
 static bool seen_boundary, seen_model, seen_anchor, seen_snapshot;
 static unsigned snapshot_count;
 static uint8_t last_snapshot[64];
+static unsigned recovery_began;
+static uint32_t reported_evidence_loss;
 static unsigned recovery_events, raw_sync_events;
 static bool sync_scope_checks;
 static uint32_t sync_scope_start;
@@ -54,6 +56,8 @@ static bool sent(uint16_t id, const uint8_t *p, size_t n) {
         if(sync_scope_checks && p[1]==0x23 && (p[59]&32))
             assert(bodaqs_control_get_u32(p+48)>=sync_scope_start);
         if(p[1]==0x25 && p[14]==3 && p[15]==4) reported_loss+=bodaqs_control_get_u32(p+40);
+        if(p[1]==0x25 && p[14]==3 && p[15]==4) reported_evidence_loss+=bodaqs_control_get_u32(p+48);
+        if(p[1]==0x25 && p[14]==1) ++recovery_began;
         if (p[1] == 0x25 && p[14] == 5) {
             assert(p[13] > 1 && !(p[54] & 0x1c)); /* unknown loss counts */
             assert(bodaqs_control_get_u32(p + 20) == 1); /* sensor clock retained */
@@ -304,6 +308,18 @@ static void completed_recording_turnovers(unsigned recordings) {
             assert(done);
         }
 }
+static BodaqsAcquisitionEvent stop_observation(uint64_t recording) {
+    BodaqsAcquisitionEvent event={0};
+    bodaqs_node_acquisition_backend(0,BODAQS_ACQ_STOP,30,recording,sim_tick/1000,&event);
+    const uint32_t until=sim_tick+300000;
+    while(sim_tick<until) {
+        advance(sim_tick+100);bodaqs_node_imu_spi_irq();memset(&event,0,sizeof event);
+        bodaqs_node_acquisition_backend(0,BODAQS_ACQ_POLL,30,recording,sim_tick/1000,&event);
+        assert(event.kind!=BODAQS_ACQ_FAILED);
+        if(event.kind==BODAQS_ACQ_STOPPED) return event;
+    }
+    assert(false);return event;
+}
 int main(int argc, char **argv) {
     unsigned selected_fault = argc > 1 ? (unsigned)strtoul(argv[1], 0, 10) : 1;
     sync_scope_checks=selected_fault==16;
@@ -378,6 +394,54 @@ int main(int argc, char **argv) {
     if (selected_fault == 13) {
         completed_recording_turnovers(260);
         return 0;
+    }
+    if(selected_fault==17) {
+        fault_mode=6;fifo_drained=false;
+        const uint32_t until=sim_tick+100000;
+        while(sim_tick<until && !recovery_began) {
+            advance(sim_tick+100);bodaqs_node_imu_spi_irq();memset(&e,0,sizeof e);
+            bodaqs_node_acquisition_backend(0,BODAQS_ACQ_POLL,2,1,sim_tick/1000,&e);
+            assert(e.kind!=BODAQS_ACQ_FAILED);
+        }
+        assert(recovery_began && !recovery_events);
+        const unsigned before=snapshot_count;
+        e=stop_observation(1);
+        assert(snapshot_count==before+1 && last_snapshot[13]==e.boundary[8]);
+        assert(bodaqs_control_get_u32(last_snapshot+20)==bodaqs_control_get_u32(e.boundary));
+        assert(bodaqs_control_get_u32(last_snapshot+36)==first_tick+300*bodaqs_control_get_u32(e.boundary));
+        assert(bodaqs_control_get_u32(last_snapshot+32)==0xfffffff0U+bodaqs_control_get_u32(last_snapshot+36)/25);
+        puts("STOP during recovery retains the last associated raw pair: PASS");return 0;
+    }
+    if(selected_fault==18) {
+        const unsigned before=snapshot_count;
+        tx_blocked_until=sim_tick+1000000;
+        const uint32_t until=sim_tick+120000;
+        while(sim_tick<until) {
+            advance(sim_tick+100);bodaqs_node_imu_spi_irq();memset(&e,0,sizeof e);
+            bodaqs_node_acquisition_backend(0,BODAQS_ACQ_POLL,2,1,sim_tick/1000,&e);
+            assert(e.kind!=BODAQS_ACQ_FAILED);
+        }
+        tx_blocked_until=0;
+        e=stop_observation(1);
+        assert(!e.known_empty && snapshot_count==before && reported_evidence_loss>0);
+        puts("STOP snapshot pressure is explicitly accounted without stale pairing: PASS");return 0;
+    }
+    if(selected_fault==19) {
+        completed_recording_turnovers(1);
+        used=0;next_slot=sim_tick+300;
+        memset(&e,0,sizeof e);
+        bodaqs_node_acquisition_backend(0,BODAQS_ACQ_PREPARE,5,2,sim_tick/1000,&e);
+        bool warm_ready=false;const uint32_t until=sim_tick+200000;
+        while(sim_tick<until) {
+            advance(sim_tick+100);bodaqs_node_imu_spi_irq();memset(&e,0,sizeof e);
+            bodaqs_node_acquisition_backend(0,BODAQS_ACQ_POLL,5,2,sim_tick/1000,&e);
+            assert(e.kind!=BODAQS_ACQ_FAILED);
+            if(e.kind==BODAQS_ACQ_READY) {warm_ready=true;break;}
+        }
+        assert(warm_ready);const unsigned before=snapshot_count;
+        e=stop_observation(2);
+        assert(e.known_empty && snapshot_count==before);
+        puts("empty successor STOP emits no cached prior-recording observation: PASS");return 0;
     }
     if (selected_fault >= 6) {
         unsigned before_recovery = samples;
