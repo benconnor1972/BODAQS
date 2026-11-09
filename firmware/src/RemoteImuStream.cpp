@@ -200,6 +200,7 @@ void RemoteImuStream::release() {
   nextPacket_=sequenceFloor_=0;
   segment_=nextSequence_=stagedEvidence_=modelCount_=epoch_=anchorCount_=0;nextEvidence_=1;
   persistedEvidence_.store(0);haveSequence_=haveBoundary_=failed_=holding_=false;
+  terminalObserved_=false;terminalSequence_=0;terminalEpoch_=0;
 
   DynamicSpscQueueDetail::releaseBytes(provenance_);provenance_=nullptr;
   DynamicSpscQueueDetail::releaseBytes(models_);models_=nullptr;
@@ -320,9 +321,11 @@ RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t
     if(b[6]==2) {
       if(segment_==UINT32_MAX) {failed_=true;return Invalid;}
       ++segment_;epoch_=b[5];haveBoundary_=true;haveSequence_=false;modelCount_=0;
+      terminalObserved_=false;
       sequenceFloor_=u32(b+20);
     }
     if(!local && (!haveBoundary_ || b[5]!=epoch_)) return Invalid;
+    if(!local && b[6]==8 && (v&1)) {terminalObserved_=true;terminalSequence_=u32(b+20);terminalEpoch_=b[5];}
     if(v&1) {put(out+24,u32(b+20));valid|=1u<<4;}
     if(v&2) {put(out+160,u32(b+24));put(out+164,u32(b+28));valid|=1u<<19;}
     if(v&4) {put(out+148,u32(b+32));valid|=1u<<16;}
@@ -480,6 +483,10 @@ bool RemoteImuStream::flushLoss(uint32_t logger) {
 bool RemoteImuStream::finish(uint32_t logger) {
   if(!flushLoss(logger)) return false;
   return !losses_[0].source && !losses_[1].evidence;
+}
+bool RemoteImuStream::terminalBoundary(uint32_t& sequence,uint8_t& epoch) const {
+  if(!terminalObserved_) return false;
+  sequence=terminalSequence_;epoch=terminalEpoch_;return true;
 }
 RemoteImuStream::Acceptance RemoteImuStream::acceptSharedSync(uint32_t sequence,uint32_t tick,uint32_t epoch,uint32_t logger) {
   if(!epoch) return Invalid;

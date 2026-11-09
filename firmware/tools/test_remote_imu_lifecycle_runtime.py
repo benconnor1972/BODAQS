@@ -62,6 +62,10 @@ def main():
         subprocess.run([str(exe), "delayed-cleanup-status"], check=True)
         subprocess.run([str(exe), "entry-timeout"], check=True)
         subprocess.run([str(exe), "entry-offline"], check=True)
+        subprocess.run([str(exe), "lost-stop-result"], check=True)
+        subprocess.run([str(exe), "uncertain-stop"], check=True)
+        if args.smoke and args.v2:
+            subprocess.run([str(exe), "tail-pressure"], check=True)
         if args.smoke:
             for scenario in ("scope-two", "scope-other", "scope-adc"):
                 subprocess.run([str(exe), scenario], check=True)

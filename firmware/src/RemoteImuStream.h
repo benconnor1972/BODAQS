@@ -32,6 +32,8 @@ public:
   Acceptance acceptLocalLoss(const uint8_t body[56],uint32_t masterTick,uint64_t order,uint32_t loggerTick);
   Acceptance acceptManagementLoss(uint8_t cls,uint8_t reason,uint16_t stage,uint32_t counter,uint32_t loggerTick);
   bool finish(uint32_t loggerTick); // producer quiescent; flush the final coalesced losses
+  // Caller has closed ingress and acquired producer retirement.
+  bool terminalBoundary(uint32_t& sequence,uint8_t& epoch) const;
   BdqV2StreamSource sampleSource();
   BdqV2StreamSource evidenceSource();
   BdqV2StreamDescriptor descriptor(bool evidence);
@@ -65,6 +67,9 @@ private:
   uint8_t anchorCount_=0;
   uint8_t modelCount_=0,epoch_=0;
   bool haveSequence_=false,haveBoundary_=false;
+  bool terminalObserved_=false;
+  uint32_t terminalSequence_=0;
+  uint8_t terminalEpoch_=0;
   std::atomic<bool> failed_{false};
   Acceptance evidence(uint8_t type,const uint8_t* body,uint32_t,uint64_t,uint32_t,bool local=false,uint8_t receptionFlags=0);
   Acceptance pushShared(uint8_t out[224]);

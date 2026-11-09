@@ -27,6 +27,8 @@ enum class Phase : uint8_t {
 struct Peer {
   Request intent;
   Exchange ordinary, protectedLane;
+  BodaqsControlWrapped stopRequest={};
+  bool stopRequestValid=false;
   uint32_t mutation = 0, renewal = 0, nextRenewal = 0, began = 0;
   uint32_t pendingMutation = 0, nextPoll = 0, waitStarted = 0;
   uint32_t leaseDeadline = 0, proposedDeadline = 0;
@@ -38,6 +40,7 @@ struct Peer {
   bool excluded = false;
   bool observing = false;
   bool monitoring = false;
+  bool fenceConfirmed = false;
 };
 struct Mailbox { Request request; bool pending = false; };
 static Peer peers[4];
@@ -49,6 +52,8 @@ static uint32_t nextRead;
 static bool owned = false, enterPending = false, exitPending = false, servicing = false;
 static bool cleanupRequested=false;
 static uint8_t cursor;
+static bool physicalFenceVerified=false;
+static uint32_t nextFenceInspection=0;
 static DataConsumer dataConsumer=nullptr;
 static uint8_t dataMask=0,dataCursor=0,serviceCursor=0;
 static uint32_t nextHealthObservation=0;
@@ -69,6 +74,7 @@ static uint32_t allocate(uint32_t& value) {
 }
 static void publish(uint8_t n,Result result,uint8_t reason=0,const BodaqsControlRecord* reply=nullptr) {
   (void)reply; // Node-wide generic results contain no endpoint revision/epoch.
+  if(result==Result::Succeeded && peers[n].intent.action==Action::Fence) peers[n].fenceConfirmed=true;
   if(result==Result::Succeeded && peers[n].intent.action==Action::Start) peers[n].monitoring=true;
   if(peers[n].observing && (result==Result::Pending || result==Result::Succeeded)) {
     if(result==Result::Succeeded) peers[n].observing=false;
@@ -101,7 +107,7 @@ static void fail(uint8_t n,Result result,uint8_t reason) {
   if(p.recording && !p.observing) {
     p.excluded=true;p.leased=false;p.protectedLane.pending=false;
     transport.terminalNodes|=1u<<n;
-    Lock lock;outcomes[n].excluded=true;
+    Lock lock;outcomes[n].excluded=true;outcomes[n].terminal=true;
   }
   publish(n,result,reason);
 }
@@ -109,8 +115,18 @@ static void exclude(uint8_t n,uint8_t reason) {
   auto& p=peers[n];
   p.excluded=true;p.leased=false;p.observing=false;p.protectedLane.pending=false;
   transport.terminalNodes|=1u<<n;
-  {Lock lock;outcomes[n].excluded=true;}
+  {Lock lock;outcomes[n].excluded=true;outcomes[n].terminal=true;}
   fail(n,Result::Unavailable,reason);
+}
+static bool uncertainStop(uint8_t n,uint8_t reason) {
+  auto& p=peers[n];
+  if(p.excluded || p.intent.action!=Action::Stop) return false;
+  p.leased=false;p.monitoring=false;p.observing=false;
+  p.protectedLane.pending=false;p.ordinary.pending=false;p.pendingMutation=0;p.phase=Phase::Idle;
+  transport.terminalNodes|=1u<<n;
+  {Lock lock;outcomes[n].terminal=true;}
+  publish(n,Result::Uncertain,reason);
+  return true;
 }
 static bool retryRenewal(uint8_t n) {
   auto& p=peers[n];const auto& q=p.protectedLane.request.record;
@@ -142,23 +158,26 @@ static void beginRequest(uint8_t n,const Request& intent,bool observing=false) {
   if(!observing) {Lock lock;outcomes[n].snapshotValid=false;}
   if(intent.action==Action::Fence) {
     if(transport.failed || p.excluded) cleanupRequested=true;
-    bool discarded=false;
-    for(uint8_t cls:{1,2,5}) {
-      auto& inbox=transport.inboxes[cls-1][cls==5?0:n];
-      discarded|=inbox.state.object && !inbox.admitted;
-      if(inbox.state.complete) CanMasterManager::releaseMeasurementObject(inbox);
-      else inbox={};
-    }
-    Lock lock;outcomes[n].tailDiscarded|=discarded;outcomes[n].localFenceComplete=false;
+    // A fence cancels old scope; it never asserts RAM acceptance. Preserve
+    // unaccepted/partial objects until fresh physical retirement is observed.
+    Lock lock;outcomes[n].localFenceComplete=false;
   }
   if(intent.action==Action::Stop) {
     // Terminal locally before dispatch. A delayed challenge can never renew.
     p.leased=false;p.monitoring=false;p.protectedLane.pending=false;p.ordinary.pending=false;p.phase=Phase::Idle;p.pendingMutation=0;
     transport.terminalNodes|=1u<<n;
+    {Lock lock;outcomes[n].terminal=true;}
     auto& retired=transport.inboxes[3][n];
     if(!retired.state.complete) retired=MeasurementInbox{};
   }
   const uint8_t opcodes[]={0x20,0x24,0x25,0x28,0x2a,0x29};
+  if(intent.action==Action::Stop && p.stopRequestValid &&
+     p.stopRequest.record.node_boot_id==CanMasterManager::diagnostics().authority.nodes[n].boot &&
+     p.stopRequest.record.session==session && bodaqs_control_get_u64(p.stopRequest.record.data)==intent.recording) {
+    if(!send(n,p.protectedLane,p.stopRequest,true)) uncertainStop(n,7);
+    else publish(n,Result::Pending);
+    return;
+  }
   uint32_t operation=intent.action==Action::Snapshot?allocate(nextRead):allocate(p.mutation);
   if(!operation) {fail(n,Result::Unavailable,22);return;}
   if(intent.action==Action::Prepare) p.recording=intent.recording;
@@ -177,7 +196,9 @@ static void beginRequest(uint8_t n,const Request& intent,bool observing=false) {
     bodaqs_control_put_u64(q.record.data+16,intent.revision);
   } else if(intent.action==Action::Stop) q.record.data[8]=intent.reason;
   if(intent.action==Action::Snapshot) q.record.data_length=8;
+  if(intent.action==Action::Stop) {p.stopRequest=q;p.stopRequestValid=true;}
   if(!send(n,intent.action==Action::Stop?p.protectedLane:p.ordinary,q,intent.action==Action::Stop)) {
+    if(intent.action==Action::Stop && uncertainStop(n,7)) return;
     fail(n,Result::Unavailable,7);return;
   }
   publish(n,Result::Pending);
@@ -195,8 +216,19 @@ static void accept(uint8_t n,bool protectedLane,const BodaqsControlWrapped& wrap
   auto& p=peers[n];auto& x=protectedLane?p.protectedLane:p.ordinary;
   if(!correlated(x,wrapped)) return;
   const auto q=x.request;const auto& r=wrapped.record;x.pending=false;
+  if(r.data_length==4) {
+    // A master transport receipt is not a node's 24-byte proof/result.
+    if(r.data[3]!=q.record.opcode || r.data[0]<BODAQS_CONTROL_BUSY || r.data[0]>BODAQS_CONTROL_UNCERTAIN) {
+      exclude(n,1);return;
+    }
+    if(r.data[0]!=BODAQS_CONTROL_REJECTED && (r.data[1]==7 || r.data[1]==10 || r.data[1]==26)) {
+      if(uncertainStop(n,r.data[1]) || (protectedLane && retryRenewal(n))) return;
+    }
+    fail(n,r.data[0]==BODAQS_CONTROL_UNCERTAIN?Result::Uncertain:Result::Rejected,r.data[1]);return;
+  }
   if(r.opcode==BODAQS_CONTROL_ERROR || (r.data_length==24 && r.data[0]==1 &&
       q.record.opcode!=0x26 && q.record.opcode!=0x27 && q.record.opcode!=0x28 && q.record.opcode!=7)) {
+    if((r.data[1]==7 || r.data[1]==10 || r.data[1]==26) && uncertainStop(n,r.data[1])) return;
     if(protectedLane && (r.data[1]==7 || r.data[1]==10 || r.data[1]==20 || r.data[1]==26) && retryRenewal(n)) return;
     if(p.recording && (r.data[1]==4 || r.data[1]==27 || r.data[1]==29 || protectedLane)) {
       exclude(n,r.data[1]);return;
@@ -321,7 +353,7 @@ bool begin(uint64_t recording,uint64_t context) {
   nextRead=d.authority.next_read;nextTransfer=d.apply.next_transfer;
   for(uint8_t n=0;n<4;++n) {peers[n]=Peer{};peers[n].mutation=d.authority.nodes[n].next_mutation;mailboxes[n]=Mailbox{};outcomes[n]=Outcome{};}
   memset(&transport,0,sizeof transport);recordingId=recording;contextId=context;cursor=0;
-  nextHealthObservation=millis()+2000;healthCursor=0;
+  nextHealthObservation=millis()+2000;healthCursor=0;physicalFenceVerified=false;nextFenceInspection=0;
   {Lock lock;owned=true;enterPending=true;exitPending=false;cleanupRequested=false;}
   return true;
 }
@@ -339,7 +371,7 @@ bool setDataConsumer(DataConsumer consumer,uint8_t mask) {
 bool enqueue(const Request& request) {
   if(request.node>3 || static_cast<unsigned>(request.action)>static_cast<unsigned>(Action::Release)) return false;
   Lock lock;
-  if(outcomes[request.node].excluded && (request.action==Action::Prepare || request.action==Action::Start)) return false;
+  if((outcomes[request.node].excluded || outcomes[request.node].terminal) && (request.action==Action::Prepare || request.action==Action::Start)) return false;
   if(!owned || (exitPending && request.action!=Action::Stop && request.action!=Action::Fence && request.action!=Action::Release && request.action!=Action::Snapshot) || (mailboxes[request.node].pending && request.action!=Action::Stop)) return false;
   mailboxes[request.node].request=request;mailboxes[request.node].pending=true;return true;
 }
@@ -409,6 +441,7 @@ void service() {
       // A request may have been queued after the service-level 'now' snapshot.
       if(x->pending && static_cast<uint32_t>(millis()-x->started)>=deadline) {
         x->pending=false;
+        if(uncertainStop(n,26)) continue;
         if(x==&p.protectedLane) {if(!retryRenewal(n)) exclude(n,26);continue;}
         if(x==&p.ordinary && p.observing) {p.observing=false;p.phase=Phase::Idle;continue;}
         fail(n,Result::Uncertain,26);
@@ -449,6 +482,34 @@ void service() {
     Request observation;observation.node=peer;observation.action=Action::Snapshot;observation.recording=p.recording;
     beginRequest(peer,observation,true);break;
   }
+  bool allFenced=true,anyRecording=false;
+  for(uint8_t node=0;node<4;++node) {
+    const auto& p=peers[node];
+    if(p.recording) {anyRecording=true;allFenced &= p.fenceConfirmed;}
+    allFenced &= !p.ordinary.pending && !p.protectedLane.pending && !p.pendingMutation;
+    Lock lock;allFenced &= !mailboxes[node].pending;
+  }
+  if(anyRecording && allFenced && !physicalFenceVerified && due(now,nextFenceInspection)) {
+    nextFenceInspection=now+20;
+    if(CanMasterManager::inspectMeasurementMode() && CanMasterManager::measurementReady() &&
+       (CanMasterManager::diagnostics().measurement.flags&BODAQS_MODE_FLAG_FENCED)) {
+      // Fully bound fresh status follows adapter FIFO/DMA retirement. Cancel
+      // local data state administratively, without a RAM-accepted ACK.
+      physicalFenceVerified=true;
+      for(uint8_t node=0;node<4;++node) for(uint8_t cls:{1,2,5}) {
+        if(cls==5 && node) continue;
+        auto& data=transport.inboxes[cls-1][node];
+        if(data.state.object && !data.admitted) {
+          Lock lock;auto& out=outcomes[node];out.tailDiscarded=true;
+          if(out.tailObjectsDiscarded!=UINT32_MAX) ++out.tailObjectsDiscarded;
+          if(cls==1) out.sampleTailDiscarded=true;
+        }
+        data={};
+      }
+      transport.bridgePending=transport.bridgeReady=transport.bridgeExpired=false;
+      transport.lossReady=false;
+    }
+  }
   MeasurementInbox* inbox=nullptr;
   // Repeat each idle control selection before rotating, so alternating lost
   // SPI requests cannot permanently skip a node's only response poll.
@@ -462,13 +523,13 @@ void service() {
   }
   // Protected and ordinary lanes retain independent service. Data takes three
   // slots out of four when registered; lifecycle still advances at each turn.
-  if(!urgent && dataConsumer && dataMask && (++serviceCursor%4)!=0) {
+  if(!urgent && !physicalFenceVerified && dataConsumer && dataMask && (++serviceCursor%4)!=0) {
     for(unsigned i=0;i<4;++i) {
       n=dataCursor++%4;if(dataMask&(1u<<n)) break;
     }
     cls=(serviceCursor%4)==1?2:1;
   } else if(!urgent) cursor=(cursor+1)%16;
-  transport.timingEnabled=dataConsumer && dataMask;
+  transport.timingEnabled=!physicalFenceVerified && dataConsumer && dataMask;
   if(!urgent && transport.timingEnabled && (serviceCursor%20)==0) {cls=5;n=255;}
   const int result=CanMasterManager::serviceMeasurementTransport(transport,cls,n,inbox);
   if(result==-14) for(uint8_t peer=0;peer<4;++peer)
@@ -482,8 +543,8 @@ void service() {
   if(dataConsumer) for(uint8_t node=0;node<4;++node) for(uint8_t dataClass:{2,1}) {
     auto& data=transport.inboxes[dataClass-1][node];
     if(peers[node].excluded && data.state.complete && !data.admitted) {
-      CanMasterManager::releaseMeasurementObject(data);
-      Lock lock;outcomes[node].tailDiscarded=true;
+      // Exclusion is not admission; retain until administrative retirement.
+      Lock lock;outcomes[node].tailDiscarded=true;outcomes[node].sampleTailDiscarded|=dataClass==1;
       continue;
     }
     if(CanMasterManager::measurementObjectReady(data) &&
@@ -507,7 +568,7 @@ void service() {
   }
   for(uint8_t node=0;node<4;++node) {
     if(peers[node].intent.action!=Action::Fence) continue;
-    bool retired=true;
+    bool retired=peers[node].fenceConfirmed;
     for(uint8_t cls:{1,2,5}) {
       const auto& retained=transport.inboxes[cls-1][cls==5?0:node];
       retired &= !retained.state.object || (retained.admitted && !retained.ackPending);

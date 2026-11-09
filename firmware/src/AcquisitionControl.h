@@ -21,7 +21,10 @@ struct Outcome {
   uint64_t revision = 0, epoch = 0;
   bool leaseAcknowledged = false, snapshotValid = false;
   bool tailDiscarded = false, localFenceComplete = false;
+  bool sampleTailDiscarded = false;
+  uint32_t tailObjectsDiscarded = 0; // Known local unaccepted objects; master backlog may be larger.
   bool excluded = false; // Terminal for this recording; local acquisition continues.
+  bool terminal = false; // STOP intent also forbids rejoining without discarding a valid tail.
   uint8_t snapshot[128] = {};
 };
 // Explicit main-task handoff, after the configuration handoff has drained.

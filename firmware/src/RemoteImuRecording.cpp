@@ -1,6 +1,7 @@
 #include "RemoteImuRecording.h"
 #include "RemoteImuStream.h"
 #include "AcquisitionControl.h"
+#include "../can-fd/common/protocol/bodaqs_control_acquisition.h"
 #include "CanMasterManager.h"
 #include "SensorAssignment.h"
 #include "BoardSelect.h"
@@ -21,11 +22,15 @@ enum Phase { Idle, Allocated, Prepare, PreparedSnapshot, Ready, Starting, Record
 struct Participant {
 RemoteImuStream stream;
 
-Phase phase=Idle;
+std::atomic<Phase> phase{Idle};
 uint8_t node=0;
 uint64_t record=0,revision=0,epoch=0;
 
 uint32_t serial=0,began=0,tailBegan=0;
+uint32_t stopRequestedMs=0,stopConfirmedMs=0;
+bool stopConfirmed=false;
+Completion frozenCompletion;
+std::atomic<bool> completionFrozen{false};
 std::atomic<bool> fault{false};
 bool stopIntent=false,startIntent=false;
 uint32_t nextCleanupAttempt=0;
@@ -33,16 +38,14 @@ bool cleanupQueued=false;
 Failure firstFailure;
 // Bit0 closes admission, bit1 marks an active producer callback. The main
 // owner closes without waiting; storage finalization starts only after bit1
-// retires. A late object is ACKed as discarded, never queued into a closing file.
+// retires. Unaccepted tail objects remain retained until administrative fence.
 std::atomic<uint8_t> dataGate{1};
-std::atomic<uint32_t> tailDiscards{0};
 uint32_t objectProgress[2]={};
 uint16_t recordProgress[2]={};
 bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint16_t total) {
   uint8_t open=0;
   if(!dataGate.compare_exchange_strong(open,2,std::memory_order_acq_rel)) {
-    if(tailDiscards.load()!=UINT32_MAX) tailDiscards.fetch_add(1);
-    return true;
+    return false; // No RAM acceptance after the file admission gate closes.
   }
 
   struct Retire {std::atomic<uint8_t>& gate;~Retire(){gate.fetch_and(1,std::memory_order_release);}} retire{dataGate};
@@ -119,8 +122,9 @@ bool configure(const SensorSpec& chosen,uint64_t sharedRecord,uint64_t sharedCon
   if(!stream.configure(b,uint16_t(34+2*node),uint16_t(35+2*node)) ) {stream.release();fault=true;return true;}
   fault=false;stopIntent=startIntent=false;cleanupQueued=false;phase=Allocated;began=millis();serial=0;
   firstFailure={};
+  stopRequestedMs=stopConfirmedMs=0;stopConfirmed=false;completionFrozen=false;
   std::memset(objectProgress,0,sizeof objectProgress);std::memset(recordProgress,0,sizeof recordProgress);
-  tailDiscards.store(0);dataGate.store(0,std::memory_order_release);
+  dataGate.store(0,std::memory_order_release);
   return true;
 }
 bool configured() {return phase!=Idle;}
@@ -128,10 +132,13 @@ bool prepared() {return phase==Idle || phase==Ready || (phase>=Stop && fault.loa
 bool recording() {return phase==Idle || phase==Recording || (phase>=Stop && fault.load());}
 bool failed() {return fault || stream.failed();}
 void start() {startIntent=true;}
-void stop() {if(phase==Allocated) {dataGate.store(1);phase=Done;} if(!stopIntent) tailBegan=millis();stopIntent=true;}
+void stop() {
+  if(phase==Allocated) {dataGate.store(1);phase=Done;}
+  if(!stopIntent) {stopRequestedMs=millis();tailBegan=stopRequestedMs;}
+  stopIntent=true;
+}
 bool stopped() {return phase==Idle || phase==Done;}
 bool tailDrained() {return stopped() || phase>=Fence;}
-uint32_t discardedTailObjects() {return tailDiscards.load();}
 void release() {if(!stopped()) return;stream.release();phase=Idle;fault=false;}
 uint16_t describe(BdqV2StreamDescriptor* out,uint16_t capacity,uint16_t) {
   if(!configured() || (phase>=Stop && fault.load())) return 0;
@@ -146,7 +153,10 @@ void service() {
   const bool fresh=out.serial!=serial;
   const bool success=fresh && out.result==AcquisitionControl::Result::Succeeded;
   const bool startupTimeout=(phase==Prepare || phase==PreparedSnapshot || phase==Starting) && uint32_t(now-began)>=10000;
-  const bool controlFailed=fresh && (out.result==AcquisitionControl::Result::Rejected || out.result==AcquisitionControl::Result::Uncertain || out.result==AcquisitionControl::Result::Unavailable);
+  const bool retryableStop=stopIntent && phase==Stop && out.action==AcquisitionControl::Action::Stop &&
+      !out.excluded && (out.result==AcquisitionControl::Result::Uncertain || out.result==AcquisitionControl::Result::Unavailable) &&
+      (out.reason==7 || out.reason==10 || out.reason==26);
+  const bool controlFailed=fresh && !retryableStop && (out.result==AcquisitionControl::Result::Rejected || out.result==AcquisitionControl::Result::Uncertain || out.result==AcquisitionControl::Result::Unavailable);
   if(!firstFailure.cause && (fault.load() || startupTimeout || stream.failed() || controlFailed)) {
     const auto& d=CanMasterManager::diagnostics();
     firstFailure.observedMs=now;firstFailure.phase=phase;
@@ -172,7 +182,7 @@ void service() {
   }
   if(startupTimeout || stream.failed()) {fault=true;stop();}
   if(fault.load() && phase<Stop) stop();
-  if(fresh && (out.result==AcquisitionControl::Result::Rejected || out.result==AcquisitionControl::Result::Uncertain || out.result==AcquisitionControl::Result::Unavailable)) {
+  if(controlFailed) {
     fault=true;if(phase<Stop) stop();
   }
   if(stopIntent && phase<Stop) {phase=Stop;if(fault.load()) dataGate.fetch_or(1);cleanupQueued=send(AcquisitionControl::Action::Stop);nextCleanupAttempt=now+300;return;}
@@ -183,16 +193,29 @@ void service() {
     case Ready: if(startIntent) {phase=Starting;began=now;send(AcquisitionControl::Action::Start);} break;
     case Starting: if(success && out.action==AcquisitionControl::Action::Start) phase=Recording;break;
     case Stop:
-      if((success && out.action==AcquisitionControl::Action::Stop) || uint32_t(now-tailBegan)>=1000) phase=Tail;
-      else if(!cleanupQueued && int32_t(now-nextCleanupAttempt)>=0) {cleanupQueued=send(AcquisitionControl::Action::Stop);nextCleanupAttempt=now+300;}
+      if(fresh && retryableStop) cleanupQueued=false;
+      if(success && out.action==AcquisitionControl::Action::Stop) {
+        stopConfirmed=true;stopConfirmedMs=now;tailBegan=now;phase=Tail;
+      } else if(uint32_t(now-stopRequestedMs)>=BODAQS_ACQ_LEASE_MS+5000U) {
+        // Bounded file-prefix closure, explicitly not proof of remote expiry.
+        fault=true;phase=Tail;
+      }
+      else if(!cleanupQueued && int32_t(now-nextCleanupAttempt)>=0) {
+        cleanupQueued=send(AcquisitionControl::Action::Stop);nextCleanupAttempt=now+1000;
+      }
       break;
     case Tail:
       // Keep transport/producer queues alive for the complete normal tail
       // interval. The independent storage worker continues writing throughout.
-      if(uint32_t(now-tailBegan)>=5000) {
+      if(!stopConfirmed || uint32_t(now-tailBegan)>=5000) {
         dataGate.fetch_or(1,std::memory_order_acq_rel);
         if(!(dataGate.load(std::memory_order_acquire)&2u) &&
            (stream.failed() || stream.finish(static_cast<uint32_t>(esp_timer_get_time())))) {
+          frozenCompletion={};frozenCompletion.stopRequestedMs=stopRequestedMs;
+          frozenCompletion.stopConfirmedMs=stopConfirmedMs;frozenCompletion.drainClosedMs=now;
+          frozenCompletion.stopConfirmed=stopConfirmed;frozenCompletion.uncertain=!stopConfirmed;
+          frozenCompletion.sourceFinalObserved=stream.terminalBoundary(frozenCompletion.finalSequence,frozenCompletion.streamEpoch);
+          completionFrozen.store(true,std::memory_order_release);
           phase=Fence;cleanupQueued=send(AcquisitionControl::Action::Fence);nextCleanupAttempt=now+3500;
         }
       }
@@ -322,8 +345,19 @@ bool recording() {for(uint8_t n=0;n<4;++n) if((selected&(1u<<n)) && !peers[n].re
 void start() {for(uint8_t n=0;n<4;++n) if(selected&(1u<<n)) peers[n].start();}
 void stop() {for(uint8_t n=0;n<4;++n) if(selected&(1u<<n)) peers[n].stop();}
 bool stopped() {for(uint8_t n=0;n<4;++n) if((selected&(1u<<n)) && !peers[n].stopped()) return false;return true;}
+bool completion(uint8_t node,Completion& out) {
+ if(node>3 || !(selected&(1u<<node)) || !peers[node].completionFrozen.load(std::memory_order_acquire)) return false;
+ out=peers[node].frozenCompletion;return true;
+}
+bool readyForFileFinalization() {
+ for(uint8_t n=0;n<4;++n) if(selected&(1u<<n)) {
+  Completion c;
+  if(!peers[n].stopped() && (!completion(n,c) || c.stopConfirmed)) return false;
+ }
+ return true;
+}
 bool tailDrained() {for(uint8_t n=0;n<4;++n) if((selected&(1u<<n)) && !peers[n].tailDrained()) return false;return true;}
-uint32_t discardedTailObjects() {uint32_t total=0;for(auto& p:peers) {uint32_t n=p.discardedTailObjects();if(UINT32_MAX-total<n) return UINT32_MAX;total+=n;}return total;}
+uint32_t discardedTailObjects() {uint32_t total=0;for(uint8_t node=0;node<4;++node) {AcquisitionControl::Outcome out;AcquisitionControl::outcome(node,out);uint32_t n=out.tailObjectsDiscarded;if(UINT32_MAX-total<n) return UINT32_MAX;total+=n;}return total;}
 void release() {if(!stopped()) return;for(auto& p:peers) p.release();selected=0;report={};AcquisitionControl::setDataConsumer(nullptr,0);}
 uint16_t describe(BdqV2StreamDescriptor* out,uint16_t capacity,uint16_t firstId) {
  uint16_t count=0;for(uint8_t n=0;n<4;++n) if(selected&(1u<<n)) {

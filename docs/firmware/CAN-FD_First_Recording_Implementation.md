@@ -179,3 +179,30 @@ keeps master loss reports count-known/interval-unknown. Raw ISR epoch extraction
 and optional timing classification are covered by production adapter tests.
 Full queue/partial consumer progress and final STOP/fence/restart remain S6
 integration obligations. Fresh adapter/wire/lifetime review precedes S6.
+
+## S6 / #185: STOP, tail, administrative retirement and restart
+
+A positive matched STOP result starts each participant's five-second drain;
+operator intent and conservative local lease expiry are not cessation proof.
+Lost STOP results retry the original immutable mutation under fresh bounded SPI
+attempts, without renewing acquisition or skipping node mutation numbers.
+Unconfirmed cessation closes an explicitly uncertain prefix at ten seconds and
+keeps cleanup ownership until verified fencing/release/exit permits restart.
+Frozen completion is published after the producer gate closes and retires.
+Normal file finalization waits for cleanup; uncertain closure reports its basis.
+
+Unaccepted or partially copied tail objects never receive RAM-admission ACKs.
+Fresh fully bound physical-fence status permits administrative cancellation of
+old local assemblies; this is distinct from downstream RAM admission. Shared
+timing publication stops once fenced. Known local unaccepted object counts and
+sample-tail discard are reported separately; unfetched master backlog is unknown.
+The footer reports per-node STOP/drain windows and final source boundary, rather
+than treating clean file closure as complete delivery.
+
+Fresh S6 boundary review passed the default and restricted-v2 lifecycle and v2
+retirement tests. The real public queue pressure test preserves 2048 exact packet
+records through partial batch retry, holds cleanup while physical retirement is
+delayed, then completes with explicit sample discard evidence. Normal, lost and
+unconfirmed STOP results, reboot/expiry, fenced timing rejection and restart are
+covered. Integrated storage tests use the approved one-second renewal cadence;
+their synthetic scheduling is not physical throughput evidence.

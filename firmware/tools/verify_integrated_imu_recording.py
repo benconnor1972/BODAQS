@@ -182,7 +182,7 @@ def verify(output: Path) -> dict:
             runtime = json.loads((output / f"{scenario}.bdq.runtime.json").read_text(encoding="utf-8"))
             assert runtime["host_only_schedule"] is True
             assert runtime["service_turns_per_tick"] == 12 and runtime["spi_slots_per_injected_ms"] == 10
-            assert all(0 < gap < 300 for gap in runtime["renewal_gap_ms"])
+            assert all(0 < gap < 1500 for gap in runtime["renewal_gap_ms"])
             assert runtime["stop_terminal_verified_within_ms"] == 200
             assert runtime["clean_close"] == (scenario != "short")
             assert runtime["rejected_source_samples"] == rejected

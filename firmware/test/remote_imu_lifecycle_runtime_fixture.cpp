@@ -210,6 +210,67 @@ int main(int argc,char** argv) {
   RemoteImuRecording::start();recordingSteps(2000);
   assert(RemoteImuRecording::recording());
   assert(!RemoteImuRecording::failed());
+  if(argc>1 && !std::strcmp(argv[1],"tail-pressure")) {
+    assert(ImuAdmission::singleNodeSmokeBuild() && BODAQS_MEASUREMENT_VERSION==2);
+    uint8_t boundary[64]={};boundary[0]=1;boundary[1]=0x25;boundary[2]=1;boundary[6]=56;
+    bodaqs_control_put_u32(boundary+8,node.view.boot_id);boundary[13]=1;boundary[14]=2;
+    bodaqs_control_put_u32(boundary+16,1);bodaqs_control_put_u32(boundary+20,1);
+    bodaqs_control_put_u32(boundary+24,1);boundary[54]=0x61;boundary[55]=1;
+    assert(bodaqs_master_service_receive_can(&master,0,2,0x90,boundary,64,0,clockMs*1000,clockMs));
+    recordingSteps(100);
+    for(unsigned i=0;i<2065;++i) {
+      uint8_t packet[64]={};packet[0]=uint8_t(i*5);packet[1]=uint8_t((i*5)>>8);packet[2]=1;packet[3]=5;
+      for(unsigned j=4;j<64;j+=2) {packet[j]=0x34;packet[j+1]=0x12;}
+      assert(bodaqs_master_service_receive_can(&master,0,1,0x100,packet,64,0,clockMs*1000,clockMs));
+      recordingSteps(10);
+    }
+    auto& source=descriptors[0].source;
+    assert(source.pendingRecords(source.context)==2048);
+    recordingSteps(200);assert(source.pendingRecords(source.context)==2048);
+    retirePhysicalMaster=false;RemoteImuRecording::stop();
+    recordingSteps(8000);
+    AcquisitionControl::Outcome pendingFence;AcquisitionControl::outcome(0,pendingFence);
+    assert(!pendingFence.localFenceComplete && AcquisitionControl::active());
+    assert(master.acquisition_retirement_pending && !master.measurement.fenced);
+    bodaqs_master_service_measurement_fence(&master,true,true);
+    assert(master.measurement.fenced && master.measurement.mode.phase==2 && !master.master_evidence.complete);
+    uint8_t timing[24]={};timing[0]=1;timing[2]=1;timing[4]=1;timing[8]=1;
+    assert(!bodaqs_master_service_publish_evidence(&master,timing,sizeof timing));
+    retirePhysicalMaster=true;
+    for(unsigned i=0;i<30000 && !RemoteImuRecording::stopped();++i) recordingSteps(1);
+    assert(RemoteImuRecording::stopped() && !AcquisitionControl::active());
+    uint8_t row[100];unsigned count=0;
+    while(source.pendingRecords(source.context)) {
+      assert(source.popRecord(source.context,row,sizeof row));
+      assert(BdqV2Format::getU32(row)==count++);
+      assert(BdqV2Format::getU16(row+40)==0x1234);
+    }
+    assert(count==2048);
+    assert(!RemoteImuRecording::failed());
+    AcquisitionControl::Outcome outcome;AcquisitionControl::outcome(0,outcome);
+    assert(outcome.tailDiscarded && outcome.sampleTailDiscarded);
+    assert(RemoteImuRecording::discardedTailObjects()==outcome.tailObjectsDiscarded);
+    puts("full compact queue retains partial progress and administratively fences unaccepted tail: PASS");return 0;
+  }
+  if(argc>1 && (!std::strcmp(argv[1],"lost-stop-result") || !std::strcmp(argv[1],"uncertain-stop"))) {
+    const bool uncertain=!std::strcmp(argv[1],"uncertain-stop");
+    loseStopResults=true;const uint32_t requested=clockMs;RemoteImuRecording::stop();
+    recordingSteps(1600);
+    assert(lostStopResults && !RemoteImuRecording::tailDrained());
+    assert(!RemoteImuRecording::failed());
+    AcquisitionControl::Request rejoin;rejoin.node=0;rejoin.action=AcquisitionControl::Action::Prepare;rejoin.recording=1;
+    assert(!AcquisitionControl::enqueue(rejoin));
+    if(!uncertain) loseStopResults=false;
+    for(unsigned i=0;i<12000 && !RemoteImuRecording::tailDrained();++i) recordingSteps(1);
+    RemoteImuRecording::Completion c;assert(RemoteImuRecording::completion(0,c));
+    assert(c.stopConfirmed!=uncertain && c.uncertain==uncertain);
+    if(uncertain) assert(uint32_t(c.drainClosedMs-requested)>=10000);
+    else assert(uint32_t(c.drainClosedMs-c.stopConfirmedMs)>=5000 && !RemoteImuRecording::failed());
+    loseStopResults=false;
+    for(unsigned i=0;i<30000 && !RemoteImuRecording::stopped();++i) recordingSteps(1);
+    assert(RemoteImuRecording::stopped() && !AcquisitionControl::active());
+    puts("STOP retry and explicit confirmed/uncertain tail basis: PASS");return 0;
+  }
 
   for(unsigned n=0;n<fixtureSensorCount;++n) assert(acquisitions[n].phase==3 && acquisitions[n].lease_valid);
 
@@ -236,7 +297,7 @@ int main(int argc,char** argv) {
     assert(recording); // Remote fault cannot stop healthy local sampling.
     AcquisitionControl::Request rejoin;rejoin.node=0;rejoin.action=AcquisitionControl::Action::Prepare;rejoin.recording=1;
     assert(!AcquisitionControl::enqueue(rejoin));
-    recordingSteps(6000);
+    recordingSteps(11000);
     if(fixtureSensorCount==4) {
       assert(!RemoteImuRecording::tailDrained() && AcquisitionControl::active());
       for(unsigned n=1;n<4;++n) {
@@ -244,7 +305,7 @@ int main(int argc,char** argv) {
         if(acquisitions[n].phase!=3 || !acquisitions[n].lease_valid) std::fprintf(stderr,"healthy peer%u phase%u leased%d excluded%d result%u reason%u action%u\n",n,acquisitions[n].phase,acquisitions[n].lease_valid,check.excluded,unsigned(check.result),check.reason,unsigned(check.action));
         assert(acquisitions[n].phase==3 && acquisitions[n].lease_valid);
       }
-      RemoteImuRecording::stop();recordingSteps(6000);
+      RemoteImuRecording::stop();recordingSteps(12000);
     }
     assert(RemoteImuRecording::tailDrained());
     recording=false;
@@ -274,21 +335,30 @@ int main(int argc,char** argv) {
   RemoteImuRecording::stop();
   clockMs+=37; // Main-loop scheduling delay must not extend the operator tail.
   RemoteImuRecording::service();
-  recordingSteps(800);
+  uint32_t confirmedAt=0;
+  for(unsigned i=0;i<1600 && !confirmedAt;++i) {
+    recordingSteps(1);AcquisitionControl::Outcome stopResult;AcquisitionControl::outcome(0,stopResult);
+    if(stopResult.action==AcquisitionControl::Action::Stop && stopResult.result==AcquisitionControl::Result::Succeeded)
+      confirmedAt=clockMs;
+  }
+  assert(confirmedAt && int32_t(confirmedAt-stoppedAt)>0);
   assert(acquisitions[0].terminal && acquisitions[0].stopped && !acquisitions[0].lease_valid);
   assert(!RemoteImuRecording::failed());
   assert(!RemoteImuRecording::tailDrained());
   // Keep control/transport service running while testing the normal tail.
   // Jumping wall time with an in-flight STOP result fabricates a transport
   // timeout unrelated to the coordinator's five-second tail deadline.
-  while(int32_t(clockMs-(stoppedAt+4999))<0) recordingSteps(1);
+  while(int32_t(clockMs-(confirmedAt+4999))<0) recordingSteps(1);
   // No storage calls participate in this deadline. A repeated STOP cannot
   // restart the five-second normal tail interval.
   RemoteImuRecording::stop();RemoteImuRecording::service();
   assert(!RemoteImuRecording::tailDrained());
-  clockMs=stoppedAt+5000;RemoteImuRecording::service();
-  assert(RemoteImuRecording::tailDrained());
+  clockMs=confirmedAt+5000;RemoteImuRecording::service();
+  if(fixtureSensorCount==1) assert(RemoteImuRecording::tailDrained());
+  // Each participant's interval begins at its own confirmed STOP result.
   retirePhysicalMaster=false;
+  for(unsigned i=0;i<1600 && !RemoteImuRecording::tailDrained();++i) recordingSteps(1);
+  assert(RemoteImuRecording::tailDrained());
   recordingSteps(3000);
   // Node RELEASE can win the race against physical DMA retirement. A rejected
   // premature exit must not destroy the confirmed measurement context.
@@ -353,9 +423,11 @@ int main(int argc,char** argv) {
   assert(originalFailure.result==unsigned(AcquisitionControl::Result::Unavailable));
   assert(originalFailure.reason==26);
   const uint32_t oldRenewal=acquisitions[0].renewal_sequence;
-  recordingSteps(6000);
+  recordingSteps(11000);
   assert(acquisitions[0].renewal_sequence==oldRenewal);
   assert(RemoteImuRecording::tailDrained());
+  RemoteImuRecording::Completion incomplete;
+  assert(RemoteImuRecording::completion(0,incomplete) && !incomplete.stopConfirmed && incomplete.uncertain);
   assert(!RemoteImuRecording::stopped()); // Tail cutoff is distinct from administrative cleanup.
   recording=false;
   for(unsigned i=0;i<20000 && !RemoteImuRecording::stopped();++i) recordingSteps(1);

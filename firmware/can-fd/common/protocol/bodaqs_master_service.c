@@ -466,7 +466,7 @@ bool bodaqs_master_service_control_receive(BodaqsMasterService *s,uint8_t addres
 }
 bool bodaqs_master_service_publish_evidence(BodaqsMasterService *s,const uint8_t *data,uint16_t length) {
     unsigned i,count;
-    if(!s || !data || s->measurement.mode.phase!=2 || length<24 || length>1020 || (length-8)%16) return false;
+    if(!s || !data || s->measurement.fenced || s->measurement.mode.phase!=2 || length<24 || length>1020 || (length-8)%16) return false;
     count=(length-8)/16;
     if(bodaqs_measurement_get(data,2)!=1 || data[2]!=1 ||
        bodaqs_measurement_get(data+4,2)!=count || !bodaqs_measurement_zero(data+6,2)) return false;
@@ -543,6 +543,19 @@ static bool measurement_transfer_core(BodaqsMasterService *s,const BodaqsMeasure
         if(cls==4 && request.record.opcode==0x25 && exchange->slots[r->node].request.opcode!=0x25) {
             if(exchange->slots[r->node].state==1) exchange->slots[r->node].state=3;
             lane->tx.complete=0; lane->awaiting_result=false;
+        }
+        if(cls==4 && request.record.opcode==0x25 && exchange->slots[r->node].state==3 &&
+           !(exchange->excluded_addresses&(1U<<r->node)) && request.master_boot_id==exchange->master_boot_id) {
+            uint8_t original[52],retry[52];
+            /* Only a fresh immutable SPI object reaches result==1 here.
+             * Re-arm this identical terminal operation for another bounded
+             * CAN attempt group; its mutation identity never changes. */
+            if(bodaqs_control_encode_record(&exchange->slots[r->node].request,original) &&
+               bodaqs_control_encode_record(&request.record,retry) && !memcmp(original,retry,52)) {
+                exchange->slots[r->node].state=1;
+                exchange->slots[r->node].attempts=0;
+                exchange->slots[r->node].attempt_ms=now;
+            }
         }
         if(!bodaqs_control_exchange_request(exchange,false,&request,&reply,&type)) {
             transfer_error(r,out,13);return true;

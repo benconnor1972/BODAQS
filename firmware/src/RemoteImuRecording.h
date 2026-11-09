@@ -19,6 +19,14 @@ struct Failure {
     CanMasterManager::MeasurementTiming timing;
 };
 bool failure(uint8_t node,Failure& out);
+struct Completion {
+  uint32_t stopRequestedMs=0,stopConfirmedMs=0,drainClosedMs=0,finalSequence=0;
+  uint8_t streamEpoch=0;
+  bool stopConfirmed=false,sourceFinalObserved=false,uncertain=false;
+};
+// Published once after producer quiescence; immutable until storage finalizes.
+bool completion(uint8_t node,Completion& out);
+bool readyForFileFinalization();
 void logDiagnostics(); // Explicit user-requested snapshot; never a fast-path log.
 // Allocation, reconciliation and lifecycle startup run while local acquisition
 // is stopped. All selected remote resources precede PREPARE.

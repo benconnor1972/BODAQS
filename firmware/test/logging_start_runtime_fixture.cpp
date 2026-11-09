@@ -147,6 +147,7 @@ bool recording() {return true;} bool failed() {return false;}
 void start() {} void stop() {} void service() {} void release() {}
 bool stopped() {return true;}
 bool tailDrained() {return true;}
+bool readyForFileFinalization() {return true;}
 }
 namespace CanMasterManager {
   bool handoffReady = true, fenced = false;

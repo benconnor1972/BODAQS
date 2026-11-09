@@ -1,5 +1,6 @@
 #include "StorageManager.h"
 #include "RemoteImuRecording.h"
+#include "AcquisitionControl.h"
 #include "RecordingStorageWorker.h"
 #include "RTCManager.h"
 #include "ConfigManager.h"
@@ -1724,6 +1725,28 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
   document["remote_admission_reason"]=admission.attempted?ImuAdmission::reportText(admission):"not evaluated";
   document["remote_reserved_bytes"]=admission.loggerBytes;
   document["remote_cleanup_complete"] = RemoteImuRecording::stopped();
+  bool allStopConfirmed=true,allSourceFinal=true,sampleTailDiscarded=false;
+  uint16_t completionCount=0,expectedCompletions=0;
+  for(uint16_t i=0;i<s_bdqV2DescriptorCount;++i) {
+    const char* schema=s_bdqV2Descriptors[i].payloadSchema;
+    if(schema && (!strcmp(schema,"bodaqs.can_imu6.v1") || !strcmp(schema,"bodaqs.can_imu_packets.v1"))) ++expectedCompletions;
+  }
+  JsonArray remoteCompletion=document["remote_tail_windows"].to<JsonArray>();
+  for(uint8_t node=0;node<4;++node) {
+    RemoteImuRecording::Completion completion;
+    if(!RemoteImuRecording::completion(node,completion)) continue;
+    ++completionCount;allStopConfirmed &= completion.stopConfirmed;
+    allSourceFinal &= completion.sourceFinalObserved;
+    AcquisitionControl::Outcome outcome;
+    if(AcquisitionControl::outcome(node,outcome)) sampleTailDiscarded |= outcome.sampleTailDiscarded;
+    JsonObject entry=remoteCompletion.add<JsonObject>();
+    entry["node"]=node;entry["stop_requested_ms"]=completion.stopRequestedMs;
+    entry["stop_confirmed_ms"]=completion.stopConfirmedMs;entry["drain_closed_ms"]=completion.drainClosedMs;
+    entry["cessation_status"]=completion.stopConfirmed?"confirmed_stop":"unconfirmed";
+    entry["drain_basis"]=completion.uncertain?"bounded_uncertain_prefix":"stop_confirmation_observed_plus_5s";
+    entry["source_final_observed"]=completion.sourceFinalObserved;
+    if(completion.sourceFinalObserved) {entry["final_sequence"]=completion.finalSequence;entry["stream_epoch"]=completion.streamEpoch;}
+  }
   JsonArray remoteFailures=document["remote_failures"].to<JsonArray>();
   for(uint8_t node=0;node<4;++node) {
     RemoteImuRecording::Failure failure;
@@ -1749,12 +1772,15 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
       for(unsigned i=0;i<2;++i) deferred.add(t.deferrals[i]);
   }
   document["remote_tail_objects_discarded"] = RemoteImuRecording::discardedTailObjects();
+  document["remote_tail_discard_count_scope"] = "known_local_unaccepted_objects_only";
+  document["remote_sample_tail_discarded"] = sampleTailDiscarded;
   // Storage finalization and membership cleanup do not prove complete source
   // tails. Preserve unknown coverage until explicit final/accepted boundaries
   // can be reconciled; any observed deadline discard is explicitly incomplete.
   document["remote_tail_status"] = !RemoteImuRecording::configured()
-      ? "not_participating" : RemoteImuRecording::discardedTailObjects()
-      ? "incomplete" : "unknown";
+      ? "not_participating" : sampleTailDiscarded
+      ? "incomplete" : completionCount==expectedCompletions && completionCount && allStopConfirmed && allSourceFinal
+      ? "observed_terminal_boundary" : "unknown";
   document["session_id"] = s_currentSessionId;
   document["path"] = s_currentLogPath;
   document["clean_shutdown"] = true;

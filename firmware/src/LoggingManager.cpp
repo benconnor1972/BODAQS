@@ -428,6 +428,7 @@ void LoggingManager::loop() {
 #if defined(ESP32)
   if (s_stopping) {
     if(!RemoteImuRecording::tailDrained()) return;
+    if(!RemoteImuRecording::readyForFileFinalization()) return;
     if(!StorageManager_recordingIoPending() && !RemoteImuRecording::stopped()) return;
     if (!StorageManager_recordingIoPending()) { finishStorageStop(); return; }
     if (s_storageStopRequested) return;

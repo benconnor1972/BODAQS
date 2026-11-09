@@ -9,12 +9,17 @@ static bool delayNodeZero=false;
 static bool holdCommit=false, commitHeld=false;
 static BodaqsControlRecord heldCommit;
 static bool loseRenewalChallenges=false, loseRenewalResults=false;
+static bool loseStopResults=false;
+static unsigned lostStopResults;
 static unsigned lostRenewals=0;
 static uint8_t renewalError=0;
 static bool renewalErrorOnProof=false;
 static BodaqsControlRecord heldRenewal;
 static bool holdControl(uint8_t address,const BodaqsControlRecord& request) {
  if(address) return false;
+ if(loseStopResults && request.opcode==0x25) {
+  BodaqsControlRecord ignored;assert(dispatchControl(address,request,ignored));++lostStopResults;return true;
+ }
  if(holdCommit && request.opcode==0x22) {heldCommit=request;commitHeld=true;return true;}
  if(loseRenewalChallenges && request.opcode==0x26 && request.data[12]==1) {++lostRenewals;return true;}
  if(loseRenewalResults && request.opcode==0x27) {
