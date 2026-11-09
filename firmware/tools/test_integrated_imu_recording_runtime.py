@@ -29,6 +29,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--compiler", default="g++")
     parser.add_argument("--cc", default="gcc")
+    parser.add_argument("--first-recording", action="store_true")
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
     firmware = Path(__file__).resolve().parents[1]
@@ -45,7 +46,7 @@ def main():
             *[str(node / "src" / name) for name in ("imu_spi.c", "imu_capture.c", "imu_acquisition.c")],
             str(common / "bodaqs_imu_disabled.c"), str(common / "bodaqs_control.c"), "-o", str(producer)], check=True)
         wire = output / "node-recovery-can.txt"
-        subprocess.run([str(producer), "6"], env=dict(os.environ, BODAQS_NODE_FIXTURE_OUT=str(wire)), check=True)
+        subprocess.run([str(producer), *([] if args.first_recording else ["6"])], env=dict(os.environ, BODAQS_NODE_FIXTURE_OUT=str(wire)), check=True)
         source = fixture_source(firmware)
         source = source.replace('namespace LoggingManager { bool isRunning() { return recording; } bool configurationLocked() { return recording || starting; } }', '#include "LoggingManager.h"')
         # Lose one *accepted-object* RAM ACK at the SPI boundary. The master
@@ -60,10 +61,10 @@ def main():
   }
   assert(dispatchControl(address,request,reply));''')
         source = source.replace('const auto slotResult=bodaqs_master_service_process_transfer(&master,tx,length,clockMs,next);', r'''
- BodaqsMeasurementSlot outgoing={};uint8_t replacement[64];const uint8_t* delivered=tx;
- if(length==64 && dropDataAck && bodaqs_measurement_decode(tx,64,&outgoing) && outgoing.kind==5 && outgoing.body[0]==1) {
+ BodaqsMeasurementSlot outgoing={};uint8_t replacement[BODAQS_MEASUREMENT_BYTES];const uint8_t* delivered=tx;
+ if(length==BODAQS_MEASUREMENT_BYTES && dropDataAck && bodaqs_measurement_decode(tx,length,&outgoing) && (outgoing.kind==5 || outgoing.kind==14) && outgoing.body[0]==1) {
    dropDataAck=false;++droppedDataAcks;outgoing={};outgoing.node=255;outgoing.context=master.measurement.mode.context;
-   assert(bodaqs_measurement_encode(&outgoing,replacement,64));delivered=replacement;
+   assert(bodaqs_measurement_encode(&outgoing,replacement,BODAQS_MEASUREMENT_BYTES));delivered=replacement;
  }
  const auto slotResult=bodaqs_master_service_process_transfer(&master,delivered,length,clockMs,next);''')
         support = (firmware / "test/integrated_imu_recording_fixture.cpp").read_text(encoding="utf-8")
@@ -78,12 +79,29 @@ def main():
         exe = temporary / "integrated.exe"
         sources = [*common.glob("bodaqs_control*.c"), common / "bodaqs_imu_disabled.c", common / "bodaqs_master_service.c", common / "bodaqs_master_protocol.c"]
         sources += [firmware / "src" / name for name in ("CanMasterProtocol.cpp", "SensorAssignment.cpp", "SensorParams.cpp", "Lsm6dso32xConfig.cpp", "RemoteImuStream.cpp", "BdqV2Catalog.cpp", "BdqV2Writer.cpp", "ImuAdmission.cpp")]
-        subprocess.run([args.compiler, "-std=c++17", "-pthread", "-DBODAQS_QUEUE_ALLOCATION_TEST", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-Wno-unused-variable", "-I", str(firmware/"test/stubs"), "-I", str(firmware/"src"), "-I", str(common), "-I", str(firmware/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
+        subprocess.run([args.compiler, "-std=c++17", *(["-DBODAQS_SINGLE_NODE_IMU_SMOKE=1", "-DBODAQS_SPI_MEASUREMENT_V2=1"] if args.first_recording else []), "-pthread", "-DBODAQS_QUEUE_ALLOCATION_TEST", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-Wno-unused-variable", "-I", str(firmware/"test/stubs"), "-I", str(firmware/"src"), "-I", str(common), "-I", str(firmware/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
         saturated = output / "saturation-can.txt"
         saturation_wire(wire, saturated)
-        for scenario in ("good", "stall", "short", "cancel-open", "cancel-prepare"):
+        for scenario in (("good", "short", "cancel-open", "cancel-prepare") if args.first_recording else ("good", "stall", "short", "cancel-open", "cancel-prepare")):
             subprocess.run([str(exe), str(saturated if scenario == "stall" else wire), str(output / f"{scenario}.bdq"), scenario], check=True, timeout=120)
-        verify(output)
+        if args.first_recording:
+            import sys,json
+            sys.path.insert(0,str(firmware.parent / "analysis"))
+            from bodaqs_analysis.can_imu_packets import read_can_imu_packets
+            from bodaqs_analysis.first_imu_recording import assess_first_imu_recording
+            decoded=read_can_imu_packets(output / "good.bdq", "can0_imu6")
+            assert [r["sequence"] for r in decoded["readings"]]==list(range(65))
+            assert all([r[k] for k in ("ax","ay","az","gx","gy","gz")]==[-32768,32767,-1,-32768,32767,-1] for r in decoded["readings"])
+            assert not decoded["gaps"] and not decoded["ambiguous_packets"]
+            report,_=assess_first_imu_recording(output / "good.bdq")
+            assert report["final_sample_raw_observation_present"]
+            # The fixture's minimal footer is deliberately not promoted to the
+            # target's full STOP/drain completion certificate.
+            assert report["file_outcome"]=="incomplete_or_unresolved"
+            (output / "compact_decode.json").write_text(json.dumps(report,indent=2),encoding="utf-8")
+            print("Restricted v2 real node -> coordinator/RAM -> storage owner/BDQ -> independent axes/raw decode: PASS")
+        else:
+            verify(output)
 
 
 if __name__ == "__main__":

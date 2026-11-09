@@ -29,7 +29,7 @@ def read_can_imu_packets(path: str | Path, stream_key: str) -> dict:
         raise ValueError("not a compact CAN packet observation stream")
     packets = list(iter_bdq_stream_records(path, stream_key))
     companion = next((d for d in descriptors.values()
-        if d["acquisition"].get("payload_schema") == "bodaqs.can_timing_evidence.v1"
+        if d.get("acquisition", {}).get("payload_schema") == "bodaqs.can_timing_evidence.v1"
         and d["acquisition"].get("related_sample_stream_id") == descriptor["stream_id"]), None)
     evidence = list(iter_bdq_stream_records(path, companion["stream_key"])) if companion else []
     terminal = {}

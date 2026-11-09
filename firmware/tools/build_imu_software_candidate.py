@@ -57,6 +57,8 @@ def arguments() -> argparse.Namespace:
         "C:/ti/ccs2101/ccs/utils/sysconfig_1.28.1/sysconfig_cli.bat"))
     parser.add_argument("--pio", default=shutil.which("pio") or str(
         Path.home() / ".platformio/penv" / ("Scripts/pio.exe" if os.name == "nt" else "bin/pio")))
+    parser.add_argument("--profile", choices=("production", "first-recording"), default="production",
+                        help="Select restricted single-IMU v2 candidate explicitly")
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--list-commands", action="store_true",
                         help="Print command plan without running or creating files")
@@ -70,11 +72,12 @@ def plan(args: argparse.Namespace, output: Path) -> list[dict]:
                 "artifacts": artifacts or []}
 
     make = [args.make, "-B"]
+    logger_env = "bodaqs_s3_mini_n4r2_imu_smoke" if args.profile=="first-recording" else "bodaqs_s3_mini_n4r2"
     commands = [
         step("a8-dependencies", [args.pio, "pkg", "install", "-d", "firmware", "-e",
-             "bodaqs_s3_mini_n4r2"]),
+             logger_env]),
         step("firmware-host", [*make, "-C", "firmware/test", "test",
-             f"CXX={args.cxx}", f"PYTHON={Path(sys.executable).as_posix()}"]),
+             f"CXX={args.cxx}", f"CC={args.cc}", f"PYTHON={Path(sys.executable).as_posix()}"]),
         step("common-host", [*make, "-C", "firmware/can-fd/common/test", "test",
              f"CC={args.cc}", f"CXX={args.cxx}", f"PYTHON={Path(sys.executable).as_posix()}"]),
         step("master-host", [*make, "-C", "firmware/can-fd/master/test", "test",
@@ -89,6 +92,11 @@ def plan(args: argparse.Namespace, output: Path) -> list[dict]:
              "--output-dir", str(output / "scenarios")]),
         step("analysis", [sys.executable, "-m", "pytest", "-q"], cwd=ROOT / "analysis"),
     ]
+    if args.profile=="first-recording":
+        commands.append(step("integrated-first-recording", [sys.executable,
+            "firmware/tools/test_integrated_imu_recording_runtime.py", "--first-recording",
+            "--compiler", args.cxx, "--cc", args.cc,
+            "--output-dir", str(output / "scenarios-first-recording")]))
     if args.mode == "host":
         return commands
     for profile in ("bringup", "acquisition"):
@@ -102,13 +110,15 @@ def plan(args: argparse.Namespace, output: Path) -> list[dict]:
                 f"MSPM0_SDK_INSTALL_DIR={args.sdk.as_posix()}",
                 f"TICLANG_ARMCOMPILER={args.ti_compiler.as_posix()}",
                 f"SYSCONFIG_TOOL={args.sysconfig.as_posix()}",
-                f"CAN_LINK_PROFILE={profile}"], artifacts))
-    a8 = "firmware/.pio/build/bodaqs_s3_mini_n4r2"
+                f"CAN_LINK_PROFILE={profile}",
+                *([f"SPI_MEASUREMENT_PROFILE={args.profile if args.profile=='first-recording' else 'legacy'}",
+                   "CFLAGS_EXTRA=-fstack-usage"] if target=="master" else [])], artifacts))
+    a8 = f"firmware/.pio/build/{logger_env}"
     commands.append(step("a8-clean", [args.pio, "run", "-d", "firmware", "-e",
-        "bodaqs_s3_mini_n4r2", "-t", "clean"]))
+        logger_env, "-t", "clean"]))
     commands.append(step("a8-build", [args.pio, "run", "-d", "firmware", "-e",
-        "bodaqs_s3_mini_n4r2", f"-j{args.jobs}"],
-        [(f"{a8}/{name}", f"artifacts/a8-bodaqs_s3_mini_n4r2/{name}") for name in
+        logger_env, f"-j{args.jobs}"],
+        [(f"{a8}/{name}", f"artifacts/a8-{logger_env}/{name}") for name in
          ("firmware.elf", "firmware.bin", "bootloader.bin", "partitions.bin")]))
     return commands
 
@@ -180,6 +190,7 @@ def build_environment(args: argparse.Namespace) -> dict[str, str]:
     compiler = shutil.which(args.cxx) or args.cxx
     env["PATH"] = str(Path(compiler).resolve().parent) + os.pathsep + env.get("PATH", "")
     env["PYTHONPATH"] = str(ROOT / "analysis")
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     return env
@@ -228,7 +239,10 @@ def main() -> int:
         "source": {"commit": git("rev-parse", "HEAD"), "tree": git("rev-parse", "HEAD^{tree}"),
                    "tracked_dirty_before": bool(dirty), "untracked_before": untracked},
         "targets": {"node": "MSPM0G3507", "master": "MSPM0G3518",
-                    "logger": "bodaqs_s3_mini_n4r2"},
+                    "logger": "bodaqs_s3_mini_n4r2_imu_smoke" if args.profile=="first-recording" else "bodaqs_s3_mini_n4r2"},
+        "candidate_profile": args.profile,
+        "measurement": {"version": 2, "physical_bytes":256,"requested_hz":16000000,"guard_us":25,"publication":"boundary_only"} if args.profile=="first-recording" else {"version":1},
+        "acquisition": {"lease_ms":5000,"renewal_ms":1000,"challenge_ms":300},
         "link_profiles": {"bringup": [500000, 2000000], "acquisition": [1000000, 4000000]},
         "sdk": str(args.sdk.resolve()) if args.mode == "candidate" else None,
         "validation_mode": args.mode, "qualification": "physical qualification deferred",
@@ -267,12 +281,27 @@ def main() -> int:
                 shutil.copyfile(artifact, target)
                 manifest["artifacts"].append({"path": destination, "source": source,
                                                "bytes": target.stat().st_size, "sha256": sha256(target)})
+            if command["name"].startswith("master-") and command["artifacts"]:
+                for source in sorted((ROOT / "firmware/can-fd/master/ticlang").glob("*.su")):
+                    destination=f"artifacts/{command['name']}/stack/{source.name}"
+                    target=output / destination;target.parent.mkdir(parents=True,exist_ok=True)
+                    shutil.copyfile(source,target)
+                    manifest["artifacts"].append({"path":destination,"bytes":target.stat().st_size,"sha256":sha256(target)})
+                    source.unlink() # Only generated compiler reports just collected.
         # Existing toolchains create these optional diagnostics on some versions.
-        a8_folder = ROOT / "firmware/.pio/build/bodaqs_s3_mini_n4r2"
+        logger_env=manifest["targets"]["logger"]
+        a8_folder = ROOT / f"firmware/.pio/build/{logger_env}"
         for optional in ("firmware.map", "idedata.json"):
             source = a8_folder / optional
             if args.mode == "candidate" and source.exists():
-                shutil.copyfile(source, output / "artifacts/a8-bodaqs_s3_mini_n4r2" / optional)
+                shutil.copyfile(source, output / f"artifacts/a8-{logger_env}" / optional)
+        if args.mode == "candidate" and args.profile=="first-recording":
+            extras=[(ROOT / "docs/firmware/CAN-FD_First_Recording_Runbook.md", "RUNBOOK.md"),
+                    (Path.home() / ".platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin",
+                     f"artifacts/a8-{logger_env}/boot_app0.bin")]
+            for source,destination in extras:
+                target=output / destination;shutil.copyfile(source,target)
+                manifest["artifacts"].append({"path":destination,"bytes":target.stat().st_size,"sha256":sha256(target)})
         if args.mode == "candidate":
             if git("status", "--porcelain", "--untracked-files=no") or git("rev-parse", "HEAD") != manifest["source"]["commit"]:
                 raise RuntimeError("Source changed during validation; refusing to archive")

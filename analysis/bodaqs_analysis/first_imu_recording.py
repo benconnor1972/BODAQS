@@ -1,0 +1,94 @@
+"""Offline evidence for the restricted first recording; never an admission policy."""
+from __future__ import annotations
+
+from collections import Counter
+from pathlib import Path
+
+from .can_imu_packets import read_can_imu_packets, SCHEMA
+from .io_bdq import read_bdq
+
+
+def assess_first_imu_recording(path: str | Path) -> tuple[dict, dict]:
+    """Return a report plus independently decoded readings/raw observations.
+
+    Completion, delivery, identity and timing are separate results. This examines
+    file evidence only: sustained queue health and physical configuration still
+    need the operator's observations, and no sample time is reconstructed.
+    """
+    info = read_bdq(path)
+    descriptors = info.stream_catalog.get("streams", [])
+    samples = [d for d in descriptors if d.get("acquisition", {}).get("payload_schema") == SCHEMA]
+    if len(samples) != 1:
+        raise ValueError("requires exactly one compact CAN IMU stream")
+    descriptor = samples[0]
+    decoded = read_can_imu_packets(path, descriptor["stream_key"])
+    source = decoded["source"]
+    required = ("provider_uid", "node_boot", "master_boot", "recording_id", "control_session", "measurement_context")
+    identity = all(int(source.get(key, 0)) > 0 for key in required)
+    effective = source.get("effective_descriptor_hex", "")
+    try:
+        image = bytes.fromhex(effective)
+        u32 = lambda offset: int.from_bytes(image[offset:offset+4], "little")
+        configuration = (len(image)==192 and image[0]==3 and image[2]==1 and image[4]==2 and image[5]==3
+                         and (u32(48),u32(52),u32(56),u32(60),u32(64),u32(68))==(3333,1,3333,1,32000,2000000))
+    except ValueError:
+        configuration = False
+    evidence = decoded["raw_timing_observations"]
+    boundaries = [r for r in evidence if r["boundary_event_kind"]]
+    starts = [r for r in boundaries if r["boundary_event_kind"] == 2]
+    stops = [r for r in boundaries if r["boundary_event_kind"] == 8 and r["boundary_validity_flags"] & 1]
+    segments = sorted({r["source_segment_id"] for r in decoded["readings"]})
+    terminal = {r["source_segment_id"]: r["related_sequence"] for r in stops}
+    gaps = list(decoded["gaps"])
+    # The reader identifies internal gaps. A lost final packet also needs the
+    # terminal boundary's inclusive upper endpoint reconciled independently.
+    for segment in segments:
+        known = [r["sequence"] for r in decoded["readings"] if r["source_segment_id"] == segment and r["sequence"] is not None]
+        if known and segment in terminal and max(known) < terminal[segment]:
+            gaps.append({"source_segment_id": segment, "first": max(known)+1,
+                         "last": terminal[segment], "count": terminal[segment]-max(known), "extent": "known"})
+    sequence_known = bool(decoded["readings"]) and not decoded["ambiguous_packets"]
+    started = {r["source_segment_id"] for r in starts if r["boundary_validity_flags"] & 1}
+    complete_bounds = bool(segments) and all(segment in terminal and segment in started for segment in segments)
+    summary = info.final_summary
+    node = source.get("node_address")
+    windows = [r for r in summary.get("remote_tail_windows", []) if r.get("node") == node]
+    confirmed_tail = (len(windows) == 1 and windows[0].get("cessation_status") == "confirmed_stop"
+                      and windows[0].get("drain_basis") == "stop_confirmation_observed_plus_5s"
+                      and windows[0].get("source_final_observed") is True
+                      and ((windows[0].get("drain_closed_ms", 0)-windows[0].get("stop_confirmed_ms", 0)) & 0xffffffff) >= 5000)
+    if confirmed_tail:
+        confirmed_tail = (len(terminal)==1 and windows[0].get("final_sequence") == next(iter(terminal.values()))
+                          and windows[0].get("stream_epoch") == stops[-1]["stream_epoch"])
+    clean_file = summary.get("clean_shutdown") is True and not info.detected_errors
+    cleanup = summary.get("remote_cleanup_complete") is True
+    sample_discard = summary.get("remote_sample_tail_discarded") is True
+    lost_counts = {key: sum(r[key] for r in evidence) for key in
+                   ("source_loss_delta", "evidence_loss_delta", "capture_loss_delta")}
+    source_fault = lost_counts["source_loss_delta"]>5 or lost_counts["capture_loss_delta"]>5 or summary.get("remote_imu_excluded") is True or bool(summary.get("primary_samples_dropped", 0))
+    integrity = identity and configuration and sequence_known and not info.detected_errors
+    complete = integrity and complete_bounds and not gaps and confirmed_tail and clean_file and cleanup and not sample_discard and not source_fault
+    isolated_gap = len(gaps) == 1 and gaps[0].get("extent") == "known" and gaps[0].get("count") == 5
+    eligible_warning = integrity and complete_bounds and isolated_gap and confirmed_tail and clean_file and cleanup and not sample_discard and not source_fault
+    outcome = "complete_delivery" if complete else "isolated_five_sample_gap_warning" if eligible_warning else "incomplete_or_unresolved"
+    raw = [r for r in evidence if r["kind"] == 1]
+    final_raw = [r for r in raw if terminal.get(r["source_segment_id"]) == r["related_sequence"]]
+    report = {
+        "schema": "bodaqs.first_imu_recording_report.v1", "file": str(path),
+        "file_outcome": outcome, "file_cleanly_closed": clean_file,
+        "cleanup_complete": cleanup, "confirmed_stop_and_drain": confirmed_tail,
+        "full_sequence_identity": sequence_known, "source_identity_present": identity,
+        "effective_configuration_present": configuration, "source": source,
+        "sample_count": len(decoded["readings"]), "packet_count": decoded["packet_count"],
+        "segments": segments, "terminal_sequences": terminal, "gaps": gaps,
+        "duplicates": decoded["duplicates"], "ambiguous_packets": decoded["ambiguous_packets"],
+        "sample_tail_discarded": sample_discard, "loss_observations": lost_counts,
+        "raw_snapshot_count": len(raw), "final_sample_raw_observation_present": bool(final_raw),
+        "raw_kind_counts": dict(Counter(str(r["kind"]) for r in evidence)),
+        "file_errors": list(info.detected_errors), "final_summary": summary,
+        "timing_status": "unreconstructed", "capacity_qualification": "unqualified",
+        "physical_capture_status": "operator_review_required",
+        "operator_review": ["one IMU, ADC and unrelated sensors disabled", "matched candidate images/configuration",
+                            "approximately 30 seconds acquired", "no persistent queue growth or repeated overload"],
+    }
+    return report, decoded

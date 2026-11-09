@@ -51,8 +51,8 @@ closure authorization.
 
 ## Pending implementation
 
-S4 #179 real ACK/fetch boundary review; S6 #185 STOP/tail isolation;
-S7 #189 reviewed candidate. S1/S2/S3/S5 are locally implemented and reviewed.
+S7 #189 reviewed candidate is being prepared. S1-S6 are locally implemented
+and reviewed.
 S8 #190 is the subsequent manual physical capture. No physical results are claimed.
 
 ## S2 / #180: authorization implementation
@@ -206,3 +206,26 @@ delayed, then completes with explicit sample discard evidence. Normal, lost and
 unconfirmed STOP results, reboot/expiry, fenced timing rejection and restart are
 covered. Integrated storage tests use the approved one-second renewal cadence;
 their synthetic scheduling is not physical throughput evidence.
+
+## S7 / #189: reviewed candidate and offline report
+
+The candidate runner explicitly selects `--profile first-recording`: coordinated
+v2 master and restricted logger, both CAN link alternatives separately labeled,
+source archive, complete host/analysis results, target maps, compiler stack reports,
+boot segments and hashes. The acquisition pair is the operator selection; its
+requested SCK is not a measured result. The runner never accesses devices.
+
+The restricted integrated fixture now exercises actual node CAN output through
+production coordinator/control, RAM admission (including a lost data ACK), the
+independent storage owner/BDQ writer, STOP/fence/restart and Python decode.
+It verifies all65 known signed-axis samples and final raw sample association.
+A minimal fixture footer is deliberately not treated as a target completion
+certificate. Independent file vectors validate actual report completion semantics,
+including a five-sample gap warning and uncertain/torn/discarded prefixes.
+
+The [operator runbook](CAN-FD_First_Recording_Runbook.md) specifies matched images,
+configuration,30second capture, normal/uncertain STOP recovery and independent
+CSV/JSON export. Reports separate identity, delivery, completion and raw timing;
+operator queue/configuration/duration evidence remains required. Runtime timing,
+heap/stack headroom and physical recording are not established by these tests.
+Final review and target/full-suite evidence are recorded in the candidate manifest.

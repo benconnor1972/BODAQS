@@ -96,16 +96,20 @@ struct FileStorage final:RecordingStorageSink,BdqV2ByteSink {
  bool start() override {
    gate(1);file=std::fopen(path,"wb");assert(file);writer.clearStreams();
    BdqV2StreamDescriptor descriptors[9]={};
-   assert(RemoteImuRecording::describe(descriptors,8,34)==8);
-   auto& d=descriptors[8];d.source=local.source();d.channels=localChannels;d.channelCount=4;
+   const unsigned count=fixtureSensorCount*2;
+   assert(RemoteImuRecording::describe(descriptors,8,34)==count);
+   auto& d=descriptors[count];d.source=local.source();d.channels=localChannels;d.channelCount=4;
    std::strcpy(d.streamKey,"primary");std::strcpy(d.transport,"local");std::strcpy(d.clockId,"logger_monotonic");
    std::strcpy(d.clockRelation,"logger_monotonic");d.nominalSampleRateNumeratorHz=500;d.statusFlags=localFlags;d.statusFlagCount=1;
-   size_t size=BdqV2Catalog::measure("integrated_host",descriptors,9);assert(size);
+   size_t size=BdqV2Catalog::measure("integrated_host",descriptors,count+1);assert(size);
    std::vector<char> catalog(size+1);size_t written=0;
-   assert(BdqV2Catalog::write("integrated_host",descriptors,9,catalog.data(),catalog.size(),written));
-   for(const auto& desc:descriptors) assert(writer.addStream(desc.source));
+   assert(BdqV2Catalog::write("integrated_host",descriptors,count+1,catalog.data(),catalog.size(),written));
+   for(unsigned i=0;i<=count;++i) assert(writer.addStream(descriptors[i].source));
    const char metadata[]=R"({"format":"bdq.v2","format_name":"BDQLOG v2","recording_id":"integrated","device_id":"integrated_host","firmware_name":"BODAQS","firmware_version":"174-host","hardware_version":"host","created_unix_us":0,"timezone":"Australia/Perth","log_format":"bodaqs_multi_stream_binary","native_stream_contract":"bodaqs.native_stream.v1","stream_count":9,"logger_monotonic_clock":{"clock_id":"logger_monotonic","unit":"us","nondecreasing":true}})";
-   return writer.begin(*this,workspace,sizeof workspace,0,metadata,sizeof metadata-1,catalog.data(),written);
+   std::string metadataText(metadata);
+   const auto position=metadataText.find("\"stream_count\":9");assert(position!=std::string::npos);
+   metadataText.replace(position,16,"\"stream_count\":"+std::to_string(count+1));
+   return writer.begin(*this,workspace,sizeof workspace,0,metadataText.c_str(),metadataText.size(),catalog.data(),written);
  }
  bool write(const uint8_t* p,size_t n) override {
    gate(2);
@@ -149,7 +153,7 @@ static void step(unsigned duration) {
  const uint32_t until=clockMs+duration;
  while(int32_t(clockMs-until)<0) {
    ++clockMs;
-   for(unsigned n=0;n<4;++n) {
+   for(unsigned n=0;n<fixtureSensorCount;++n) {
      auto& a=acquisitions[n];bodaqs_control_acquisition_tick(&a,clockMs);
      if(!a.lease_valid) lastRenewal[n]=0;
      if(a.lease_valid && a.renewal_sequence!=renewalSequence[n]) {
@@ -170,19 +174,19 @@ static void setup() {
  ImuAdmission::Profile costs;costs.maximumSourceSamplesPerSecond=3333;costs.qualified=true;
  costs.adcAttemptsPerConversion=1;costs.canBurstFrames=20;costs.spiBurstSlots=32;
  costs.sampleSlotUs=64;costs.auxiliarySlotUs=64;costs.sampleDrainSlotsPerSecond=14000;
- assert(RemoteImuRecording::setAdmissionProfile(costs));
+ if(!ImuAdmission::singleNodeSmokeBuild()) assert(RemoteImuRecording::setAdmissionProfile(costs));
  saved.type=SensorType::LSM6DSO32XImu;std::strcpy(saved.name,"remote_imu");
  assert(savedParams.set("provider","can:0"));assert(savedParams.set("endpoint","imu"));
  assert(savedParams.set("profile","imu6_3333_32g_2000dps_v1"));saved.params.bind(&savedParams);
- fixtureSensorCount=4;
- for(unsigned n=1;n<4;++n) {
+ fixtureSensorCount=ImuAdmission::singleNodeSmokeBuild()?1:4;
+ for(unsigned n=1;n<fixtureSensorCount;++n) {
    extra[n-1]=saved;extraParams[n-1]=savedParams;
    char provider[8];std::snprintf(provider,sizeof provider,"can:%u",n);
    assert(extraParams[n-1].set("provider",provider));extra[n-1].params.bind(&extraParams[n-1]);
  }
  reset();lifecycleEnabled=true;fastMeasurementClock=true;config.logFormat=LogFormat::BodaqsMultiStreamBinary;
  BodaqsMasterDiscoveryRecord records[4]={};
- for(uint8_t n=0;n<4;++n) {
+ for(uint8_t n=0;n<fixtureSensorCount;++n) {
    auto& f=peerFixture(n);f.view.active_session=0;f.authority={};f.view.flags=0;f.view.boot_id=17;
    f.authority.next_challenge=1;
    bodaqs_control_acquisition_init(&acquisitions[n],&f.authority,&f.view,f.apply.effective,backendEvent,reinterpret_cast<void*>(static_cast<uintptr_t>(n)));
@@ -192,16 +196,16 @@ static void setup() {
    records[n].capabilities=BODAQS_CAN_LINK_CAP_ACQUISITION;records[n].endpoint_mask=1;records[n].hardware_uid=123+n;
  }
  bodaqs_master_service_set_inventory(&master,2,records,4);assert(CanMasterManager::probeNow());
- for(unsigned i=0;i<300000;++i) {advance(1);bool ready=true;for(unsigned n=0;n<4;++n) ready&=CanMasterManager::configurationReconciled(n);if(ready) break;}
- for(unsigned n=0;n<4;++n) assert(CanMasterManager::configurationReconciled(n));
+ for(unsigned i=0;i<300000;++i) {advance(1);bool ready=true;for(unsigned n=0;n<fixtureSensorCount;++n) ready&=CanMasterManager::configurationReconciled(n);if(ready) break;}
+ for(unsigned n=0;n<fixtureSensorCount;++n) assert(CanMasterManager::configurationReconciled(n));
 }
 static void awaitRunning() {
  const unsigned expectedStarts=localStarts+1;
  assert(LoggingManager::requestStart()==LoggingManager::StartResult::Pending);
  for(unsigned i=0;i<20000 && !s_running;++i) step(1);
- if(!s_running || RemoteImuRecording::failed()) {std::fprintf(stderr,"start diagnostic: expected%u starts%u starting%d stopping%d configured%d prepared%d remote_failed%d worker%d UI%s reason%s\n",expectedStarts,localStarts,s_starting,s_stopping,RemoteImuRecording::configured(),RemoteImuRecording::prepared(),RemoteImuRecording::failed(),worker.recording(),uiStatus.c_str(),RemoteImuRecording::failureReason());for(unsigned n=0;n<4;++n){AcquisitionControl::Outcome o;AcquisitionControl::outcome(n,o);std::fprintf(stderr,"node%u result%u action%u reason%u phase%u record%llu epoch%llu\n",n,unsigned(o.result),unsigned(o.action),o.reason,acquisitions[n].phase,(unsigned long long)acquisitions[n].recording,(unsigned long long)peerFixture(n).view.endpoint_epoch[0]);}}
+ if(!s_running || RemoteImuRecording::failed()) {std::fprintf(stderr,"start diagnostic: expected%u starts%u starting%d stopping%d configured%d prepared%d remote_failed%d worker%d UI%s reason%s\n",expectedStarts,localStarts,s_starting,s_stopping,RemoteImuRecording::configured(),RemoteImuRecording::prepared(),RemoteImuRecording::failed(),worker.recording(),uiStatus.c_str(),RemoteImuRecording::failureReason());for(unsigned n=0;n<fixtureSensorCount;++n){AcquisitionControl::Outcome o;AcquisitionControl::outcome(n,o);std::fprintf(stderr,"node%u result%u action%u reason%u phase%u record%llu epoch%llu\n",n,unsigned(o.result),unsigned(o.action),o.reason,acquisitions[n].phase,(unsigned long long)acquisitions[n].recording,(unsigned long long)peerFixture(n).view.endpoint_epoch[0]);}}
  assert(s_running && !s_starting && localStarts==expectedStarts && worker.recording() && !RemoteImuRecording::failed());
- for(unsigned n=0;n<4;++n) assert(acquisitions[n].phase==3 && acquisitions[n].lease_valid);
+ for(unsigned n=0;n<fixtureSensorCount;++n) assert(acquisitions[n].phase==3 && acquisitions[n].lease_valid);
 }
 static void feedWire(const char* path,unsigned pacing=40) {
  std::ifstream input(path);assert(input);unsigned id,length,frameNumber=0;std::string hex;
@@ -209,7 +213,7 @@ static void feedWire(const char* path,unsigned pacing=40) {
    assert(length<=64 && hex.size()==length*2);uint8_t payload[64]={};
    for(unsigned i=0;i<length;++i) payload[i]=std::stoul(hex.substr(i*2,2),nullptr,16);
    if(pacing<40 && id!=0x100) step(80); // preserve essential definitions under deliberate overload
-   for(uint8_t n=0;n<4;++n) {
+   for(uint8_t n=0;n<fixtureSensorCount;++n) {
      const bool accepted=bodaqs_master_service_receive_can(&master,n,id==0x100?1:2,id+(id==0x100?8*n:n),payload,length,0,clockMs*1000,clockMs);
      if(id==0x100) {
        std::fprintf(inputLedger,"%u\t%u\t%u\t%u\t%u\n",n,unsigned(payload[2]),unsigned(BdqV2Format::getU16(payload)),unsigned(payload[3]&7),unsigned(accepted));
@@ -249,7 +253,7 @@ int main(int argc,char** argv) {
      LoggingManager::cancelStart();step(100);
      assert(s_stopping && !localStarts && worker.pending());
      assert(LoggingManager::requestStart()==LoggingManager::StartResult::Failed);
-     for(unsigned n=0;n<4;++n) assert(!acquisitions[n].recording);
+     for(unsigned n=0;n<fixtureSensorCount;++n) assert(!acquisitions[n].recording);
      storage.blocked=false;opening.join();
    } else {
      delayNodeZero=true;worker.step(clockMs);
@@ -259,11 +263,11 @@ int main(int argc,char** argv) {
      assert(s_stopping && !localStarts);
    }
    serviceStorage=true;awaitFinalized();
-   for(unsigned n=0;n<4;++n) assert(!acquisitions[n].recording && !acquisitions[n].lease_valid);
+   for(unsigned n=0;n<fixtureSensorCount;++n) assert(!acquisitions[n].recording && !acquisitions[n].lease_valid);
    assert(!localStarts && localStops==1 && storage.healthChecks==1);
    assert(std::fclose(inputLedger)==0);assert(std::fclose(controlLedger)==0);puts("Integrated operator cancellation, storage ownership and lease cleanup: PASS");return 0;
  }
- awaitRunning();localRow();
+ awaitRunning();if(ImuAdmission::singleNodeSmokeBuild()) step(4200);localRow();
  std::thread writing;
  if(scenario=="stall") {
    serviceStorage=false;storage.blockOperation=2;storage.blocked=true;
@@ -288,7 +292,7 @@ int main(int argc,char** argv) {
  LoggingManager::stop(scenario=="short"?LoggingManager::StopReason::StorageFailure:LoggingManager::StopReason::UserRequest,"operator");
  assert(!s_running && s_stopping && LoggingManager::configurationLocked());
  assert(LoggingManager::requestStart()==LoggingManager::StartResult::Failed);
- step(200);for(unsigned n=0;n<4;++n) assert(acquisitions[n].terminal && !acquisitions[n].lease_valid);
+ step(200);for(unsigned n=0;n<fixtureSensorCount;++n) assert(acquisitions[n].terminal && !acquisitions[n].lease_valid);
  assert(s_stopping && clockMs-stopAt<5000);
  if(scenario=="stall") {
    assert(worker.pending() && !storage.cleanClosed);
@@ -298,7 +302,7 @@ int main(int argc,char** argv) {
  }
  awaitFinalized();
  assert(localStops==1 && storage.cleanClosed==(scenario!="short"));
- for(unsigned n=0;n<4;++n) assert(maxRenewalGap[n]<1500 && renewalSequence[n]>3);
+ for(unsigned n=0;n<fixtureSensorCount;++n) assert(maxRenewalGap[n]<1500 && renewalSequence[n]>3);
  assert(uiStatus==(scenario=="short"?"Storage failure":"Recording finalized"));
  assert(std::fclose(inputLedger)==0);
  const uint32_t recordingGaps[4]={maxRenewalGap[0],maxRenewalGap[1],maxRenewalGap[2],maxRenewalGap[3]};
@@ -317,11 +321,11 @@ int main(int argc,char** argv) {
    // the next explicit start, as in the baseline lifecycle regression.
    advance(12000);
    for(unsigned wait=0;wait<300000;++wait) {
-     bool ready=true;for(unsigned n=0;n<4;++n) ready&=CanMasterManager::configurationReconciled(n);
+     bool ready=true;for(unsigned n=0;n<fixtureSensorCount;++n) ready&=CanMasterManager::configurationReconciled(n);
      if(ready) break;
      advance(1);
    }
-   for(unsigned n=0;n<4;++n) assert(CanMasterManager::configurationReconciled(n));
+   for(unsigned n=0;n<fixtureSensorCount;++n) assert(CanMasterManager::configurationReconciled(n));
    std::fill(std::begin(lastRenewal),std::end(lastRenewal),0);
    std::fill(std::begin(maxRenewalGap),std::end(maxRenewalGap),0);
    const std::string restarted=std::string(argv[2])+".restart.bdq";storage.path=restarted.c_str();
@@ -332,10 +336,10 @@ int main(int argc,char** argv) {
    // merely to an invented malformed payload.
    assert(dispatchControl(0,stale,reply));assert(reply.opcode==127 || reply.data[0]>=4);
    assert(acquisitions[0].recording==2 && acquisitions[0].phase==3 && acquisitions[0].lease_valid);
-   uint8_t request[64],response[84];BodaqsMeasurementSlot old={};old.kind=1;old.node=0;old.context=oldContext;old.body[0]=1;
-   assert(bodaqs_measurement_encode(&old,request,64));
-   assert(bodaqs_master_service_process_transfer(&master,request,64,clockMs,response)==BODAQS_MASTER_SLOT_PROCESSED);
-   BodaqsMeasurementSlot rejected={};assert(bodaqs_measurement_decode(response,64,&rejected));assert(rejected.kind==7);
+   uint8_t request[BODAQS_MEASUREMENT_BYTES],response[BODAQS_MASTER_TRANSFER_BYTES];BodaqsMeasurementSlot old={};old.kind=1;old.node=0;old.context=oldContext;old.body[0]=1;
+   assert(bodaqs_measurement_encode(&old,request,BODAQS_MEASUREMENT_BYTES));
+   assert(bodaqs_master_service_process_transfer(&master,request,BODAQS_MEASUREMENT_BYTES,clockMs,response)==BODAQS_MASTER_SLOT_PROCESSED);
+   BodaqsMeasurementSlot rejected={};assert(bodaqs_measurement_decode(response,BODAQS_MEASUREMENT_BYTES,&rejected));assert(rejected.kind==7);
    assert(s_running && !RemoteImuRecording::failed());step(500);assert(!RemoteImuRecording::failed());localRow();
    LoggingManager::stop(LoggingManager::StopReason::UserRequest,"explicit_restart_stop");awaitFinalized(2);
    assert(storage.cleanClosed && localStarts==2 && localStops==2);
