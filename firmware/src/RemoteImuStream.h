@@ -39,6 +39,14 @@ public:
   BdqV2StreamDescriptor descriptor(bool evidence);
   bool failed() const { return failed_.load(std::memory_order_acquire); }
   bool empty() const { return !holding_ && samples_.empty() && packets_.empty() && evidence_.empty(); }
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+  struct QueueState {size_t samples,evidence,sampleCapacity,evidenceCapacity;};
+  // Queue indices are atomic; allocations/capacities stay fixed while owned.
+  QueueState queueState() const {
+    return {binding_.compactPackets?packets_.size():samples_.size(),evidence_.size(),
+      binding_.compactPackets?packets_.capacity():samples_.capacity(),evidence_.capacity()};
+  }
+#endif
 private:
   struct Sample { uint8_t bytes[28]; uint32_t dependency; };
   struct Model {

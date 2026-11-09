@@ -1,5 +1,6 @@
 #include "RemoteImuRecording.h"
 #include "RemoteImuStream.h"
+#include "ImuFlowDiagnostics.h"
 #include "AcquisitionControl.h"
 #include "../can-fd/common/protocol/bodaqs_control_acquisition.h"
 #include "CanMasterManager.h"
@@ -45,6 +46,9 @@ uint16_t recordProgress[2]={};
 bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint16_t total) {
   uint8_t open=0;
   if(!dataGate.compare_exchange_strong(open,2,std::memory_order_acq_rel)) {
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+    if(ImuFlowDiagnostics::active) ++ImuFlowDiagnostics::live.gateWait;
+#endif
     return false; // No RAM acceptance after the file admission gate closes.
   }
 
@@ -245,11 +249,52 @@ ImuAdmission::Report report;
 uint8_t sharedPending=0;
 uint32_t sharedObject=0;
 uint8_t sharedClass=0;
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+void observeConsumer(uint8_t cls,Participant& peer,bool accepted,const uint8_t* p,uint16_t total) {
+ const auto queues=peer.stream.queueState();
+ ImuFlowDiagnostics::consumer(cls,accepted,queues.samples,queues.evidence,queues.sampleCapacity,queues.evidenceCapacity);
+ if(cls==7 && total==8 && p[0]==1 && p[1]==9)
+   ImuFlowDiagnostics::loss(BdqV2Format::getU32(p+4),millis(),micros());
+}
+void logFlowSnapshot(const char* stage,[[maybe_unused]] const ImuFlowDiagnostics::Snapshot& s) {
+ LOGW_TAG("FLOW","stage=%s context=%llu began_ms=%lu observed_ms=%lu services=%lu loss_counter=%lu\n",
+  stage,(unsigned long long)s.context,(unsigned long)s.beganMs,(unsigned long)s.observedMs,(unsigned long)s.services,
+  (unsigned long)s.lossCounter);
+ LOGW_TAG("FLOW","stage=%s poll=%lu ackfetch=%lu outgoing=%lu other=%lu empty=%lu wire_failed=%lu deferred=%lu,%lu\n",
+  stage,
+  (unsigned long)s.requests[0],(unsigned long)s.requests[1],(unsigned long)s.requests[2],(unsigned long)s.requests[3],
+  (unsigned long)s.empty,(unsigned long)s.wireFailures,(unsigned long)s.deferred[0],(unsigned long)s.deferred[1]);
+ LOGW_TAG("FLOW","stage=%s queue_packet_peak=%lu/%lu queue_evidence_peak=%lu/%lu gate_wait=%lu bridge_wait=%lu management_wait=%lu\n",
+  stage,(unsigned long)s.sampleQueuePeak,(unsigned long)s.sampleCapacity,(unsigned long)s.evidenceQueuePeak,(unsigned long)s.evidenceCapacity,
+  (unsigned long)s.gateWait,(unsigned long)s.consumerWait[5],(unsigned long)s.consumerWait[6]);
+ for(unsigned i=0;i<5;++i) {
+  LOGW_TAG("FLOW","stage=%s class=%u new_frag=%lu replay_frag=%lu admitted=%lu consumer_calls=%lu consumer_wait=%lu polls=%lu fetch_target=%lu\n",
+   stage,i+1,(unsigned long)s.newFragments[i],(unsigned long)s.repeatFragments[i],(unsigned long)s.admitted[i],
+   (unsigned long)s.consumerCalls[i],(unsigned long)s.consumerWait[i],(unsigned long)s.polls[i],(unsigned long)s.fetchTargets[i]);
+  LOGW_TAG("FLOW","stage=%s class=%u proof_n=%lu proof_total_us=%llu proof_max_us=%lu proof_pending=%lu proof_oldest_us=%lu\n",
+   stage,i+1,
+   (unsigned long)s.proofMatches[i],(unsigned long long)s.proofWaitTotalUs[i],(unsigned long)s.proofWaitMaxUs[i],
+   (unsigned long)s.proofPending[i],(unsigned long)s.proofOldestUs[i]);
+ }
+ (void)stage;
+}
+#endif
 bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint16_t total) {
- if(address<4) return !(selected&(1u<<address)) || peers[address].consume(cls,address,identity,p,total);
+ if(address<4) {
+  if(!(selected&(1u<<address))) return true;
+  const bool accepted=peers[address].consume(cls,address,identity,p,total);
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+  observeConsumer(cls,peers[address],accepted,p,total);
+#endif
+  return accepted;
+ }
  if(sharedObject!=identity || sharedClass!=cls) {sharedObject=identity;sharedClass=cls;sharedPending=selected;}
  for(uint8_t n=0;n<4;++n) if(sharedPending&(1u<<n)) {
-  if(!peers[n].consume(cls,address,identity,p,total)) return false;
+  const bool accepted=peers[n].consume(cls,address,identity,p,total);
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+  observeConsumer(cls,peers[n],accepted,p,total);
+#endif
+  if(!accepted) return false;
   sharedPending&=uint8_t(~(1u<<n));
  }
  return true;
@@ -368,7 +413,18 @@ bool readyForFileFinalization() {
 }
 bool tailDrained() {for(uint8_t n=0;n<4;++n) if((selected&(1u<<n)) && !peers[n].tailDrained()) return false;return true;}
 uint32_t discardedTailObjects() {uint32_t total=0;for(uint8_t node=0;node<4;++node) {AcquisitionControl::Outcome out;AcquisitionControl::outcome(node,out);uint32_t n=out.tailObjectsDiscarded;if(UINT32_MAX-total<n) return UINT32_MAX;total+=n;}return total;}
-void release() {if(!stopped()) return;for(auto& p:peers) p.release();selected=0;report={};AcquisitionControl::setDataConsumer(nullptr,0);}
+void release() {
+ if(!stopped()) return;
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+ // stopped() acquires inactive owner state before reading owner-written snapshots.
+ if(selected && ImuFlowDiagnostics::haveFinished) {
+  if(ImuFlowDiagnostics::haveFirstLoss) logFlowSnapshot("first_loss",ImuFlowDiagnostics::firstLoss);
+  logFlowSnapshot("finished",ImuFlowDiagnostics::finished);
+ }
+#endif
+ for(auto& p:peers) p.release();
+ selected=0;report={};AcquisitionControl::setDataConsumer(nullptr,0);
+}
 uint16_t describe(BdqV2StreamDescriptor* out,uint16_t capacity,uint16_t firstId) {
  uint16_t count=0;for(uint8_t n=0;n<4;++n) if(selected&(1u<<n)) {
   uint16_t remaining=capacity>count?uint16_t(capacity-count):0;

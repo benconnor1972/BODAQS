@@ -53,6 +53,8 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_master_phase_timing_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --smoke --v2 --start-spacing-us 500 --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --smoke --v2 --start-spacing-us 500 --flow-diagnostics --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_imu_flow_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_remote_imu_stream_contract.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_remote_imu_recording_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_remote_imu_loss_runtime.py --compiler "$(CXX)"
@@ -60,6 +62,7 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_node_master_bdq_runtime.py --v2 --compiler "$(CXX)" --cc "$(CC)"
 	$(PYTHON) ../tools/test_integrated_imu_recording_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_integrated_imu_recording_runtime.py --first-recording --compiler "$(CXX)" --cc "$(CC)"
+	$(PYTHON) ../tools/test_integrated_imu_recording_runtime.py --first-recording --flow-diagnostics --compiler "$(CXX)" --cc "$(CC)"
 	@echo "All tests passed."
 
 $(TEST_BIN): $(PROD_SRCS) $(STUB_SRCS) $(TEST_SRCS) | $(BUILD_DIR)

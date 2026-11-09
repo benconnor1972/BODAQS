@@ -1,4 +1,5 @@
 #include "AcquisitionControl.h"
+#include "ImuFlowDiagnostics.h"
 #include "../can-fd/common/protocol/bodaqs_control_acquisition.h"
 #include "CanMasterManager.h"
 #include "../can-fd/common/protocol/bodaqs_control_snapshot.h"
@@ -378,6 +379,9 @@ bool begin(uint64_t recording,uint64_t context) {
   if(!task && xTaskCreate(run,"AcquisitionCtl",4096,nullptr,2,&task)!=pdPASS) return false;
 #endif
   if(!CanMasterManager::claimMeasurementControl(isOwner)) return false;
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+  ImuFlowDiagnostics::reset(context,millis());
+#endif
   const auto& d=CanMasterManager::diagnostics();session=d.authority.session;masterBoot=d.control.master_boot_id;
   nextRead=d.authority.next_read;nextTransfer=d.apply.next_transfer;
   for(uint8_t n=0;n<4;++n) {peers[n]=Peer{};peers[n].mutation=d.authority.nodes[n].next_mutation;mailboxes[n]=Mailbox{};outcomes[n]=Outcome{};}
@@ -392,7 +396,11 @@ size_t reservedBytes() {
  return sizeof(peers)+sizeof(mailboxes)+sizeof(outcomes)+sizeof(transport)+sizeof(fenceSnapshot)+3*sizeof(uint32_t)+
         sizeof(recordingId)+sizeof(contextId)+sizeof(session)+sizeof(masterBoot)+sizeof(nextTransfer)+
         sizeof(nextRead)+sizeof(cursor)+sizeof(dataConsumer)+sizeof(dataMask)+sizeof(dataCursor)+sizeof(serviceCursor)+
-        4096; // configured control task stack; watermark qualification remains deferred
+        4096 // configured control task stack; watermark qualification remains deferred
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+        +ImuFlowDiagnostics::reservedBytes()
+#endif
+        ;
 }
 bool active() {Lock lock;return owned;}
 bool setDataConsumer(DataConsumer consumer,uint8_t mask) {
@@ -415,6 +423,9 @@ void service() {
 #endif
   bool enter=false,exit=false;
   {Lock lock;if(!owned) return;enter=enterPending;enterPending=false;exit=exitPending;}
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+  ImuFlowDiagnostics::service();
+#endif
   servicing=true;
   if(transport.failed) for(uint8_t n=0;n<4;++n) {
     Request terminal;bool queued=false;
@@ -437,6 +448,9 @@ void service() {
         {Lock lock;mailboxes[n].pending=false;outcomes[n].localFenceComplete=true;}
       }
       nextFenceSnapshot=millis();publishFenceDiagnostics(millis());
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+      ImuFlowDiagnostics::finish(millis(),micros());
+#endif
       CanMasterManager::releaseMeasurementControl();
       {Lock lock;owned=false;exitPending=false;cleanupRequested=false;}
       servicing=false;return;
@@ -457,6 +471,9 @@ void service() {
       uint32_t mutations[4];for(uint8_t n=0;n<4;++n) mutations[n]=peers[n].mutation;
       CanMasterManager::retainMeasurementAllocators(nextRead,mutations,nextTransfer);
       nextFenceSnapshot=millis();publishFenceDiagnostics(millis());
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+      ImuFlowDiagnostics::finish(millis(),micros());
+#endif
       CanMasterManager::releaseMeasurementControl();
       {Lock lock;owned=false;exitPending=false;}
       servicing=false;return;

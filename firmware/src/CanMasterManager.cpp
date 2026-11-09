@@ -4,6 +4,7 @@
 #include <esp_timer.h>
 #endif
 #include "CanMasterManager.h"
+#include "ImuFlowDiagnostics.h"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -752,7 +753,12 @@ static MeasurementInbox* transportInbox_(MeasurementTransport& transport,uint8_t
 void releaseMeasurementObject(MeasurementInbox& inbox) {
   if (!measurementAccess_()) return;
   if(inbox.ackPending && inbox.pendingAck.object!=inbox.state.object) return;
-  if(inbox.state.complete) {inbox.admitted=true;inbox.ackPending=true;bodaqs_fragment_ack(&inbox.state,1,&inbox.pendingAck);}
+  if(inbox.state.complete) {
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+    if(!inbox.admitted) ImuFlowDiagnostics::admitted(inbox.state.cls);
+#endif
+    inbox.admitted=true;inbox.ackPending=true;bodaqs_fragment_ack(&inbox.state,1,&inbox.pendingAck);
+  }
 }
 
 bool queueMeasurementControl(MeasurementTransport& transport,const BodaqsControlWrapped& wrapped,
@@ -921,6 +927,9 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
     if(cls<3 && !request.object) {
       uint8_t budgetNode=node==255?4:node;
       if(static_cast<int32_t>(millis()-transport.nextHeadPollMs[cls-1][budgetNode])<0) {
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+        if(ImuFlowDiagnostics::active) ++ImuFlowDiagnostics::live.deferred[cls-1];
+#endif
         ++s_diagnostics.measurementTiming.deferrals[cls-1];return 0;
       }
       transport.nextHeadPollMs[cls-1][budgetNode]=millis()+20;
@@ -938,7 +947,13 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
       transport.bridgeRetry=millis()+20; // normal data/ACK polls run between retries
     }
   }
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+  ImuFlowDiagnostics::request(request.kind,request.body[0],request.node,request.object,micros(),request.body[2]);
+#endif
   if(!exchangeMeasurementSlot(request,response)) {
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+    if(ImuFlowDiagnostics::active) ++ImuFlowDiagnostics::live.wireFailures;
+#endif
     transport.previousPollClass=0;
     transport.recovering=true;transport.recoveryStarted=millis();
     transport.recoveryBinding=s_diagnostics.measurement;
@@ -955,6 +970,9 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
     return 0;
   }
   const uint64_t receivedUs=loggerClockUs_();
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+  if(ImuFlowDiagnostics::active && !response.kind) ++ImuFlowDiagnostics::live.empty;
+#endif
   if(response.context==transport.context && transport.bridgePending &&
      static_cast<uint32_t>(millis()-transport.bridgeStarted)<300 &&
      response.object==transport.bridgeToken && bodaqs_bridge_valid(&response,1)) {
@@ -970,8 +988,12 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
       const auto& pending=retired->pendingAck;
       if(pending.context==response.context && pending.object==response.retiredObject &&
          pending.total==response.retiredTotal &&
-         bodaqs_measurement_get(pending.body+4,4)==response.retiredChecksum)
+         bodaqs_measurement_get(pending.body+4,4)==response.retiredChecksum) {
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+        ImuFlowDiagnostics::proof(response.retiredClass,response.retiredNode,response.retiredObject,micros());
+#endif
         retired->ackPending=false;
+      }
     }
   }
 #else
@@ -1033,7 +1055,14 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
   }
   BodaqsMeasurementSlot ack={};
   const uint32_t previousObject=inbox->state.object;
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+  const bool freshFragment=response.index<32 && (response.object>previousObject ||
+      (previousObject==response.object && !(inbox->state.mask&(1UL<<response.index))));
+#endif
   int result=bodaqs_fragment_accept(&inbox->state,inbox->bytes,sizeof(inbox->bytes),&response,1,&ack);
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+  if(result>=0) ImuFlowDiagnostics::fragment(responseClass,freshFragment);
+#endif
   if(inbox->state.object!=previousObject) inbox->requestedFragments=0;
   if(result==1) {
     inbox->admitted=false;

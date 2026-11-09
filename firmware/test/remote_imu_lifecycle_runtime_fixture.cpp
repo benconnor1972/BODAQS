@@ -272,6 +272,19 @@ int main(int argc,char** argv) {
     auto& source=descriptors[0].source;
     assert(source.pendingRecords(source.context)==2048);
     recordingSteps(200);assert(source.pendingRecords(source.context)==2048);
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+    assert(ImuFlowDiagnostics::live.sampleQueuePeak==2048);
+    assert(ImuFlowDiagnostics::live.consumerWait[0]>0);
+    assert(ImuFlowDiagnostics::live.proofMatches[0]>0);
+    // A real master loss report traverses the wire/management consumer while
+    // the native packet queue stays full. Capture is diagnostic, not admission.
+    const uint8_t lost[16]={0,0,1,1};
+    bodaqs_master_service_loss(&master,0,6,1,lost,16,clockMs*1000,100000);
+    recordingSteps(500);
+    assert(ImuFlowDiagnostics::haveFirstLoss);
+    assert(ImuFlowDiagnostics::firstLoss.sampleQueuePeak==2048);
+    assert(ImuFlowDiagnostics::firstLoss.lossCounter==1);
+#endif
     retirePhysicalMaster=false;RemoteImuRecording::stop();
     recordingSteps(8000);
     AcquisitionControl::Outcome pendingFence;AcquisitionControl::outcome(0,pendingFence);
@@ -296,6 +309,11 @@ int main(int argc,char** argv) {
         (unsigned long)diagnostic.inspections,(unsigned long)diagnostic.observations,diagnostic.allFenced,diagnostic.verified);
     }
     assert(RemoteImuRecording::stopped() && !AcquisitionControl::active());
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+    assert(ImuFlowDiagnostics::haveFinished && !ImuFlowDiagnostics::active);
+    assert(ImuFlowDiagnostics::finished.consumerWait[0]>0);
+    assert(ImuFlowDiagnostics::firstLoss.lossCounter==1);
+#endif
     if(deferFenceStatus) assert(deferredFenceStatuses && ordinaryFenceStatuses);
     uint8_t row[100];unsigned count=0;
     while(source.pendingRecords(source.context)) {
