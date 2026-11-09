@@ -66,6 +66,7 @@ def main():
         subprocess.run([str(exe), "uncertain-stop"], check=True)
         if args.smoke and args.v2:
             subprocess.run([str(exe), "tail-pressure"], check=True)
+            subprocess.run([str(exe), "tail-pressure-deferred-status"], check=True)
         if args.smoke:
             for scenario in ("scope-two", "scope-other", "scope-adc"):
                 subprocess.run([str(exe), scenario], check=True)

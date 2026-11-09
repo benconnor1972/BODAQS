@@ -9,7 +9,7 @@ layout and the packaged map. This localizes the remaining stall to logger proof
 recognition or retained-state retirement. It does not identify its cause.
 
 The earlier copied BDQ is an in-progress prefix:120422 retained readings,
-45831 known sequence gaps across2361 intervals,46078 reported source losses at
+45831 known missing samples across2361 gap intervals,46078 reported source losses at
 master software-retention stage6, and no STOP/footer in that copy. The user
 confirmed it was copied before finalization. Do not infer a file-close failure
 from that prefix alone. Its loss pattern is sustained, not an isolated packet.
@@ -40,3 +40,33 @@ pressure snapshot assertions. Acquisition control retry/wrap/expiry and restrict
 integrated storage/decoder tests also pass. The reviewer accepted final source
 with no remaining findings. Target compilation and hashes are retained in the
 new diagnostic bundle; physical reproduction is still an operator step.
+
+## Asynchronous inspection proof fix
+
+The diagnostic rerun showed allFence1, no pending control/mailbox masks,3792
+inspection attempts and zero observations, while the shared timing inbox stayed
+unadmitted. Master fencing was complete. The inspector only examined responses
+inside its four-transfer burst; ordinary poll responses were not routed to it.
+A matching status could therefore arrive between inspections and be discarded.
+
+The new `tail-pressure-deferred-status` test preserves real master-produced
+status bytes but delivers them on later ordinary SPI slots. Before the fix it
+reproduces a fenced master and successful node Fence with a logger stuck awaiting
+local retirement. After the fix it completes cleanup with the retained queue
+records intact and explicit discard accounting.
+
+The existing owner-only SPI receive path now routes matching status responses
+through the unchanged inspection validator. A bounded latch retains the validated
+observation until the inspector consumes it once. The initial/preloaded slot is
+also considered when it matches the same live nonce. A new nonce,300ms expiry,
+boot/context change, mode transition or manager restart clears the latch. Full
+binding changes still revoke measurement readiness. Administrative cancellation
+still requires confirmed readiness and the physical FENCED flag; RAM admission
+and ACK rules are unchanged.
+
+Nine hostile/positive cases cover ordinary-slot reception, wrong nonce/header
+context, changed boot/session/record/body context, aged proof and replay after
+consumption. Fresh boundary review independently ran these tests and found no
+remaining findings. The physical DMA/FIFO proof mechanism is unchanged. This
+software fix matches the observed failure, but still needs the operator to
+confirm finalization on the hardware. Sustained sample loss remains separate.

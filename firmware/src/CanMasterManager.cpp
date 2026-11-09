@@ -45,6 +45,7 @@ uint32_t s_nextSequence = 1;
 struct ModeInspection {
   uint32_t token=0,startedMs=0;
   uint64_t boot=0,context=0;
+  bool ready=false;
 } s_modeInspection;
 uint32_t s_nextProbeMs = 0;
 bool s_started = false;
@@ -690,6 +691,7 @@ void retainMeasurementAllocators(uint32_t read,const uint32_t mutations[4],uint6
   s_diagnostics.apply.next_transfer=transfer;
 }
 
+static bool modeObservation_(const BodaqsMeasurementSlot&,uint32_t,uint64_t,const BodaqsMeasurementMode*);
 static uint32_t measurementTimingStartUs,measurementTimingEndUs;
 bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
                              BodaqsMeasurementSlot& response) {
@@ -719,6 +721,13 @@ bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
     const uint8_t cls=bodaqs_fragment_class(response.kind);
     if(cls>=1 && cls<=5) ++timing.fragments[cls-1];
   }
+  // Full-duplex responses belong to their identity, not the MOSI poll that
+  // happens to carry them. Preserve a matching inspection observed on data,
+  // ACK or control traffic for the next bounded inspection call.
+  if(valid && s_modeInspection.token &&
+     static_cast<uint32_t>(millis()-s_modeInspection.startedMs)<300 &&
+     modeObservation_(response,s_modeInspection.token,s_modeInspection.context,nullptr))
+    s_modeInspection.ready=true;
   return valid;
 }
 
@@ -1181,18 +1190,20 @@ bool inspectMeasurementMode() {
     if(!s_modeInspection.token || s_modeInspection.boot!=s_diagnostics.measurement.boot ||
        s_modeInspection.context!=s_diagnostics.measurement.context ||
        static_cast<uint32_t>(millis()-s_modeInspection.startedMs)>=300) {
+      s_modeInspection={};
       s_modeInspection.token=nextSequence_();s_modeInspection.startedMs=millis();
       s_modeInspection.boot=s_diagnostics.measurement.boot;
       s_modeInspection.context=s_diagnostics.measurement.context;
     }
+    if(s_modeInspection.ready) {s_modeInspection={};return true;}
     const uint32_t token=s_modeInspection.token;
     BodaqsMeasurementSlot query = {}, response = {};
     query.kind=6; query.node=255; query.object=token; query.context=s_diagnostics.measurement.context;
-    (void)exchangeMeasurementSlot(query,response); // Preloaded data is never fresh evidence.
-    for(uint8_t attempt=0;attempt<3;++attempt) {
-      if(exchangeMeasurementSlot(query,response) && modeObservation_(response,token,query.context,nullptr)) {
-        s_modeInspection={};return true;
-      }
+    for(uint8_t attempt=0;attempt<4;++attempt) {
+      (void)exchangeMeasurementSlot(query,response);
+      // This includes a preloaded status from an earlier attempt using this
+      // same fresh nonce. Unrelated/stale frames cannot set ready.
+      if(s_modeInspection.ready) {s_modeInspection={};return true;}
     }
     return false;
   }

@@ -60,6 +60,9 @@ static unsigned physicalSlots;
 static bool dropOrdinaryControlAck=false;
 static unsigned droppedControlAcks;
 static bool delayStatusResponses=false;
+static bool deferFenceStatus=false,haveDeferredFenceStatus=false;
+static unsigned deferredFenceStatuses=0,ordinaryFenceStatuses=0;
+static uint8_t deferredFenceStatus[BODAQS_MEASUREMENT_BYTES];
 static unsigned delayedResponseDepth=8;
 struct DelayedSpiSlot {uint8_t bytes[BODAQS_MASTER_TRANSFER_BYTES];};
 static std::vector<DelayedSpiSlot> delayedSpiSlots;
@@ -153,6 +156,19 @@ bool transfer(int8_t,const SPISettings& settings,const uint8_t*tx,uint8_t*rx,siz
      static_cast<unsigned>(legacy.type)==0x87 &&
      bodaqs_control_decode_wrapped(legacy.payload,legacy.payload_length,&reply) && reply.record.opcode==2)
    memset(rx,0,length);
+ }
+ if(deferFenceStatus && length==BODAQS_MEASUREMENT_BYTES && master.acquisition_fenced && master.measurement.fenced) {
+  BodaqsMeasurementSlot request={},reply={};
+  assert(bodaqs_measurement_decode(tx,length,&request));
+  if(request.kind==6 && bodaqs_measurement_decode(rx,length,&reply) && reply.kind==6) {
+   // Actual status response becomes visible only on a later ordinary SPI slot.
+   // The selected physical response window is asynchronous to the inspector.
+   memcpy(deferredFenceStatus,rx,length);haveDeferredFenceStatus=true;++deferredFenceStatuses;
+   reply={};reply.node=255;reply.context=master.measurement.mode.context;
+   assert(bodaqs_measurement_encode(&reply,rx,length));
+  } else if(request.kind!=6 && haveDeferredFenceStatus) {
+   memcpy(rx,deferredFenceStatus,length);haveDeferredFenceStatus=false;++ordinaryFenceStatuses;
+  }
  }
  return true;
 }

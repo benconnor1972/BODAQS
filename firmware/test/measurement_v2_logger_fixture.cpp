@@ -1,4 +1,44 @@
+static void asynchronousInspectionProofs() {
+  for(unsigned variant=0;variant<9;++variant) {
+    reset();fixedMeasurementClock=true;
+    assert(CanMasterManager::enterMeasurementMode(123,456));
+    master.acquisition_fenced=1;master.measurement.fenced=true;
+    deferFenceStatus=true;haveDeferredFenceStatus=false;
+    assert(!CanMasterManager::inspectMeasurementMode());
+    assert(haveDeferredFenceStatus);
+    BodaqsMeasurementSlot proof={};
+    assert(bodaqs_measurement_decode(deferredFenceStatus,BODAQS_MEASUREMENT_BYTES,&proof));
+    assert(proof.kind==6 && (proof.body[36]&2));
+    deferFenceStatus=false;
+    if(variant==1) ++proof.object;
+    if(variant==2) ++proof.context;
+    if(variant>=3 && variant<=6) ++proof.body[(variant-3)*8]; // boot, session, record, body context
+    if(variant==7) clockMs+=301;
+    assert(bodaqs_measurement_encode(&proof,preloaded,BODAQS_MEASUREMENT_BYTES));
+    BodaqsMeasurementSlot poll={},received={};poll.kind=1;poll.node=255;poll.context=456;poll.body[0]=5;
+    assert(CanMasterManager::exchangeMeasurementSlot(poll,received));
+    const uint32_t before=master.slots_received;
+    if(variant>=3 && variant<=6) {
+      assert(!CanMasterManager::measurementReady()); // matched identity change fails closed
+      continue;
+    }
+    assert(CanMasterManager::inspectMeasurementMode());
+    if(variant==0 || variant==8) {
+      assert(master.slots_received==before); // proof arrived on an ordinary poll, no extra wire exchange
+      if(variant==8) {
+        assert(bodaqs_measurement_encode(&proof,preloaded,BODAQS_MEASUREMENT_BYTES));
+        assert(CanMasterManager::exchangeMeasurementSlot(poll,received));
+        const uint32_t replayBefore=master.slots_received;
+        assert(CanMasterManager::inspectMeasurementMode());
+        assert(master.slots_received>replayBefore); // consumed nonce cannot satisfy another inspection
+      }
+    } else assert(master.slots_received>before); // wrong/expired proof requires a fresh successful query
+  }
+  deferFenceStatus=false;haveDeferredFenceStatus=false;
+  puts("asynchronous mode proofs preserve nonce, binding, freshness and one-time consumption: PASS");
+}
 int main() {
+  asynchronousInspectionProofs();
   reset();fixedMeasurementClock=true;
   assert(CanMasterManager::enterMeasurementMode(123,456));
   master.acquisition_record[0]=123;master.acquisition_boot[0]=node.view.boot_id;

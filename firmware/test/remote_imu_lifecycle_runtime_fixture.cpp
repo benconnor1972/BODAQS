@@ -210,7 +210,8 @@ int main(int argc,char** argv) {
   RemoteImuRecording::start();recordingSteps(2000);
   assert(RemoteImuRecording::recording());
   assert(!RemoteImuRecording::failed());
-  if(argc>1 && !std::strcmp(argv[1],"tail-pressure")) {
+  if(argc>1 && (!std::strcmp(argv[1],"tail-pressure") || !std::strcmp(argv[1],"tail-pressure-deferred-status"))) {
+    deferFenceStatus=!std::strcmp(argv[1],"tail-pressure-deferred-status");
     assert(ImuAdmission::singleNodeSmokeBuild() && BODAQS_MEASUREMENT_VERSION==2);
     uint8_t boundary[64]={};boundary[0]=1;boundary[1]=0x25;boundary[2]=1;boundary[6]=56;
     bodaqs_control_put_u32(boundary+8,node.view.boot_id);boundary[13]=1;boundary[14]=2;
@@ -244,7 +245,14 @@ int main(int argc,char** argv) {
     assert(!bodaqs_master_service_publish_evidence(&master,timing,sizeof timing));
     retirePhysicalMaster=true;
     for(unsigned i=0;i<30000 && !RemoteImuRecording::stopped();++i) recordingSteps(1);
+    if(deferFenceStatus && !RemoteImuRecording::stopped()) {
+      AcquisitionControl::fenceDiagnostics(diagnostic);
+      std::fprintf(stderr,"fence stall: master_fenced=%d node_mask=%u deferred=%u ordinary_deliveries=%u attempts=%lu observations=%lu all=%d verified=%d\n",
+        master.measurement.fenced,master.acquisition_fenced,deferredFenceStatuses,ordinaryFenceStatuses,
+        (unsigned long)diagnostic.inspections,(unsigned long)diagnostic.observations,diagnostic.allFenced,diagnostic.verified);
+    }
     assert(RemoteImuRecording::stopped() && !AcquisitionControl::active());
+    if(deferFenceStatus) assert(deferredFenceStatuses && ordinaryFenceStatuses);
     uint8_t row[100];unsigned count=0;
     while(source.pendingRecords(source.context)) {
       assert(source.popRecord(source.context,row,sizeof row));
