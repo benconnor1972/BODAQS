@@ -7,9 +7,9 @@ extern "C"
 #endif
 #define BODAQS_ACQ_PREPARE_BYTES 112U
 #define BODAQS_ACQ_STATE_BYTES 128U
-#define BODAQS_ACQ_LEASE_MS 1000U
+#define BODAQS_ACQ_LEASE_MS 5000U
 #define BODAQS_ACQ_RESPONSE_MS 300U
-#define BODAQS_ACQ_RENEW_MS 100U
+#define BODAQS_ACQ_RENEW_MS 1000U
     /* One nonblocking main-loop hardware owner. Commands are delivered once; POLL
      * observes independent completion. Every event echoes generation. A backend must
      * stop/discard on STOP, even if PREPARE/START has not completed. No ISR SPI writes. */

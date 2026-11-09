@@ -198,7 +198,9 @@ struct Rig
         assert(answer.opcode == 0x26);
         assert(bodaqs_control_get_u32(answer.data + 8) == now * 1000U);
         assert((uint32_t)(bodaqs_control_get_u32(answer.data + 16) -
-                          bodaqs_control_get_u32(answer.data + 8)) == 1000000U);
+                          bodaqs_control_get_u32(answer.data + 8)) == 5000000U);
+        assert((uint32_t)(bodaqs_control_get_u32(answer.data + 12) -
+                          bodaqs_control_get_u32(answer.data + 8)) == 300000U);
         auto retry = send(challenge);
         assert(!memcmp(answer.data, retry.data, 24));
         auto commit = request(0x22, 2);

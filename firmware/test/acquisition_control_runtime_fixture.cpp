@@ -101,14 +101,14 @@ int main() {
  for(uint8_t n=0;n<4;++n) {
   assert(AcquisitionControl::outcome(n,result));
   assert(result.result==AcquisitionControl::Result::Succeeded && result.leaseAcknowledged);
-  assert(acquisitions[n].phase==2 && acquisitions[n].renewal_sequence>=3);
+  assert(acquisitions[n].phase==2 && acquisitions[n].renewal_sequence>=2 && acquisitions[n].renewal_sequence<=3);
  }
  // A pending ordinary START on one node does not suppress its own renewals or
- // other nodes' 100ms lease attempts. STOP then supersedes that operation.
+ // other nodes' one-second lease attempts. STOP then supersedes that operation.
  request={};request.action=AcquisitionControl::Action::Start;request.recording=123;
  request.revision=1;request.epoch=node.view.endpoint_epoch[0];delayNodeZero=true;
  assert(AcquisitionControl::enqueue(request));controlSteps(1500);
- for(uint8_t n=0;n<4;++n) assert(acquisitions[n].lease_valid && acquisitions[n].renewal_sequence>=10);
+ for(uint8_t n=0;n<4;++n) assert(acquisitions[n].lease_valid && acquisitions[n].renewal_sequence>=3 && acquisitions[n].renewal_sequence<=5);
  request.action=AcquisitionControl::Action::Stop;assert(AcquisitionControl::enqueue(request));
  delayNodeZero=false;controlSteps(500);
  assert(acquisitions[0].terminal && !acquisitions[0].lease_valid && acquisitions[0].stopped);

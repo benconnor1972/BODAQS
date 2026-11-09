@@ -145,7 +145,7 @@ void bodaqs_control_acquisition_exclude(BodaqsControlAcquisition *s, uint8_t rea
 static bool proof(BodaqsControlAcquisition *s, const BodaqsControlRecord *q, uint32_t now,
                   bool initial)
 {
-    return s->challenge_valid && !reached(now, s->issued_ms + 300U) &&
+    return s->challenge_valid && !reached(now, s->issued_ms + BODAQS_ACQ_RESPONSE_MS) &&
            bodaqs_control_get_u64(q->data) == bodaqs_control_get_u64(s->challenge_request.data) &&
            bodaqs_control_get_u64(q->data + 8) == s->challenge &&
            bodaqs_control_get_u32(q->data + 16) ==
@@ -179,7 +179,7 @@ void bodaqs_control_acquisition_tick(BodaqsControlAcquisition *s, uint32_t now)
         else if (s->phase == 1 && (uint32_t)(now - s->prepared_ms) >= 5000)
             bodaqs_control_acquisition_exclude(s, 18);
     }
-    if (s->challenge_valid && reached(now, s->issued_ms + 300U))
+    if (s->challenge_valid && reached(now, s->issued_ms + BODAQS_ACQ_RESPONSE_MS))
         s->challenge_valid = false;
     if (!s->backend || (!s->command && !s->recording))
         return;
@@ -360,8 +360,8 @@ bool bodaqs_control_acquisition_process(BodaqsControlAcquisition *s, const Bodaq
         memset(r->data, 0, 24);
         bodaqs_control_put_u64(r->data, s->challenge);
         bodaqs_control_put_u32(r->data + 8, s->issued_tick);
-        bodaqs_control_put_u32(r->data + 12, s->issued_tick + 300000U);
-        bodaqs_control_put_u32(r->data + 16, s->issued_tick + 1000000U);
+        bodaqs_control_put_u32(r->data + 12, s->issued_tick + BODAQS_ACQ_RESPONSE_MS * 1000U);
+        bodaqs_control_put_u32(r->data + 16, s->issued_tick + BODAQS_ACQ_LEASE_MS * 1000U);
         bodaqs_control_put_u32(r->data + 20, seq);
         return true;
     }
@@ -387,8 +387,8 @@ bool bodaqs_control_acquisition_process(BodaqsControlAcquisition *s, const Bodaq
             result(s, q, r, 1, reason);
             return true;
         }
-        s->lease_deadline = s->issued_ms + 1000U;
-        s->lease_tick = s->issued_tick + 1000000U;
+        s->lease_deadline = s->issued_ms + BODAQS_ACQ_LEASE_MS;
+        s->lease_tick = s->issued_tick + BODAQS_ACQ_LEASE_MS * 1000U;
         s->renewal_sequence = bodaqs_control_get_u32(q->data + 16);
         s->challenge_valid = false;
         s->renewal_valid = true;
@@ -479,9 +479,9 @@ bool bodaqs_control_acquisition_process(BodaqsControlAcquisition *s, const Bodaq
         s->recording = bodaqs_control_get_u64(q->data);
         s->owner = q->session;
         s->renewal_sequence = bodaqs_control_get_u32(q->data + 16);
-        s->lease_deadline = s->issued_ms + 1000U;
+        s->lease_deadline = s->issued_ms + BODAQS_ACQ_LEASE_MS;
         s->lease_valid = true;
-        s->lease_tick = s->issued_tick + 1000000U;
+        s->lease_tick = s->issued_tick + BODAQS_ACQ_LEASE_MS * 1000U;
         s->challenge_valid = false;
         s->staging = false;
         s->phase = 1;
@@ -719,7 +719,7 @@ void bodaqs_control_acquisition_capture(void *context, const BodaqsControlNode *
     bodaqs_control_put_u32(d + 24, v->boot_id);
     bodaqs_control_put_u32(d + 28, flags);
     bodaqs_control_put_u32(d + 32, s->lease_tick);
-    bodaqs_control_put_u32(d + 36, s->challenge ? s->issued_tick + 300000U : 0);
+    bodaqs_control_put_u32(d + 36, s->challenge ? s->issued_tick + BODAQS_ACQ_RESPONSE_MS * 1000U : 0);
     bodaqs_control_put_u32(d + 40, s->recording ? s->prepared_tick + 5000000U : 0);
     bodaqs_control_put_u32(d + 44, s->renewal_sequence);
     bodaqs_control_put_u32(d + 48, captured_tick);

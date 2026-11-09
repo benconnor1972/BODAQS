@@ -1,4 +1,5 @@
 #include "AcquisitionControl.h"
+#include "../can-fd/common/protocol/bodaqs_control_acquisition.h"
 #include "CanMasterManager.h"
 #include "../can-fd/common/protocol/bodaqs_control_snapshot.h"
 #include <Arduino.h>
@@ -196,13 +197,13 @@ static void accept(uint8_t n,bool protectedLane,const BodaqsControlWrapped& wrap
     const bool initial=p.phase==Phase::InitialProof;
     if((!initial && !p.leased) || r.data_length!=24 ||
        bodaqs_control_get_u32(r.data+20)!=p.renewal || !bodaqs_control_get_u64(r.data) ||
-       static_cast<uint32_t>(bodaqs_control_get_u32(r.data+12)-bodaqs_control_get_u32(r.data+8))!=300000 ||
-       static_cast<uint32_t>(bodaqs_control_get_u32(r.data+16)-bodaqs_control_get_u32(r.data+8))!=1000000) {
+       static_cast<uint32_t>(bodaqs_control_get_u32(r.data+12)-bodaqs_control_get_u32(r.data+8))!=BODAQS_ACQ_RESPONSE_MS*1000U ||
+       static_cast<uint32_t>(bodaqs_control_get_u32(r.data+16)-bodaqs_control_get_u32(r.data+8))!=BODAQS_ACQ_LEASE_MS*1000U) {
       exclude(n,1);return;
     }
     // Node ticks are not logger ticks. Bound transit by local request age.
-    if(static_cast<uint32_t>(millis()-x.started)>=300) {exclude(n,26);return;}
-    p.proposedDeadline=x.started+1000;
+    if(static_cast<uint32_t>(millis()-x.started)>=BODAQS_ACQ_RESPONSE_MS) {exclude(n,26);return;}
+    p.proposedDeadline=x.started+BODAQS_ACQ_LEASE_MS;
     p.proposedWireDeadline=bodaqs_control_get_u32(r.data+16);
     auto proof=request(n,initial?0x22:0x27,initial?p.ordinary.request.record.operation:q.record.operation,initial?p.transfer:0);
     proof.record.data_length=24;bodaqs_control_put_u64(proof.record.data,p.recording);
@@ -265,7 +266,7 @@ static void accept(uint8_t n,bool protectedLane,const BodaqsControlWrapped& wrap
     p.phase=Phase::Idle;publish(n,Result::Succeeded);return;
   }
   if(q.record.opcode==0x22 && (r.data[0]==2 || r.data[0]==3)) {
-    p.leased=true;p.leaseDeadline=p.proposedDeadline;p.nextRenewal=millis()+100;p.phase=Phase::Idle;
+    p.leased=true;p.leaseDeadline=p.proposedDeadline;p.nextRenewal=millis()+BODAQS_ACQ_RENEW_MS;p.phase=Phase::Idle;
   }
   if(r.data_length!=24) {fail(n,Result::Uncertain,1);return;}
   if(r.data[0]==2) {
@@ -385,7 +386,7 @@ void service() {
     }}
     if(have) beginRequest(n,intent);
     for(Exchange* x:{&p.ordinary,&p.protectedLane}) {
-      const uint32_t deadline=x==&p.protectedLane?300:3500;
+      const uint32_t deadline=x==&p.protectedLane?BODAQS_ACQ_RESPONSE_MS:3500;
       // A request may have been queued after the service-level 'now' snapshot.
       if(x->pending && static_cast<uint32_t>(millis()-x->started)>=deadline) {
         x->pending=false;if(x==&p.protectedLane) p.leased=false;
@@ -412,7 +413,7 @@ void service() {
       }
     }
     if(p.leased && due(now,p.nextRenewal)) {
-      p.nextRenewal=now+100; // no accumulated catch-up requests
+      p.nextRenewal=now+BODAQS_ACQ_RENEW_MS; // no accumulated catch-up requests
       if(!p.protectedLane.pending) challenge(n,false);
     }
   }
