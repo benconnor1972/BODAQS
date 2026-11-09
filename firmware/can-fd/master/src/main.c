@@ -21,6 +21,11 @@
 #ifndef BODAQS_ENABLE_FRONT_BRANCH
 #define BODAQS_ENABLE_FRONT_BRANCH (1)
 #endif
+#if defined(BODAQS_MASTER_QUEUE_TIMING) && BODAQS_MASTER_QUEUE_TIMING
+#if !defined(BODAQS_MASTER_PHASE_TIMING) || !BODAQS_MASTER_PHASE_TIMING || BODAQS_MEASUREMENT_VERSION != 2
+#error "Queue timing requires v2 and phase timing"
+#endif
+#endif
 
 typedef struct {
     uint32_t reset_cause;
@@ -117,6 +122,18 @@ typedef struct {
     uint32_t phase_calls[4], phase_max_us[4][3];
     uint64_t phase_total_us[4][3];
 #endif
+#if defined(BODAQS_MASTER_QUEUE_TIMING) && BODAQS_MASTER_QUEUE_TIMING
+    /* Version4: boundary enqueue observation -> main pop (before wire decode).
+     * Valid current-context measurement slots enqueued within this START scope
+     * only. Histogram <=250, <=500, <=1000, <=2000, <=4000, >4000 us.
+     * Depth histogram counts depth BEFORE pop (1..4); index0 unused.
+     * Instantaneous depth/head age are sampled at drain_check, including freeze.
+     * No queue clearing, readiness or ownership decision uses these fields. */
+    uint32_t spi_queue_wait_count, spi_queue_wait_excluded, spi_queue_time_invalid;
+    uint32_t spi_queue_wait_max_us, spi_queue_wait_hist[6], spi_queue_depth_hist[5];
+    uint32_t spi_queue_depth, spi_queue_peak, spi_queue_head_age_us, spi_queue_head_valid;
+    uint64_t spi_queue_wait_total_us;
+#endif
 } MasterDrainInfo;
 volatile MasterDrainInfo gMasterDrainInfo;
 /* End drain diagnostic state. */
@@ -176,6 +193,13 @@ static uint8_t gReceiveIndex;
 /* Each queued physical transaction owns its exact extent until the main pop. */
 static uint8_t gSpiReceiveStorage[BODAQS_MASTER_SPI_RX_CAPACITY][BODAQS_MASTER_TRANSFER_BYTES] BODAQS_SPI_BUFFER_STORAGE;
 static uint16_t gSpiReceiveLengths[BODAQS_MASTER_SPI_RX_CAPACITY];
+#if defined(BODAQS_MASTER_QUEUE_TIMING) && BODAQS_MASTER_QUEUE_TIMING
+/* Same ownership and cell lifetime as lengths: ISR writes before queue push;
+ * main copies metadata and payload together under the existing pop IRQ fence.
+ * The ISR never reads or writes the main-owned drain snapshot. */
+typedef struct { uint32_t tick, epoch; } SpiReceiveTiming;
+static SpiReceiveTiming gSpiReceiveTiming[BODAQS_MASTER_SPI_RX_CAPACITY] BODAQS_SPI_BUFFER_STORAGE;
+#endif
 static BodaqsRecordQueue gSpiReceiveQueue;
 /* Main publishes requests and consumes proof under a short IRQ fence. Only
  * the ISR adapter touches hardware; it never mutates the protocol service. */
@@ -202,6 +226,61 @@ static uint32_t drain_clock(void)
         gMasterDrainInfo.timing_invalid=1;
     return tick;
 }
+
+#if defined(BODAQS_MASTER_QUEUE_TIMING) && BODAQS_MASTER_QUEUE_TIMING
+static void drain_queue_sample(void)
+{
+    uint32_t tick=0,epoch=0,primask=__get_PRIMASK();
+    SpiReceiveTiming received={0};
+    uint16_t depth;
+    __disable_irq();
+    depth=gSpiReceiveQueue.depth;
+    if(depth) {
+        received=gSpiReceiveTiming[gSpiReceiveQueue.head];
+        tick=bodaqs_master_timing_clock(NULL,&epoch);
+    }
+    __set_PRIMASK(primask);
+    gMasterDrainInfo.spi_queue_depth=depth;
+    if(depth>gMasterDrainInfo.spi_queue_peak) gMasterDrainInfo.spi_queue_peak=depth;
+    gMasterDrainInfo.spi_queue_head_age_us=0;
+    gMasterDrainInfo.spi_queue_head_valid=0;
+    if(!depth) return;
+    if(!epoch || received.epoch!=epoch || epoch!=gMasterDrainInfo.clock_epoch) {
+        gMasterDrainInfo.timing_invalid=1;return;
+    }
+    /* For the bounded diagnostic run (<one low32 clock period), this also
+     * excludes cells enqueued before START, including across low32 wrap. */
+    const uint32_t age=tick-received.tick;
+    if(age>tick-gMasterDrainInfo.started_tick) return;
+    gMasterDrainInfo.spi_queue_head_age_us=age;
+    gMasterDrainInfo.spi_queue_head_valid=1;
+}
+
+static void drain_queue_record(const uint8_t *request,size_t length,
+    SpiReceiveTiming received,uint32_t tick,uint32_t epoch,uint16_t depth,bool scoped)
+{
+    uint32_t age;
+    unsigned bucket;
+    if(gMasterDrainInfo.state!=1 || length!=BODAQS_MEASUREMENT_BYTES) return;
+    if(!scoped || bodaqs_measurement_get(request+4,8)!=gMasterDrainInfo.context) {
+        ++gMasterDrainInfo.spi_queue_wait_excluded;return;
+    }
+    if(!epoch || received.epoch!=epoch || epoch!=gMasterDrainInfo.clock_epoch) {
+        ++gMasterDrainInfo.spi_queue_time_invalid;gMasterDrainInfo.timing_invalid=1;return;
+    }
+    age=tick-received.tick;
+    if(age>tick-gMasterDrainInfo.started_tick) {
+        ++gMasterDrainInfo.spi_queue_wait_excluded;return;
+    }
+    bucket=age<=250?0:age<=500?1:age<=1000?2:age<=2000?3:age<=4000?4:5;
+    ++gMasterDrainInfo.spi_queue_wait_count;
+    gMasterDrainInfo.spi_queue_wait_total_us+=age;
+    if(age>gMasterDrainInfo.spi_queue_wait_max_us) gMasterDrainInfo.spi_queue_wait_max_us=age;
+    ++gMasterDrainInfo.spi_queue_wait_hist[bucket];
+    if(depth>0 && depth<=BODAQS_MASTER_SPI_RX_CAPACITY) ++gMasterDrainInfo.spi_queue_depth_hist[depth];
+    if(depth>gMasterDrainInfo.spi_queue_peak) gMasterDrainInfo.spi_queue_peak=depth;
+}
+#endif
 
 #if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
 uint32_t bodaqs_master_profile_clock(void)
@@ -257,6 +336,9 @@ static void drain_check(void)
 #if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
         gMasterDrainInfo.version=3;
 #endif
+#if defined(BODAQS_MASTER_QUEUE_TIMING) && BODAQS_MASTER_QUEUE_TIMING
+        gMasterDrainInfo.version=4;
+#endif
         gMasterDrainInfo.context=context;gMasterDrainInfo.recording=recording;
         gMasterDrainInfo.started_tick=bodaqs_master_timing_clock(NULL,&epoch);
         gMasterDrainInfo.clock_epoch=epoch;
@@ -274,6 +356,9 @@ static void drain_check(void)
     gMasterDrainInfo.can_dropped=gCanReceiveQueue.dropped-gMasterDrainInfo.can_dropped_base;
     gMasterDrainInfo.can_hardware_losses=gMasterRuntimeInfo.can_rx_hardware_losses-gMasterDrainInfo.can_hardware_base;
     gMasterDrainInfo.retained_frames=gService.retained_frames-gMasterDrainInfo.retained_base;
+#if defined(BODAQS_MASTER_QUEUE_TIMING) && BODAQS_MASTER_QUEUE_TIMING
+    drain_queue_sample();
+#endif
     if(gCanReceiveQueue.depth>gMasterDrainInfo.can_queue_sampled_high_water)
         gMasterDrainInfo.can_queue_sampled_high_water=gCanReceiveQueue.depth;
     for(node=0;node<4;++node) {
@@ -1085,8 +1170,13 @@ static void retire_spi_boundary(void)
     length += DL_SPI_drainRXFIFO8(SPI_A8_INST,
         &gReceiveSlots[gReceiveIndex][length], (uint32_t)remaining);
     if (DL_SPI_drainRXFIFO8(SPI_A8_INST, &excess, 1U)) length = BODAQS_MASTER_TRANSFER_BYTES+1U;
-    if(gSpiReceiveQueue.depth<gSpiReceiveQueue.capacity)
+    if(gSpiReceiveQueue.depth<gSpiReceiveQueue.capacity) {
         gSpiReceiveLengths[gSpiReceiveQueue.tail]=(uint16_t)length;
+#if defined(BODAQS_MASTER_QUEUE_TIMING) && BODAQS_MASTER_QUEUE_TIMING
+        SpiReceiveTiming *timing=&gSpiReceiveTiming[gSpiReceiveQueue.tail];
+        timing->tick=bodaqs_master_timing_clock(NULL,&timing->epoch);
+#endif
+    }
     (void)bodaqs_record_queue_push(&gSpiReceiveQueue,gReceiveSlots[gReceiveIndex]);
     /* Publish only a fully prepared response at a physical boundary. Parsing,
      * control dispatch and all ownership changes remain in the main loop. */
@@ -1123,10 +1213,21 @@ static void service_spi_receive(void)
     uint32_t acked_before;
     uint16_t ack_records=0;
     BodaqsMasterSlotResult result;
+#if defined(BODAQS_MASTER_QUEUE_TIMING) && BODAQS_MASTER_QUEUE_TIMING
+    SpiReceiveTiming received_time;
+    uint32_t pop_tick=0,pop_epoch=0;
+    uint16_t queue_depth;
+    const bool queue_scoped=gMasterDrainInfo.state==1;
+#endif
     if (gSpiTransmitReady) return;
     primask=__get_PRIMASK();
     __disable_irq();
     length=gSpiReceiveLengths[gSpiReceiveQueue.head];
+#if defined(BODAQS_MASTER_QUEUE_TIMING) && BODAQS_MASTER_QUEUE_TIMING
+    received_time=gSpiReceiveTiming[gSpiReceiveQueue.head];
+    queue_depth=gSpiReceiveQueue.depth;
+    if(queue_depth) pop_tick=bodaqs_master_timing_clock(NULL,&pop_epoch);
+#endif
     if (!bodaqs_record_queue_pop(&gSpiReceiveQueue,received)) {
         __set_PRIMASK(primask); return;
     }
@@ -1144,6 +1245,9 @@ static void service_spi_receive(void)
     result=bodaqs_master_service_process_transfer(&gService,received,length,
         gUptimeMs,gTransmitSlots[next_index]);
     if (result==BODAQS_MASTER_SLOT_PROCESSED) {
+#if defined(BODAQS_MASTER_QUEUE_TIMING) && BODAQS_MASTER_QUEUE_TIMING
+        drain_queue_record(received,length,received_time,pop_tick,pop_epoch,queue_depth,queue_scoped);
+#endif
         if(gService.acquisition_retirement_pending)
             retire_measurement_slot(gTransmitSlots[next_index],gService.measurement.mode.context);
         reply_kind=gTransmitSlots[next_index][3];

@@ -37,6 +37,14 @@ endif
 
 NAME := bodaqs_can_master
 SPI_PHASE_TIMING ?= 0
+SPI_QUEUE_TIMING ?= 0
+ifeq ($(SPI_QUEUE_TIMING),1)
+ifneq ($(SPI_PHASE_TIMING),1)
+$(error SPI_QUEUE_TIMING=1 requires SPI_PHASE_TIMING=1)
+endif
+else ifneq ($(SPI_QUEUE_TIMING),0)
+$(error SPI_QUEUE_TIMING must be 0 or 1)
+endif
 ifeq ($(SPI_PHASE_TIMING),1)
 ifneq ($(SPI_MEASUREMENT_PROFILE),first-recording)
 $(error SPI_PHASE_TIMING=1 requires SPI_MEASUREMENT_PROFILE=first-recording)
@@ -81,6 +89,7 @@ CFLAGS := -I../include \
     -DBODAQS_CAN_LINK_PROFILE=$(CAN_LINK_DEFINE) \
     -DBODAQS_SPI_MEASUREMENT_V2=$(MEASUREMENT_DEFINE) \
     -DBODAQS_MASTER_PHASE_TIMING=$(SPI_PHASE_TIMING) \
+    -DBODAQS_MASTER_QUEUE_TIMING=$(SPI_QUEUE_TIMING) \
     -Werror \
     $(CFLAGS_EXTRA)
 

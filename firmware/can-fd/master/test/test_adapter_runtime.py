@@ -13,6 +13,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--cc", required=True)
 parser.add_argument("--v2", action="store_true")
 parser.add_argument("--phase-timing", action="store_true")
+parser.add_argument("--queue-timing", action="store_true")
 args = parser.parse_args()
 source = (ROOT / "firmware/can-fd/master/src/main.c").read_text()
 assert "volatile MasterDrainInfo gMasterDrainInfo;" in source, "missing START-scoped drain diagnostics"
@@ -33,12 +34,22 @@ if args.phase_timing:
     assert args.v2
     functions += "\n" + function("bodaqs_master_profile_clock")
     functions += "\n" + function("bodaqs_master_profile_record")
+if args.queue_timing:
+    assert args.v2 and args.phase_timing
+    functions += "\n" + function("drain_queue_sample")
+    functions += "\n" + function("drain_queue_record")
+    functions = "static void drain_queue_sample(void);\nstatic void drain_queue_record(const uint8_t *,size_t,SpiReceiveTiming,uint32_t,uint32_t,uint16_t,bool);\n" + functions
 # Deliver a real capture IRQ just before take_record masks interrupts.
 take = function("take_record")
 functions = functions.replace(take, take.replace("__disable_irq();", "inject_can_arrival(queue); __disable_irq();"))
 spi_receive = function("service_spi_receive")
 functions = functions.replace(spi_receive, spi_receive.replace("gSpiTransmitReady=true;",
     "gSpiTransmitReady=true; injected_reply_retirement();"))
+if args.queue_timing:
+    functions = functions.replace("primask=__get_PRIMASK();\n    __disable_irq();\n    length=gSpiReceiveLengths",
+        "primask=__get_PRIMASK();\n    inject_spi_arrival(false);\n    __disable_irq();\n    length=gSpiReceiveLengths")
+    sample = function("drain_queue_sample")
+    functions = functions.replace(sample, sample.replace("__disable_irq();", "inject_spi_arrival(true); __disable_irq();"))
 drain_types = source[source.index("/* Active drain diagnostic state. */"):source.index("/* End drain diagnostic state. */")]
 # Interrupt exactly after pending publication, before the owner's next store.
 common = (ROOT / "firmware/can-fd/common/protocol/bodaqs_master_service.c").read_text()
@@ -52,6 +63,8 @@ fixture=fixture.replace("/* SPI_ADAPTER_STORAGE */",owned)
 if args.v2:
     assert "/* SPI adapter ownership storage. */" in source, "v2 DMA storage must match production"
     fixture=fixture[:fixture.index("int main(void) {")]+Path(__file__).with_name("adapter_v2_cases.c").read_text()
+if args.queue_timing:
+    fixture=fixture.replace("/* QUEUE_TIMING_CASES */",Path(__file__).with_name("adapter_queue_cases.c").read_text())
 with tempfile.TemporaryDirectory() as temp:
     c = Path(temp) / "adapter.c"
     exe = Path(temp) / "adapter.exe"
@@ -59,6 +72,8 @@ with tempfile.TemporaryDirectory() as temp:
     flags=["-DBODAQS_SPI_MEASUREMENT_V2=1", "-Wno-unused-function", "-Wno-unused-variable"] if args.v2 else []
     if args.phase_timing:
         flags.append("-DBODAQS_MASTER_PHASE_TIMING=1")
+    if args.queue_timing:
+        flags.append("-DBODAQS_MASTER_QUEUE_TIMING=1")
     subprocess.run([args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-O2",*flags,
         "-I" + str(ROOT / "firmware/can-fd/common/protocol"),
         "-I" + str(ROOT / "firmware/can-fd/common/network"),

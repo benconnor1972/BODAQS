@@ -49,6 +49,12 @@ static void DL_GPIO_setPins(int p,int m) {(void)p;(void)m;assert(false);}
 static void update_service_status(void) {test_tick+=3;}
 static unsigned remaining=20,cs_high=1,prefetched_tx,disabled,reset_count,arm_count;
 static uint32_t irq_mask;
+#if defined(BODAQS_MASTER_QUEUE_TIMING) && BODAQS_MASTER_QUEUE_TIMING
+static bool inject_spi_on_pop,inject_spi_on_sample;
+static unsigned inject_spi_length;
+static uint32_t inject_spi_tick;
+static void inject_spi_arrival(bool sample);
+#endif
 static uint32_t __get_PRIMASK(void) {return irq_mask;}
 static void __disable_irq(void) {irq_mask=1;}
 static void __DMB(void) {}
@@ -99,6 +105,14 @@ static void inject_can_arrival(BodaqsRecordQueue *queue) {
     }
 }
 static void injected_cs_preemption(void) {retire_spi_boundary();}
+#if defined(BODAQS_MASTER_QUEUE_TIMING) && BODAQS_MASTER_QUEUE_TIMING
+static void inject_spi_arrival(bool sample) {
+    bool *armed=sample?&inject_spi_on_sample:&inject_spi_on_pop;
+    if(!*armed) return;
+    assert(!irq_mask);*armed=false;test_tick=inject_spi_tick;
+    remaining=256-inject_spi_length;retire_spi_boundary();
+}
+#endif
 int main(void) {
     /* START-like consecutive metadata bursts, with one main-loop CAN turn
      * between them. Exercise actual capture, pop and drain function bodies. */

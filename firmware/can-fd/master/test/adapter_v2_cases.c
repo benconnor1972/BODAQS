@@ -76,8 +76,13 @@ int main(void) {
     assert(gMasterDrainInfo.phase_calls[0]==2 && bodaqs_master_profile_clock()==0);
     gService.measurement.mode.context=123;gService.measurement.mode.recording=456;
     gService.acquisition_started=1;drain_check();
+#if defined(BODAQS_MASTER_QUEUE_TIMING) && BODAQS_MASTER_QUEUE_TIMING
+    assert(gMasterDrainInfo.version==4 && gMasterDrainInfo.phase_calls[0]==0);
+#else
     assert(gMasterDrainInfo.version==3 && gMasterDrainInfo.phase_calls[0]==0);
+#endif
     puts("production phase classification, accumulation, freeze and new-scope reset: PASS");
 #endif
+    /* QUEUE_TIMING_CASES */
     puts("production v2 CS/DMA extent, four-cell length ownership and fence retirement: PASS");
 }
