@@ -115,6 +115,19 @@ int main(int argc,char** argv) {
   assert(acquisitions[n].phase==2 && acquisitions[n].renewal_sequence>=2 && acquisitions[n].renewal_sequence<=3);
  }
  if(argc>1) {
+  if(!std::strcmp(argv[1],"late-renewal-wire") || !std::strcmp(argv[1],"split-renewal-stop")) {
+   delayRenewalWire=true;
+   controlSteps(1400);assert(renewalWire.size()==2);
+   request.node=0;request.action=AcquisitionControl::Action::Stop;request.recording=123;
+   assert(AcquisitionControl::enqueue(request));controlSteps(500);
+   assert(acquisitions[0].terminal && !acquisitions[0].lease_valid);
+   if(!std::strcmp(argv[1],"split-renewal-stop")) renewalWire.erase(renewalWire.begin());
+   delayRenewalWire=false;replayRenewalWire=true;controlSteps(1000);
+   assert(renewalWire.empty());
+   assert(AcquisitionControl::outcome(0,result) && !result.leaseAcknowledged);
+   assert(acquisitions[0].terminal && !acquisitions[0].lease_valid);
+   puts("late successful renewal wire fragments cannot revive STOP: PASS");return 0;
+  }
   if(!std::strcmp(argv[1],"renewal-wrap")) {
    controlSteps(7000);
    assert(AcquisitionControl::outcome(0,result) && !result.excluded && result.leaseAcknowledged);

@@ -29,7 +29,7 @@ def main():
         cpp.write_text(fixture)
         subprocess.run([args.compiler, "-std=c++17", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-I", str(root/"test/stubs"), "-I", str(root/"src"), "-I", str(protocol), "-I", str(root/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
-        for scenario in ("lost-renewal-challenge", "lost-renewal-result", "renewal-expiry", "stop-renewal-retry", "renewal-wrap"):
+        for scenario in ("lost-renewal-challenge", "lost-renewal-result", "renewal-expiry", "stop-renewal-retry", "renewal-wrap", "late-renewal-wire", "split-renewal-stop"):
             subprocess.run([str(exe), scenario], check=True)
 
 if __name__ == "__main__":

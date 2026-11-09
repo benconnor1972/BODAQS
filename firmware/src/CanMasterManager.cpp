@@ -821,7 +821,7 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
   bool partialControl=false;
   for(int lane=1;lane>=0 && !partialControl;--lane) for(uint8_t n=0;n<4;++n) {
     const auto& retained=transport.inboxes[lane+2][n].state;
-    if(retained.object && !retained.complete) {
+    if(transport.controls[lane][n].state.complete && retained.object && !retained.complete) {
       // Fetch and retire the predecessor before transmitting a successor.
       // The master cannot replace a pinned result, so fragment retries alone
       // would starve the missing predecessor fragment and deadlock this lane.

@@ -68,6 +68,10 @@ static bool dropDataFragmentOnce=false;
 static unsigned droppedDataFragments;
 static uint8_t droppedFragmentIndex=1;
 static bool loseBridgeReplies=false;
+static bool strandOrdinaryReply=false;
+static bool delayRenewalWire=false,replayRenewalWire=false;
+static uint32_t delayedRenewalObject=0;
+static std::vector<DelayedSpiSlot> renewalWire;
 static bool allowMalformedMeasurement=false;
 static uint32_t dropBindReplyUntil=0;
 namespace SharedSpiBus {
@@ -123,6 +127,24 @@ bool transfer(int8_t,const SPISettings& settings,const uint8_t*tx,uint8_t*rx,siz
   if(bodaqs_measurement_decode(rx,64,&bridge) && bridge.kind==11) {
     bridge={};bridge.node=255;bridge.context=master.measurement.mode.context;
     assert(bodaqs_measurement_encode(&bridge,rx,64));
+  }
+ }
+ if(length==64 && (strandOrdinaryReply || delayRenewalWire || replayRenewalWire)) {
+  BodaqsMeasurementSlot slot={};
+  if(bodaqs_measurement_decode(rx,64,&slot)) {
+   bool suppress=strandOrdinaryReply && slot.kind==4 && slot.node==0 && slot.index==1;
+   if(delayRenewalWire && slot.kind==12 && slot.node==0) {
+    if(slot.index==0 && slot.body[12]==0x27) delayedRenewalObject=slot.object;
+    if(delayedRenewalObject && slot.object==delayedRenewalObject) {
+     DelayedSpiSlot savedSlot={};memcpy(savedSlot.bytes,rx,64);
+     if(renewalWire.size()<2 && slot.index==renewalWire.size()) renewalWire.push_back(savedSlot);
+     suppress=slot.index!=0;
+    }
+   }
+   if(suppress) {BodaqsMeasurementSlot empty={};empty.node=255;empty.context=master.measurement.mode.context;assert(bodaqs_measurement_encode(&empty,rx,64));}
+  }
+  if(replayRenewalWire && !renewalWire.empty()) {
+   memcpy(rx,renewalWire.front().bytes,64);renewalWire.erase(renewalWire.begin());
   }
  }
  if(length==84 && int32_t(clockMs-dropBindReplyUntil)<0) {
@@ -396,5 +418,36 @@ int main() {
  for(unsigned i=0;i<5;++i)
   excluded|=CanMasterManager::serviceMeasurementTransport(rebootBank,1,0,resumed)==-14;
  assert(excluded);
+ // A permanently missing predecessor on node0 must not pin every poll after
+ // its successor times out. Node1 data and ordinary replies still progress.
+ reset();assert(CanMasterManager::enterMeasurementMode(123,456));
+ static CanMasterManager::MeasurementTransport stranded;
+ BodaqsControlWrapped query={};query.master_boot_id=99;query.node_address=0;
+ query.record.opcode=BODAQS_CONTROL_GET_NODE_STATE;query.record.endpoint=255;
+ query.record.node_boot_id=node.view.boot_id;query.record.operation=902;
+ query.record.session=CanMasterManager::diagnostics().measurement.session;
+ strandOrdinaryReply=true;
+ assert(CanMasterManager::queueMeasurementControl(stranded,query,CanMasterManager::nextMeasurementObjectId(3,0)));
+ for(unsigned i=0;i<100;++i) {++clockMs;CanMasterManager::serviceMeasurementTransport(stranded,3,0,resumed);}
+ query.record.operation=903;
+ assert(CanMasterManager::queueMeasurementControl(stranded,query,CanMasterManager::nextMeasurementObjectId(3,0)));
+ master.discovery[1].flags=1;master.discovery[1].boot_id=node.view.boot_id;
+ master.acquisition_record[1]=123;master.acquisition_boot[1]=node.view.boot_id;master.acquisition_fenced &= ~2u;
+ const uint8_t event[8]={1,4,1,0,0,0,0,0};
+ assert(bodaqs_master_service_receive_can(&master,1,2,0x061,event,8,0,12345,clockMs));
+ query.node_address=1;query.record.operation=904;
+ assert(CanMasterManager::queueMeasurementControl(stranded,query,CanMasterManager::nextMeasurementObjectId(3,1)));
+ bool healthyData=false,healthyControl=false;
+ for(unsigned i=0;i<1000 && !(healthyData && healthyControl);++i) {
+  ++clockMs;
+  int r=CanMasterManager::serviceMeasurementTransport(stranded,i%2?2:3,1,resumed);
+  if(r==1) {
+   healthyData|=resumed->state.cls==2 && resumed->state.node==1;
+   healthyControl|=resumed->state.cls==3 && resumed->state.node==1;
+   CanMasterManager::releaseMeasurementObject(*resumed);
+  }
+ }
+ assert(healthyData && healthyControl);
+ strandOrdinaryReply=false;
  puts("production logger/master pipelined mode, exit, read-only status and lost-reply tests passed");
 }
