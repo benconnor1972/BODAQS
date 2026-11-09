@@ -35,6 +35,21 @@ else
 $(error SPI_MEASUREMENT_PROFILE must be legacy or first-recording)
 endif
 
+# Only the explicit v2 comparison may select two cells. Defaults stay unchanged.
+ifeq ($(SPI_MEASUREMENT_PROFILE),first-recording)
+SPI_RX_CAPACITY ?= 4
+ifneq ($(SPI_RX_CAPACITY),2)
+ifneq ($(SPI_RX_CAPACITY),4)
+$(error first-recording SPI_RX_CAPACITY must be 2 or 4)
+endif
+endif
+else
+SPI_RX_CAPACITY ?= 1
+ifneq ($(SPI_RX_CAPACITY),1)
+$(error legacy SPI_RX_CAPACITY must remain 1)
+endif
+endif
+
 NAME := bodaqs_can_master
 SPI_PHASE_TIMING ?= 0
 SPI_QUEUE_TIMING ?= 0
@@ -90,6 +105,7 @@ CFLAGS := -I../include \
     -DBODAQS_SPI_MEASUREMENT_V2=$(MEASUREMENT_DEFINE) \
     -DBODAQS_MASTER_PHASE_TIMING=$(SPI_PHASE_TIMING) \
     -DBODAQS_MASTER_QUEUE_TIMING=$(SPI_QUEUE_TIMING) \
+    -DBODAQS_MASTER_SPI_RX_CAPACITY=$(SPI_RX_CAPACITY) \
     -Werror \
     $(CFLAGS_EXTRA)
 

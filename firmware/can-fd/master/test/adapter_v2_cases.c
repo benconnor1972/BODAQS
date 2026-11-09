@@ -1,6 +1,7 @@
 int main(void) {
-    assert(BODAQS_MASTER_TRANSFER_BYTES==256 && BODAQS_MASTER_SPI_RX_CAPACITY==4);
-    bodaqs_record_queue_init(&gSpiReceiveQueue,gSpiReceiveStorage,256,4);
+    const unsigned capacity=BODAQS_MASTER_SPI_RX_CAPACITY;
+    assert(BODAQS_MASTER_TRANSFER_BYTES==256 && (capacity==2 || capacity==4));
+    bodaqs_record_queue_init(&gSpiReceiveQueue,gSpiReceiveStorage,256,capacity);
     bodaqs_master_service_init(&gService,NULL);
     bodaqs_record_queue_init(&gCanReceiveQueue,storage,sizeof storage[0],8);
     hardware=(DL_MCAN_RxBufElement){.id=0x100U<<18,.fdf=1,.brs=1,.dlc=15};
@@ -18,14 +19,14 @@ int main(void) {
     hardware_depth=1;capture_can_receive_fifo();assert(gRejectedCan[0].essential);
     gService.measurement.mode.phase=2;gService.measurement.mode.context=77;
     const unsigned lengths[4]={84,256,255,256};
-    for(unsigned i=0;i<4;++i) {
+    for(unsigned i=0;i<capacity;++i) {
         memset(gReceiveSlots[gReceiveIndex],i+1,256);
         remaining=256-lengths[i];retire_spi_boundary();
     }
-    assert(gSpiReceiveQueue.depth==4 && !gSpiReceiveQueue.dropped);
+    assert(gSpiReceiveQueue.depth==capacity && !gSpiReceiveQueue.dropped);
     remaining=0;retire_spi_boundary();
-    assert(gSpiReceiveQueue.depth==4 && gSpiReceiveQueue.dropped==1);
-    for(unsigned i=0;i<4;++i) {
+    assert(gSpiReceiveQueue.depth==capacity && gSpiReceiveQueue.dropped==1);
+    for(unsigned i=0;i<capacity;++i) {
         assert(gSpiReceiveLengths[gSpiReceiveQueue.head]==lengths[i]);
         uint8_t bytes[256];assert(bodaqs_record_queue_pop(&gSpiReceiveQueue,bytes));
         assert(bytes[0]==i+1 && bytes[255]==i+1);
@@ -84,5 +85,6 @@ int main(void) {
     puts("production phase classification, accumulation, freeze and new-scope reset: PASS");
 #endif
     /* QUEUE_TIMING_CASES */
-    puts("production v2 CS/DMA extent, four-cell length ownership and fence retirement: PASS");
+    /* RX_RETRY_CASES */
+    printf("production v2 CS/DMA extent, %u-cell length ownership and fence retirement: PASS\n",capacity);
 }

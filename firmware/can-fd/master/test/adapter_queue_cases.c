@@ -1,7 +1,7 @@
     /* Real boundary enqueue, main pop, overflow and freeze; no timing helper
      * is replaced. The fixture supplies only the hardware clock's values. */
     bodaqs_master_service_init(&gService,NULL);
-    bodaqs_record_queue_init(&gSpiReceiveQueue,gSpiReceiveStorage,256,4);
+    bodaqs_record_queue_init(&gSpiReceiveQueue,gSpiReceiveStorage,256,capacity);
     bodaqs_record_queue_init(&gCanReceiveQueue,storage,sizeof storage[0],8);
     memset((void*)&gMasterDrainInfo,0,sizeof gMasterDrainInfo);
     gService.measurement.mode.phase=2;gService.measurement.mode.context=91;
@@ -35,28 +35,30 @@
     gService.ingress[0].dropped=0;test_tick=4000;drain_check();
     assert(gMasterDrainInfo.state==1 && !gMasterDrainInfo.spi_queue_wait_count);
     idle.context=93;
-    bodaqs_record_queue_init(&gSpiReceiveQueue,gSpiReceiveStorage,256,4);
-    for(unsigned i=0;i<5;++i) {
+    bodaqs_record_queue_init(&gSpiReceiveQueue,gSpiReceiveStorage,256,capacity);
+    for(unsigned i=0;i<capacity+1;++i) {
         test_tick=4100+i*100;assert(bodaqs_measurement_encode(&idle,gReceiveSlots[gReceiveIndex],256));
         remaining=0;retire_spi_boundary();
     }
-    assert(gSpiReceiveQueue.depth==4 && gSpiReceiveQueue.dropped==1);
-    for(unsigned i=0;i<4;++i) {
+    assert(gSpiReceiveQueue.depth==capacity && gSpiReceiveQueue.dropped==1);
+    for(unsigned i=0;i<capacity;++i) {
         test_tick=5000;gSpiTransmitReady=false;service_spi_receive();
     }
-    assert(gMasterDrainInfo.spi_queue_wait_count==4 && gMasterDrainInfo.spi_queue_wait_total_us==3000);
-    for(unsigned i=1;i<=4;++i) assert(gMasterDrainInfo.spi_queue_depth_hist[i]==1);
+    assert(gMasterDrainInfo.spi_queue_wait_count==capacity);
+    assert(gMasterDrainInfo.spi_queue_wait_total_us==(capacity==4?3000:1700));
+    for(unsigned i=1;i<=capacity;++i) assert(gMasterDrainInfo.spi_queue_depth_hist[i]==1);
+    for(unsigned i=capacity+1;i<=4;++i) assert(!gMasterDrainInfo.spi_queue_depth_hist[i]);
     /* Pre-START timestamps and stale-context requests never enter the mean. */
     test_tick=3900;assert(bodaqs_measurement_encode(&idle,gReceiveSlots[gReceiveIndex],256));
     remaining=0;retire_spi_boundary();test_tick=6000;gSpiTransmitReady=false;service_spi_receive();
-    assert(gMasterDrainInfo.spi_queue_wait_count==4 && gMasterDrainInfo.spi_queue_wait_excluded==1);
+    assert(gMasterDrainInfo.spi_queue_wait_count==capacity && gMasterDrainInfo.spi_queue_wait_excluded==1);
     idle.context=91;assert(bodaqs_measurement_encode(&idle,gReceiveSlots[gReceiveIndex],256));
     remaining=0;retire_spi_boundary();gSpiTransmitReady=false;service_spi_receive();
-    assert(gMasterDrainInfo.spi_queue_wait_count==4 && gMasterDrainInfo.spi_queue_wait_excluded==2);
+    assert(gMasterDrainInfo.spi_queue_wait_count==capacity && gMasterDrainInfo.spi_queue_wait_excluded==2);
     /* Malformed/short slots are not accepted timing observations. */
     idle.context=93;assert(bodaqs_measurement_encode(&idle,gReceiveSlots[gReceiveIndex],256));
     remaining=1;retire_spi_boundary();gSpiTransmitReady=false;service_spi_receive();
-    assert(gMasterDrainInfo.spi_queue_wait_count==4);
+    assert(gMasterDrainInfo.spi_queue_wait_count==capacity);
     /* Clock fault/epoch mismatch cannot produce plausible queue times. */
     test_epoch=0;assert(bodaqs_measurement_encode(&idle,gReceiveSlots[gReceiveIndex],256));
     remaining=0;retire_spi_boundary();test_epoch=1;gSpiTransmitReady=false;service_spi_receive();

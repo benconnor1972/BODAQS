@@ -65,3 +65,22 @@ the pop/sample mask. Target builds and stack reports are retained in the master
 candidate manifest. These are software checks: added ISR/masked-section work,
 runtime stack headroom and physical timing remain on-device qualification debt.
 There is no acquisition-path serial output or extra wire validation pass.
+
+## Two-cell comparison
+
+`SPI_RX_CAPACITY=2` selects a bounded first-recording comparison against the
+unchanged v2 default4. Legacy retains1; unsupported capacities fail the build.
+Only the SPI request FIFO and its per-cell length/timing storage shrink. CAN data
+retention and logger buffers, wire profiles, pacing, FIFO/drop-newest semantics,
+CS publication and logical/physical retirement rules are unchanged. Capacity is
+selected at build time, not switched within a recording.
+
+The hypothesis is that limiting persistent request debt reduces retirement delay
+and improves useful sample delivery. More dropped SPI requests can accompany that
+result; judge it by independently decoded source coverage, integrity and reliable
+control/STOP/fence/cleanup. The real adapter tests cover both capacities, including
+a full-queue dropped ACK_FETCH, RAM-validated batch acceptance, lost/replayed proof
+and exactly-once retirement. Existing lifecycle lost-request/reply checks remain
+required. The unchanged version4 depth histogram keeps five entries; indices3/4
+remain zero for a valid two-cell run. Record the selected artifact hash/capacity
+because version4 alone does not identify the build option.

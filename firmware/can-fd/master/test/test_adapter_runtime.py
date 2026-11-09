@@ -14,7 +14,10 @@ parser.add_argument("--cc", required=True)
 parser.add_argument("--v2", action="store_true")
 parser.add_argument("--phase-timing", action="store_true")
 parser.add_argument("--queue-timing", action="store_true")
+parser.add_argument("--rx-capacity", type=int, choices=(2,4))
 args = parser.parse_args()
+if args.rx_capacity:
+    assert args.v2
 source = (ROOT / "firmware/can-fd/master/src/main.c").read_text()
 assert "volatile MasterDrainInfo gMasterDrainInfo;" in source, "missing START-scoped drain diagnostics"
 def function(name, text=source):
@@ -63,6 +66,7 @@ fixture=fixture.replace("/* SPI_ADAPTER_STORAGE */",owned)
 if args.v2:
     assert "/* SPI adapter ownership storage. */" in source, "v2 DMA storage must match production"
     fixture=fixture[:fixture.index("int main(void) {")]+Path(__file__).with_name("adapter_v2_cases.c").read_text()
+    fixture=fixture.replace("/* RX_RETRY_CASES */",Path(__file__).with_name("adapter_v2_retry_cases.c").read_text())
 if args.queue_timing:
     fixture=fixture.replace("/* QUEUE_TIMING_CASES */",Path(__file__).with_name("adapter_queue_cases.c").read_text())
 with tempfile.TemporaryDirectory() as temp:
@@ -74,6 +78,8 @@ with tempfile.TemporaryDirectory() as temp:
         flags.append("-DBODAQS_MASTER_PHASE_TIMING=1")
     if args.queue_timing:
         flags.append("-DBODAQS_MASTER_QUEUE_TIMING=1")
+    if args.rx_capacity:
+        flags.append(f"-DBODAQS_MASTER_SPI_RX_CAPACITY={args.rx_capacity}")
     subprocess.run([args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-O2",*flags,
         "-I" + str(ROOT / "firmware/can-fd/common/protocol"),
         "-I" + str(ROOT / "firmware/can-fd/common/network"),

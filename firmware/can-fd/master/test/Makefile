@@ -9,6 +9,7 @@ test: $(BUILD_DIR)/test_timing.exe
 	$(PYTHON) test_adapter_runtime.py --v2 --cc "$(CC)"
 	$(PYTHON) test_adapter_runtime.py --v2 --phase-timing --cc "$(CC)"
 	$(PYTHON) test_adapter_runtime.py --v2 --phase-timing --queue-timing --cc "$(CC)"
+	$(PYTHON) test_adapter_runtime.py --v2 --phase-timing --queue-timing --rx-capacity 2 --cc "$(CC)"
 	$(PYTHON) test_inventory_runtime.py --cc "$(CC)"
 $(BUILD_DIR)/test_timing.exe: test_timing.c ../src/master_timing.c ../include/master_timing.h ti_msp_dl_config.h
 	$(CC) $(CFLAGS) $(filter %.c,$^) -o $@

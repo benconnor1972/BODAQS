@@ -180,10 +180,20 @@ static BodaqsMasterDiscoveryRecord
     gDiscoveryRecords[BODAQS_MASTER_DISCOVERY_NODE_COUNT];
 /* SPI adapter ownership storage. */
 #if BODAQS_MEASUREMENT_VERSION == 2
+#ifndef BODAQS_MASTER_SPI_RX_CAPACITY
 #define BODAQS_MASTER_SPI_RX_CAPACITY 4U
+#endif
+#if BODAQS_MASTER_SPI_RX_CAPACITY != 2 && BODAQS_MASTER_SPI_RX_CAPACITY != 4
+#error "V2 SPI RX capacity must be 2 or 4"
+#endif
 #define BODAQS_SPI_BUFFER_STORAGE __attribute__((section(".bodaqs_spi_buffers"),aligned(4)))
 #else
+#ifndef BODAQS_MASTER_SPI_RX_CAPACITY
 #define BODAQS_MASTER_SPI_RX_CAPACITY 1U
+#endif
+#if BODAQS_MASTER_SPI_RX_CAPACITY != 1
+#error "Legacy SPI RX capacity must remain 1"
+#endif
 #define BODAQS_SPI_BUFFER_STORAGE
 #endif
 static uint8_t gTransmitSlots[2][BODAQS_MASTER_TRANSFER_BYTES] BODAQS_SPI_BUFFER_STORAGE;
