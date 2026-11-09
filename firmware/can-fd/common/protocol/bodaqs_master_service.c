@@ -639,10 +639,11 @@ static bool measurement_transfer_core(BodaqsMasterService *s,const BodaqsMeasure
             }
             advance_receptions(s,node,now);
             if(b->count && !b->object.complete && b->next_id[b->cls-1]==UINT32_MAX) {
+#if BODAQS_MEASUREMENT_VERSION == 2
                 transfer_error(r,out,14);out->node=node;return true;
-            }
-            if(b->count && !b->object.complete && b->next_id[b->cls-1]==UINT32_MAX) {
+#else
                 transfer_error(r,out,9); return true;
+#endif
             }
             if(b->cls==cls && (!r->object || r->object==b->object.object) &&
                bodaqs_fragment_emit(&b->object,b->bytes,r->index,out)) { s->fair_node[cls]=(node+1)%4; return true; }
@@ -677,7 +678,7 @@ static bool measurement_transfer(BodaqsMasterService *s,const BodaqsMeasurementS
     if(r->kind==14) {
         BodaqsMeasurementSlot command=*r;
         if(r->index || r->body[2]<1 || r->body[2]>5 ||
-           (r->body[3]>3 && !(r->body[2]==5 && r->body[3]==255)) ||
+           (r->body[2]==5?r->body[3]!=255:r->body[3]>3) ||
            r->body[12]>=BODAQS_MEASUREMENT_FRAGMENT_COUNT ||
            (!bodaqs_measurement_get(r->body+8,4) && r->body[12]) ||
            !bodaqs_measurement_zero(r->body+13,BODAQS_MEASUREMENT_BODY_BYTES-13)) return false;

@@ -60,11 +60,12 @@ int main(int argc,char** argv) {
     assert(!transfer(wrong).retired);
     assert(service.objects_acked==acknowledged && service.receptions[0].object.complete);
   }
-  for(unsigned fault=0;fault<3;++fault) {
+  for(unsigned fault=0;fault<4;++fault) {
     auto wrong=fetch;
     if(fault==0) wrong.body[2]=0;
     if(fault==1) wrong.index=1;
     if(fault==2) {wrong.retired=true;wrong.retiredClass=1;wrong.retiredObject=first.object;wrong.retiredTotal=1008;wrong.retiredChecksum=assembled.checksum;}
+    if(fault==3) {wrong.body[2]=5;wrong.body[3]=0;}
     uint8_t tx[256],rx[256];assert(bodaqs_measurement_encode(&wrong,tx,256));
     assert(bodaqs_master_service_process_transfer(&service,tx,256,100,rx)==BODAQS_MASTER_SLOT_MALFORMED);
     assert(service.objects_acked==acknowledged && service.receptions[0].object.complete);
