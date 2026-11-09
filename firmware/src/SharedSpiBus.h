@@ -21,13 +21,16 @@ bool begin(const board::SPIProfile& profile);
 bool ready();
 
 // Performs one complete, mutually exclusive CS-bounded transaction.
+// Optional spacing is measured from the previous bus transaction's CS start,
+// after acquiring the lock. Zero preserves the normal unpaced behavior.
 bool transfer(
     int8_t csPin,
     const SPISettings& settings,
     const uint8_t* tx,
     uint8_t* rx,
     size_t length,
-    uint32_t lockTimeoutMs = 50);
+    uint32_t lockTimeoutMs = 50,
+    uint32_t minimumStartSpacingUs = 0);
 
 const Diagnostics& diagnostics();
 

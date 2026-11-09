@@ -37,6 +37,8 @@ def fixture_source(root):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--compiler", default="g++")
+    parser.add_argument("--start-spacing-us", type=int, default=0,
+                        help="Verify measurement pacing propagation; physical clock tested separately")
     parser.add_argument("--v2", action="store_true", help="Exercise coordinated 256-byte measurement profile")
     parser.add_argument("--smoke", action="store_true", help="Exercise opt-in unqualified single-node build without installing synthetic costs")
     args = parser.parse_args()
@@ -52,6 +54,8 @@ def main():
         flags=["-DBODAQS_SINGLE_NODE_IMU_SMOKE=1"] if args.smoke else []
         if args.v2:
             flags.append("-DBODAQS_SPI_MEASUREMENT_V2=1")
+        if args.start_spacing_us:
+            flags.append(f"-DBODAQS_MEASUREMENT_START_SPACING_US={args.start_spacing_us}")
         subprocess.run([args.compiler, "-std=c++17", *flags, "-DBODAQS_QUEUE_ALLOCATION_TEST", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-I", str(root/"test/stubs"), "-I", str(root/"src"), "-I", str(protocol), "-I", str(root/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
         subprocess.run([str(exe), "start-clock-boundary"], check=True)

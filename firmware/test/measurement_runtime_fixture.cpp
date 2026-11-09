@@ -83,7 +83,12 @@ static bool allowMalformedMeasurement=false;
 static uint32_t dropBindReplyUntil=0;
 namespace SharedSpiBus {
 bool begin(const board::SPIProfile&) { return spiAvailable; }
-bool transfer(int8_t,const SPISettings& settings,const uint8_t*tx,uint8_t*rx,size_t length,uint32_t) {
+bool transfer(int8_t,const SPISettings& settings,const uint8_t*tx,uint8_t*rx,size_t length,uint32_t,uint32_t startSpacingUs=0) {
+#if defined(BODAQS_MEASUREMENT_START_SPACING_US)
+ assert(startSpacingUs==(length==BODAQS_MEASUREMENT_BYTES?BODAQS_MEASUREMENT_START_SPACING_US:0));
+#else
+ assert(startSpacingUs==0);
+#endif
  if(!spiAvailable) return false;
  if(!fixedMeasurementClock && (length!=BODAQS_MEASUREMENT_BYTES || !fastMeasurementClock || ++measurementSlots%10==0)) ++clockMs;
  assert(length==BODAQS_MEASUREMENT_BYTES || length==84);

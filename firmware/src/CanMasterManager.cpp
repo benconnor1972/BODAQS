@@ -24,6 +24,11 @@
 #define CANMASTER_LOGI(...) LOGI_TAG("CANMASTER", __VA_ARGS__)
 #define CANMASTER_LOGW(...) LOGW_TAG("CANMASTER", __VA_ARGS__)
 
+// Bench-only start pacing; ordinary builds retain the existing dispatch rhythm.
+#ifndef BODAQS_MEASUREMENT_START_SPACING_US
+#define BODAQS_MEASUREMENT_START_SPACING_US 0
+#endif
+
 namespace {
 
 constexpr uint32_t kAbsentProbeIntervalMs = 5000;
@@ -255,7 +260,8 @@ void refreshInventoryIfStateChanged_(CanMasterManager::State previous,
 
 bool transferSlot_(
     const SPISettings& settings, const uint8_t* tx, uint8_t* rx,
-    size_t length = CanMasterProtocol::kSlotBytes, uint32_t guardUs = kInterSlotGuardUs) {
+    size_t length = CanMasterProtocol::kSlotBytes, uint32_t guardUs = kInterSlotGuardUs,
+    uint32_t minimumStartSpacingUs = 0) {
   if (s_haveCompletedSlot) {
     const uint32_t elapsedUs = micros() - s_lastSlotCompletedUs;
     if (elapsedUs < guardUs) {
@@ -264,7 +270,7 @@ bool transferSlot_(
   }
   if (!SharedSpiBus::transfer(
           s_profile.cs_pin, settings, tx, rx,
-          length, kSpiLockTimeoutMs)) {
+          length, kSpiLockTimeoutMs, minimumStartSpacingUs)) {
     return false;
   }
   s_lastSlotCompletedUs = micros();
@@ -713,7 +719,8 @@ bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
     const uint32_t idle=started-measurementTimingEndUs;
     if(idle>timing.maxIdleUs) timing.maxIdleUs=idle;
   }
-  const bool valid=transferSlot_(settings,tx,rx,BODAQS_MEASUREMENT_BYTES,25) && bodaqs_measurement_decode(rx,BODAQS_MEASUREMENT_BYTES,&response);
+  const bool valid=transferSlot_(settings,tx,rx,BODAQS_MEASUREMENT_BYTES,25,
+      BODAQS_MEASUREMENT_START_SPACING_US) && bodaqs_measurement_decode(rx,BODAQS_MEASUREMENT_BYTES,&response);
   measurementTimingEndUs=micros();
   const uint32_t duration=measurementTimingEndUs-started;
   ++timing.slots;timing.exchangeUs+=duration;
