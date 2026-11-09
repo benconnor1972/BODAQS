@@ -10,6 +10,7 @@ struct RemoteImuBinding {
   char sensorId[32]={}, mountPoint[32]={}, calibrationRef[32]={};
   char domain[24]={}, end[16]={};
   bool orientationValid=false;
+  bool compactPackets=false; // additive observation schema; legacy remains default
   double mountingQuaternion[4]={1,0,0,0};
 };
 
@@ -21,7 +22,7 @@ public:
   ~RemoteImuStream() {release();}
   enum Acceptance { Invalid=-1, Blocked=0, Accepted=1 };
   bool configure(const RemoteImuBinding&,uint16_t sampleId,uint16_t evidenceId);
-  static size_t allocatedBufferBytes();
+  static size_t allocatedBufferBytes(bool compactPackets=false);
   void release(); // only after both producer and storage owner stop
   Acceptance accept(uint16_t identifier,const uint8_t*,size_t length,
                     uint32_t masterTick,uint64_t masterOrder,uint32_t loggerTick,uint8_t receptionFlags=0);
@@ -35,7 +36,7 @@ public:
   BdqV2StreamSource evidenceSource();
   BdqV2StreamDescriptor descriptor(bool evidence);
   bool failed() const { return failed_.load(std::memory_order_acquire); }
-  bool empty() const { return !holding_ && samples_.empty() && evidence_.empty(); }
+  bool empty() const { return !holding_ && samples_.empty() && packets_.empty() && evidence_.empty(); }
 private:
   struct Sample { uint8_t bytes[28]; uint32_t dependency; };
   struct Model {
@@ -54,6 +55,7 @@ private:
   RemoteImuBinding binding_;
   char* provenance_=nullptr;
   DynamicSpscQueue<Sample> samples_;
+  DynamicSpscRecordQueue packets_;
   DynamicSpscRecordQueue evidence_;
   uint16_t sampleId_=0,evidenceId_=0;
   uint32_t segment_=0,nextSequence_=0,nextEvidence_=1,stagedEvidence_=0;
@@ -72,9 +74,11 @@ private:
   uint32_t lastLossReport_=0;
   unsigned nextLossLane_=0;
   uint32_t lossDependency_=0;
+  uint32_t nextPacket_=0,sequenceFloor_=0;
   bool producerGap_=false,alignmentDegraded_=false;
   uint32_t managementLoss_[2][2]={};
   bool flushLoss(uint32_t logger);
+  Acceptance packet(const uint8_t*,size_t,uint32_t,uint64_t,uint32_t,uint8_t);
   bool drop(unsigned lane,uint32_t count,uint32_t first,uint32_t logger);
   static size_t pendingSamples(const void*);
   static size_t pendingEvidence(const void*);

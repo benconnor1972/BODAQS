@@ -333,10 +333,15 @@ def _payload_schema(descriptor: Mapping[str, Any]) -> Any:
 
 def _validate_can_payload_schema(descriptor: Mapping[str, Any]) -> None:
     schema = _payload_schema(descriptor)
-    if schema not in {"bodaqs.can_imu6.v1", "bodaqs.can_timing_evidence.v1"}:
+    if schema not in {"bodaqs.can_imu6.v1", "bodaqs.can_timing_evidence.v1", "bodaqs.can_imu_packets.v1"}:
         return
     layout = {0: "uint32", 4: "uint32", 8: "uint16"}
-    if schema == "bodaqs.can_imu6.v1":
+    if schema == "bodaqs.can_imu_packets.v1":
+        size = 100
+        layout.update({offset: "uint32" for offset in range(12, 32, 4)})
+        layout.update({32: "uint16", 34: "uint8", 35: "uint8", 36: "uint16", 38: "uint8"})
+        layout.update({offset: "int16" for offset in range(40, 100, 2)})
+    elif schema == "bodaqs.can_imu6.v1":
         size = 28
         layout.update({12: "uint32", **{offset: "int16" for offset in range(16, 28, 2)}})
     else:

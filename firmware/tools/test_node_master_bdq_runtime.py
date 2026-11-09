@@ -4,6 +4,7 @@ import argparse
 import os
 import subprocess
 import sys
+import struct
 import tempfile
 
 
@@ -62,6 +63,73 @@ def main():
         assert evidence[-1]["boundary_validity_flags"] & 512
         chunks = list(info.stream_data_chunks)
         assert min(c.sequence_number for c in chunks if c.stream_id == 3) < min(c.sequence_number for c in chunks if c.stream_id == 2)
+        # Same real node/master/writer seam, with timing models deliberately
+        # omitted: packets remain independently decodable by sequence.
+        compact_can=temporary / "without-models.txt"
+        compact_can.write_text("\n".join(line for line in can.read_text().splitlines()
+            if not (line.split()[0]=="144" and line.split()[2][2:4] == "24"))+"\n")
+        subprocess.run([str(consumer), str(compact_can), str(bdq), "compact"], check=True)
+        from bodaqs_analysis.can_imu_packets import read_can_imu_packets
+        decoded=read_can_imu_packets(bdq, "can0_imu6")
+        assert [row["sequence"] for row in decoded["readings"]] == list(range(65))
+        assert decoded["timing_status"] == "unreconstructed"
+        assert decoded["ambiguous_packets"] == 0
+        for row in decoded["readings"]:
+            assert [row[name] for name in ("ax", "ay", "az", "gx", "gy", "gz")] == [-32768,32767,-1,-32768,32767,-1]
+            assert "native_tick" not in row and "time_s" not in row
+        # Missing optional raw clock observations still leaves START/STOP
+        # sequence bounds; the axes do not depend on native timing coverage.
+        no_clock=temporary / "without-clocks.txt"
+        no_clock.write_text("\n".join(line for line in compact_can.read_text().splitlines()
+            if not (line.split()[0]=="144" and line.split()[2][2:4]=="23"))+"\n")
+        subprocess.run([str(consumer), str(no_clock), str(bdq), "compact"], check=True)
+        assert [r["sequence"] for r in read_can_imu_packets(bdq,"can0_imu6")["readings"]] == list(range(65))
+        saved=bdq.read_bytes()
+        subprocess.run([str(consumer), str(no_clock), str(bdq), "compact", "duplicate"], check=True)
+        repeated=read_can_imu_packets(bdq,"can0_imu6")
+        assert repeated["duplicates"]==5 and len(repeated["readings"])==65
+        # The sample chunk is readable before its optional timing companions.
+        # A torn tail retains exact axes and reports unresolved high sequence
+        # bits, rather than guessing or requiring a predecessor timing write.
+        cursor=32
+        while cursor<len(saved):
+            magic,version,kind,chunk_sequence,length,crc=struct.unpack_from("<4sHHIII",saved,cursor)
+            end=cursor+20+length
+            if kind==3 and struct.unpack_from("<H",saved,cursor+20)[0]==2:
+                prefix_path=temporary / "compact-prefix.bdq"
+                prefix_path.write_bytes(saved[:end])
+                partial=read_can_imu_packets(prefix_path,"can0_imu6")
+                assert 0<len(partial["readings"])<=65
+                assert partial["ambiguous_packets"]>0
+                assert all(r["sequence"] is None for r in partial["readings"])
+                break
+            cursor=end
+        else:
+            raise AssertionError("compact packet chunk missing")
+        # Explicit independent packet sequences exercise low16 rollover, a
+        # five-sample gap and a variable-length final packet.
+        lines=compact_can.read_text().splitlines()
+        prefix=[]
+        for line in lines:
+            ident,length,hexdata=line.split()
+            if ident=="256":
+                axes=bytes.fromhex(hexdata)[4:64]
+                break
+            payload=bytearray.fromhex(hexdata)
+            if ident=="144" and payload[1] in (0x22,0x23):
+                struct.pack_into("<I",payload,12 if payload[1]==0x22 else 20,65530)
+            prefix.append(f"{ident} {length} {payload.hex()}")
+        tail=next(bytearray.fromhex(line.split()[2]) for line in lines
+            if line.split()[0]=="144" and line.split()[2][2:4]=="25" and bytes.fromhex(line.split()[2])[14]==8)
+        struct.pack_into("<I",tail,28,65550)
+        packets=[struct.pack("<HBB",seq%65536,1,count)+axes[:12*count]
+                 for seq,count in ((65530,5),(65535,5),(65545,5),(65550,1))]
+        wrap=temporary / "wrap-gap.txt"
+        wrap.write_text("\n".join(prefix+[f"256 {len(p)} {p.hex()}" for p in packets]+[f"144 64 {tail.hex()}"])+"\n")
+        subprocess.run([str(consumer), str(wrap), str(bdq), "compact"], check=True)
+        result=read_can_imu_packets(bdq,"can0_imu6")
+        assert [r["sequence"] for r in result["readings"]] == list(range(65530,65540))+list(range(65545,65551))
+        assert {"source_segment_id":1,"first":65540,"last":65544,"count":5,"extent":"known"} in result["gaps"]
         # The real node recovery path must survive transport, writer staging and
         # reopening with separate origins; clock continuity is not source continuity.
         subprocess.run([str(producer), "6"], env=environment, check=True)

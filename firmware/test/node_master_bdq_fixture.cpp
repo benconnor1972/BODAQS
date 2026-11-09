@@ -10,6 +10,7 @@
 #include <vector>
 static BodaqsMasterService master;
 static RemoteImuStream stream;
+static bool duplicatePacket=false;
 static BodaqsMeasurementSlot exchange(const BodaqsMeasurementSlot& request,unsigned now) {
   uint8_t wire[64],response[84];BodaqsMeasurementSlot reply={};
   assert(bodaqs_measurement_encode(&request,wire,64));
@@ -33,6 +34,12 @@ static bool drain(unsigned cls,unsigned now) {
     const uint64_t order=(uint64_t(BdqV2Format::getU32(bytes+8))<<32)|BdqV2Format::getU32(r+8);
     assert(stream.accept(BdqV2Format::getU16(r),r+12,r[2],BdqV2Format::getU32(r+4),order,5000+now)
       ==RemoteImuStream::Accepted);
+    if(duplicatePacket && BdqV2Format::getU16(r)==0x100) {
+      // Replay at the public recording seam, after actual master reassembly.
+      // This tests persistence/decode deduplication, not transport RAM-ACK logic.
+      assert(stream.accept(0x100,r+12,r[2],BdqV2Format::getU32(r+4),order,5000+now)==RemoteImuStream::Accepted);
+      duplicatePacket=false;
+    }
   }
   (void)exchange(ack,now);return true;
 }
@@ -45,13 +52,15 @@ public:
   bool flush() override{return std::fflush(file)==0;}
 };
 int main(int argc,char** argv) {
-  assert(argc==3);
+  assert(argc>=3 && argc<=5);
+  duplicatePacket=argc==5;
   BodaqsMasterIdentity identity={};bodaqs_master_service_init(&master,&identity);
   bodaqs_control_exchange_init(&master.control,99);
   master.measurement.mode.phase=2;master.measurement.mode.context=9;master.measurement.mode.recording=77;
   master.discovery[0].flags=1;master.discovery[0].boot_id=17;
   master.acquisition_record[0]=77;master.acquisition_boot[0]=17;
   RemoteImuBinding binding;binding.boot=17;binding.masterBoot=99;binding.session=1;binding.recording=77;binding.context=9;
+  binding.compactPackets=argc>=4;
   assert(stream.configure(binding,2,3));
   std::ifstream input(argv[1]);assert(input);
   unsigned id,length,now=0;std::string hex;

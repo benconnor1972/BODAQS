@@ -101,6 +101,7 @@ bool configure(const SensorSpec& chosen,uint64_t sharedRecord,uint64_t sharedCon
   if(assignment.kind!=SensorAssignment::Kind::NodeImu || node>3 || !CanMasterManager::configurationReconciled(node)) {fault=true;return true;}
   const auto& d=CanMasterManager::diagnostics();const auto& endpoint=d.control.nodes[node].endpoints[0];
   RemoteImuBinding b;b.node=node;b.boot=endpoint.effective_boot;b.uid=endpoint.effective_uid;b.masterBoot=d.control.master_boot_id;b.masterUid=d.hardwareUid;
+  b.compactPackets=ImuAdmission::singleNodeSmokeBuild();
   b.session=d.authority.session;
   record=sharedRecord;
   b.recording=record;b.context=sharedContext;std::memcpy(b.effective,endpoint.effective,192);
@@ -293,7 +294,7 @@ bool configure(const LoggerConfig& cfg) {
    discardAllocated();report.reason=ImuAdmission::Reason::Allocation;return true;
   }
  }
- report.loggerBytes=sizeof(peers)+demand.nodes*RemoteImuStream::allocatedBufferBytes()+
+ report.loggerBytes=sizeof(peers)+demand.nodes*RemoteImuStream::allocatedBufferBytes(ImuAdmission::singleNodeSmokeBuild())+
     AcquisitionControl::reservedBytes()+sizeof(CanMasterManager::Diagnostics);
  selected=mask;sharedPending=0;sharedObject=0;
  return true;

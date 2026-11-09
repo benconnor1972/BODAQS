@@ -21,6 +21,51 @@ const BdqV2CatalogChannel sampleChannels[]={
  {"gy","angular_velocity","count","int16",24,"signal","y","sensor","gyro"},
  {"gz","angular_velocity","count","int16",26,"signal","z","sensor","gyro"}
 };
+const BdqV2CatalogChannel packetChannels[]={
+ {"sequence","packet_observation","count","uint32",0,"diagnostic"},
+ {"native_tick","packet_observation","count","uint32",4,"diagnostic"},
+ {"status_flags","packet_observation","count","uint16",8,"diagnostic"},
+ {"source_segment_id","packet_observation","count","uint32",12,"diagnostic"},
+ {"sequence_floor","packet_observation","count","uint32",16,"diagnostic"},
+ {"master_receive_tick","packet_observation","count","uint32",20,"diagnostic"},
+ {"master_receive_ordinal_low","packet_observation","count","uint32",24,"diagnostic"},
+ {"master_receive_ordinal_high","packet_observation","count","uint32",28,"diagnostic"},
+ {"first_sequence_low","packet_observation","count","uint16",32,"diagnostic"},
+ {"stream_epoch","packet_observation","count","uint8",34,"diagnostic"},
+ {"packet_flags","packet_observation","count","uint8",35,"diagnostic"},
+ {"packet_length","packet_observation","count","uint16",36,"diagnostic"},
+ {"reception_flags","packet_observation","count","uint8",38,"diagnostic"},
+ {"ax0","packet_observation","count","int16",40,"diagnostic"},
+ {"ay0","packet_observation","count","int16",42,"diagnostic"},
+ {"az0","packet_observation","count","int16",44,"diagnostic"},
+ {"gx0","packet_observation","count","int16",46,"diagnostic"},
+ {"gy0","packet_observation","count","int16",48,"diagnostic"},
+ {"gz0","packet_observation","count","int16",50,"diagnostic"},
+ {"ax1","packet_observation","count","int16",52,"diagnostic"},
+ {"ay1","packet_observation","count","int16",54,"diagnostic"},
+ {"az1","packet_observation","count","int16",56,"diagnostic"},
+ {"gx1","packet_observation","count","int16",58,"diagnostic"},
+ {"gy1","packet_observation","count","int16",60,"diagnostic"},
+ {"gz1","packet_observation","count","int16",62,"diagnostic"},
+ {"ax2","packet_observation","count","int16",64,"diagnostic"},
+ {"ay2","packet_observation","count","int16",66,"diagnostic"},
+ {"az2","packet_observation","count","int16",68,"diagnostic"},
+ {"gx2","packet_observation","count","int16",70,"diagnostic"},
+ {"gy2","packet_observation","count","int16",72,"diagnostic"},
+ {"gz2","packet_observation","count","int16",74,"diagnostic"},
+ {"ax3","packet_observation","count","int16",76,"diagnostic"},
+ {"ay3","packet_observation","count","int16",78,"diagnostic"},
+ {"az3","packet_observation","count","int16",80,"diagnostic"},
+ {"gx3","packet_observation","count","int16",82,"diagnostic"},
+ {"gy3","packet_observation","count","int16",84,"diagnostic"},
+ {"gz3","packet_observation","count","int16",86,"diagnostic"},
+ {"ax4","packet_observation","count","int16",88,"diagnostic"},
+ {"ay4","packet_observation","count","int16",90,"diagnostic"},
+ {"az4","packet_observation","count","int16",92,"diagnostic"},
+ {"gx4","packet_observation","count","int16",94,"diagnostic"},
+ {"gy4","packet_observation","count","int16",96,"diagnostic"},
+ {"gz4","packet_observation","count","int16",98,"diagnostic"},
+};
 const BdqV2CatalogChannel evidenceChannels[]={
  {"sequence","sequence","count","uint32",0,"diagnostic"},
  {"native_tick","native_tick","count","uint32",4,"diagnostic"},
@@ -91,7 +136,8 @@ const BdqV2CatalogChannel evidenceChannels[]={
 }
 bool RemoteImuStream::configure(const RemoteImuBinding& b,uint16_t sample,uint16_t companion) {
   release(); if(!b.boot || b.node>3 || !sample || !companion || sample==companion) return false;
-  if(!samples_.allocate(8192) || !evidence_.allocate(224,512)) {release();return false;}
+  if(!(b.compactPackets?packets_.allocate(100,2048):samples_.allocate(8192)) ||
+     !evidence_.allocate(224,512)) {release();return false;}
   provenance_=static_cast<char*>(DynamicSpscQueueDetail::allocateBytes(3072));
   models_=static_cast<Model*>(DynamicSpscQueueDetail::allocateBytes(32*sizeof(Model)));
   anchors_=static_cast<Anchor*>(DynamicSpscQueueDetail::allocateBytes(32*sizeof(Anchor)));
@@ -130,7 +176,7 @@ bool RemoteImuStream::configure(const RemoteImuBinding& b,uint16_t sample,uint16
     "\"sensor_clock_id\":\"can%u_sensor_boot_%lu\",\"master_clock_id\":\"master_boot_%llu_native\","
     "\"logger_clock_id\":\"logger_monotonic_creation\",\"master_clock_epoch_scope\":\"one_per_boot_fail_closed_on_discontinuity\",\"master_timestamp_nominal_hz\":1000000,\"master_timestamp_modulus\":4294967296,\"physical_timing_bounds\":\"unknown_pending_qualification\",\"node_sync_capture_flags\":{\"0\":\"raw_capture_sequence_unknown\",\"1\":\"sequence_association_proven\"},\"bridge_methods\":{\"1\":\"complete_causal_bracket\",\"2\":\"expired_token_only_no_master_observation\"},"
     "\"sensor_timestamp_nominal_hz\":40000,\"sensor_timestamp_modulus\":4294967296,"
-    "\"tick_semantics\":\"modelled_acceleration_output_ready\",\"inter_node_alignment\":\"unknown\","
+    "\"tick_semantics\":\"%s\",\"inter_node_alignment\":\"unknown\","
     "\"uncertainty_validity\":\"validity_mask bit13\",\"snapshot_flag_semantics\":\"acquisition_contract_5.1\","
     "\"clock_bound_flags_semantics\":\"bits0..7 original reception flags; bit0 receive tick unknown\",\"validity_mask_semantics\":\"acquisition_contract_6.1\",\"tag_decoding\":\"LSM6DSO32X FIFO_DATA_OUT_TAG\","
     "\"companion_prefix_semantics\":\"logger_creation_observation_not_sample_time\"",
@@ -141,15 +187,17 @@ bool RemoteImuStream::configure(const RemoteImuBinding& b,uint16_t sample,uint16
     scalingKnown?"true":"false",(unsigned long long)accelScale,(unsigned long long)gyroScale,
     (unsigned long)u32(b.effective+72),(unsigned long)u32(b.effective+76),
     (unsigned long)u32(b.effective+80),(unsigned long)u32(b.effective+84),
-    b.node,(unsigned long)b.boot,(unsigned long long)b.masterBoot);
+    b.node,(unsigned long)b.boot,(unsigned long long)b.masterBoot,
+    b.compactPackets?"logger_packet_observation_not_sample_time":"modelled_acceleration_output_ready");
   if(provenanceLength<0 || size_t(provenanceLength)>=3072) {release();return false;}
   return true;
 }
-size_t RemoteImuStream::allocatedBufferBytes() {
- return 8192*sizeof(Sample)+512*224+3072+32*sizeof(Model)+32*sizeof(Anchor);
+size_t RemoteImuStream::allocatedBufferBytes(bool compactPackets) {
+ return (compactPackets?2048*100:8192*sizeof(Sample))+512*224+3072+32*sizeof(Model)+32*sizeof(Anchor);
 }
 void RemoteImuStream::release() {
-  samples_.release();evidence_.release();sampleId_=evidenceId_=0;
+  samples_.release();packets_.release();evidence_.release();sampleId_=evidenceId_=0;
+  nextPacket_=sequenceFloor_=0;
   segment_=nextSequence_=stagedEvidence_=modelCount_=epoch_=anchorCount_=0;nextEvidence_=1;
   persistedEvidence_.store(0);haveSequence_=haveBoundary_=failed_=holding_=false;
 
@@ -164,6 +212,7 @@ void RemoteImuStream::release() {
 }
 BdqV2StreamSource RemoteImuStream::sampleSource() {
   BdqV2StreamSource s;s.streamId=sampleId_;s.recordSizeBytes=28;s.nativeTickModulus=uint64_t{1}<<32;
+  if(binding_.compactPackets) s.recordSizeBytes=100;
   s.context=this;s.pendingRecords=pendingSamples;s.pendingObservations=noObservations;s.popRecord=popSample;s.popObservation=noObservation;return s;
 }
 BdqV2StreamSource RemoteImuStream::evidenceSource() {
@@ -171,13 +220,16 @@ BdqV2StreamSource RemoteImuStream::evidenceSource() {
 }
 size_t RemoteImuStream::pendingSamples(const void* p) {
   auto& s=*const_cast<RemoteImuStream*>(static_cast<const RemoteImuStream*>(p));
+  if(s.binding_.compactPackets) return s.packets_.size();
   if(!s.holding_) s.holding_=s.samples_.pop(s.held_);
   if(!s.holding_ || s.held_.dependency>s.persistedEvidence_.load(std::memory_order_acquire)) return 0;
   return 1+s.samples_.size(); // each pop rechecks its own evidence dependency
 }
 size_t RemoteImuStream::pendingEvidence(const void* p) {return static_cast<const RemoteImuStream*>(p)->evidence_.size();}
 bool RemoteImuStream::popSample(void* p,uint8_t* out,size_t capacity) {
-  auto& s=*static_cast<RemoteImuStream*>(p);if(capacity<28 || !pendingSamples(p)) return false;
+  auto& s=*static_cast<RemoteImuStream*>(p);
+  if(s.binding_.compactPackets) return s.packets_.pop(out,capacity);
+  if(capacity<28 || !pendingSamples(p)) return false;
   std::memcpy(out,s.held_.bytes,28);s.holding_=false;return true;
 }
 bool RemoteImuStream::popEvidence(void* p,uint8_t* out,size_t capacity) {
@@ -196,20 +248,27 @@ BdqV2StreamDescriptor RemoteImuStream::descriptor(bool ev) {
   std::snprintf(d.clockId,sizeof d.clockId,ev?"logger_monotonic_creation":"can%u_boot%lu_native",binding_.node,(unsigned long)binding_.boot);
   std::snprintf(d.requestedProfile,sizeof d.requestedProfile,"imu6_3333_32g_2000dps_v1");
   std::snprintf(d.payloadSchema,sizeof d.payloadSchema,ev?"bodaqs.can_timing_evidence.v1":"bodaqs.can_imu6.v1");
+  if(!ev && binding_.compactPackets) {
+    std::snprintf(d.payloadSchema,sizeof d.payloadSchema,"bodaqs.can_imu_packets.v1");
+    std::snprintf(d.clockId,sizeof d.clockId,"logger_monotonic_creation");
+    std::snprintf(d.streamKind,sizeof d.streamKind,"intermittent");
+  }
   std::snprintf(d.domain,sizeof d.domain,"%s",binding_.domain);
   std::snprintf(d.end,sizeof d.end,"%s",binding_.end);
   std::snprintf(d.mountPoint,sizeof d.mountPoint,"%s",binding_.mountPoint);
   std::snprintf(d.calibrationRef,sizeof d.calibrationRef,"%s",binding_.calibrationRef);
   d.nominalSampleRateNumeratorHz=ev?50:3333;d.effectiveAccelRateHz=d.effectiveGyroRateHz=3333;
   d.channels=ev?evidenceChannels:sampleChannels;d.channelCount=ev?sizeof evidenceChannels/sizeof *evidenceChannels:sizeof sampleChannels/sizeof *sampleChannels;
+  if(!ev && binding_.compactPackets) {d.channels=packetChannels;d.channelCount=sizeof packetChannels/sizeof *packetChannels;}
   d.statusFlags=flags;d.statusFlagCount=sizeof flags/sizeof *flags;d.acquisitionDetailsJson=provenance_;return d;
 }
 RemoteImuStream::Acceptance RemoteImuStream::accept(uint16_t id,const uint8_t* p,size_t n,uint32_t tick,uint64_t order,uint32_t logger,uint8_t receptionFlags) {
   if(failed_ || !sampleId_ || !p) return Invalid;
-  if(id==0x100+8*binding_.node) return samples(p,n,logger);
+  if(id==0x100+8*binding_.node) return binding_.compactPackets?packet(p,n,tick,order,logger,receptionFlags):samples(p,n,logger);
   if(id!=0x90+binding_.node || n<8 || p[0]!=1 || p[2]!=1 || p[3] || p[7]) return Invalid;
   if(p[1]==0x22) {
     if(n!=32 || p[6]!=20 || p[8] || p[9]!=1 || u16(p+26) || u32(p+28)) return Invalid;
+    if(binding_.compactPackets) return Accepted; // optional legacy timing model anchor
     for(uint8_t i=0;i<modelCount_;++i) {auto& m=models_[i];
       if(m.epoch==p[10] && m.anchor==u32(p+12)) {
         if(m.tick==u32(p+16) && m.numerator==u32(p+20) && m.denominator==u16(p+24)) {m.anchored=true;return Accepted;}
@@ -261,6 +320,7 @@ RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t
     if(b[6]==2) {
       if(segment_==UINT32_MAX) {failed_=true;return Invalid;}
       ++segment_;epoch_=b[5];haveBoundary_=true;haveSequence_=false;modelCount_=0;
+      sequenceFloor_=u32(b+20);
     }
     if(!local && (!haveBoundary_ || b[5]!=epoch_)) return Invalid;
     if(v&1) {put(out+24,u32(b+20));valid|=1u<<4;}
@@ -283,7 +343,7 @@ RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t
       }
     }
     if(modelCount_==32) { // retire only decoded definitions; queued native records retain evidence serials
-      if(!haveSequence_ || uint32_t(nextSequence_-models_[0].anchor)<models_[0].span) {
+      if(!binding_.compactPackets && (!haveSequence_ || uint32_t(nextSequence_-models_[0].anchor)<models_[0].span)) {
         failed_=true;return Invalid;
       }
       for(uint8_t i=1;i<modelCount_;++i) models_[i-1]=models_[i];
@@ -307,6 +367,10 @@ RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t
   } else {
     if(!haveBoundary_ || b[5]!=epoch_ || u16(b+6)&~511u) return Invalid;
     const uint8_t presence=b[51];const uint16_t association=u16(b+6);
+    if(binding_.compactPackets && (presence&128)) {
+      if(u32(b+12)<sequenceFloor_) {failed_=true;return Invalid;}
+      sequenceFloor_=u32(b+12);
+    }
     put(out+48,u32(b+8));put(out+32,u32(b+16));put(out+36,u32(b+20));valid|=6;
     if(presence&128) {put(out+24,u32(b+12));valid|=1u<<4;}
     if(presence&8) {put(out+52,u32(b+24));valid|=1u<<5;}
@@ -322,6 +386,24 @@ RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t
   ++nextEvidence_;
   if(local && u16(b+44)==31) failed_=true;
   return Accepted;
+}
+RemoteImuStream::Acceptance RemoteImuStream::packet(const uint8_t* p,size_t n,uint32_t tick,uint64_t order,uint32_t logger,uint8_t receptionFlags) {
+  if(n<16 || n>64 || !haveBoundary_ || p[2]!=epoch_) return Invalid;
+  const uint8_t count=p[3]&7;
+  if(!count || count>5 || n<4+12u*count || (p[3]&128)) return Invalid;
+  for(size_t i=4+12u*count;i<n;++i) if(p[i]) return Invalid;
+  if(nextPacket_==UINT32_MAX) {failed_=true;return Invalid;}
+  // Backpressure keeps the real retained master head pinned until copied.
+  if(packets_.size()==packets_.capacity()) return Blocked;
+  uint8_t out[100]={};put(out,nextPacket_);put(out+4,logger);
+  BdqV2Format::putU16(out+8,BdqV2Format::TimingDegraded);
+  put(out+12,segment_);put(out+16,sequenceFloor_);put(out+20,tick);
+  put(out+24,static_cast<uint32_t>(order));put(out+28,static_cast<uint32_t>(order>>32));
+  BdqV2Format::putU16(out+32,u16(p));out[34]=p[2];out[35]=p[3];
+  BdqV2Format::putU16(out+36,static_cast<uint16_t>(n));out[38]=receptionFlags;
+  std::memcpy(out+40,p+4,12u*count);
+  if(!packets_.push(out,sizeof out)) return Blocked;
+  ++nextPacket_;return Accepted;
 }
 RemoteImuStream::Acceptance RemoteImuStream::samples(const uint8_t* p,size_t n,uint32_t logger) {
   if(n<16 || !haveBoundary_ || p[2]!=epoch_) return Invalid;

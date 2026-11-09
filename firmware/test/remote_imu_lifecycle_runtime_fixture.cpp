@@ -204,7 +204,7 @@ int main(int argc,char** argv) {
   BdqV2StreamDescriptor descriptors[8];
   assert(RemoteImuRecording::describe(descriptors,8,2)==2*fixtureSensorCount);
   for(unsigned n=0;n<fixtureSensorCount;++n) simulatedStorage.push_back(descriptors[n*2+1].source);
-  assert(!strcmp(descriptors[0].payloadSchema,"bodaqs.can_imu6.v1"));
+  assert(!strcmp(descriptors[0].payloadSchema,ImuAdmission::singleNodeSmokeBuild()?"bodaqs.can_imu_packets.v1":"bodaqs.can_imu6.v1"));
   assert(!strcmp(descriptors[1].payloadSchema,"bodaqs.can_timing_evidence.v1"));
   RemoteImuRecording::start();recordingSteps(2000);
   assert(RemoteImuRecording::recording());
