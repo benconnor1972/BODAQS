@@ -75,7 +75,7 @@ def plan(args: argparse.Namespace, output: Path) -> list[dict]:
     logger_env = "bodaqs_s3_mini_n4r2_imu_smoke" if args.profile=="first-recording" else "bodaqs_s3_mini_n4r2"
     commands = [
         step("a8-dependencies", [args.pio, "pkg", "install", "-d", "firmware", "-e",
-             logger_env]),
+             "bodaqs_s3_mini_n4r2"]),
         step("firmware-host", [*make, "-C", "firmware/test", "test",
              f"CXX={args.cxx}", f"CC={args.cc}", f"PYTHON={Path(sys.executable).as_posix()}"]),
         step("common-host", [*make, "-C", "firmware/can-fd/common/test", "test",
@@ -93,6 +93,7 @@ def plan(args: argparse.Namespace, output: Path) -> list[dict]:
         step("analysis", [sys.executable, "-m", "pytest", "-q"], cwd=ROOT / "analysis"),
     ]
     if args.profile=="first-recording":
+        commands.insert(1,step("restricted-a8-dependencies", [args.pio,"pkg","install","-d","firmware","-e",logger_env]))
         commands.append(step("integrated-first-recording", [sys.executable,
             "firmware/tools/test_integrated_imu_recording_runtime.py", "--first-recording",
             "--compiler", args.cxx, "--cc", args.cc,
