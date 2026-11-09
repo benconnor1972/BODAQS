@@ -6,6 +6,12 @@
 /* One main-loop owner: runtime writes never overlap profile apply or DMA.
  * Unknown alignment/uncertainty is explicitly retained on the wire. */
 enum { IDLE, CONFIG, VERIFY, SETTLE, DISCARD, READY, STARTING, RECORDING, STOPPING, FAILED, RECOVER };
+typedef struct {
+    uint32_t sequence,tick,sensor,sensor_epoch,capture,slot,model;
+    uint32_t sync_sequence,sync_tick;
+    uint8_t tags[3],epoch;
+    bool sync_associated,sync_present;
+} SampleObservation;
 static struct {
     BodaqsImuDisabled *stopped;
     BodaqsNodeCanSend send;
@@ -31,6 +37,7 @@ static struct {
     uint32_t recovery_capture;
     bool gap, recovered, evidence_gap;
     uint32_t slot_timestamp;
+    SampleObservation final_sample;
 } a;
 /* FIFO drains decode up to 32 slots in one turn. Keep CAN backpressure out of
  * that deadline: immutable frames retain evidence/data order until hardware
@@ -123,7 +130,7 @@ static void fail(uint8_t reason) {
         a.pending_event = BODAQS_ACQ_FAILED;
     bodaqs_node_imu_cancel(0);
 }
-static bool snapshot(uint32_t seq, uint32_t tick, uint32_t ts) {
+static bool snapshot_observation(uint32_t seq, uint32_t tick, uint32_t ts,const SampleObservation *sample) {
     uint8_t p[64], *b = p + 8;
     if(!evidence_available()) return false;
     uint32_t sync_sequence=0,sync_tick=0;
@@ -132,28 +139,33 @@ static bool snapshot(uint32_t seq, uint32_t tick, uint32_t ts) {
         ++a.loss_evidence; ++a.evidence; a.evidence_gap=true;
         return true;
     }
-    const bool sync_associated=bodaqs_node_sync_latest(&sync_sequence,&sync_tick);
+    const bool sync_associated=sample?sample->sync_associated:bodaqs_node_sync_latest(&sync_sequence,&sync_tick);
+    if(sample) {sync_sequence=sample->sync_sequence;sync_tick=sample->sync_tick;}
     envelope(p, 0x23, 56);
     bodaqs_control_put_u32(b, a.boot);
-    b[5] = a.epoch;
+    b[5] = sample?sample->epoch:a.epoch;
     put16(b + 6, (uint16_t)(0x37 | (sync_associated?8:0) | (a.evidence_gap?64:0)));
     bodaqs_control_put_u32(b + 8, ++a.evidence);
     bodaqs_control_put_u32(b + 12, seq);
-    bodaqs_control_put_u32(b + 16, a.sensor_epoch);
+    bodaqs_control_put_u32(b + 16, sample?sample->sensor_epoch:a.sensor_epoch);
     bodaqs_control_put_u32(b + 20, 1);
     bodaqs_control_put_u32(b + 24, ts);
     bodaqs_control_put_u32(b + 28, tick);
-    bodaqs_control_put_u32(b + 32, a.capture.ordinal);
-    bodaqs_control_put_u32(b + 44, a.model_id);
-    memcpy(b + 48, a.tags, 3);
-    b[51] = (uint8_t)(0xdf | (a.sync_present ? 0x20 : 0));
-    if (a.sync_present) {
+    bodaqs_control_put_u32(b + 32, sample?sample->capture:a.capture.ordinal);
+    bodaqs_control_put_u32(b + 44, sample?sample->model:a.model_id);
+    memcpy(b + 48, sample?sample->tags:a.tags, 3);
+    const bool sync_present=sample?sample->sync_present:a.sync_present;
+    b[51] = (uint8_t)(0xdf | (sync_present ? 0x20 : 0));
+    if (sync_present) {
         bodaqs_control_put_u32(b + 36, sync_sequence);
-        bodaqs_control_put_u32(b + 40, a.sync.tick);
+        bodaqs_control_put_u32(b + 40, sample?sample->sync_tick:a.sync.tick);
     }
-    bodaqs_control_put_u32(b + 52, a.slot);
+    bodaqs_control_put_u32(b + 52, sample?sample->slot:a.slot);
     a.evidence_gap=false;
     return emit(0x23, p, 64);
+}
+static bool snapshot(uint32_t seq,uint32_t tick,uint32_t ts) {
+    return snapshot_observation(seq,tick,ts,NULL);
 }
 static bool model(uint32_t seq, uint32_t tick, uint32_t now) {
     uint8_t p[64], *b = p + 8;
@@ -389,6 +401,15 @@ static bool word(const uint8_t *w, uint32_t now) {
             a.packet[2] = a.epoch;
         }
         memcpy(a.packet + 4 + 12 * a.count, a.axes, 12);
+        SampleObservation *last=&a.final_sample;
+        last->sequence=a.sequence;last->tick=tick;last->sensor=ts;
+        last->sensor_epoch=a.sensor_epoch;last->capture=a.capture.ordinal;
+        last->slot=a.slot;last->model=a.model_id;last->epoch=a.epoch;
+        memcpy(last->tags,a.tags,3);
+        last->sync_sequence=last->sync_tick=0;
+        last->sync_associated=bodaqs_node_sync_latest(&last->sync_sequence,&last->sync_tick);
+        last->sync_present=a.sync_present;
+        if(!last->sync_associated && last->sync_present) last->sync_tick=a.sync.tick;
         ++a.count;
         ++a.sequence;
         a.recorded = true;
@@ -680,7 +701,9 @@ void bodaqs_node_acquisition_backend(void *context, uint8_t command, uint32_t ge
         a.phase = STARTING;
     } else if (command == BODAQS_ACQ_STOP) {
         bodaqs_node_imu_cancel(0);
-        if (!flush(true) || (a.recorded && !boundary(8, 0, clock_tick())))
+        if (!flush(true) || (a.recorded &&
+            (!snapshot_observation(a.final_sample.sequence,a.final_sample.tick,a.final_sample.sensor,&a.final_sample) ||
+             !boundary(8, 0, clock_tick()))))
             a.reason = 31;
         a.drain_phase = 0;
         a.pending_event = 0;

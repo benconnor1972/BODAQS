@@ -31,6 +31,8 @@ static bool fifo_drained;
 static FILE *wire;
 static uint32_t next_tx_tick, tx_blocked_until;
 static bool seen_boundary, seen_model, seen_anchor, seen_snapshot;
+static unsigned snapshot_count;
+static uint8_t last_snapshot[64];
 static unsigned recovery_events, raw_sync_events;
 static bool sync_scope_checks;
 static uint32_t sync_scope_start;
@@ -63,8 +65,10 @@ static bool sent(uint16_t id, const uint8_t *p, size_t n) {
             seen_model = true;
         if (p[1] == 0x22)
             seen_anchor = true;
-        if (p[1] == 0x23)
+        if (p[1] == 0x23) {
             seen_snapshot = true;
+            ++snapshot_count;memcpy(last_snapshot,p,64);
+        }
     }
     if (id == 0x100)
         assert(seen_boundary && seen_model && seen_anchor && seen_snapshot);
@@ -427,6 +431,10 @@ int main(int argc, char **argv) {
         }
     }
     assert(stopped_ok && regs[10] == 0 && regs[25] == 0 && regs[16] == 0x94 && regs[17] == 0x9c);
+    assert(snapshot_count>=2);
+    assert(bodaqs_control_get_u32(last_snapshot+20)==bodaqs_control_get_u32(e.boundary));
+    assert(bodaqs_control_get_u32(last_snapshot+36)==bodaqs_control_get_u32(e.boundary+4));
+    assert(bodaqs_control_get_u32(last_snapshot+32)==0xfffffff0U+bodaqs_control_get_u32(e.boundary+4)/25U);
     /* FENCE is not complete while an already accepted hardware TX is pending. */
     next_tx_tick = sim_tick + 500;
     memset(&e, 0, sizeof(e));

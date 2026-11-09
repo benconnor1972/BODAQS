@@ -117,3 +117,28 @@ The legacy master still requires a full-sequence origin anchor (0x22); this is
 source interpretation metadata, not an applicable model. Its older low16 loss
 accounting must be reconciled explicitly with the new transport in S4. No
 real-path throughput, target memory, timing or storage qualification is claimed.
+
+Follow-up S3 review found that a replay after a newer snapshot carries a newer
+logger floor despite having unchanged master reception identity. `ed1206c`
+excludes this interpretation-state field from immutable-content comparison. The
+new replay-after-floor300 writer/reader test fails before the correction and
+passes after it. Fresh reviewer accepted the fix with no remaining concrete S3
+source findings; S4's retained-head evidence remains outstanding.
+
+## S5 / #182: final sample-associated raw observation
+
+The node caches the last completely associated sample's sequence, sensor time,
+capture tick/ordinal, sensor/stream epochs, FIFO slot/tags, model identity and
+raw SYNC state when that sample is appended. Normal STOP flushes samples,
+emits a raw snapshot from that cache, then emits the separate STOP-time boundary.
+It never pairs a cached sensor timestamp with the later STOP tick. Start and
+100ms-or500-sample periodic observation triggers remain unchanged. Optional
+snapshot queue pressure retains its existing explicit-loss behavior; it does
+not prevent retained axes from being decoded.
+
+The actual node adapter -> master fragments -> stream -> BDQ writer -> independent
+reader test verifies final sequence64, sensor timestamp7008, capture tick175600,
+and capture/slot increments64 from the start observation. Full node capture,
+SPI and acquisition host suite (including recovery, wrap/fault, queue pressure,
+FIFO ordering and repeated recording turnovers) passes. These are deterministic
+host clock values, not measured physical timing or a fitted timing model.
