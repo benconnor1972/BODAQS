@@ -486,7 +486,7 @@ void service() {
       Lock lock;outcomes[node].tailDiscarded=true;
       continue;
     }
-    if(data.state.complete && !data.admitted &&
+    if(CanMasterManager::measurementObjectReady(data) &&
        dataConsumer(dataClass,node,data.state.object,data.bytes,data.state.total))
       CanMasterManager::releaseMeasurementObject(data);
   }
@@ -494,7 +494,7 @@ void service() {
     if(transport.lossReady && dataConsumer(7,transport.lossDiagnostic.node,
        transport.lossDiagnostic.object,transport.lossDiagnostic.body,8)) transport.lossReady=false;
     auto& shared=transport.inboxes[4][0];
-    if(shared.state.complete && !shared.admitted &&
+    if(CanMasterManager::measurementObjectReady(shared) &&
        dataConsumer(5,255,shared.state.object,shared.bytes,shared.state.total))
       CanMasterManager::releaseMeasurementObject(shared);
     if(transport.bridgeReady) {

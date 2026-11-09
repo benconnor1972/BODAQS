@@ -37,11 +37,11 @@ static inline bool bodaqs_fragment_seal(BodaqsFragmentState *s,uint8_t *data,siz
 }
 static inline bool bodaqs_fragment_emit(const BodaqsFragmentState *s,const uint8_t *data,
     uint8_t index,BodaqsMeasurementSlot *slot) {
-    unsigned offset=(unsigned)index*40, count;
+    unsigned offset=(unsigned)index*BODAQS_MEASUREMENT_BODY_BYTES, count;
     if(!s->complete || offset>=s->total) return false;
     memset(slot,0,sizeof(*slot)); slot->kind=bodaqs_fragment_kind(s->cls);
     slot->context=s->context; slot->object=s->object; slot->node=s->node; slot->index=index; slot->total=s->total;
-    count=s->total-offset; if(count>40) count=40;
+    count=s->total-offset; if(count>BODAQS_MEASUREMENT_BODY_BYTES) count=BODAQS_MEASUREMENT_BODY_BYTES;
     memcpy(slot->body,data+offset,count); return true;
 }
 static inline void bodaqs_fragment_ack(const BodaqsFragmentState *s,uint8_t disposition,BodaqsMeasurementSlot *ack) {
@@ -53,13 +53,13 @@ static inline bool bodaqs_fragment_ack_matches(const BodaqsFragmentState *s,cons
     return s->complete && a->kind==5 && a->context==s->context && a->object==s->object &&
         a->node==s->node && a->total==s->total && !a->index && a->body[0]==s->cls &&
         (a->body[1]==1 || a->body[1]==2) && bodaqs_measurement_zero(a->body+2,2) &&
-        bodaqs_measurement_get(a->body+4,4)==s->checksum && bodaqs_measurement_zero(a->body+8,32);
+        bodaqs_measurement_get(a->body+4,4)==s->checksum && bodaqs_measurement_zero(a->body+8,BODAQS_MEASUREMENT_BODY_BYTES-8);
 }
 /* 0 incomplete, 1 new validated RAM object, 2 cached duplicate; negative ERROR reason.
  * Complete RAM remains pinned until caller has admitted it downstream. */
 static inline int bodaqs_fragment_accept(BodaqsFragmentState *s,uint8_t *data,size_t capacity,
     const BodaqsMeasurementSlot *a,uint8_t direction,BodaqsMeasurementSlot *ack) {
-    uint8_t cls=bodaqs_fragment_class(a->kind); unsigned offset=(unsigned)a->index*40,count;
+    uint8_t cls=bodaqs_fragment_class(a->kind); unsigned offset=(unsigned)a->index*BODAQS_MEASUREMENT_BODY_BYTES,count;
     uint32_t bit, all;
     if(!cls || !a->object || !a->context || direction>1 ||
        (a->node>3 && !(a->node==255 && cls==5))) return -13;
@@ -67,8 +67,8 @@ static inline int bodaqs_fragment_accept(BodaqsFragmentState *s,uint8_t *data,si
        ((cls==3 || cls==4) && a->total!=68) ||
        ((cls==1 || cls==2) && (a->total<96 || (a->total-20)%76)) ||
        (cls==5 && (a->total<28 || (a->total-12)%16))) return -2;
-    count=a->total-offset; if(count>40) count=40;
-    if(!bodaqs_measurement_zero(a->body+count,40-count)) return -2;
+    count=a->total-offset; if(count>BODAQS_MEASUREMENT_BODY_BYTES) count=BODAQS_MEASUREMENT_BODY_BYTES;
+    if(!bodaqs_measurement_zero(a->body+count,BODAQS_MEASUREMENT_BODY_BYTES-count)) return -2;
     if(s->object && (s->context!=a->context || s->node!=a->node || s->cls!=cls || s->direction!=direction)) return -4;
     if(s->object && a->object!=s->object && a->object==s->accepted_object) {
         BodaqsFragmentState cached=*s;
@@ -93,7 +93,7 @@ static inline int bodaqs_fragment_accept(BodaqsFragmentState *s,uint8_t *data,si
     if((s->mask&bit) && memcmp(data+offset,a->body,count)) return -5;
     if(s->complete) { bodaqs_fragment_ack(s,2,ack); return 2; }
     memcpy(data+offset,a->body,count); s->mask|=bit;
-    all=(1UL<<((s->total+39)/40))-1;
+    all=(1UL<<((s->total+BODAQS_MEASUREMENT_BODY_BYTES-1)/BODAQS_MEASUREMENT_BODY_BYTES))-1;
     if(s->mask!=all) return 0;
     s->checksum=(uint32_t)bodaqs_measurement_get(data+s->total-4,4);
     if(s->checksum!=bodaqs_fragment_checksum(s,data)) { s->mask=0; return -3; }

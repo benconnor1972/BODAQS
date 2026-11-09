@@ -126,6 +126,10 @@ struct MeasurementInbox {
   uint32_t requestedFragments = 0;
   BodaqsMeasurementSlot pendingAck = {};
 };
+inline bool measurementObjectReady(const MeasurementInbox& inbox) {
+  return inbox.state.complete && !inbox.admitted &&
+      !(inbox.ackPending && inbox.pendingAck.object!=inbox.state.object);
+}
 // Caller allocates this bank persistently (not on a task stack). It demultiplexes
 // all pipelined traffic, including MISO received while sending another lane/ACK.
 struct MeasurementOutbox {

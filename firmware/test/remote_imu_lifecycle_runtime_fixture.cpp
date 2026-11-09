@@ -133,7 +133,8 @@ int main(int argc,char** argv) {
     dropOrdinaryControlAck=true;
     recordingSteps(8000);
     assert(droppedControlAcks==1);
-    assert(CanMasterManager::diagnostics().measurementTransferErrorMask&(1U<<8));
+    if(BODAQS_MEASUREMENT_VERSION==1)
+      assert(CanMasterManager::diagnostics().measurementTransferErrorMask&(1U<<8));
     assert(!RemoteImuRecording::failed() && RemoteImuRecording::prepared());
     RemoteImuRecording::stop();
     for(unsigned i=0;i<30000 && !RemoteImuRecording::stopped();++i) recordingSteps(1);

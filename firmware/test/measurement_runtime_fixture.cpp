@@ -52,7 +52,7 @@ void discoverHardware(DiscoveryReason) {}
 bool setRemoteProviderObservation(const SensorProviderObservation&) { return true; }
 bool setRemoteEndpointObservation(const SensorEndpointObservation&) { return true; }
 }
-static uint8_t preloaded[84];
+static uint8_t preloaded[BODAQS_MASTER_TRANSFER_BYTES];
 // Model saturation of the real one-slot RX queue: every other physical slot
 // arrives before the main-loop owner has freed its previous queue entry.
 static bool alternateRxLoss=false;
@@ -61,7 +61,7 @@ static bool dropOrdinaryControlAck=false;
 static unsigned droppedControlAcks;
 static bool delayStatusResponses=false;
 static unsigned delayedResponseDepth=8;
-struct DelayedSpiSlot {uint8_t bytes[84];};
+struct DelayedSpiSlot {uint8_t bytes[BODAQS_MASTER_TRANSFER_BYTES];};
 static std::vector<DelayedSpiSlot> delayedSpiSlots;
 static bool loseMeasurementReplies=false;
 static bool dropDataFragmentOnce=false;
@@ -78,34 +78,34 @@ namespace SharedSpiBus {
 bool begin(const board::SPIProfile&) { return spiAvailable; }
 bool transfer(int8_t,const SPISettings& settings,const uint8_t*tx,uint8_t*rx,size_t length,uint32_t) {
  if(!spiAvailable) return false;
- if(!fixedMeasurementClock && (length!=64 || !fastMeasurementClock || ++measurementSlots%10==0)) ++clockMs;
- assert(length==64 || length==84);
- if(length==64) assert(settings.hz==8000000);
+ if(!fixedMeasurementClock && (length!=BODAQS_MEASUREMENT_BYTES || !fastMeasurementClock || ++measurementSlots%10==0)) ++clockMs;
+ assert(length==BODAQS_MEASUREMENT_BYTES || length==84);
+ if(length==BODAQS_MEASUREMENT_BYTES) assert(settings.hz==BODAQS_MEASUREMENT_HZ);
  memcpy(rx,preloaded,length);
- uint8_t lostAckReplacement[64];BodaqsMeasurementSlot ackSlot={};
- if(length==64 && dropOrdinaryControlAck && bodaqs_measurement_decode(tx,64,&ackSlot) &&
-    ackSlot.kind==5 && ackSlot.node==0 && ackSlot.body[0]==3) {
+ uint8_t lostAckReplacement[BODAQS_MEASUREMENT_BYTES];BodaqsMeasurementSlot ackSlot={};
+ if(length==BODAQS_MEASUREMENT_BYTES && dropOrdinaryControlAck && bodaqs_measurement_decode(tx,BODAQS_MEASUREMENT_BYTES,&ackSlot) &&
+    (ackSlot.kind==5 || ackSlot.kind==14) && ackSlot.node==0 && ackSlot.body[0]==3) {
   dropOrdinaryControlAck=false;++droppedControlAcks;
   ackSlot={};ackSlot.node=255;ackSlot.context=master.measurement.mode.context;
-  assert(bodaqs_measurement_encode(&ackSlot,lostAckReplacement,64));
+  assert(bodaqs_measurement_encode(&ackSlot,lostAckReplacement,BODAQS_MEASUREMENT_BYTES));
   tx=lostAckReplacement;
   // Another lane's empty response can occupy MISO when this ACK is lost.
   // Do not hand the host an immediate duplicate that would repair the ACK.
-  memcpy(rx,lostAckReplacement,64);
+  memcpy(rx,lostAckReplacement,BODAQS_MEASUREMENT_BYTES);
  }
  if(alternateRxLoss && (++physicalSlots%2)==0) return true;
- uint8_t next[84];
+ uint8_t next[BODAQS_MASTER_TRANSFER_BYTES];
  const auto slotResult=bodaqs_master_service_process_transfer(&master,tx,length,clockMs,next);
  if(slotResult!=BODAQS_MASTER_SLOT_PROCESSED && !allowMalformedMeasurement)
   std::fprintf(stderr,"malformed at%u length%u kind%u phase%u context%llu\n",clockMs,unsigned(length),tx[3],master.measurement.mode.phase,(unsigned long long)master.measurement.mode.context);
  assert(slotResult==BODAQS_MASTER_SLOT_PROCESSED ||
-   (allowMalformedMeasurement && length==64 && slotResult==BODAQS_MASTER_SLOT_MALFORMED));
- if(delayStatusResponses && length==64) {
-  DelayedSpiSlot queued={};memcpy(queued.bytes,next,84);delayedSpiSlots.push_back(queued);
+   (allowMalformedMeasurement && length==BODAQS_MEASUREMENT_BYTES && slotResult==BODAQS_MASTER_SLOT_MALFORMED));
+ if(delayStatusResponses && length==BODAQS_MEASUREMENT_BYTES) {
+  DelayedSpiSlot queued={};memcpy(queued.bytes,next,BODAQS_MASTER_TRANSFER_BYTES);delayedSpiSlots.push_back(queued);
   if(delayedSpiSlots.size()>delayedResponseDepth) {
-   memcpy(preloaded,delayedSpiSlots.front().bytes,84);delayedSpiSlots.erase(delayedSpiSlots.begin());
+   memcpy(preloaded,delayedSpiSlots.front().bytes,BODAQS_MASTER_TRANSFER_BYTES);delayedSpiSlots.erase(delayedSpiSlots.begin());
   }
- } else memcpy(preloaded,next,84);
+ } else memcpy(preloaded,next,BODAQS_MASTER_TRANSFER_BYTES);
  uint8_t address,payload[64]; uint16_t transaction;
  if(bodaqs_master_service_control_transmit(&master,clockMs,&address,&transaction,payload)) {
   BodaqsControlRecord request,reply;uint16_t decoded;
@@ -113,38 +113,38 @@ bool transfer(int8_t,const SPISettings& settings,const uint8_t*tx,uint8_t*rx,siz
   assert(bodaqs_control_node_process(&node.view,&request,&reply));
   assert(bodaqs_master_service_control_receive(&master,address,transaction,&reply));
  }
- if(length==64 && loseMeasurementReplies) memset(rx,0,length);
- if(length==64 && dropDataFragmentOnce) {
+ if(length==BODAQS_MEASUREMENT_BYTES && loseMeasurementReplies) memset(rx,0,length);
+ if(length==BODAQS_MEASUREMENT_BYTES && dropDataFragmentOnce) {
   BodaqsMeasurementSlot fragment={};
-  if(bodaqs_measurement_decode(rx,64,&fragment) && fragment.kind==2 && fragment.index==droppedFragmentIndex) {
+  if(bodaqs_measurement_decode(rx,BODAQS_MEASUREMENT_BYTES,&fragment) && fragment.kind==2 && fragment.index==droppedFragmentIndex) {
    dropDataFragmentOnce=false;++droppedDataFragments;
    const uint64_t context=fragment.context;fragment={};fragment.context=context;fragment.node=255;
-   assert(bodaqs_measurement_encode(&fragment,rx,64));
+   assert(bodaqs_measurement_encode(&fragment,rx,BODAQS_MEASUREMENT_BYTES));
   }
  }
- if(length==64 && loseBridgeReplies) {
+ if(length==BODAQS_MEASUREMENT_BYTES && loseBridgeReplies) {
   BodaqsMeasurementSlot bridge={};
-  if(bodaqs_measurement_decode(rx,64,&bridge) && bridge.kind==11) {
+  if(bodaqs_measurement_decode(rx,BODAQS_MEASUREMENT_BYTES,&bridge) && bridge.kind==11) {
     bridge={};bridge.node=255;bridge.context=master.measurement.mode.context;
-    assert(bodaqs_measurement_encode(&bridge,rx,64));
+    assert(bodaqs_measurement_encode(&bridge,rx,BODAQS_MEASUREMENT_BYTES));
   }
  }
- if(length==64 && (strandOrdinaryReply || delayRenewalWire || replayRenewalWire)) {
+ if(length==BODAQS_MEASUREMENT_BYTES && (strandOrdinaryReply || delayRenewalWire || replayRenewalWire)) {
   BodaqsMeasurementSlot slot={};
-  if(bodaqs_measurement_decode(rx,64,&slot)) {
+  if(bodaqs_measurement_decode(rx,BODAQS_MEASUREMENT_BYTES,&slot)) {
    bool suppress=strandOrdinaryReply && slot.kind==4 && slot.node==0 && slot.index==1;
    if(delayRenewalWire && slot.kind==12 && slot.node==0) {
     if(slot.index==0 && slot.body[12]==0x27) delayedRenewalObject=slot.object;
     if(delayedRenewalObject && slot.object==delayedRenewalObject) {
-     DelayedSpiSlot savedSlot={};memcpy(savedSlot.bytes,rx,64);
+     DelayedSpiSlot savedSlot={};memcpy(savedSlot.bytes,rx,BODAQS_MEASUREMENT_BYTES);
      if(renewalWire.size()<2 && slot.index==renewalWire.size()) renewalWire.push_back(savedSlot);
      suppress=slot.index!=0;
     }
    }
-   if(suppress) {BodaqsMeasurementSlot empty={};empty.node=255;empty.context=master.measurement.mode.context;assert(bodaqs_measurement_encode(&empty,rx,64));}
+   if(suppress) {BodaqsMeasurementSlot empty={};empty.node=255;empty.context=master.measurement.mode.context;assert(bodaqs_measurement_encode(&empty,rx,BODAQS_MEASUREMENT_BYTES));}
   }
   if(replayRenewalWire && !renewalWire.empty()) {
-   memcpy(rx,renewalWire.front().bytes,64);renewalWire.erase(renewalWire.begin());
+   memcpy(rx,renewalWire.front().bytes,BODAQS_MEASUREMENT_BYTES);renewalWire.erase(renewalWire.begin());
   }
  }
  if(length==84 && int32_t(clockMs-dropBindReplyUntil)<0) {

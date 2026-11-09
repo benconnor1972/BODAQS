@@ -696,7 +696,7 @@ bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
   if (!measurementAccess_()) return false;
   if (!s_started || !s_profile.supported || s_profile.cs_pin < 0 ||
       s_profile.spi_bus_index != 0 || s_diagnostics.mode == CanMasterMode::Off) return false;
-  uint8_t tx[64], rx[64];
+  uint8_t tx[BODAQS_MEASUREMENT_BYTES], rx[BODAQS_MEASUREMENT_BYTES];
   if (!bodaqs_measurement_encode(&request, tx, sizeof tx)) return false;
   const SPISettings settings(BODAQS_MEASUREMENT_HZ, MSBFIRST, spiDataMode_(s_profile.spi_mode));
   const uint32_t started=micros();
@@ -706,7 +706,7 @@ bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
     const uint32_t idle=started-measurementTimingEndUs;
     if(idle>timing.maxIdleUs) timing.maxIdleUs=idle;
   }
-  const bool valid=transferSlot_(settings,tx,rx,64,25) && bodaqs_measurement_decode(rx,64,&response);
+  const bool valid=transferSlot_(settings,tx,rx,BODAQS_MEASUREMENT_BYTES,25) && bodaqs_measurement_decode(rx,BODAQS_MEASUREMENT_BYTES,&response);
   measurementTimingEndUs=micros();
   const uint32_t duration=measurementTimingEndUs-started;
   ++timing.slots;timing.exchangeUs+=duration;
@@ -730,6 +730,7 @@ static MeasurementInbox* transportInbox_(MeasurementTransport& transport,uint8_t
 }
 void releaseMeasurementObject(MeasurementInbox& inbox) {
   if (!measurementAccess_()) return;
+  if(inbox.ackPending && inbox.pendingAck.object!=inbox.state.object) return;
   if(inbox.state.complete) {inbox.admitted=true;inbox.ackPending=true;bodaqs_fragment_ack(&inbox.state,1,&inbox.pendingAck);}
 }
 
@@ -839,7 +840,7 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
     // Retire the previous immutable result before sending the successor on
     // this lane. Otherwise its new fragments indefinitely suppress the RAM
     // ACK and the master correctly refuses to replace its pinned result.
-    const bool retireFirst=retained.admitted && retained.ackPending &&
+    const bool retireFirst=retained.ackPending &&
         !(lane==1 && candidate.bytes[12]==0x25);
     const bool fetchFirst=retained.state.object && !retained.state.complete &&
         !(lane==1 && candidate.bytes[12]==0x25);
@@ -848,7 +849,8 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
       // Reverse the two-fragment order on each retry round (0,1,1,0).
       // A fixed 0,1 pattern can starve one fragment forever if the master's
       // saturated RX queue accepts only alternating physical slots.
-      const uint8_t fragment=candidate.nextFragment==1 || candidate.nextFragment==2?1:0;
+      const uint8_t fragment=candidate.state.total<=BODAQS_MEASUREMENT_BODY_BYTES?0:
+          (candidate.nextFragment==1 || candidate.nextFragment==2?1:0);
       (void)bodaqs_fragment_emit(&candidate.state,candidate.bytes,fragment,&request);
       candidate.nextFragment=(candidate.nextFragment+1)%4;
       transport.nextControlNode[lane]=(n+1)%4;
@@ -857,23 +859,34 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
   const uint8_t priority[5]={4,3,5,1,2};
   for(uint8_t p:priority) for(uint8_t n=0;n<(p==5?1:4);++n) {
     auto& inbox=transport.inboxes[p-1][n];
-    if(!outgoing && !acked && inbox.admitted && inbox.ackPending) {
+    if(!outgoing && !acked && inbox.ackPending) {
       request=inbox.pendingAck;acked=&inbox;
     }
   }
+#if BODAQS_MEASUREMENT_VERSION == 2
+  if(acked) {
+    request.kind=14;request.body[2]=cls;request.body[3]=node;
+    auto* next=transportInbox_(transport,cls,node);
+    if(next && next->state.object && !next->state.complete) {
+      bodaqs_measurement_put(request.body+8,next->state.object,4);
+      for(uint8_t i=0;i<BODAQS_MEASUREMENT_FRAGMENT_COUNT;++i)
+        if(!(next->state.mask&(1UL<<i))) {request.body[12]=i;break;}
+    }
+  }
+#endif
   if(!acked && !outgoing) {
     request.kind=1;request.context=s_diagnostics.measurement.context;request.node=node;request.body[0]=cls;
     MeasurementInbox* partial=transportInbox_(transport,cls,node);
     if(partial && partial->state.object && !partial->state.complete) {
       request.object=partial->state.object;request.node=partial->state.node;
-      for(uint8_t i=0;i<26;++i) if(!(partial->state.mask&(1UL<<i))) {request.index=i;break;}
+      for(uint8_t i=0;i<BODAQS_MEASUREMENT_FRAGMENT_COUNT;++i) if(!(partial->state.mask&(1UL<<i))) {request.index=i;break;}
       // Publication can take several physical slots. Request each missing
       // fragment once before repeating gaps, rather than tracking only the
       // immediately preceding poll. This hint never marks a fragment received;
       // a new sweep retries every still-missing fragment, including a lost tail.
       if(cls<3) {
         bool unrequested=false;
-        for(uint8_t i=0;i<(partial->state.total+39)/40;++i)
+        for(uint8_t i=0;i<(partial->state.total+BODAQS_MEASUREMENT_BODY_BYTES-1)/BODAQS_MEASUREMENT_BODY_BYTES;++i)
           if(!(partial->state.mask&(1UL<<i)) && !(partial->requestedFragments&(1UL<<i))) {
             request.index=i;unrequested=true;break;
           }
@@ -929,7 +942,20 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
     transport.bridgeUpper=receivedUs;transport.bridgeExpired=transport.bridgeEpoch==0;transport.bridgeReady=true;
     transport.bridgePending=false;transport.bridgeNext=transport.bridgeStarted+100;
   }
+#if BODAQS_MEASUREMENT_VERSION == 2
+  if(response.retired) {
+    auto* retired=transportInbox_(transport,response.retiredClass,response.retiredNode);
+    if(retired && retired->ackPending) {
+      const auto& pending=retired->pendingAck;
+      if(pending.context==response.context && pending.object==response.retiredObject &&
+         pending.total==response.retiredTotal &&
+         bodaqs_measurement_get(pending.body+4,4)==response.retiredChecksum)
+        retired->ackPending=false;
+    }
+  }
+#else
   if(acked) acked->ackPending=false;
+#endif
   if(response.kind==5 && response.node<4 && (response.body[0]==3 || response.body[0]==4)) {
     auto& sent=transport.controls[response.body[0]-3][response.node];
     if(bodaqs_fragment_ack_matches(&sent.state,&response)) {
@@ -989,11 +1015,17 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
   int result=bodaqs_fragment_accept(&inbox->state,inbox->bytes,sizeof(inbox->bytes),&response,1,&ack);
   if(inbox->state.object!=previousObject) inbox->requestedFragments=0;
   if(result==1) {
-    inbox->admitted=false;inbox->ackPending=false;completed=inbox;
+    inbox->admitted=false;
+#if BODAQS_MEASUREMENT_VERSION == 1
+    inbox->ackPending=false;
+#endif
+    if(measurementObjectReady(*inbox)) completed=inbox;
+    else result=0; // retain the successor until predecessor retirement is confirmed
     ++s_diagnostics.measurementObjectsReceived;
   } else if(result==2) {
     ++s_diagnostics.measurementDuplicates;
     if(inbox->admitted) {inbox->ackPending=true;inbox->pendingAck=ack;}
+    else if(measurementObjectReady(*inbox)) {result=1;completed=inbox;}
   } else if(result<0) {
     measurementError_(static_cast<uint8_t>(-result),responseClass,response.node,response.object,"fragment_decode");
     if(result!=-6) return unavailableTransport_(transport);
@@ -1008,8 +1040,20 @@ bool acknowledgeMeasurementObject(MeasurementInbox& inbox) {
   if(!measurementReady() || !inbox.state.complete) return false;
   BodaqsMeasurementSlot ack={}, response={};
   bodaqs_fragment_ack(&inbox.state,1,&ack);
+#if BODAQS_MEASUREMENT_VERSION == 2
+  ack.kind=14;ack.body[2]=inbox.state.cls;ack.body[3]=inbox.state.node;
+  const uint32_t started=millis();
+  do {
+    if(exchangeMeasurementSlot(ack,response) && response.context==ack.context && response.retired &&
+       response.retiredClass==inbox.state.cls && response.retiredNode==inbox.state.node &&
+       response.retiredObject==inbox.state.object && response.retiredTotal==inbox.state.total &&
+       response.retiredChecksum==inbox.state.checksum) {inbox.ackPending=false;return true;}
+  } while(static_cast<uint32_t>(millis()-started)<300);
+  return false;
+#else
   if(!exchangeMeasurementSlot(ack,response)) return false;
   inbox.ackPending=false; return true;
+#endif
 }
 int pollMeasurementObject(uint8_t cls,uint8_t node,MeasurementInbox& inbox) {
   if (!measurementAccess_()) return -8;
@@ -1019,7 +1063,7 @@ int pollMeasurementObject(uint8_t cls,uint8_t node,MeasurementInbox& inbox) {
   request.kind=1;request.context=s_diagnostics.measurement.context;request.node=node;request.body[0]=cls;
   if(inbox.state.object && !inbox.state.complete) {
     request.object=inbox.state.object; request.node=inbox.state.node;
-    for(uint8_t i=0;i<26;++i) if(!(inbox.state.mask&(1UL<<i))) {request.index=i;break;}
+    for(uint8_t i=0;i<BODAQS_MEASUREMENT_FRAGMENT_COUNT;++i) if(!(inbox.state.mask&(1UL<<i))) {request.index=i;break;}
   }
   if(!exchangeMeasurementSlot(request,response)) return 0;
   if(response.context!=request.context) return 0;
@@ -1061,7 +1105,7 @@ bool submitMeasurementControl(const BodaqsControlWrapped& wrapped,uint32_t objec
         wrapped.node_address,authorization?4:3,0,64)) return false;
   const uint32_t began=millis();
   do {
-    for(uint8_t index=0;index<2;++index) {
+    for(uint8_t index=0;index<(tx.total+BODAQS_MEASUREMENT_BODY_BYTES-1)/BODAQS_MEASUREMENT_BODY_BYTES;++index) {
       BodaqsMeasurementSlot request={},response={};
       (void)bodaqs_fragment_emit(&tx,data,index,&request);
       if(exchangeMeasurementSlot(request,response) && bodaqs_fragment_ack_matches(&tx,&response)) {
@@ -1220,7 +1264,7 @@ bool enterMeasurementMode(uint64_t recording, uint64_t context) {
   s_diagnostics.measurementTiming={};
   requested.boot=s_diagnostics.control.master_boot_id; requested.session=s_diagnostics.authority.session;
   requested.caller=requested.session; requested.recording=recording; requested.context=context;
-  requested.version=1; requested.maximum=1024; requested.physical=64; requested.hz=8000000; requested.gap=25;
+  requested.version=BODAQS_MEASUREMENT_VERSION; requested.maximum=1024; requested.physical=BODAQS_MEASUREMENT_BYTES; requested.hz=BODAQS_MEASUREMENT_HZ; requested.gap=25;
   return transitionMode_(requested,false);
 }
 

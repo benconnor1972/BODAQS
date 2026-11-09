@@ -6,8 +6,20 @@
 #include <stddef.h>
 #include <string.h>
 #define BODAQS_MEASUREMENT_CAPABILITY (1UL << 3)
+#if defined(BODAQS_SPI_MEASUREMENT_V2) && BODAQS_SPI_MEASUREMENT_V2
+#define BODAQS_MEASUREMENT_VERSION 2U
+#define BODAQS_MEASUREMENT_BYTES 256U
+#define BODAQS_MEASUREMENT_BODY_BYTES 216U
+#define BODAQS_MEASUREMENT_HZ 16000000UL
+#define BODAQS_MEASUREMENT_MAX_KIND 14U
+#else
+#define BODAQS_MEASUREMENT_VERSION 1U
 #define BODAQS_MEASUREMENT_BYTES 64U
+#define BODAQS_MEASUREMENT_BODY_BYTES 40U
 #define BODAQS_MEASUREMENT_HZ 8000000UL
+#define BODAQS_MEASUREMENT_MAX_KIND 13U
+#endif
+#define BODAQS_MEASUREMENT_FRAGMENT_COUNT ((1024U+BODAQS_MEASUREMENT_BODY_BYTES-1U)/BODAQS_MEASUREMENT_BODY_BYTES)
 #define BODAQS_MEASUREMENT_GAP_US 25U
 #define BODAQS_MEASUREMENT_DEADLINE_MS 1000U
 #define BODAQS_MODE_ENTRY 8U
@@ -27,7 +39,13 @@ typedef struct {
     uint64_t context;
     uint32_t object;
     uint16_t total;
-    uint8_t body[40];
+    uint8_t body[BODAQS_MEASUREMENT_BODY_BYTES];
+#if BODAQS_MEASUREMENT_VERSION == 2
+    uint32_t retiredObject,retiredChecksum;
+    uint16_t retiredTotal,available;
+    uint8_t retiredClass,retiredNode;
+    bool retired;
+#endif
 } BodaqsMeasurementSlot;
 typedef struct {
     uint64_t boot, session, recording, context, caller;
@@ -130,19 +148,38 @@ static inline uint32_t bodaqs_measurement_crc(const uint8_t *p, size_t n) {
     return ~c;
 }
 static inline bool bodaqs_measurement_encode(const BodaqsMeasurementSlot *s, uint8_t *p, size_t n) {
-    if(!s || !p || n<64 || s->kind>13) return false;
-    memset(p,0,64); p[0]='B'; p[1]='M'; p[2]=1; p[3]=s->kind;
+    if(!s || !p || n<BODAQS_MEASUREMENT_BYTES || s->kind>BODAQS_MEASUREMENT_MAX_KIND) return false;
+    memset(p,0,BODAQS_MEASUREMENT_BYTES); p[0]='B'; p[1]='M'; p[2]=BODAQS_MEASUREMENT_VERSION; p[3]=s->kind;
     bodaqs_measurement_put(p+4,s->context,8); bodaqs_measurement_put(p+12,s->object,4);
     p[16]=s->node; p[17]=s->index; bodaqs_measurement_put(p+18,s->total,2);
-    memcpy(p+20,s->body,40); bodaqs_measurement_put(p+60,bodaqs_measurement_crc(p,60),4);
+    memcpy(p+20,s->body,BODAQS_MEASUREMENT_BODY_BYTES);
+#if BODAQS_MEASUREMENT_VERSION == 2
+    p[236]=s->retiredClass;p[237]=s->retiredNode;p[238]=s->retired?1:0;
+    bodaqs_measurement_put(p+240,s->retiredObject,4);bodaqs_measurement_put(p+244,s->retiredTotal,2);
+    bodaqs_measurement_put(p+246,s->available,2);bodaqs_measurement_put(p+248,s->retiredChecksum,4);
+#endif
+    bodaqs_measurement_put(p+BODAQS_MEASUREMENT_BYTES-4,bodaqs_measurement_crc(p,BODAQS_MEASUREMENT_BYTES-4),4);
     return true;
 }
 static inline bool bodaqs_measurement_decode(const uint8_t *p,size_t n,BodaqsMeasurementSlot *s) {
-    if(!p || !s || n!=64 || p[0]!='B' || p[1]!='M' || p[2]!=1 || p[3]>13 ||
-       bodaqs_measurement_crc(p,60)!=bodaqs_measurement_get(p+60,4)) return false;
+    if(!p || !s || n!=BODAQS_MEASUREMENT_BYTES || p[0]!='B' || p[1]!='M' || p[2]!=BODAQS_MEASUREMENT_VERSION || p[3]>BODAQS_MEASUREMENT_MAX_KIND ||
+       bodaqs_measurement_crc(p,BODAQS_MEASUREMENT_BYTES-4)!=bodaqs_measurement_get(p+BODAQS_MEASUREMENT_BYTES-4,4)) return false;
     memset(s,0,sizeof(*s)); s->kind=p[3]; s->context=bodaqs_measurement_get(p+4,8);
     s->object=(uint32_t)bodaqs_measurement_get(p+12,4); s->node=p[16]; s->index=p[17];
-    s->total=(uint16_t)bodaqs_measurement_get(p+18,2); memcpy(s->body,p+20,40); return true;
+    s->total=(uint16_t)bodaqs_measurement_get(p+18,2); memcpy(s->body,p+20,BODAQS_MEASUREMENT_BODY_BYTES);
+#if BODAQS_MEASUREMENT_VERSION == 2
+    if(p[239] || p[238]>1 || (bodaqs_measurement_get(p+246,2)&~255ULL)) return false;
+    if(p[238]) {
+        if(p[236]<1 || p[236]>5 || (p[237]>3 && !(p[236]==5 && p[237]==255)) ||
+           !bodaqs_measurement_get(p+240,4) || bodaqs_measurement_get(p+244,2)<4 || bodaqs_measurement_get(p+244,2)>1024) return false;
+    } else if(!bodaqs_measurement_zero(p+236,10) || !bodaqs_measurement_zero(p+248,4)) return false;
+    s->retired=p[238]!=0;s->retiredClass=p[236];s->retiredNode=p[237];
+    s->retiredObject=(uint32_t)bodaqs_measurement_get(p+240,4);s->retiredTotal=(uint16_t)bodaqs_measurement_get(p+244,2);
+    s->available=(uint16_t)bodaqs_measurement_get(p+246,2);s->retiredChecksum=(uint32_t)bodaqs_measurement_get(p+248,4);
+    if(s->kind!=2 && s->kind!=3 && s->kind!=4 && s->kind!=12 && s->kind!=13 &&
+       !bodaqs_measurement_zero(s->body+40,BODAQS_MEASUREMENT_BODY_BYTES-40)) return false;
+#endif
+    return true;
 }
 static inline void bodaqs_measurement_mode_encode(const BodaqsMeasurementMode *m,uint8_t p[64]) {
     memset(p,0,64);
@@ -165,7 +202,7 @@ static inline bool bodaqs_measurement_mode_decode(const uint8_t *p,size_t n,Boda
     m->flags=(uint16_t)bodaqs_measurement_get(p+58,2); return true;
 }
 static inline bool bodaqs_measurement_limits(const BodaqsMeasurementMode *m) {
-    return m->version==1 && m->maximum==1024 && m->physical==64 && m->hz==8000000UL && m->gap==25;
+    return m->version==BODAQS_MEASUREMENT_VERSION && m->maximum==1024 && m->physical==BODAQS_MEASUREMENT_BYTES && m->hz==BODAQS_MEASUREMENT_HZ && m->gap==25;
 }
 static inline bool bodaqs_measurement_binding(const BodaqsMeasurementMode *a,const BodaqsMeasurementMode *b) {
     return a->boot==b->boot && a->session==b->session && a->recording==b->recording && a->context==b->context;

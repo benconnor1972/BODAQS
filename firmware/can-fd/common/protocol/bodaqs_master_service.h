@@ -4,6 +4,7 @@
 #include "bodaqs_master_protocol.h"
 #include "bodaqs_control_exchange.h"
 #include "bodaqs_fragment_transport.h"
+#define BODAQS_MASTER_TRANSFER_BYTES (BODAQS_MEASUREMENT_BYTES>84U?BODAQS_MEASUREMENT_BYTES:84U)
 
 #ifdef __cplusplus
 extern "C" {

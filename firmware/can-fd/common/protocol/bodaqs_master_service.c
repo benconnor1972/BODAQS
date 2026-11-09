@@ -72,7 +72,7 @@ BodaqsMasterSlotResult bodaqs_master_service_process_slot(
         return BODAQS_MASTER_SLOT_MALFORMED;
     }
 
-    memset(next_transmit, 0, BODAQS_MASTER_SLOT_BYTES);
+    memset(next_transmit, 0, BODAQS_MASTER_TRANSFER_BYTES);
     ++service->slots_received;
     result = bodaqs_master_decode_slot(
         received, BODAQS_MASTER_SLOT_BYTES, &request);
@@ -449,11 +449,11 @@ bool bodaqs_master_service_publish_evidence(BodaqsMasterService *s,const uint8_t
         s->transfer_context,s->master_evidence_next_id,255,5,1,length);
 }
 static void transfer_error(const BodaqsMeasurementSlot *r,BodaqsMeasurementSlot *out,uint8_t reason) {
-    *out=*r; out->kind=7; out->index=0; memset(out->body,0,40);
+    *out=*r; out->kind=7; out->index=0; memset(out->body,0,sizeof out->body);
     out->body[0]=(r->kind==1 || r->kind==5)?r->body[0]:bodaqs_fragment_class(r->kind);
     out->body[1]=reason;
 }
-static bool measurement_transfer(BodaqsMasterService *s,const BodaqsMeasurementSlot *r,
+static bool measurement_transfer_core(BodaqsMasterService *s,const BodaqsMeasurementSlot *r,
     uint32_t now,BodaqsMeasurementSlot *out) {
     uint8_t cls=bodaqs_fragment_class(r->kind); unsigned i;
     transfer_context(s); memset(out,0,sizeof(*out)); out->context=s->transfer_context; out->node=255;
@@ -470,7 +470,7 @@ static bool measurement_transfer(BodaqsMasterService *s,const BodaqsMeasurementS
             if(!s->bridge_epoch) s->bridge_tick=0;
             s->bridge_token=r->object;
         }
-        *out=*r;out->kind=11;out->total=16;memset(out->body,0,40);
+        *out=*r;out->kind=11;out->total=16;memset(out->body,0,sizeof out->body);
         bodaqs_measurement_put(out->body,r->object,4);
         bodaqs_measurement_put(out->body+4,s->bridge_tick,4);
         bodaqs_measurement_put(out->body+8,s->bridge_epoch,4);
@@ -637,6 +637,33 @@ static bool measurement_transfer(BodaqsMasterService *s,const BodaqsMeasurementS
     }
     return true;
 }
+
+static bool measurement_transfer(BodaqsMasterService *s,const BodaqsMeasurementSlot *r,
+    uint32_t now,BodaqsMeasurementSlot *out) {
+#if BODAQS_MEASUREMENT_VERSION == 2
+    if(r->retired || r->available) return false; /* requests carry no response proof */
+    if(r->kind==14) {
+        BodaqsMeasurementSlot command=*r;
+        if(r->index || r->body[2]<1 || r->body[2]>5 ||
+           (r->body[3]>3 && !(r->body[2]==5 && r->body[3]==255)) ||
+           !bodaqs_measurement_zero(r->body+13,BODAQS_MEASUREMENT_BODY_BYTES-13)) return false;
+        command.kind=5;memset(command.body+2,0,2);
+        memset(command.body+8,0,BODAQS_MEASUREMENT_BODY_BYTES-8);
+        if(!measurement_transfer_core(s,&command,now,out)) return false;
+        if(out->kind==7) return true; /* invalid proof never retires */
+        command.kind=1;command.node=r->body[3];command.total=0;
+        command.object=(uint32_t)bodaqs_measurement_get(r->body+8,4);command.index=r->body[12];
+        memset(command.body,0,sizeof command.body);command.body[0]=r->body[2];
+        if(!measurement_transfer_core(s,&command,now,out)) return false;
+        out->retired=true;out->retiredClass=r->body[0];out->retiredNode=r->node;
+        out->retiredObject=r->object;out->retiredTotal=r->total;
+        out->retiredChecksum=(uint32_t)bodaqs_measurement_get(r->body+4,4);
+        return true;
+    }
+#endif
+    return measurement_transfer_core(s,r,now,out);
+}
+
 BodaqsMasterSlotResult bodaqs_master_service_process_transfer(
     BodaqsMasterService *service, const uint8_t *received, size_t length,
     uint32_t now_ms, uint8_t next_transmit[BODAQS_MASTER_SLOT_BYTES])
@@ -648,14 +675,30 @@ BodaqsMasterSlotResult bodaqs_master_service_process_transfer(
     if (!service || !received || !next_transmit) return BODAQS_MASTER_SLOT_MALFORMED;
     service->measurement.mode.boot = service->control.master_boot_id;
     bodaqs_measurement_tick(&service->measurement, now_ms);
-    memset(next_transmit, 0, BODAQS_MASTER_SLOT_BYTES);
-    if (length == 64) {
+    memset(next_transmit, 0, BODAQS_MASTER_TRANSFER_BYTES);
+    if (length == BODAQS_MEASUREMENT_BYTES) {
         if (!bodaqs_measurement_decode(received, length, &slot)) goto malformed;
+#if BODAQS_MEASUREMENT_VERSION == 2
+        if(slot.retired || slot.available) goto malformed;
+#endif
         if (!bodaqs_measurement_manage(&service->measurement, &slot, now_ms, &reply) &&
             !(service->measurement.mode.phase==2 && slot.kind!=6 && slot.kind!=8 && slot.kind!=9 &&
               measurement_transfer(service,&slot,now_ms,&reply)))
             goto malformed;
-        (void)bodaqs_measurement_encode(&reply, next_transmit, 64);
+#if BODAQS_MEASUREMENT_VERSION == 2
+        /* Bounded stale scheduling hint, never readiness/retirement proof. */
+        for(unsigned n=0;n<4;++n) {
+            const BodaqsReceptionBatch *batch=&service->receptions[n];
+            if(batch->object.complete && batch->cls>=1 && batch->cls<=2)
+                reply.available |= (uint16_t)(1U<<(n+4U*(batch->cls-1U)));
+            const BodaqsReceptionIngress *queue=&service->ingress[n];
+            if(queue->count) {
+                const uint8_t cls=queue->records[queue->head].cls;
+                if(cls>=1 && cls<=2) reply.available |= (uint16_t)(1U<<(n+4U*(cls-1U)));
+            }
+        }
+#endif
+        (void)bodaqs_measurement_encode(&reply, next_transmit, BODAQS_MEASUREMENT_BYTES);
         ++service->slots_received;
         return BODAQS_MASTER_SLOT_PROCESSED;
     }
