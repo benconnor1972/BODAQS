@@ -269,7 +269,7 @@ void logDiagnostics() {
  for(uint8_t n=0;n<4;++n) if(selected&(1u<<n)) {
    AcquisitionControl::Outcome out;AcquisitionControl::outcome(n,out);
    LOGW_TAG("REMOTEIMU","node=%u cleanupPhase=%u action=%u result=%u reason=%u excluded=%u localFence=%u\n",
-     n,peers[n].phase,static_cast<unsigned>(out.action),static_cast<unsigned>(out.result),out.reason,out.excluded,out.localFenceComplete);
+     n,static_cast<unsigned>(peers[n].phase.load()),static_cast<unsigned>(out.action),static_cast<unsigned>(out.result),out.reason,out.excluded,out.localFenceComplete);
  }
 }
 bool setAdmissionProfile(const ImuAdmission::Profile& p) {

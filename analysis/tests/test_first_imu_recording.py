@@ -8,7 +8,7 @@ from test_io_bdq_can_imu import _sample_descriptor, _evidence_descriptor
 from test_io_bdq_v2 import FILE_HEADER, FILE_MAGIC_V2, _catalog, _metadata, _chunk, _json_chunk, _stream_data
 
 
-def recording(tmp_path, *, gap=False, footer=True, confirmed=True, discarded=False, torn=False):
+def recording(tmp_path, *, gap=False, footer=True, confirmed=True, discarded=False, torn=False, source_loss=0, capture_loss=0, valid_raw=True):
     sample=_sample_descriptor()
     sample.update(stream_kind="intermittent",record_size_bytes=100)
     sample["acquisition"].update(payload_schema="bodaqs.can_imu_packets.v1", provider_uid="123",
@@ -38,6 +38,12 @@ def recording(tmp_path, *, gap=False, footer=True, confirmed=True, discarded=Fal
         row[12]=1 if kind==0 else 6;row[14]=1
         struct.pack_into("<II",row,20,1,seq);row[200]=kind
         struct.pack_into("<H",row,208,1 if kind else 0)
+        if kind==0:
+            if valid_raw:
+                struct.pack_into("<I",row,16,sum(1 << bit for bit in (0,1,2,4,5,6,21)))
+                struct.pack_into("<III",row,28,7,1,1)
+                row[201]=0xd8;struct.pack_into("<H",row,204,7)
+            struct.pack_into("<I",row,148,source_loss);struct.pack_into("<I",row,156,capture_loss)
         observations.append(bytes(row))
     catalog=_catalog();catalog["streams"]=[catalog["streams"][0],sample,timing]
     metadata=_metadata();metadata["stream_count"]=3
@@ -72,4 +78,21 @@ def test_one_accounted_packet_gap_is_warning(tmp_path):
 def test_prefix_uncertainty_and_discard_never_claim_delivery(tmp_path,kwargs):
     report,decoded=assess_first_imu_recording(recording(tmp_path,**kwargs))
     assert report["file_outcome"]=="incomplete_or_unresolved"
+    assert len(decoded["readings"])==10
+
+
+@pytest.mark.parametrize("key",["source_loss","capture_loss"])
+def test_unreconciled_loss_prevents_delivery_or_warning(tmp_path,key):
+    report,_=assess_first_imu_recording(recording(tmp_path,**{key:1}))
+    assert report["file_outcome"]=="incomplete_or_unresolved" and not report["sample_loss_reconciled"]
+    report,_=assess_first_imu_recording(recording(tmp_path,gap=True,**{key:1}))
+    assert report["file_outcome"]=="incomplete_or_unresolved"
+    report,_=assess_first_imu_recording(recording(tmp_path,gap=True,**{key:5}))
+    assert report["file_outcome"]=="isolated_five_sample_gap_warning" and report["sample_loss_reconciled"]
+
+
+def test_invalid_raw_association_is_separate_from_axes(tmp_path):
+    report,decoded=assess_first_imu_recording(recording(tmp_path,valid_raw=False))
+    assert report["file_outcome"]=="complete_delivery"
+    assert not report["final_sample_raw_observation_present"]
     assert len(decoded["readings"])==10

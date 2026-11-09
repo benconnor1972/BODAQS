@@ -67,12 +67,22 @@ def assess_first_imu_recording(path: str | Path) -> tuple[dict, dict]:
                    ("source_loss_delta", "evidence_loss_delta", "capture_loss_delta")}
     source_fault = lost_counts["source_loss_delta"]>5 or lost_counts["capture_loss_delta"]>5 or summary.get("remote_imu_excluded") is True or bool(summary.get("primary_samples_dropped", 0))
     integrity = identity and configuration and sequence_known and not info.detected_errors
-    complete = integrity and complete_bounds and not gaps and confirmed_tail and clean_file and cleanup and not sample_discard and not source_fault
+    no_sample_loss = not lost_counts["source_loss_delta"] and not lost_counts["capture_loss_delta"]
+    complete = no_sample_loss and integrity and complete_bounds and not gaps and confirmed_tail and clean_file and cleanup and not sample_discard and not source_fault
     isolated_gap = len(gaps) == 1 and gaps[0].get("extent") == "known" and gaps[0].get("count") == 5
-    eligible_warning = integrity and complete_bounds and isolated_gap and confirmed_tail and clean_file and cleanup and not sample_discard and not source_fault
+    gap_loss_reconciled = all(lost_counts[key] in (0,5) for key in ("source_loss_delta","capture_loss_delta"))
+    eligible_warning = gap_loss_reconciled and integrity and complete_bounds and isolated_gap and confirmed_tail and clean_file and cleanup and not sample_discard and not source_fault
     outcome = "complete_delivery" if complete else "isolated_five_sample_gap_warning" if eligible_warning else "incomplete_or_unresolved"
     raw = [r for r in evidence if r["kind"] == 1]
-    final_raw = [r for r in raw if terminal.get(r["source_segment_id"]) == r["related_sequence"]]
+    required_raw = sum(1 << bit for bit in (0,1,2,4,5,6,21))
+    final_raw = [r for r in raw
+                 if terminal.get(r["source_segment_id"]) == r["related_sequence"]
+                 and r["validity_mask"] & required_raw == required_raw
+                 and r["snapshot_flags"] & 7 == 7
+                 and r["snapshot_presence"] & 0xd8 == 0xd8
+                 and r["node_boot"] == source.get("node_boot")
+                 and r["sensor_clock_epoch"] and r["node_clock_epoch"]
+                 and any(stop["source_segment_id"]==r["source_segment_id"] and stop["stream_epoch"]==r["stream_epoch"] for stop in stops)]
     report = {
         "schema": "bodaqs.first_imu_recording_report.v1", "file": str(path),
         "file_outcome": outcome, "file_cleanly_closed": clean_file,
@@ -83,6 +93,7 @@ def assess_first_imu_recording(path: str | Path) -> tuple[dict, dict]:
         "segments": segments, "terminal_sequences": terminal, "gaps": gaps,
         "duplicates": decoded["duplicates"], "ambiguous_packets": decoded["ambiguous_packets"],
         "sample_tail_discarded": sample_discard, "loss_observations": lost_counts,
+        "sample_loss_reconciled": no_sample_loss if not gaps else isolated_gap and gap_loss_reconciled,
         "raw_snapshot_count": len(raw), "final_sample_raw_observation_present": bool(final_raw),
         "raw_kind_counts": dict(Counter(str(r["kind"]) for r in evidence)),
         "file_errors": list(info.detected_errors), "final_summary": summary,

@@ -229,3 +229,15 @@ CSV/JSON export. Reports separate identity, delivery, completion and raw timing;
 operator queue/configuration/duration evidence remains required. Runtime timing,
 heap/stack headroom and physical recording are not established by these tests.
 Final review and target/full-suite evidence are recorded in the candidate manifest.
+
+Final two-axis source review found no Standards findings. Spec review caught
+unreconciled source/capture counters below five being labeled complete delivery,
+and final raw association being inferred from segment/sequence alone. Corrected
+report logic requires zero unresolved sample-loss evidence for delivery, reconciles
+nonzero counters against the isolated five-sample gap, and checks raw validity,
+association/presence flags, boot and clock/stream epochs. Nine independent report
+vectors pass; the actual restricted integrated raw-observation check also passes.
+Target logger compilation caught a variadic log attempting to copy atomic phase;
+an explicit unsigned load fixes it. The restricted logger build then passed,
+static RAM265572/327680 and flash2063085/4063232. Final source-pinned candidate
+logs/maps supersede these preliminary compilation results.
