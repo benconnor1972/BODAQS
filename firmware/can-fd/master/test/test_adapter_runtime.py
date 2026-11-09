@@ -12,12 +12,13 @@ ROOT = Path(__file__).resolve().parents[4]
 parser = argparse.ArgumentParser()
 parser.add_argument("--cc", required=True)
 parser.add_argument("--v2", action="store_true")
+parser.add_argument("--phase-timing", action="store_true")
 args = parser.parse_args()
 source = (ROOT / "firmware/can-fd/master/src/main.c").read_text()
 assert "volatile MasterDrainInfo gMasterDrainInfo;" in source, "missing START-scoped drain diagnostics"
 def function(name, text=source):
     import re
-    match = re.search(r"static [^;{}]+\b" + name + r"\([^;{}]*\)\s*\{", text)
+    match = re.search(r"^(?:static )?[\w *]+\b" + name + r"\([^;{}]*\)\s*\{", text, re.MULTILINE)
     assert match, name
     start = match.start()
     end = match.end()
@@ -28,6 +29,10 @@ def function(name, text=source):
     return text[start:end]
 functions = "\n".join(function(n) for n in (
     "drain_clock", "drain_cost", "drain_check", "drain_transfer", "can_standard_identifier", "capture_can_receive_fifo", "take_record", "service_can_receive", "retire_measurement_slot", "service_spi_retirement", "retire_spi_boundary", "service_spi_receive"))
+if args.phase_timing:
+    assert args.v2
+    functions += "\n" + function("bodaqs_master_profile_clock")
+    functions += "\n" + function("bodaqs_master_profile_record")
 # Deliver a real capture IRQ just before take_record masks interrupts.
 take = function("take_record")
 functions = functions.replace(take, take.replace("__disable_irq();", "inject_can_arrival(queue); __disable_irq();"))
@@ -52,6 +57,8 @@ with tempfile.TemporaryDirectory() as temp:
     exe = Path(temp) / "adapter.exe"
     c.write_text(fixture.replace("/* PRODUCTION_FUNCTIONS */", functions))
     flags=["-DBODAQS_SPI_MEASUREMENT_V2=1", "-Wno-unused-function", "-Wno-unused-variable"] if args.v2 else []
+    if args.phase_timing:
+        flags.append("-DBODAQS_MASTER_PHASE_TIMING=1")
     subprocess.run([args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-O2",*flags,
         "-I" + str(ROOT / "firmware/can-fd/common/protocol"),
         "-I" + str(ROOT / "firmware/can-fd/common/network"),

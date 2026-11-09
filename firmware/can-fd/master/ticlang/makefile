@@ -36,6 +36,14 @@ $(error SPI_MEASUREMENT_PROFILE must be legacy or first-recording)
 endif
 
 NAME := bodaqs_can_master
+SPI_PHASE_TIMING ?= 0
+ifeq ($(SPI_PHASE_TIMING),1)
+ifneq ($(SPI_MEASUREMENT_PROFILE),first-recording)
+$(error SPI_PHASE_TIMING=1 requires SPI_MEASUREMENT_PROFILE=first-recording)
+endif
+else ifneq ($(SPI_PHASE_TIMING),0)
+$(error SPI_PHASE_TIMING must be 0 or 1)
+endif
 SOURCES := ../src/main.c ../src/master_timing.c \
     ../../common/protocol/bodaqs_control.c \
     ../../common/protocol/bodaqs_control_exchange.c \
@@ -72,6 +80,7 @@ CFLAGS := -I../include \
     -Wextra \
     -DBODAQS_CAN_LINK_PROFILE=$(CAN_LINK_DEFINE) \
     -DBODAQS_SPI_MEASUREMENT_V2=$(MEASUREMENT_DEFINE) \
+    -DBODAQS_MASTER_PHASE_TIMING=$(SPI_PHASE_TIMING) \
     -Werror \
     $(CFLAGS_EXTRA)
 
@@ -124,6 +133,7 @@ main.obj master_identity.obj bodaqs_master_service.obj bodaqs_control.obj bodaqs
 main.obj bodaqs_master_service.obj master_identity.obj: ../../common/protocol/bodaqs_measurement.h
 
 main.obj bodaqs_master_service.obj: ../../common/protocol/bodaqs_master_service.h ../../common/protocol/bodaqs_fragment_transport.h
+main.obj bodaqs_master_service.obj: ../../common/protocol/bodaqs_master_profile.h
 
 # Profile is a make input, not a generated-code edit. Rebuild its two consumers
 # on every invocation so switching back to a previously built profile is safe.

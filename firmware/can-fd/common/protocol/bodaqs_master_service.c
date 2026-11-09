@@ -1,5 +1,6 @@
 #include "bodaqs_timing.h"
 #include "bodaqs_master_service.h"
+#include "bodaqs_master_profile.h"
 
 #include <string.h>
 
@@ -725,9 +726,15 @@ BodaqsMasterSlotResult bodaqs_master_service_process_transfer(
     bodaqs_measurement_tick(&service->measurement, now_ms);
     memset(next_transmit, 0, BODAQS_MASTER_TRANSFER_BYTES);
     if (length == BODAQS_MEASUREMENT_BYTES) {
+#if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
+        const uint32_t profile_begin = bodaqs_master_profile_clock();
+#endif
         if (!bodaqs_measurement_decode(received, length, &slot)) goto malformed;
 #if BODAQS_MEASUREMENT_VERSION == 2
         if(slot.retired || slot.available) goto malformed;
+#endif
+#if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
+        const uint32_t profile_decoded = bodaqs_master_profile_clock();
 #endif
         if (!bodaqs_measurement_manage(&service->measurement, &slot, now_ms, &reply) &&
             !(service->measurement.mode.phase==2 && slot.kind!=6 && slot.kind!=8 && slot.kind!=9 &&
@@ -746,7 +753,16 @@ BodaqsMasterSlotResult bodaqs_master_service_process_transfer(
             }
         }
 #endif
+#if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
+        const uint32_t profile_dispatched = bodaqs_master_profile_clock();
+#endif
         (void)bodaqs_measurement_encode(&reply, next_transmit, BODAQS_MEASUREMENT_BYTES);
+#if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
+        const uint32_t profile_encoded = bodaqs_master_profile_clock();
+        bodaqs_master_profile_record(profile_decoded-profile_begin,
+            profile_dispatched-profile_decoded, profile_encoded-profile_dispatched,
+            slot.kind, reply.kind);
+#endif
         ++service->slots_received;
         return BODAQS_MASTER_SLOT_PROCESSED;
     }

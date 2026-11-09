@@ -50,6 +50,7 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --smoke --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --smoke --v2 --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_measurement_v2_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_master_phase_timing_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --smoke --v2 --start-spacing-us 500 --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_remote_imu_stream_contract.py --compiler "$(CXX)"

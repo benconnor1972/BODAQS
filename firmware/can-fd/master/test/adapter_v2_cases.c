@@ -57,5 +57,27 @@ int main(void) {
     assert(gService.receptions[0].count==2 && gSpiRetirementProof.generation==1);
     service_spi_retirement();
     assert(!gService.receptions[0].count && !gService.acquisition_retirement_pending);
+#if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
+    gMasterDrainInfo.state=1;
+    memset((void*)gMasterDrainInfo.phase_calls,0,sizeof gMasterDrainInfo.phase_calls);
+    memset((void*)gMasterDrainInfo.phase_total_us,0,sizeof gMasterDrainInfo.phase_total_us);
+    memset((void*)gMasterDrainInfo.phase_max_us,0,sizeof gMasterDrainInfo.phase_max_us);
+    bodaqs_master_profile_record(11,22,33,14,0);
+    bodaqs_master_profile_record(3,4,5,14,2);
+    bodaqs_master_profile_record(7,8,9,1,0);
+    bodaqs_master_profile_record(10,20,30,1,2);
+    bodaqs_master_profile_record(6,7,8,6,6);
+    assert(gMasterDrainInfo.phase_calls[0]==2 && gMasterDrainInfo.phase_total_us[0][0]==14);
+    assert(gMasterDrainInfo.phase_max_us[0][2]==33);
+    assert(gMasterDrainInfo.phase_calls[1]==1 && gMasterDrainInfo.phase_total_us[1][1]==8);
+    assert(gMasterDrainInfo.phase_calls[2]==1 && gMasterDrainInfo.phase_calls[3]==1);
+    gMasterDrainInfo.state=2;
+    bodaqs_master_profile_record(100,100,100,14,0);
+    assert(gMasterDrainInfo.phase_calls[0]==2 && bodaqs_master_profile_clock()==0);
+    gService.measurement.mode.context=123;gService.measurement.mode.recording=456;
+    gService.acquisition_started=1;drain_check();
+    assert(gMasterDrainInfo.version==3 && gMasterDrainInfo.phase_calls[0]==0);
+    puts("production phase classification, accumulation, freeze and new-scope reset: PASS");
+#endif
     puts("production v2 CS/DMA extent, four-cell length ownership and fence retirement: PASS");
 }

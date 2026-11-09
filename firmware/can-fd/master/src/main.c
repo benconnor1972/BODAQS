@@ -6,6 +6,7 @@
 #include "bodaqs_can_network.h"
 #include "bodaqs_record_queue.h"
 #include "bodaqs_master_service.h"
+#include "bodaqs_master_profile.h"
 #include "bodaqs_node_inventory.h"
 #include "master_identity.h"
 #include "ti_msp_dl_config.h"
@@ -109,6 +110,13 @@ typedef struct {
     uint32_t data_batch_records[2][14];
     /* Main-owned bookkeeping, reset with the START scope. */
     uint32_t data_last_object[2][4], data_fragment_mask[2][4];
+#if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
+    /* Version3, successful measurement requests only. Rows: ACK_FETCH (any
+     * reply), other empty, other data fragment, other reply. Columns:
+     * physical decode/validation, dispatch plus hints, physical encode. */
+    uint32_t phase_calls[4], phase_max_us[4][3];
+    uint64_t phase_total_us[4][3];
+#endif
 } MasterDrainInfo;
 volatile MasterDrainInfo gMasterDrainInfo;
 /* End drain diagnostic state. */
@@ -195,6 +203,28 @@ static uint32_t drain_clock(void)
     return tick;
 }
 
+#if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
+uint32_t bodaqs_master_profile_clock(void)
+{
+    return gMasterDrainInfo.state==1 ? drain_clock() : 0;
+}
+
+void bodaqs_master_profile_record(uint32_t decode_us,uint32_t dispatch_us,
+    uint32_t encode_us,uint8_t request_kind,uint8_t reply_kind)
+{
+    unsigned row,phase;
+    const uint32_t durations[3]={decode_us,dispatch_us,encode_us};
+    if(gMasterDrainInfo.state!=1) return;
+    row=request_kind==14?0:reply_kind==0?1:bodaqs_fragment_class(reply_kind)?2:3;
+    ++gMasterDrainInfo.phase_calls[row];
+    for(phase=0;phase<3;++phase) {
+        gMasterDrainInfo.phase_total_us[row][phase]+=durations[phase];
+        if(durations[phase]>gMasterDrainInfo.phase_max_us[row][phase])
+            gMasterDrainInfo.phase_max_us[row][phase]=durations[phase];
+    }
+}
+#endif
+
 static void drain_cost(unsigned lane,uint32_t started)
 {
     uint32_t duration;
@@ -224,6 +254,9 @@ static void drain_check(void)
            gMasterDrainInfo.context==context && gMasterDrainInfo.recording==recording)) return;
         memset((void *)&gMasterDrainInfo,0,sizeof gMasterDrainInfo);
         gMasterDrainInfo.version=2;
+#if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
+        gMasterDrainInfo.version=3;
+#endif
         gMasterDrainInfo.context=context;gMasterDrainInfo.recording=recording;
         gMasterDrainInfo.started_tick=bodaqs_master_timing_clock(NULL,&epoch);
         gMasterDrainInfo.clock_epoch=epoch;
