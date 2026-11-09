@@ -88,6 +88,9 @@ def main():
         subprocess.run([str(consumer), str(no_clock), str(bdq), "compact", "duplicate"], check=True)
         repeated=read_can_imu_packets(bdq,"can0_imu6")
         assert repeated["duplicates"]==5 and len(repeated["readings"])==65
+        subprocess.run([str(consumer), str(no_clock), str(bdq), "compact", "nonadjacent"], check=True)
+        repeated=read_can_imu_packets(bdq,"can0_imu6")
+        assert repeated["duplicates"]==5 and len(repeated["readings"])==65
         # The sample chunk is readable before its optional timing companions.
         # A torn tail retains exact axes and reports unresolved high sequence
         # bits, rather than guessing or requiring a predecessor timing write.
@@ -130,6 +133,55 @@ def main():
         result=read_can_imu_packets(bdq,"can0_imu6")
         assert [r["sequence"] for r in result["readings"]] == list(range(65530,65540))+list(range(65545,65551))
         assert {"source_segment_id":1,"first":65540,"last":65544,"count":5,"extent":"known"} in result["gaps"]
+        # A longer normalized CAN fixture exercises periodic full-sequence
+        # floors. Physical timestamp quality is outside this codec test.
+        periodic_prefix=[]
+        for line in prefix:
+            ident,length,hexdata=line.split();payload=bytearray.fromhex(hexdata)
+            if ident=="144" and payload[1] in (0x22,0x23):
+                struct.pack_into("<I",payload,12 if payload[1]==0x22 else 20,0)
+            periodic_prefix.append(f"{ident} {length} {payload.hex()}")
+        anchor=next(bytearray.fromhex(line.split()[2]) for line in periodic_prefix
+                    if line.split()[0]=="144" and line.split()[2][2:4]=="22")
+        snapshot=next(bytearray.fromhex(line.split()[2]) for line in periodic_prefix
+                    if line.split()[0]=="144" and line.split()[2][2:4]=="23")
+        periodic_lines=list(periodic_prefix)
+        for seq in range(0,1000,5):
+            if seq and seq%300==0:
+                struct.pack_into("<I",anchor,12,seq)
+                struct.pack_into("<I",snapshot,20,seq)
+                struct.pack_into("<I",snapshot,16,20+seq//300)
+                periodic_lines += [f"144 32 {anchor.hex()}",f"144 64 {snapshot.hex()}"]
+            payload=struct.pack("<HBB",seq,1,5)+axes
+            periodic_lines.append(f"256 64 {payload.hex()}")
+        struct.pack_into("<I",tail,28,999)
+        periodic_lines.append(f"144 64 {tail.hex()}")
+        periodic=temporary / "periodic.txt";periodic.write_text("\n".join(periodic_lines)+"\n")
+        subprocess.run([str(consumer), str(periodic), str(bdq), "compact"], check=True)
+        assert [r["sequence"] for r in read_can_imu_packets(bdq,"can0_imu6")["readings"]] == list(range(1000))
+        # Two missing low16 cycles cannot be reconstructed from the same raw
+        # low bits. Keep the axes and distinguish uncertainty from known loss.
+        struct.pack_into("<I",anchor,12,131072);struct.pack_into("<I",snapshot,20,131072)
+        struct.pack_into("<I",tail,28,131072)
+        first=struct.pack("<HBB",0,1,1)+axes[:12]
+        second=struct.pack("<HBB",10,1,1)+axes[:12]
+        uncertain_lines=periodic_prefix+[f"256 16 {first.hex()}",f"256 16 {second.hex()}",
+            f"144 32 {anchor.hex()}",f"144 64 {snapshot.hex()}",f"256 16 {first.hex()}"]
+        uncertain=temporary / "multiwrap.txt"
+        uncertain.write_text("\n".join(uncertain_lines+[f"144 64 {tail.hex()}"])+"\n")
+        subprocess.run([str(consumer),str(uncertain),str(bdq),"compact"],check=True)
+        unclear=read_can_imu_packets(bdq,"can0_imu6")
+        assert [r["sequence"] for r in unclear["readings"]]==[None,None,131072]
+        assert unclear["ambiguous_packets"]==2 and unclear["gaps"][-1]["extent"]=="uncertain"
+        struct.pack_into("<I",tail,28,131071)
+        uncertain.write_text("\n".join(uncertain_lines+[f"144 64 {tail.hex()}"])+"\n")
+        subprocess.run([str(consumer),str(uncertain),str(bdq),"compact"],check=True)
+        try:
+            read_can_imu_packets(bdq,"can0_imu6")
+        except ValueError as error:
+            assert "conflicting compact sequence bounds" in str(error)
+        else:
+            raise AssertionError("contradictory STOP must not fabricate a full sequence")
         # The real node recovery path must survive transport, writer staging and
         # reopening with separate origins; clock continuity is not source continuity.
         subprocess.run([str(producer), "6"], env=environment, check=True)
@@ -148,6 +200,12 @@ def main():
             assert row["sensor_clock_epoch"] == row["node_clock_epoch"] == 1
             assert not row["boundary_validity_flags"] & 28  # no invented loss counts
         assert boundaries[-1]["recovery_elapsed_us"] < 100000
+        subprocess.run([str(consumer), str(can), str(bdq), "compact"], check=True)
+        raw_recovery=read_can_imu_packets(bdq,"can0_imu6")
+        assert {r["source_segment_id"] for r in raw_recovery["readings"]}=={1,2}
+        assert raw_recovery["ambiguous_packets"]>0  # no normal terminal boundary
+        for row in raw_recovery["readings"]:
+            assert [row[axis] for axis in ("ax","ay","az","gx","gy","gz")]==[-32768,32767,-1,-32768,32767,-1]
     print("Production node adapter -> master fragments -> native BDQ -> independent reader passed")
 
 

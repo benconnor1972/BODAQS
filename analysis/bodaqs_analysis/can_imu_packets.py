@@ -36,7 +36,9 @@ def read_can_imu_packets(path: str | Path, stream_key: str) -> dict:
     for row in evidence:
         if row["boundary_event_kind"] == 8 and row["boundary_validity_flags"] & 1:
             terminal[row["source_segment_id"]] = row["related_sequence"] + 1
-    groups = {}
+    groups, receptions = {}, {}
+    replayed_samples = 0
+    last_order = 0
     for index, packet in enumerate(packets):
         count = packet["packet_flags"] & 7
         if (packet["sequence"] != index or not 1 <= count <= 5
@@ -44,9 +46,20 @@ def read_can_imu_packets(path: str | Path, stream_key: str) -> dict:
                 or not packet["source_segment_id"]):
             raise ValueError("invalid compact packet identity or length")
         packet["count"] = count
+        order = (packet["master_receive_ordinal_high"] << 32) | packet["master_receive_ordinal_low"]
+        identity = {key: value for key, value in packet.items() if key not in ("sequence", "native_tick")}
+        if order in receptions:
+            if receptions[order] != identity:
+                raise ValueError("conflicting immutable reception replay")
+            replayed_samples += count
+            continue
+        if not order or order <= last_order:
+            raise ValueError("unordered compact reception identity")
+        last_order = order
+        receptions[order] = identity
         groups.setdefault(packet["source_segment_id"], []).append(packet)
     readings, gaps = [], []
-    ambiguous = duplicates = 0
+    ambiguous, duplicates = 0, replayed_samples
     for segment, rows in groups.items():
         minimum, maximum = [], [0]*len(rows)
         lower = 0

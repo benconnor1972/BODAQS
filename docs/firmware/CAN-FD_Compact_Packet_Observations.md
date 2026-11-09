@@ -42,6 +42,10 @@ A later floor bounds preceding packets because node acquisition flushes sample
 packets before publishing its next raw snapshot. Normal STOP's last sequence
 is inclusive. Sequence high bits are exposed only when both constraint passes
 agree. Ordinary low16 wrap works; ambiguous multi-wrap loss is not guessed.
+Immutable reception replays (including non-adjacent ones) are checked against
+their original global master ordinal before source ordering. A conflicting
+payload for that identity is invalid. Adjacent repeated CAN payloads are resolved
+within sequence bounds; a possible additional low16 cycle remains ambiguous.
 Exact bounded duplicates produce one decoded reading per source sequence;
 conflicting values/sequence bounds are invalid. Known five-sample gaps retain
 their exact extent. Unresolved intervals are reported separately.

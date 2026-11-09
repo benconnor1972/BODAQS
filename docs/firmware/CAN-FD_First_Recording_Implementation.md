@@ -91,3 +91,29 @@ accepted both fixes. Additional passing owner cases inject matched errors
 7/10/20/26, proof rejection reason20, and stale success while a newer retry is
 pending: none creates extra authority. The reviewer inspected sources and
 supplied results; physical CAN adapter/timing qualification remains deferred.
+
+## S3 / #178: compact packet observation recording
+
+`6527790` adds the versioned 100-byte packet schema, selected only by the
+restricted smoke build, plus independent untimed decoding. See the
+[byte-level contract](CAN-FD_Compact_Packet_Observations.md). Existing formats
+and ordinary builds keep the legacy sample schema. The real node/master/writer
+tracer passes with timing models omitted and with raw clock snapshots absent;
+START/STOP sequence identity remains sufficient for those cases. No nominal
+acquisition times are invented. Legacy writer and 27 reader/timing regressions
+pass. Offline tool/dependency/SDK preflight passes.
+
+Fresh review found non-adjacent exact replay was rejected by the ordering solver.
+Immutable master reception identity now resolves replays before ordering; a
+production recording/writer regression fails before that correction and passes
+afterward. Added cases cover 1000 readings with periodic floors, low16 wrap,
+five-sample gaps, short packets, two-cycle ambiguous loss, contradictory STOP
+bounds, compact recovery segments, interrupted prefixes, reserved input bits,
+nonzero padding and 2048-record queue backpressure. Queue refusal is verified
+before publication and consumer drain allows retry. Full retained-head/partial
+progress testing remains mandatory at S4's real transport seam.
+
+The legacy master still requires a full-sequence origin anchor (0x22); this is
+source interpretation metadata, not an applicable model. Its older low16 loss
+accounting must be reconciled explicitly with the new transport in S4. No
+real-path throughput, target memory, timing or storage qualification is claimed.

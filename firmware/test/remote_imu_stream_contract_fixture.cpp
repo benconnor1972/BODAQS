@@ -77,4 +77,25 @@ int main() {
   // A conflicting definition cannot silently replace an already used origin.
   model[32]^=1;
   assert(stream.accept(0x91,model,64,54,6,104)==RemoteImuStream::Invalid);
+  // Compact publication has no model or companion-write prerequisite. A full
+  // queue refuses RAM acceptance; after consumer drain the same packet works.
+  RemoteImuStream packets;binding.compactPackets=true;
+  assert(packets.configure(binding,2,3));
+  assert(packets.accept(0x91,boundary,64,50,1,100)==RemoteImuStream::Accepted);
+  auto packetSource=packets.sampleSource();
+  compact[3]=0x81; // Reserved bit7 cannot become a valid raw observation.
+  assert(packets.accept(0x108,compact,16,53,2,103)==RemoteImuStream::Invalid);
+  compact[3]=1;
+  uint8_t padded[20]={};std::memcpy(padded,compact,16);padded[19]=1;
+  assert(packets.accept(0x108,padded,20,53,2,103)==RemoteImuStream::Invalid);
+  for(unsigned i=0;i<2048;++i) {
+    BdqV2Format::putU16(compact,static_cast<uint16_t>(i));
+    assert(packets.accept(0x108,compact,16,53,i+2,103)==RemoteImuStream::Accepted);
+  }
+  assert(packetSource.pendingRecords(packetSource.context)==2048);
+  assert(packets.accept(0x108,compact,16,53,2050,103)==RemoteImuStream::Blocked);
+  assert(packetSource.popRecord(packetSource.context,record,sizeof record));
+  assert(BdqV2Format::getU32(record)==0 && BdqV2Format::getU16(record+32)==0);
+  assert(packets.accept(0x108,compact,16,53,2050,103)==RemoteImuStream::Accepted);
+  assert(packetSource.pendingRecords(packetSource.context)==2048 && !packets.failed());
 }
