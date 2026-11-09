@@ -8,7 +8,7 @@ unqualified. Historical round17 and the original four-node no-go are unchanged.
 
 ## Candidate selection
 
-Use the new `first-real-imu-recording-bundle-r2` directory. Require
+Use the new `first-real-imu-recording-bundle-r3` directory. Require
 `BUILD_MANIFEST.json` status `passed`, profile `first-recording`, a clean pinned
 source commit, and matching SHA256SUMS. Preserve the manifest with the recording.
 The two CAN profiles are alternatives: use the **acquisition** pair below.

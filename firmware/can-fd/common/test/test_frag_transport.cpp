@@ -22,6 +22,8 @@ int main() {
  assert(!bodaqs_fragment_seal(&tx,data,sizeof data,9,0,0,3,1,64));
  BodaqsMasterService service={}; BodaqsMasterIdentity identity={};
  bodaqs_master_service_init(&service,&identity); bodaqs_control_exchange_init(&service.control,99);
+ // This fixture simulates an authorized active recording, not a fenced mode.
+ service.measurement.fenced=false;service.measurement.quiescent=false;
  service.measurement.mode.phase=2;service.measurement.mode.context=9;service.measurement.mode.session=1;service.measurement.mode.recording=1;
  for(unsigned n=0;n<4;++n) {service.discovery[n].flags=1;service.discovery[n].boot_id=5;service.acquisition_record[n]=1;service.acquisition_boot[n]=5;}
  uint8_t payload[64]={1,2,3},wire[64],response[84];
