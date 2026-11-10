@@ -41,6 +41,10 @@ start**. `startUs` remains in the diagnostics layout but records no separate
 operation (count zero). Compare old `configUs + startUs` with new `configUs` for
 the combined setup cost, using totals/counts from matching workloads. Existing
 acquisition, ready-wait, row-fresh/reused/no-sample and row-age statistics remain.
+The current compact-binary (BDQ v1) final summary serializes these ADC statistics.
+The separate multistream (BDQ v2) summary does not: use compact binary for this
+ADC-only comparison. A v2 file can establish logger-row delivery but cannot
+establish per-ADC setup cost or freshness from its saved footer.
 
 `firmware/tools/test_adc_setup_runtime.py` compiles the full production manager
 with only includes replaced, against a command/register/DRDY model. It checks
@@ -56,11 +60,19 @@ settling or achieved rate. Target compilation establishes integration only.
 ## Smallest physical check
 
 Use the A8 ADC-only logger environment, `bodaqs_s3_mini_n4r2`, with CAN master mode
-off and remote IMUs/unrelated sensors disabled. Begin with one active channel on
-each ADC at requested 500 Hz. Record effective rate and configured SPS, setup and
+off and remote IMUs/unrelated sensors disabled. Select **BODAQS compact binary**
+and **RAW** analog output. LINEAR output with zero configured full travel emits
+zero regardless of ADC input, so it cannot expose useful bench signal values.
+Begin with one active channel on each ADC at requested 500 Hz. Record effective
+rate and configured SPS, setup and
 loop costs, wait timeouts, acquisition failures, and per-channel row freshness,
 reuse, absence and age. Equal numeric values are not evidence of repeated
 conversions; use acquisition/freshness counters.
+Keep these format/output settings identical for the baseline and optimized
+images. For any later v2 test, ensure unique generated primary field IDs: two
+channels with the same `end`, `primary_domain` and `primary_quantity` collide
+even if their sensor names differ. Leaving `end` blank derives distinct IDs
+from distinct sensor names without inventing a physical placement.
 
 Then select two different, known-safe analog input levels on two channels of one
 ADC and scan them at an already supported rate. Check channel association and
