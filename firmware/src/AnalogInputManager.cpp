@@ -25,6 +25,7 @@
 namespace {
 
 constexpr uint8_t ADS1220_CMD_RESET = 0x06;
+constexpr uint8_t ADS1220_CMD_START = 0x08;
 constexpr uint8_t ADS1220_CMD_RDATA = 0x10;
 constexpr uint8_t ADS1220_CMD_WREG  = 0x40;
 constexpr uint8_t kInvalidChannel = 0xFF;
@@ -237,14 +238,17 @@ bool adsCommand_(AdsDevice& dev, uint8_t cmd) {
   return adsTransfer_(dev, &cmd, nullptr, 1);
 }
 
-bool adsWriteRegisters_(AdsDevice& dev, uint8_t startReg, const uint8_t* regs, size_t len) {
+bool adsWriteRegistersAndStart_(AdsDevice& dev, uint8_t startReg, const uint8_t* regs, size_t len) {
   if (!dev.present || !regs || len == 0 || len > 4 || !s_spiReady) return false;
 
-  uint8_t tx[5] = {0};
+  uint8_t tx[6] = {0};
   tx[0] = (uint8_t)(ADS1220_CMD_WREG | ((startReg & 0x03U) << 2) | ((len - 1U) & 0x03U));
   for (size_t i = 0; i < len; ++i) tx[i + 1] = regs[i];
+  tx[len + 1] = ADS1220_CMD_START;
 
-  return adsTransfer_(dev, tx, nullptr, len + 1);
+  // WREG consumes its declared register bytes; START is the next command.
+  // Keep explicit START (required by the physical control) in the same CS span.
+  return adsTransfer_(dev, tx, nullptr, len + 2);
 }
 
 bool adsReadData_(AdsDevice& dev, int32_t& raw24) {
@@ -342,11 +346,11 @@ bool configureAndStartAdsChannel_(AdsDevice& dev, uint8_t channel) {
   const uint8_t reg3 = 0x00;
   const uint8_t regs[4] = { reg0, reg1, reg2, reg3 };
 
-  // CM remains zero (single-shot). WREG itself starts a fresh conversion,
-  // including when the bytes are unchanged (ADS1220 datasheet 8.4.2.1).
+  // CM remains zero (single-shot). Do not rely on WREG alone starting a
+  // conversion: the WREG-only candidate timed out on both physical ADCs.
   // Keep the full image on every conversion so an ADC-only reset cannot leave
   // cached mux/gain/reference settings inconsistent with the physical device.
-  return adsWriteRegisters_(dev, 0, regs, sizeof(regs));
+  return adsWriteRegistersAndStart_(dev, 0, regs, sizeof(regs));
 }
 
 uint32_t conversionTimeoutUs_(const AdsDevice& dev) {
@@ -366,7 +370,7 @@ bool readAdsChannelLive_(uint8_t adcIndex, uint8_t channel, int32_t& outCounts) 
 #endif
 #if defined(ESP32)
   if (dev.drdyTask == xTaskGetCurrentTaskHandle()) {
-    // WREG starts the conversion: discard the previous notification before it,
+    // The combined transfer starts conversion: discard old notification first,
     // never afterwards, which could lose a fast completion.
     (void)ulTaskNotifyTake(pdTRUE, 0);
   }
@@ -666,6 +670,7 @@ void begin(const board::BoardProfile& board) {
            (int)board.spi.sck,
            (int)board.spi.miso,
            (int)board.spi.mosi);
+  AIN_LOGI("ADS1220 setup=full_wreg_then_start_single_cs\n");
 
   const uint8_t count = (board.external_adc_count < board::BOARD_MAX_EXTERNAL_ADCS)
                           ? board.external_adc_count

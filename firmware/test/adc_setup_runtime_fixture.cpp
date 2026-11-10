@@ -60,7 +60,8 @@ int xTaskCreatePinnedToCore(void (*)(void*), const char*, uint32_t, void*, int,
 
 struct AdcModel {
   std::array<uint8_t,4> regs{};
-  unsigned starts=0, reads=0, readyAt=0;
+  unsigned starts=0, reads=0, readyAt=0, generation=0;
+  bool active=false;
   bool timeout=false;
 };
 AdcModel chips[2];
@@ -90,22 +91,31 @@ bool transfer(int8_t cs, const SPISettings&, const uint8_t* tx, uint8_t* rx,
     if (completeDuringWrite) clearCountAtWrite=clears;
 #endif
     const unsigned start=(cmd>>2)&3, count=(cmd&3)+1;
-    assert(len==count+1 && start+count<=4);
+    assert((len==count+1 || len==count+2) && start+count<=4);
     for (unsigned i=0;i<count;++i) chip.regs[start+i]=tx[i+1];
-    // Datasheet 8.4.2.1: every complete WREG triggers a single-shot conversion.
     assert((chip.regs[1]&0x04)==0);
-    ++chip.starts; chip.readyAt=nowUs+(completeDuringWrite?0:40);
+    // Do not require WREG alone to wake/start a conversion. Exercise both
+    // behaviors; the r1 hardware test failed when explicit START was removed.
+    if (ADC_TEST_WREG_STARTS) {
+      chip.active=true; ++chip.generation;
+      chip.readyAt=nowUs+(completeDuringWrite?0:40);
+    }
+    if (len==count+2) {
+      assert(tx[count+1]==0x08); // decoder resumes after the WREG payload
+      ++chip.starts; ++chip.generation; chip.active=true;
+      chip.readyAt=nowUs+(completeDuringWrite?0:40);
+    }
   } else if (cmd==0x10) {
-    assert(!chip.timeout && nowUs>=chip.readyAt);
+    assert(chip.active && !chip.timeout && nowUs>=chip.readyAt);
     ++chip.reads;
     // Independent channel code and conversion generation identify each result.
-    const uint32_t value=(((chip.regs[0]>>4)-8)+1)*100000+chip.starts*1000;
+    const uint32_t value=(((chip.regs[0]>>4)-8)+1)*100000+chip.generation*1000;
     rx[0]=0; rx[1]=value>>16; rx[2]=value>>8; rx[3]=value;
+    chip.active=false;
     if (afterRead) afterRead();
   } else if (cmd==0x08) {
-    // Supported for the saved old source: redundant START must be visible in
-    // the wire trace, rather than failing solely because the model rejects it.
-    ++chip.starts; chip.readyAt=nowUs+40;
+    // The verified baseline sends START as a separate transaction.
+    ++chip.starts; ++chip.generation; chip.active=true; chip.readyAt=nowUs+40;
   } else assert(false);
   return true;
 }
@@ -113,7 +123,7 @@ bool transfer(int8_t cs, const SPISettings&, const uint8_t* tx, uint8_t* rx,
 int digitalRead(uint8_t pin) {
   assert(pin==20 || pin==21);
   const auto& c=chips[pin-20];
-  return !c.timeout && nowUs>=c.readyAt ? LOW : HIGH;
+  return c.active && !c.timeout && nowUs>=c.readyAt ? LOW : HIGH;
 }
 
 board::BoardProfile profile() {
@@ -154,48 +164,48 @@ int32_t read(uint8_t ain) {
 int main() {
   auto p=profile();
   AnalogInputManager::begin(p); wire.clear();
-  // Repeated fixed input: full setup triggers a fresh conversion every time.
+  // Repeated fixed input: full setup and explicit START in one transaction.
   const auto first=read(0), second=read(0);
   assert(first!=second);
-  expect(0,10,{0x43,0x81,0x00,0xc0,0x00});
+  expect(0,10,{0x43,0x81,0x00,0xc0,0x00,0x08});
   expect(1,10,{0x10,0,0,0});
-  expect(2,10,{0x43,0x81,0x00,0xc0,0x00}); expect(3,10,{0x10,0,0,0});
+  expect(2,10,{0x43,0x81,0x00,0xc0,0x00,0x08}); expect(3,10,{0x10,0,0,0});
   assert(chips[0].starts==2 && chips[0].reads==2);
   assert(wire.size()==4); read(4); assert(commands(0x43)==3);
   // Every mux change restores the complete config before a fresh result.
   wire.clear();
   for (uint8_t ch: {1,2,3,0}) {
     read(ch); const auto offset=wire.size()-2;
-    expect(offset,10,{0x43,static_cast<uint8_t>(0x81+(ch<<4)),0,0xc0,0});
+    expect(offset,10,{0x43,static_cast<uint8_t>(0x81+(ch<<4)),0,0xc0,0,0x08});
     expect(offset+1,10,{0x10,0,0,0});
   }
   // Changed rate/configuration is applied before accepting another conversion.
   s_ads[0].config1=0xd0; wire.clear(); read(0);
-  expect(0,10,{0x43,0x81,0xd0,0xc0,0});
+  expect(0,10,{0x43,0x81,0xd0,0xc0,0,0x08});
   s_ads[0].cfg.reference=board::AdcReferenceType::ExternalRef0;
   s_ads[0].cfg.gain=2; s_ads[0].cfg.pga_bypass=false; wire.clear(); read(1);
-  expect(0,10,{0x43,0x92,0xd0,0x40,0});
+  expect(0,10,{0x43,0x92,0xd0,0x40,0,0x08});
   // Silent ADC-only reset: SPI still succeeds, but next conversion must restore
   // mux/rate/reference before accepting data. No software invalidation signal.
   chips[0].regs.fill(0); wire.clear(); read(1);
-  expect(0,10,{0x43,0x92,0xd0,0x40,0});
+  expect(0,10,{0x43,0x92,0xd0,0x40,0,0x08});
   assert(chips[0].regs[0]==0x92 && chips[0].regs[2]==0x40);
   // Unknown/partial WREG must not read/publish; retry always sends full setup.
   wire.clear(); failCommand=0x43; int32_t untouched=-123;
   assert(!AnalogInputManager::readCounts(2,untouched) && untouched==-123);
   assert(wire.size()==1); wire.clear(); read(2);
-  expect(0,10,{0x43,0xa2,0xd0,0x40,0});
+  expect(0,10,{0x43,0xa2,0xd0,0x40,0,0x08});
   // Failed config, RDATA or DRDY timeout never accepts an old result.
   for (int cmd: {0x43,0x10}) {
     failCommand=cmd; untouched=-123;
     assert(!AnalogInputManager::readCounts(2,untouched) && untouched==-123);
-    wire.clear(); read(2); expect(0,10,{0x43,0xa2,0xd0,0x40,0});
+    wire.clear(); read(2); expect(0,10,{0x43,0xa2,0xd0,0x40,0,0x08});
   }
   chips[0].timeout=true; assert(!AnalogInputManager::readCounts(2,untouched));
   chips[0].timeout=false; wire.clear(); read(2);
-  expect(0,10,{0x43,0xa2,0xd0,0x40,0});
+  expect(0,10,{0x43,0xa2,0xd0,0x40,0,0x08});
   assert(adsCommand_(s_ads[0],ADS1220_CMD_RESET)); wire.clear(); read(2);
-  expect(0,10,{0x43,0xa2,0xd0,0x40,0});
+  expect(0,10,{0x43,0xa2,0xd0,0x40,0,0x08});
   // Reinitialization of both independent chips.
   AnalogInputManager::begin(p); wire.clear(); read(0); read(4);
   assert(commands(0x43)==2);
@@ -215,7 +225,7 @@ int main() {
   wire.clear();
   // Keep the synchronous call on the same hardware path while fake tasks exist.
   assert(readAdsChannelLive_(0,0,untouched));
-  expect(0,10,{0x43,0x81,0x60,0xc0,0}); // 175 vs 1000 SPS normal
+  expect(0,10,{0x43,0x81,0x60,0xc0,0,0x08}); // 175 vs 1000 SPS normal
   assert(AnalogInputManager::configureFromConfig(cfg,500)==500);
   assert(readAdsChannelLive_(0,0,untouched));
 #if ADC_TEST_ASYNC
@@ -269,6 +279,6 @@ int main() {
   AnalogInputManager::endSample();
   assert(AnalogInputManager::timingStats().adc[0].configUs.count>0);
   assert(AnalogInputManager::timingStats().adc[0].startUs.count==0);
-  printf("ADC setup: %s path, WREG starts, full reset restore, mux/config changes, failures/restart PASS\n",
-         ADC_TEST_ASYNC?"worker":"synchronous");
+  printf("ADC setup: %s path WREG-starts=%d, explicit START, full restore, mux/config, failures/restart PASS\n",
+         ADC_TEST_ASYNC?"worker":"synchronous",ADC_TEST_WREG_STARTS);
 }

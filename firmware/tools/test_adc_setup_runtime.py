@@ -30,12 +30,13 @@ struct SPISettings { SPISettings(uint32_t, int, int) {} };
 ''', encoding="utf-8")
         cpp = temp / "fixture.cpp"
         cpp.write_text(fixture.replace("// PRODUCTION_MANAGER", source), encoding="utf-8")
-        for async_path in (0, 1):
-            exe = temp / f"fixture-{async_path}.exe"
+        for async_path, wreg_starts in ((0, 0), (1, 0), (0, 1), (1, 1)):
+            exe = temp / f"fixture-{async_path}-{wreg_starts}.exe"
             subprocess.run([
                 args.compiler, "-std=gnu++2a", "-Wall", "-Wextra", "-Werror",
                 "-Wno-unused-variable", "-Wno-unused-function", "-Wno-unused-parameter",
                 f"-DADC_TEST_ASYNC={async_path}", "-I", str(temp),
+                f"-DADC_TEST_WREG_STARTS={wreg_starts}",
                 "-I", str(root / "test/stubs"), "-I", str(root / "src"),
                 str(cpp), str(root / "src/SensorParams.cpp"), "-o", str(exe)
             ], check=True)

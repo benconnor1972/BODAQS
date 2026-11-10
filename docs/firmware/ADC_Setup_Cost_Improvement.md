@@ -4,36 +4,37 @@ Implemented after the first real single-IMU recording milestone. Controlled SD
 stall tests remain deferred; this change does not expand IMU admission or change
 the selected master/node firmware.
 
-Physical status (10 November 2026): the WREG-only candidate failed the first
-counter-bearing test. `261110_091939.bdq` matches the optimized build08:28:23;
-each ADC made904 attempts with904 timeouts and zero successful readings. The
-preceding baseline-build08:31:00 v2 file omitted ADC counters. This does not
-isolate format from firmware changes. Hold the candidate pending a short
-same-format baseline control; command-count savings are not a working ADC result.
-The sections below describe the implementation and host model, not physical
-qualification of WREG-only triggering.
+Physical status (10 November 2026): the WREG-only r1 candidate failed.
+`261110_091939.bdq` matches build08:28:23; each ADC made904 attempts with904
+timeouts and zero successful readings. The same-format baseline control
+`261110_093302.bdq` matches the original build08:31:00; each ADC completed18706
+acquisitions with zero failures/timeouts. Across12629 rows, ADC0 reused10 and
+ADC1 reused3, with no no-sample rows. This is strong evidence to retain explicit
+START; it does not establish the exact silicon/protocol reason WREG-only failed.
+The r2 implementation below restores START in a combined transaction. Host
+validation does not establish its physical success or rate improvement.
 
 ## Conversion trigger
 
 Previously each conversion used three shared-SPI transactions: full four-register
 WREG (5 bytes), START (1 byte), then RDATA (4 bytes) after readiness. The driver
-now uses full WREG followed by readiness and RDATA: two transactions, 9 bytes.
-This removes one mutex acquisition, CS cycle and SPI-driver setup per conversion,
-plus 8 us of wire time at 1 MHz. It does not establish a percentage improvement
-in conversion rate, CPU use or mixed throughput.
+now sends `43 reg0 reg1 reg2 reg3 08` in one six-byte CS span, waits for readiness,
+then performs the same four-byte RDATA transaction. This reduces three SPI
+transactions to two, retaining all10 wire bytes and explicit START. It removes
+one mutex acquisition, CS cycle and SPI-driver setup per conversion. It does not
+establish a percentage improvement in conversion rate, CPU use or mixed throughput.
 
-The ADS1220's single-shot mode starts a new conversion on **every** configuration
-register write, including unchanged values; a write during a conversion restarts
-it. See TI [ADS1220 datasheet](https://www.ti.com/lit/ds/symlink/ads1220.pdf),
-SBAS501D, sections 8.4.2.1 and 8.5.3.6. Register one retains CM=0. The complete
+See TI [ADS1220 datasheet](https://www.ti.com/lit/ds/symlink/ads1220.pdf),
+SBAS501D, sections8.5.3.2,8.5.3.6 and8.5.5. WREG consumes its declared payload
+before the following byte is decoded as START. Register one retains CM=0. The complete
 four-register write remains before every conversion, preserving restoration of
 mux, gain, rate and reference after an ADC-only reset. The considered software
 register cache was rejected because successful SPI transfer does not prove the
 ADC retained its settings across a power/reset event.
 
 Both asynchronous worker/live reads and synchronous scans use the same trigger.
-The worker clears the previous ready notification **before WREG**, then waits
-using the existing level/notification check. Clearing after WREG could discard
+The worker clears the previous ready notification **before the combined transfer**, then waits
+using the existing level/notification check. Clearing after the combined transfer could discard
 the new completion. Reads retain existing scaling, row-cache/freshness semantics,
 rate selection, SPI settings and log format. No continuous-conversion mode or
 new admission margin is introduced.
@@ -57,11 +58,14 @@ establish per-ADC setup cost or freshness from its saved footer.
 
 `firmware/tools/test_adc_setup_runtime.py` compiles the full production manager
 with only includes replaced, against a command/register/DRDY model. It checks
-both ESP32 worker and synchronous paths, full restore after a silent ADC reset,
+both ESP32 worker and synchronous paths, with models that do and do not start on
+WREG alone. The latter catches the r1 failure instead of baking its assumption
+into the fake device. Checks include explicit START after the complete WREG
+payload, full restore after a silent ADC reset,
 all mux channels, rate/gain/reference changes, independent ADCs, transfer failure,
 timeout rejection, recording restart, per-row reuse and completion during setup.
-The firmware host Makefile runs it. A saved baseline source can be supplied with
-`--manager-source` to prove the old extra START transaction fails the wire trace.
+The firmware host Makefile runs it. A saved r1 source can be supplied with
+`--manager-source` to prove removal of START fails the START-required model.
 
 Host tests establish command order and software acceptance, not electrical
 settling or achieved rate. Target compilation establishes integration only.
@@ -87,7 +91,8 @@ Then select two different, known-safe analog input levels on two channels of one
 ADC and scan them at an already supported rate. Check channel association and
 settling against an ADC-only baseline, including the first conversion after a
 switch, and confirm the other ADC still operates. The old separate START added
-uncontrolled wall time after mux selection; removing it shortens that interval.
+uncontrolled wall time after mux selection; combining it into the WREG
+transaction shortens that interval.
 The datasheet's single-cycle digital-filter settling assumes the analog input
 has settled. Board/source impedance and input filtering still require the bench
 check. Do not increase admitted rates based solely on command-count savings.
