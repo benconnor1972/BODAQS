@@ -11,8 +11,20 @@ timeouts and zero successful readings. The same-format baseline control
 acquisitions with zero failures/timeouts. Across12629 rows, ADC0 reused10 and
 ADC1 reused3, with no no-sample rows. This is strong evidence to retain explicit
 START; it does not establish the exact silicon/protocol reason WREG-only failed.
-The r2 implementation below restores START in a combined transaction. Host
-validation does not establish its physical success or rate improvement.
+
+The r2 combined-transaction candidate `af8a4a7` then completed
+`261110_094418.bdq`:23975/23984 acquisitions per ADC, zero failures/timeouts and
+16071 consecutive logger rows with no storage drops or no-sample rows. Mean
+setup/start cost decreased115.104->95.632us (ADC0,16.9%) and116.500->92.657us
+(ADC1,20.5%). Mean worker-loop cost improved only0.7-0.9%; do not interpret the
+setup saving as a10% end-to-end throughput gain. Reused rows were11/25
+(0.0684%/0.1556%); the single baseline/candidate pair does not establish the cause
+of changed repeat rates. It is not an all-rows-fresh pass.
+
+The user confirmed no physical sensors were connected. These tests establish
+the one-channel-per-ADC servicing behavior, not analog accuracy, meaningful
+scaled values, known-level channel association or mux settling. Retain r2 as the
+limited tested candidate; further settling qualification needs known inputs.
 
 ## Conversion trigger
 
