@@ -200,7 +200,7 @@ S->on("/api/transforms/list", HTTP_GET, [S](){
     }
 
     const String sensor = srv.arg("sensor");
-    const bool ok = (StorageFilesystem::card().cardType() != CARD_NONE) && gTransforms.reload(sensor, SD_MMC);
+    const bool ok = (StorageFilesystem::card().cardType() != CARD_NONE) && gTransforms.reload(sensor, StorageFilesystem::card());
 
     srv.sendHeader("Cache-Control", "no-store");
     srv.send(ok ? 200 : 500,

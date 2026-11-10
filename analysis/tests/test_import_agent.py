@@ -1448,6 +1448,27 @@ def test_mounted_folder_manager_worker_acquires_and_imports_selected_source(tmp_
     assert original.exists()
 
 
+def test_mounted_folder_scan_limit_does_not_starve_later_recordings(tmp_path):
+    workspace = _prepare_source(tmp_path, "usb", tmp_path / "library")
+    config_path = workspace / "import_source.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["max_archives_per_scan"] = 1
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    card = tmp_path / "card"
+    card.mkdir()
+    first = _write_session_archive(card, stem="first")
+    second = _write_bdq_input(card, stem="second")
+    for recording in (first, second):
+        _set_old_mtime(recording)
+    runner = ImportSourceRunner(load_import_source_config(workspace))
+    imported = []
+    for _ in range(2):
+        runner.acquire_folder(card)
+        imported.extend(runner.scan_once()["imported"])
+    assert len(imported) == 2
+    assert first.exists() and second.exists()
+
+
 def test_processed_archive_retention_uses_processed_time_and_sweeps_existing_files(tmp_path):
     artifacts_dir = tmp_path / "artifacts"
     source_root = _prepare_source(tmp_path, "retention_source", artifacts_dir)

@@ -17,6 +17,9 @@ and acquisition errors as well as import results. Retry after card writes finish
 or reconnect the card if it became unavailable. Failed/interrupted copies never
 appear as importable ZIP/BDQ files. Existing successful-import deduplication
 prevents a repeated acquisition from creating duplicate library sessions.
+Acquisition copies all eligible recordings; the source's per-scan limit applies
+to subsequent import processing. Existing pending copies stay ahead of newly
+reacquired duplicates so repeated manual operations can make progress.
 
 Copying and import state stays local. The source card is never used as an inbox
 that the importer moves files out of. Ordinary folder and Wi-Fi source behavior

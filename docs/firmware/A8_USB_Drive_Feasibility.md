@@ -25,6 +25,29 @@ discovery/pairing, and full platform acceptance remain the later tickets #194-#1
 and #198-#199. Compilation is not evidence that physical USB/SD operation works.
 No ticket has been closed and no device has been flashed.
 
+## Automated validation on Windows, 2026-11-10
+
+| Check | Result |
+| --- | --- |
+| Tracked Python analysis test set | 565 passed, 1 skipped |
+| Mounted-folder acquisition/runner tests | 6 passed, including interrupted-copy retry and capped-scan progress |
+| Firmware host harness and four runtime fixtures | Passed, including storage ownership admission/drain/reclaim checks |
+| Isolated A8 USB diagnostic build | Passed |
+| Normal A8 build | Passed |
+| Prototype F build | Passed |
+| Real USB/SD, OS enumeration, serial/flashing checks | Pending; A8 not connected |
+
+The broad local Python run also collected older untracked tests previously hidden
+by the old branch's ignore rules: 635 passed, 1 skipped, and 10 failures in those
+untracked legacy tests. The tracked test set was then run separately and passed;
+those local files were preserved. Existing deprecation warnings remain.
+
+Standards and specification reviews each identified the same two defects: an
+unmigrated transform-reload filesystem reference and starvation with a configured
+import scan limit. Both were fixed; review confirmed resolution and the added
+scan-limit regression test passes. No further concrete defect was reported in
+this checkpoint. This does not establish completion of the deferred USB tickets.
+
 ## Ownership interface
 
 Call storage handoff/reclaim functions on the main loop. A request is admitted

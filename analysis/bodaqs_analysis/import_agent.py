@@ -911,7 +911,6 @@ class ImportSourceRunner:
             return acquire_mounted_folder(
                 selected, self.source.inbox_dir,
                 settle_time_s=self.source.settle_time_s,
-                max_files=self.source.max_archives_per_scan,
             )
 
     def __init__(

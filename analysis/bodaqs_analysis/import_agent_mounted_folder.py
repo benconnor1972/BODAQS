@@ -5,7 +5,6 @@ import hashlib
 import math
 import os
 from pathlib import Path
-import shutil
 import tempfile
 import time
 from typing import Any
@@ -16,7 +15,6 @@ def acquire_mounted_folder(
     inbox: Path,
     *,
     settle_time_s: float,
-    max_files: int | None = None,
 ) -> dict[str, Any]:
     """Copy settled ZIP/BDQ inputs atomically; never write to the selected card.
 
@@ -36,7 +34,7 @@ def acquire_mounted_folder(
     result: dict[str, Any] = {"copied": [], "already_copied": [], "deferred": [], "errors": []}
     # Recordings are flat in the selected folder; never follow card symlinks.
     paths = sorted(p for p in folder.iterdir() if p.suffix.lower() in {".zip", ".bdq"})
-    for path in paths[:max_files] if max_files is not None else paths:
+    for path in paths:
         temporary: Path | None = None
         try:
             if path.is_symlink() or not path.is_file():
@@ -72,8 +70,12 @@ def acquire_mounted_folder(
                     raise OSError("Conflicting local acquisition; resolve the inbox conflict before retrying")
                 result["already_copied"].append(str(target))
             else:
-                # Preserve age for the existing runner's settling check.
-                shutil.copystat(path, temporary, follow_symlinks=False)
+                # Acquisition has finished and checked source stability. Make
+                # this complete copy immediately eligible, ordered by local
+                # acquisition time. Reacquired duplicates must sort behind
+                # pending older copies when the runner has a scan limit.
+                ready_at = time.time() - settle_time_s - 1.0
+                os.utime(temporary, (ready_at, ready_at))
                 os.replace(temporary, target)
                 result["copied"].append(str(target))
         except OSError as error:
