@@ -156,3 +156,59 @@ profile and transport unchanged. Review normalized ADC freshness, independent
 IMU sequence coverage, queues, split failures and STOP/terminal evidence before
 any further change. No general admission margin or percentage improvement is
 promised. Known-input/mux checks and controlled storage stalls remain deferred.
+
+## r3: bounded rejected-reply evidence
+
+The r2 recording `261110_115614.bdq` improved ADC reuse to12.9%/13.1% but still
+missed72.77% of the fully bounded IMU sequence. The owner-frozen final counters
+were0 failed bus transfers and6932 rejected measurement replies. Storage reported
+no primary drops or write failures. This justifies inspecting actual rejected
+MISO bytes before changing timing again; it does not establish an electrical
+cause. CRC-valid invalid producer fields remain possible.
+
+The same mixed bench environment now identifies itself as
+`bodaqs_a8_imu_adc_capture_r3` and enables `BODAQS_MEASUREMENT_REPLY_CAPTURE=1`.
+It requires FLOW and measurement v2. Pacing, SPI settings, ADC commands, admission
+scope, binary records and reply acceptance rules are unchanged. Production builds
+do not allocate capture buffers. Only optional final-summary JSON is extended.
+
+The acquisition owner copies the first four rejected256-byte replies received
+while measurement mode is confirmed. Failed bus transfers have undefined RX and
+are excluded. Pre-confirmation entry can receive a legacy-width pipeline reply
+and is also excluded. Entries retain every raw byte, the one-based physical slot
+ordinal within measurement timing and the outgoing request kind. MISO has its own
+pipelined identity; the outgoing kind is not the identity of the returned reply.
+Two fixed1060-byte buffers hold live and finished evidence (2120bytes total on
+the host/A8 ABI). Only four bounded copies occur; no per-slot allocation, serial
+output or JSON work is added. The extra static memory is included in FLOW's
+reservation accounting. A new context clears both buffers. Normal and unavailable
+cleanup freeze before acquisition ownership is released; unavailable timing never
+publishes stale capture as current. Readers require stopped ownership and matching
+finished context. Borrowed evidence is consumed before release/new configuration.
+
+The finalized footer adds
+`remote_measurement_failures.rejected_replies` with `available`, `capacity`,
+`captured`, `selection=first_decode_failures_while_confirmed` and `entries`.
+Each entry contains `slot`, `request_kind` and512 lowercase hex characters in
+`reply_hex`. Available with an empty entries array is a valid zero-capture result;
+unavailable is not zero failures. The final failure counter still includes the
+whole measurement-mode-through-cleanup scope and may exceed the captured count.
+No raw bytes are printed during acquisition. If owner retirement/file finalization
+cannot complete, this diagnostic intentionally remains unavailable.
+
+`firmware/tools/replay_measurement_replies.py` accepts a finalized BDQ or extracted
+final-summary JSON and compiles the actual canonical v2 C decoder. Its acceptance
+verdict is authoritative. Independent header/CRC observations classify framing,
+CRC mismatch or CRC-valid protocol-field rejection; header offsets are evidence,
+not proof of byte displacement. Four initial failures are a small diagnostic
+sample, not an estimate of all failure modes or their proportions.
+
+Host tests inject rejected bytes at the actual shared-bus/manager seam, check the
+cap, exact byte retention, exclusion of failed transfers, freeze/reset/scope,
+owner-live unavailability and successful lifecycle publication. Footer roundtrip
+tests verify all512 hex digits survive temporary-buffer reuse. Offline replay
+tests independently construct framing, CRC and CRC-valid reserved/body-padding
+failures and a valid slot. These establish diagnostic behavior only; no physical
+mixed-load failure is claimed fixed. Repeat the same approximately45-second mixed
+recording, finalize normally, and preserve its BDQ/serial evidence before deciding
+whether a wire/configuration investigation is worthwhile.

@@ -323,6 +323,46 @@ static void measurementFailureSplit() {
  puts("actual measurement adapter separates failed bus transfer from invalid reply: PASS");
 }
 int main() {
+#if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
+ reset();ImuFlowDiagnostics::reset(456,clockMs);
+ assert(CanMasterManager::enterMeasurementMode(123,456));
+ BodaqsMeasurementSlot captureRequest={},captureResponse={};
+ captureRequest.node=255;captureRequest.context=456;captureRequest.kind=1;captureRequest.body[0]=1;
+ uint8_t rejected[6][256]={};
+ for(unsigned i=0;i<6;++i) {
+  assert(bodaqs_measurement_encode(&captureResponse,rejected[i],256));
+  if(i==0) rejected[i][0]='X';
+  else if(i==1) rejected[i][252]^=1;
+  else {rejected[i][i==2?239:60]=uint8_t(i+1);
+   bodaqs_measurement_put(rejected[i]+252,bodaqs_measurement_crc(rejected[i],252),4);}
+  assert(!bodaqs_measurement_decode(rejected[i],256,&captureResponse));
+ }
+ auto initialSlots=CanMasterManager::diagnostics().measurementTiming.slots;
+ spiAvailable=false;assert(!CanMasterManager::exchangeMeasurementSlot(captureRequest,captureResponse));spiAvailable=true;
+ assert(ImuFlowDiagnostics::liveReplies.count==0);
+ for(unsigned i=0;i<6;++i) {
+  memcpy(preloaded,rejected[i],256);
+  assert(!CanMasterManager::exchangeMeasurementSlot(captureRequest,captureResponse));
+ }
+ assert(ImuFlowDiagnostics::liveReplies.count==4);
+ for(unsigned i=0;i<4;++i) {
+  const auto& entry=ImuFlowDiagnostics::liveReplies.entries[i];
+  assert(entry.slot==initialSlots+2+i && entry.requestKind==1);
+  assert(!memcmp(entry.reply,rejected[i],256));
+ }
+ assert(CanMasterManager::exchangeMeasurementSlot(captureRequest,captureResponse));
+ assert(ImuFlowDiagnostics::liveReplies.count==4);
+ ImuFlowDiagnostics::finish(clockMs,micros(),1,6);
+ memset(ImuFlowDiagnostics::liveReplies.entries[0].reply,0,256);
+ assert(!memcmp(ImuFlowDiagnostics::finishedReplies.entries[0].reply,rejected[0],256));
+ ImuFlowDiagnostics::reset(789,clockMs);
+ assert(!ImuFlowDiagnostics::liveReplies.count && !ImuFlowDiagnostics::finishedReplies.count);
+ memcpy(preloaded,rejected[0],256);
+ assert(!CanMasterManager::exchangeMeasurementSlot(captureRequest,captureResponse));
+ assert(ImuFlowDiagnostics::liveReplies.count==0);
+ puts("actual rejected-reply capture: transfer failure exclusion, exact bytes, cap, freeze and reset PASS");
+ return 0;
+#endif
  measurementFailureSplit();
  mixedReceptionDrain(8);
  mixedReceptionDrain(4);

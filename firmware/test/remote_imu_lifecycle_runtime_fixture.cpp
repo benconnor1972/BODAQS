@@ -145,6 +145,7 @@ int main(int argc,char** argv) {
     RemoteImuRecording::stop();assert(RemoteImuRecording::stopped());
     uint32_t transfer=0,decode=0;
     assert(!RemoteImuRecording::finalMeasurementFailures(transfer,decode)); // Stale completed context is not this allocation.
+    assert(!RemoteImuRecording::finalRejectedMeasurementReplies());
     flowLogCalls=0;RemoteImuRecording::release();
     assert(flowLogCalls==0); // Never attribute prior-context FLOW to this cancellation.
     assert(ImuFlowDiagnostics::finished.context==9999);
@@ -245,6 +246,7 @@ int main(int argc,char** argv) {
     if(entryPrecheck) {
       uint32_t transfer=99,decode=88;
       assert(!RemoteImuRecording::finalMeasurementFailures(transfer,decode));
+      assert(!RemoteImuRecording::finalRejectedMeasurementReplies());
       assert(transfer==99 && decode==88); // Prior scope is unavailable, not current 7/11.
       RemoteImuRecording::Failure firstFailure;
       assert(RemoteImuRecording::failure(0,firstFailure) && !firstFailure.timingAvailable);
@@ -272,6 +274,13 @@ int main(int argc,char** argv) {
   RemoteImuRecording::start();recordingSteps(2000);
   assert(RemoteImuRecording::recording());
   assert(!RemoteImuRecording::failed());
+#if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
+  assert(!RemoteImuRecording::finalRejectedMeasurementReplies()); // Owner is still live.
+  uint8_t capturedWire[256];memcpy(capturedWire,preloaded,256);capturedWire[0]='X';
+  memcpy(preloaded,capturedWire,256);
+  for(unsigned i=0;i<10 && !ImuFlowDiagnostics::liveReplies.count;++i) recordingSteps(1);
+  assert(ImuFlowDiagnostics::liveReplies.count==1);
+#endif
   if(argc>1 && (!std::strcmp(argv[1],"lost-exit-request") || !std::strcmp(argv[1],"lost-exit-stage") || !std::strcmp(argv[1],"lost-exit-confirm") || !std::strcmp(argv[1],"expired-exit-stage"))) {
     loseExitStageRequest=!std::strcmp(argv[1],"lost-exit-request");
     const bool expired=!std::strcmp(argv[1],"expired-exit-stage");
@@ -519,6 +528,14 @@ int main(int argc,char** argv) {
   assert(RemoteImuRecording::stopped());
   assert(!RemoteImuRecording::failed());
   uint32_t finalTransfer=0,finalDecode=0;
+#if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
+  const auto* captured=RemoteImuRecording::finalRejectedMeasurementReplies();
+  assert(captured && captured==&ImuFlowDiagnostics::finishedReplies);
+  assert(captured->count>=1 && captured->count<=4);
+  assert(!memcmp(captured->entries[0].reply,capturedWire,256));
+#else
+  assert(!RemoteImuRecording::finalRejectedMeasurementReplies());
+#endif
 #if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
   assert(RemoteImuRecording::finalMeasurementFailures(finalTransfer,finalDecode));
   assert(finalTransfer==CanMasterManager::diagnostics().measurementTiming.transferFailedSlots);
@@ -528,6 +545,7 @@ int main(int argc,char** argv) {
 #endif
   simulatedStorage.clear();RemoteImuRecording::release();
   assert(!RemoteImuRecording::configured());
+  assert(!RemoteImuRecording::finalRejectedMeasurementReplies());
   assert(!RemoteImuRecording::finalMeasurementFailures(finalTransfer,finalDecode));
   CanMasterManager::endRecordingHandoff();
   if(remoteNodes==4) {puts("production four-node resource/lifecycle isolation passed");return 0;}

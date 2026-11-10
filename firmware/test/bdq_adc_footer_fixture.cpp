@@ -1,11 +1,14 @@
 #include "BdqAdcTimingJson.h"
 #include "BdqLogWriter.h"
+#include "MeasurementReplyCapture.h"
 #include <cassert>
 #include <string>
 #include <cstdio>
 
 static bool failuresAvailable=true;
+static MeasurementReplyCapture replyCapture;
 namespace RemoteImuRecording {
+const MeasurementReplyCapture* finalRejectedMeasurementReplies() {return failuresAvailable?&replyCapture:nullptr;}
 bool finalMeasurementFailures(uint32_t& transfer,uint32_t& decode) {
   if(!failuresAvailable) return false;
   transfer=7;decode=11;return true;
@@ -43,12 +46,31 @@ int main() {
   assert(empty["external_adc_timing"].isNull());
   assert(empty["external_adc_timing_status"]=="worker_not_retired");
   appendBdqV2MeasurementFailures_(document);
+  replyCapture.count=4;
+  for(unsigned i=0;i<4;++i) {
+    auto& entry=replyCapture.entries[i];entry.slot=100+i;entry.requestKind=14;
+    for(unsigned b=0;b<256;++b) entry.reply[b]=uint8_t(b+i);
+  }
+  appendBdqV2MeasurementFailures_(document);
   bytes.clear();serializeJson(document,bytes);assert(!deserializeJson(parsed,bytes));
   auto failures=parsed["remote_measurement_failures"];
   assert(failures["available"]==true && failures["transfer_failed_slots"]==7 && failures["decode_failed_slots"]==11);
   assert(failures["scope"]=="measurement_mode_through_cleanup");
+  auto replies=failures["rejected_replies"];
+  assert(replies["available"]==true && replies["captured"]==4 && replies["capacity"]==4);
+  assert(replies["entries"].size()==4);
+  for(unsigned i=0;i<4;++i) {
+    auto entry=replies["entries"][i];assert(entry["slot"]==100+i && entry["request_kind"]==14);
+    const std::string hex=entry["reply_hex"].as<std::string>();assert(hex.size()==512);
+    for(unsigned b=0;b<256;++b) assert(std::stoul(hex.substr(2*b,2),nullptr,16)==uint8_t(b+i));
+  }
   failuresAvailable=false;appendBdqV2MeasurementFailures_(empty);
   assert(empty["remote_measurement_failures"]["available"]==false);
   assert(empty["remote_measurement_failures"]["transfer_failed_slots"].isNull());
+  assert(empty["remote_measurement_failures"]["rejected_replies"]["available"]==false);
+  assert(empty["remote_measurement_failures"]["rejected_replies"]["entries"].isNull());
+  failuresAvailable=true;replyCapture.count=0;JsonDocument zero;appendBdqV2MeasurementFailures_(zero);
+  assert(zero["remote_measurement_failures"]["rejected_replies"]["available"]==true);
+  assert(zero["remote_measurement_failures"]["rejected_replies"]["entries"].size()==0);
   puts("Production v2 footer ADC snapshot: both ADCs, 64-bit costs, failure/freshness and absent snapshot PASS");
 }

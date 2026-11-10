@@ -1,6 +1,13 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include "MeasurementReplyCapture.h"
+
+#if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
+#if !defined(BODAQS_IMU_FLOW_DIAGNOSTICS) || !BODAQS_IMU_FLOW_DIAGNOSTICS || !defined(BODAQS_SPI_MEASUREMENT_V2) || !BODAQS_SPI_MEASUREMENT_V2
+#error "Rejected reply capture requires FLOW diagnostics and measurement v2"
+#endif
+#endif
 
 #if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
 // One acquisition-owner writer. Reset before ownership publication; finish
@@ -25,11 +32,28 @@ struct Wait {uint32_t object=0,startedUs=0;};
 inline Snapshot live,firstLoss,finished;
 inline Wait waits[5][4];
 inline bool active=false,haveFirstLoss=false,haveFinished=false;
+#if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
+inline MeasurementReplyCapture liveReplies,finishedReplies;
+// Acquisition owner only. No allocation, serialization or logging in this path.
+inline void rejectedReply(uint64_t context,uint32_t slot,uint8_t kind,const uint8_t* bytes) {
+  if(!active || live.context!=context || liveReplies.count==MeasurementReplyCapture::capacity) return;
+  auto& entry=liveReplies.entries[liveReplies.count++];
+  entry.slot=slot;entry.requestKind=kind;
+  for(unsigned i=0;i<MeasurementReplyCapture::replyBytes;++i) entry.reply[i]=bytes[i];
+}
+#endif
 inline size_t reservedBytes() {
-  return sizeof(live)+sizeof(firstLoss)+sizeof(finished)+sizeof(waits)+3*sizeof(bool);
+  size_t bytes=sizeof(live)+sizeof(firstLoss)+sizeof(finished)+sizeof(waits)+3*sizeof(bool);
+#if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
+  bytes+=sizeof(liveReplies)+sizeof(finishedReplies);
+#endif
+  return bytes;
 }
 inline void reset(uint64_t context,uint32_t now) {
   live={};firstLoss={};finished={};
+#if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
+  liveReplies={};finishedReplies={};
+#endif
   for(auto& row:waits) for(auto& wait:row) wait={};
   live.context=context;live.beganMs=now;active=true;haveFirstLoss=haveFinished=false;
 }
@@ -82,6 +106,10 @@ inline void finish(uint32_t now,uint32_t nowUs,uint32_t transferFailures=0,uint3
   if(!active) return;
   live.measurementTransferFailures=transferFailures;live.measurementDecodeFailures=decodeFailures;
   live.measurementFailuresAvailable=measurementAvailable;
+#if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
+  if(measurementAvailable) finishedReplies=liveReplies;
+  else finishedReplies={};
+#endif
   finished=capture(now,nowUs);haveFinished=true;active=false;
 }
 } // namespace ImuFlowDiagnostics

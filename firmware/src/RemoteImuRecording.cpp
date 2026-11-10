@@ -436,6 +436,13 @@ bool completion(uint8_t node,Completion& out) {
  if(node>3 || !(selected&(1u<<node)) || !peers[node].completionFrozen.load(std::memory_order_acquire)) return false;
  out=peers[node].frozenCompletion;return true;
 }
+const MeasurementReplyCapture* finalRejectedMeasurementReplies() {
+#if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
+ uint32_t transfer=0,decode=0;
+ if(finalMeasurementFailures(transfer,decode)) return &ImuFlowDiagnostics::finishedReplies;
+#endif
+ return nullptr;
+}
 bool readyForFileFinalization() {
  for(uint8_t n=0;n<4;++n) if(selected&(1u<<n)) {
   Completion c;

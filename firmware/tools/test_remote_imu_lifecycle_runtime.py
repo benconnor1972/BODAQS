@@ -38,6 +38,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--compiler", default="g++")
     parser.add_argument("--flow-diagnostics", action="store_true")
+    parser.add_argument("--reply-capture",action="store_true")
     parser.add_argument("--start-spacing-us", type=int, default=0,
                         help="Verify measurement pacing propagation; physical clock tested separately")
     parser.add_argument("--v2", action="store_true", help="Exercise coordinated 256-byte measurement profile")
@@ -45,6 +46,9 @@ def main():
     parser.add_argument("--mixed", action="store_true", help="Exact 500 Hz two-ADC bench scope plus one compact IMU")
     args = parser.parse_args()
     if args.mixed: args.smoke=True;args.v2=True
+    if args.reply_capture:
+        assert args.v2 or args.mixed
+        args.flow_diagnostics=True
     root = Path(__file__).resolve().parents[1]
     fixture = fixture_source(root)
     if args.mixed:
@@ -72,6 +76,7 @@ static void captureFlowLog(const char* tag,const char*,...) {if(!std::strcmp(tag
             flags.append(f"-DBODAQS_MEASUREMENT_START_SPACING_US={args.start_spacing_us}")
         if args.flow_diagnostics:
             flags.append("-DBODAQS_IMU_FLOW_DIAGNOSTICS=1")
+        if args.reply_capture: flags.append("-DBODAQS_MEASUREMENT_REPLY_CAPTURE=1")
         subprocess.run([args.compiler, "-std=c++17", *flags, "-DBODAQS_QUEUE_ALLOCATION_TEST", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-I", str(root/"test/stubs"), "-I", str(root/"src"), "-I", str(protocol), "-I", str(root/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
         if args.flow_diagnostics:

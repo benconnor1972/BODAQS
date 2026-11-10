@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include "ImuAdmission.h"
 #include "CanMasterManager.h"
+#include "MeasurementReplyCapture.h"
 struct LoggerConfig;
 struct BdqV2StreamDescriptor;
 namespace RemoteImuRecording {
@@ -49,6 +50,9 @@ bool stopped();
 // Immutable completed measurement-scope counters; false until owner retirement
 // or when this build has no FLOW snapshot. Never reads live transport totals.
 bool finalMeasurementFailures(uint32_t& transfer,uint32_t& decode);
+// Same retirement/scope barrier as final counters. Borrowed immutable storage;
+// consume before release or configure starts another recording. Null if unavailable.
+const MeasurementReplyCapture* finalRejectedMeasurementReplies();
 bool tailDrained();
 uint32_t discardedTailObjects();
 void release(); // after transport exit and storage finalization

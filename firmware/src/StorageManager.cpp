@@ -1728,6 +1728,27 @@ static void appendBdqV2MeasurementFailures_(JsonDocument& document) {
     failures["decode_failed_slots"]=decode;
     failures["scope"]="measurement_mode_through_cleanup";
   }
+  JsonObject replies=failures["rejected_replies"].to<JsonObject>();
+  const auto* capture=RemoteImuRecording::finalRejectedMeasurementReplies();
+  replies["available"]=capture!=nullptr;
+  if(capture) {
+    replies["capacity"]=MeasurementReplyCapture::capacity;
+    replies["captured"]=capture->count;
+    replies["selection"]="first_decode_failures_while_confirmed";
+    JsonArray entries=replies["entries"].to<JsonArray>();
+    for(unsigned i=0;i<capture->count;++i) {
+      const auto& entry=capture->entries[i];
+      JsonObject row=entries.add<JsonObject>();
+      row["slot"]=entry.slot;row["request_kind"]=entry.requestKind;
+      char hex[2*MeasurementReplyCapture::replyBytes+1];
+      static constexpr char digits[]="0123456789abcdef";
+      for(unsigned b=0;b<MeasurementReplyCapture::replyBytes;++b) {
+        hex[2*b]=digits[entry.reply[b]>>4];hex[2*b+1]=digits[entry.reply[b]&15];
+      }
+      hex[sizeof(hex)-1]=0;
+      row["reply_hex"]=hex; // ArduinoJson copies the temporary array.
+    }
+  }
 }
 
 static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {

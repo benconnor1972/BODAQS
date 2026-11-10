@@ -724,7 +724,16 @@ bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
       BODAQS_MEASUREMENT_START_SPACING_US);
   const bool valid=transferred && bodaqs_measurement_decode(rx,BODAQS_MEASUREMENT_BYTES,&response);
   if(!transferred) ++timing.transferFailedSlots;
-  else if(!valid) ++timing.decodeFailedSlots;
+  else if(!valid) {
+    ++timing.decodeFailedSlots;
+#if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
+    static_assert(BODAQS_MEASUREMENT_BYTES==MeasurementReplyCapture::replyBytes,"Capture wire size mismatch");
+    // Entry may still receive a legacy-width pipeline reply. Sample only after
+    // the larger measurement profile has been confirmed for this recording.
+    if(s_diagnostics.measurementConfirmed)
+      ImuFlowDiagnostics::rejectedReply(s_diagnostics.measurementTimingContext,timing.slots+1,request.kind,rx);
+#endif
+  }
   measurementTimingEndUs=micros();
   const uint32_t duration=measurementTimingEndUs-started;
   ++timing.slots;timing.exchangeUs+=duration;
