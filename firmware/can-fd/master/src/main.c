@@ -736,6 +736,11 @@ static void arm_spi_slot(void)
      * start at byte1; RX keeps its complete physical extent. No wait/delay is
      * added and this experiment does not change CS-boundary ownership. */
     DL_SPI_disable(SPI_A8_INST);
+#if BODAQS_CAN_SPI_BENCH_MODE == 1
+    /* Generated reset defaults are mode0. Change phase only while disabled,
+     * on startup and every physical CS retirement before byte0 is primed. */
+    DL_SPI_setFrameFormat(SPI_A8_INST,DL_SPI_FRAME_FORMAT_MOTO4_POL0_PHA1);
+#endif
     DL_SPI_transmitData8(SPI_A8_INST,gTransmitSlots[gTransmitIndex][0]);
 #endif
     DL_DMA_setSrcAddr(DMA, DMA_SPI_TX_CHAN_ID,

@@ -13,11 +13,12 @@ import build_imu_software_candidate as runner
 
 
 class MasterAbCandidate(unittest.TestCase):
-    def packaged_fixture(self,identical=False):
+    def packaged_fixture(self,identical=False,experiment="spi-tx-prime-ab",broken=None):
         with tempfile.TemporaryDirectory() as directory:
             temp=Path(directory);root=temp/"source";root.mkdir()
             docs=root/"docs/firmware";docs.mkdir(parents=True)
             (docs/"CAN-FD_SPI_TX_Priming_Bench.md").write_text("Matched master A/B fixture runbook\n")
+            (docs/"CAN-FD_SPI_Mode_Bench.md").write_text("Matched mode0/1 fixture runbook\n")
             (root/".gitignore").write_text(".build/\n")
             subprocess.run(["git","init","-q",str(root)],check=True)
             subprocess.run(["git","add","."],cwd=root,check=True)
@@ -33,28 +34,43 @@ class MasterAbCandidate(unittest.TestCase):
             review=temp/"review.json";review.write_text(json.dumps({"schema":"bodaqs.review.v1","base":head,"head":head,"outcome":"passed",
                 "findings":[],"evidence":[{"path":review_text.name,"sha256":hashlib.sha256(review_text.read_bytes()).hexdigest()}]}))
             output=temp/"bundle"
-            argv=["candidate","--profile","mixed-diagnostic","--experiment","spi-tx-prime-ab","--validation-scope","master",
+            argv=["candidate","--profile","mixed-diagnostic","--experiment",experiment,"--validation-scope","full" if experiment=="spi-mode-ab" else "master",
                 "--fixed-bundle",str(fixed),"--review-result",str(review),"--review-base",head,"--output-dir",str(output)]
             with patch.object(sys,"argv",argv):args=runner.arguments()
             sdk=temp/"sdk/.metadata";sdk.mkdir(parents=True);(sdk/"product.json").write_text('{"version":"fixture"}')
             args.sdk=sdk.parent
             build=root/".build";build.mkdir();commands=[]
-            for variant in ("A","B"):
+            variants=("mode0","mode1") if experiment=="spi-mode-ab" else ("A","B")
+            for variant in variants:
                 image=build/(variant+".out");image.write_bytes(b"A" if identical else variant.encode())
                 commands.append({"name":"master-"+variant,"argv":[sys.executable,"-c","pass"],"cwd":str(root),
                     "artifacts":[(image.relative_to(root).as_posix(),f"artifacts/master-{variant}/bodaqs_can_master.out")]})
+                if experiment=="spi-mode-ab":
+                    mode=int(variant[-1]);logger=build/(variant+".bin");logger.write_bytes(b"same" if broken=="identical-logger" else variant.encode())
+                    recipe=build/(variant+".json");recipe.write_text(json.dumps({"id":variant}))
+                    commands.append({"name":"contract-"+variant,"argv":[sys.executable,"-c",
+                        "from pathlib import Path; import sys; Path(sys.argv[1]).write_text(sys.argv[2])",
+                        str(output/f"SPI_SOURCE_CONTRACT_{variant}.json"),json.dumps({"spi_mode":0 if broken=="wrong-mode" else mode})],"cwd":str(root),"artifacts":[]})
+                    commands.append({"name":"logger-"+variant,"argv":[sys.executable,"-c","pass"],"cwd":str(root),
+                        "artifacts":([] if broken=="missing-logger" else [(logger.relative_to(root).as_posix(),f"artifacts/logger-{variant}/firmware.bin")])+
+                            [(recipe.relative_to(root).as_posix(),f"artifacts/logger-{variant}/identity/build-recipe.json")]})
+            boot=temp/"boot.bin";boot.write_bytes(b"boot fixture")
             with patch.object(runner,"ROOT",root),patch.object(runner,"arguments",return_value=args), \
-                    patch.object(runner,"preflight",return_value=[]),patch.object(runner,"plan",return_value=commands), \
+                    patch.object(runner,"preflight",return_value=[]),patch.object(runner,"plan",return_value=commands),patch.object(runner,"boot_app0_path",return_value=boot), \
                     contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):
                 result=runner.main()
-            self.assertEqual(result,1 if identical else 0)
+            fails=identical or broken is not None
+            self.assertEqual(result,1 if fails else 0)
             manifest=json.loads((output/"BUILD_MANIFEST.json").read_text())
-            self.assertEqual(manifest["status"],"failed" if identical else "passed")
-            self.assertEqual((output/"SOURCE.zip").exists(),not identical)
+            self.assertEqual(manifest["status"],"failed" if fails else "passed")
+            self.assertEqual((output/"SOURCE.zip").exists(),not fails)
             self.assertEqual((output/"artifacts/fixed-logger/logger.bin").read_bytes(),b"logger.bin")
-            if not identical:
+            if not fails and experiment=="spi-tx-prime-ab":
                 self.assertNotEqual(manifest["variants"]["A"]["sha256"],manifest["variants"]["B"]["sha256"])
                 self.assertEqual((output/"RUNBOOK.md").read_text(),"Matched master A/B fixture runbook\n")
+            if not fails and experiment=="spi-mode-ab":
+                self.assertEqual(manifest["variants"]["mode1"]["spi_mode"],1)
+                self.assertEqual((output/"RUNBOOK.md").read_text(),"Matched mode0/1 fixture runbook\n")
             for line in (output/"SHA256SUMS.txt").read_text().splitlines():
                 sha,name=line.split("  ",1);self.assertEqual(hashlib.sha256((output/name).read_bytes()).hexdigest(),sha)
 

@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 
 
-def collect(compiler:str) -> dict:
+def collect(compiler:str, mode:int | None = None) -> dict:
     root=Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix="bodaqs-board-contract-") as directory:
         source=Path(directory)/"contract.cpp";exe=Path(directory)/"contract.exe"
@@ -20,7 +20,9 @@ int main() {
  unsigned(p.can_fd_master.spi_mode),unsigned(p.can_fd_master.spi_hz),unsigned(p.external_adcs[0].spi_hz),unsigned(p.external_adcs[1].spi_hz));
 }
 ''',encoding="utf-8")
-        subprocess.run([compiler,"-std=gnu++2a","-I",str(root/"test/stubs"),"-I",str(root/"src"),str(source),str(root/"src/BoardProfile.cpp"),"-o",str(exe)],check=True)
+        flags=[] if mode is None else [f"-DBODAQS_CAN_SPI_BENCH_MODE={mode}",
+            "-DBODAQS_SPI_MEASUREMENT_V2=1","-DBODAQS_SINGLE_NODE_IMU_ADC_SMOKE=1"]
+        subprocess.run([compiler,"-std=gnu++2a",*flags,"-I",str(root/"test/stubs"),"-I",str(root/"src"),str(source),str(root/"src/BoardProfile.cpp"),"-o",str(exe)],check=True)
         result=json.loads(subprocess.check_output([str(exe)]))
     files=("src/CanMasterManager.cpp","src/SharedSpiBus.cpp","src/AnalogInputManager.cpp")
     result["buffer_and_transfer_declarations"]={}
@@ -35,5 +37,7 @@ int main() {
 
 if __name__=="__main__":
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument("--compiler",default="g++")
-    parser.add_argument("--output",type=Path,required=True);args=parser.parse_args()
-    args.output.write_text(json.dumps(collect(args.compiler),indent=2)+"\n",encoding="utf-8")
+    parser.add_argument("--output",type=Path,required=True)
+    parser.add_argument("--mode",type=int,choices=(0,1),help="Explicit mixed bench mode; omitted preserves normal build")
+    args=parser.parse_args()
+    args.output.write_text(json.dumps(collect(args.compiler,args.mode),indent=2)+"\n",encoding="utf-8")

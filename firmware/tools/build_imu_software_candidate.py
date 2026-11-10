@@ -71,8 +71,8 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--validation-scope", choices=("full", "logger", "master"), default="full",
                         help="Logger scope requires declared unchanged peer images; no full-suite claim")
     parser.add_argument("--reuse-peers", type=Path, help="bodaqs.peer-images.v1 JSON with immutable image paths/hashes")
-    parser.add_argument("--experiment",choices=("spi-tx-prime-ab",))
-    parser.add_argument("--fixed-bundle",type=Path,help="Sealed r5 bundle: reuse exact logger/node and preserve old master rollback")
+    parser.add_argument("--experiment",choices=("spi-tx-prime-ab","spi-mode-ab"))
+    parser.add_argument("--fixed-bundle",type=Path,help="Sealed r5/r6 bundle: preserve exact reference logger/node/master")
     parser.add_argument("--review-result", type=Path, help="bodaqs.review.v1 source-bound result")
     parser.add_argument("--review-base", help="Exact commit reviewed against HEAD")
     parser.add_argument("--list-commands", action="store_true",
@@ -127,11 +127,26 @@ def plan(args: argparse.Namespace, output: Path) -> list[dict]:
     if args.validation_scope=="master":
         commands=[c for c in commands if c["name"] in ("common-host","master-host")]
         commands.append(step("candidate-runner-tests",[sys.executable,"-m","unittest","discover","-s","firmware/tools","-p","test_*candidate*.py"]))
+    elif args.experiment:
+        commands.append(step("candidate-runner-tests",[sys.executable,"-m","unittest","discover","-s","firmware/tools","-p","test_*candidate*.py"]))
     if args.mode == "host":
         return commands
     if args.experiment=="spi-tx-prime-ab":
         for label,enabled in (("A",0),("B",1)):
             commands.append(ti_step("master","acquisition","master-"+label,[f"SPI_TX_PRIME={enabled}"]))
+        return commands
+    if args.experiment=="spi-mode-ab":
+        for mode in (0,1):
+            label=f"mode{mode}"
+            commands.append(ti_step("master","acquisition","master-"+label,["SPI_TX_PRIME=1",f"SPI_BENCH_MODE={mode}"]))
+            logger_env=f"bodaqs_s3_mini_n4r2_imu_adc_{label}"
+            folder=f"firmware/.pio/build/{logger_env}"
+            commands.append(step("contract-"+label,[sys.executable,"firmware/tools/collect_spi_contract.py",
+                "--compiler",args.cxx,"--mode",str(mode),"--output",str(output/f"SPI_SOURCE_CONTRACT_{label}.json")]))
+            commands.append(step("logger-clean-"+label,[args.pio,"run","-d","firmware","-e",logger_env,"-t","clean"]))
+            commands.append(step("logger-"+label,[args.pio,"run","-d","firmware","-e",logger_env,f"-j{args.jobs}"],
+                [(f"{folder}/{name}",f"artifacts/logger-{label}/{name}") for name in
+                 ("firmware.elf","firmware.bin","bootloader.bin","partitions.bin","firmware.map","identity/build-recipe.json")]))
         return commands
     for profile in ("bringup", "acquisition"):
         for target in ("node", "master"):
@@ -158,6 +173,31 @@ def load_fixed_bundle(bundle:Path) -> dict:
     """
     bundle=bundle.resolve();path=bundle/"BUILD_MANIFEST.json"
     value=json.loads(path.read_text(encoding="utf-8"))
+    if value.get("experiment")=="spi-tx-prime-ab":
+        if value.get("status")!="passed" or value.get("candidate_profile")!="mixed-diagnostic" or value.get("variants",{}).get("B",{}).get("spi_tx_prime") is not True:
+            raise ValueError("Mode comparison requires the passed r6 primed-master bundle")
+        def one(items,predicate):
+            selected=[item for item in items if predicate(item)]
+            if len(selected)!=1:raise ValueError("Missing or duplicate r6 fixed artifact")
+            return selected[0]
+        images=[]
+        for role in ("logger","node","rollback-master"):
+            if role=="rollback-master":
+                image=value["variants"]["B"]
+                artifact=one(value["artifacts"],lambda a:a["path"]==image["path"])
+                if artifact["sha256"]!=image["sha256"]:raise ValueError("r6 variant/artifact hash mismatch")
+                source_commit=value["source"]["commit"]
+            else:
+                image=one(value["artifacts"],lambda a:a.get("role")==role)
+                source_commit=one(value["fixed_bundle"]["images"],lambda a:a["role"]==role).get("source_commit")
+            source=(bundle/image["path"]).resolve()
+            if bundle not in source.parents or sha256(source)!=image["sha256"]:
+                raise ValueError("r6 fixed image path/hash mismatch")
+            images.append({"role":role,"path":image["path"],"sha256":image["sha256"],"source_commit":source_commit})
+        firmware_name=value["fixed_bundle"]["firmware_name"]
+        if firmware_name!="bodaqs_a8_imu_adc_buffers_r5":raise ValueError("Unexpected r6 logger")
+        return {"manifest_sha256":sha256(path),"bundle":str(bundle),"images":images,
+                "firmware_name":firmware_name,"configuration":"operator_preserves_same_mixed_configuration"}
     if value.get("environment")!="bodaqs_s3_mini_n4r2_imu_adc_smoke" or value.get("application",{}).get("firmware_name")!="bodaqs_a8_imu_adc_buffers_r5":
         raise ValueError("A/B requires the existing r5 logger bundle")
     images=[]
@@ -198,6 +238,10 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def boot_app0_path() -> Path:
+    return Path.home()/".platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin"
 
 
 def write_manifest(output: Path, manifest: dict) -> None:
@@ -273,7 +317,9 @@ def main() -> int:
         raise SystemExit("Logger-only validation requires --reuse-peers")
     if args.experiment:
         if args.mode!="candidate" or args.profile!="mixed-diagnostic" or not args.fixed_bundle or args.reuse_peers:
-            raise SystemExit("Priming A/B requires candidate/mixed-diagnostic, --fixed-bundle and no --reuse-peers")
+            raise SystemExit("SPI comparison requires candidate/mixed-diagnostic, --fixed-bundle and no --reuse-peers")
+        if args.experiment=="spi-mode-ab" and args.validation_scope!="full":
+            raise SystemExit("Mode comparison changes both endpoints and requires full validation scope")
     elif args.fixed_bundle or args.validation_scope=="master":
         raise SystemExit("Fixed bundle/master-only scope requires an explicit experiment")
     if sys.flags.optimize or os.environ.get("PYTHONOPTIMIZE"):
@@ -404,7 +450,7 @@ def main() -> int:
                     shutil.copyfile(source,target)
                     manifest["artifacts"].append({"path":destination,"bytes":target.stat().st_size,"sha256":sha256(target)})
                     source.unlink() # Only generated compiler reports just collected.
-        if args.experiment:
+        if args.experiment=="spi-tx-prime-ab":
             variants={}
             for variant,enabled in (("A",False),("B",True)):
                 image=next((item for item in manifest["artifacts"] if item["path"]==f"artifacts/master-{variant}/bodaqs_can_master.out"),None)
@@ -412,8 +458,32 @@ def main() -> int:
                 variants[variant]={"spi_tx_prime":enabled,"path":image["path"],"sha256":image["sha256"]}
             if variants["A"]["sha256"]==variants["B"]["sha256"]:raise RuntimeError("A/B images are identical; priming control was not built")
             manifest["variants"]=variants
+        if args.experiment=="spi-mode-ab":
+            variants={}
+            for mode in (0,1):
+                label=f"mode{mode}"
+                def artifact(path):
+                    selected=next((a for a in manifest["artifacts"] if a["path"]==path),None)
+                    if selected is None:raise RuntimeError("Missing paired mode artifact: "+path)
+                    return {key:selected[key] for key in ("path","sha256")}
+                variants[label]={"spi_mode":mode,"spi_tx_prime":True,
+                    "master":artifact(f"artifacts/master-{label}/bodaqs_can_master.out"),
+                    "logger":artifact(f"artifacts/logger-{label}/firmware.bin")}
+                recipe=json.loads((output/f"artifacts/logger-{label}/identity/build-recipe.json").read_text(encoding="utf-8"))
+                variants[label]["logger"]["recipe_id"]=recipe["id"]
+                variants[label]["logger"]["environment"]=f"bodaqs_s3_mini_n4r2_imu_adc_{label}"
+                variants[label]["bus_contract"]=json.loads((output/f"SPI_SOURCE_CONTRACT_{label}.json").read_text(encoding="utf-8"))
+                if variants[label]["bus_contract"]["spi_mode"]!=mode:raise RuntimeError("Compiled mode contract mismatch")
+                source=boot_app0_path()
+                target=output/f"artifacts/logger-{label}/boot_app0.bin";shutil.copyfile(source,target)
+                manifest["artifacts"].append({"path":target.relative_to(output).as_posix(),"sha256":sha256(target),"bytes":target.stat().st_size})
+            for role in ("master","logger"):
+                if variants["mode0"][role]["sha256"]==variants["mode1"][role]["sha256"]:
+                    raise RuntimeError("Mode0/1 images are identical: "+role)
+            manifest["variants"]=variants
+            manifest["targets"]["logger"]=[v["logger"]["environment"] for v in variants.values()]
         # Existing toolchains create these optional diagnostics on some versions.
-        logger_env=manifest["targets"]["logger"]
+        logger_env=PROFILES[args.profile]["logger_env"]
         a8_folder = ROOT / f"firmware/.pio/build/{logger_env}"
         for optional in ("firmware.map", "idedata.json", "identity/build-recipe.json"):
             source = a8_folder / optional
@@ -426,11 +496,12 @@ def main() -> int:
         if (output/"SPI_SOURCE_CONTRACT.json").exists():
             manifest["bus_contract"]=json.loads((output/"SPI_SOURCE_CONTRACT.json").read_text(encoding="utf-8"))
         if args.mode=="candidate" and args.experiment:
-            shutil.copyfile(ROOT/"docs/firmware/CAN-FD_SPI_TX_Priming_Bench.md",output/"RUNBOOK.md")
+            runbook="CAN-FD_SPI_Mode_Bench.md" if args.experiment=="spi-mode-ab" else "CAN-FD_SPI_TX_Priming_Bench.md"
+            shutil.copyfile(ROOT/"docs/firmware"/runbook,output/"RUNBOOK.md")
         if args.mode == "candidate" and args.profile!="production" and not args.experiment:
             runbook="Bench_Automation.md" if args.profile=="mixed-diagnostic" else "CAN-FD_First_Recording_Runbook.md"
             extras=[(ROOT / "docs/firmware" / runbook, "RUNBOOK.md"),
-                    (Path.home() / ".platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin",
+                    (boot_app0_path(),
                      f"artifacts/a8-{logger_env}/boot_app0.bin")]
             for source,destination in extras:
                 target=output / destination;shutil.copyfile(source,target)
@@ -461,7 +532,8 @@ def main() -> int:
              "Host validation only; no target images or source archive were produced.\n") +
             "No devices were accessed.\n"
             "Inspect BUILD_MANIFEST.json status and logs before using artifacts.\n" +
-            ("Master-only A/B; keep fixed r5 logger/node installed. See RUNBOOK.md and variants in BUILD_MANIFEST.json.\n" if args.experiment else
+            ("Paired mode trial: select BOTH logger and master from the same variant. Keep fixed node. See RUNBOOK.md.\n" if args.experiment=="spi-mode-ab" else
+             "Master-only A/B; keep fixed r5 logger/node installed. See RUNBOOK.md and variants in BUILD_MANIFEST.json.\n" if args.experiment else
              "Both TI profiles are separate artifacts; both endpoints must match.\n"
              "A8 images are separate bootloader/partition/application outputs, not a merged flash image.\n"
              if args.mode == "candidate" else "Only host test evidence is included; target builds were not run.\n") +

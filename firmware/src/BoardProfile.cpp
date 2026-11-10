@@ -1,6 +1,11 @@
 #include <Arduino.h>
 #include "BoardProfile.h"
+#include "../can-fd/common/transport/bodaqs_spi_bench.h"
 #include <string.h>
+
+#if BODAQS_CAN_SPI_BENCH_MODE && (!defined(BODAQS_SINGLE_NODE_IMU_ADC_SMOKE) || !BODAQS_SINGLE_NODE_IMU_ADC_SMOKE)
+#error "CAN SPI mode1 requires the explicit mixed bench logger"
+#endif
 
 namespace board {
 
@@ -369,7 +374,7 @@ static const BoardProfile A8_PROFILE = {
     .irq_active_low = true,
     .irq_use_internal_pullup = true,
     .spi_hz = 4000000,
-    .spi_mode = 0,
+    .spi_mode = BODAQS_CAN_SPI_BENCH_MODE,
   },
 
   .indicators = {

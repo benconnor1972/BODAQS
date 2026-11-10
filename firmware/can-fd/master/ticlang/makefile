@@ -51,6 +51,18 @@ endif
 endif
 
 NAME := bodaqs_can_master
+SPI_BENCH_MODE ?= 0
+ifneq ($(SPI_BENCH_MODE),0)
+ifneq ($(SPI_BENCH_MODE),1)
+$(error SPI_BENCH_MODE must be 0 or 1)
+endif
+ifneq ($(SPI_MEASUREMENT_PROFILE),first-recording)
+$(error SPI_BENCH_MODE=1 requires SPI_MEASUREMENT_PROFILE=first-recording)
+endif
+ifneq ($(SPI_TX_PRIME),1)
+$(error SPI_BENCH_MODE=1 requires SPI_TX_PRIME=1)
+endif
+endif
 SPI_TX_PRIME ?= 0
 ifneq ($(SPI_TX_PRIME),0)
 ifneq ($(SPI_TX_PRIME),1)
@@ -116,6 +128,7 @@ CFLAGS := -I../include \
     -DBODAQS_MASTER_QUEUE_TIMING=$(SPI_QUEUE_TIMING) \
     -DBODAQS_MASTER_SPI_RX_CAPACITY=$(SPI_RX_CAPACITY) \
     -DBODAQS_MASTER_SPI_TX_PRIME=$(SPI_TX_PRIME) \
+    -DBODAQS_CAN_SPI_BENCH_MODE=$(SPI_BENCH_MODE) \
     -Werror \
     $(CFLAGS_EXTRA)
 

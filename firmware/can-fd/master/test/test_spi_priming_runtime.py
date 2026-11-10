@@ -25,7 +25,7 @@ def function(text,name):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cc",default="gcc")
-    parser.add_argument("--negative",choices=("missing-preload","duplicate-prefix","early-enable"))
+    parser.add_argument("--negative",choices=("missing-preload","duplicate-prefix","early-enable","missing-mode","enabled-mode"))
     args=parser.parse_args()
     root=Path(__file__).resolve().parents[1]
     arm=function((root/"src/main.c").read_text(encoding="utf-8"),"arm_spi_slot")
@@ -37,8 +37,12 @@ def main():
             arm,n=re.subn(r"\s*DL_SPI_transmitData8\([^;]+;","",arm);assert n==1
         elif args.negative=="duplicate-prefix":
             arm,n=re.subn(r"\[BODAQS_MASTER_SPI_TX_PRIME\]","[0]",arm);assert n==1
-        else:
+        elif args.negative=="early-enable":
             arm,n=re.subn(r"DL_SPI_transmitData8\(","DL_SPI_enable(SPI_A8_INST); DL_SPI_transmitData8(",arm);assert n==1
+        elif args.negative=="missing-mode":
+            arm,n=re.subn(r"\s*DL_SPI_setFrameFormat\([^;]+;","",arm);assert n==1
+        else:
+            arm,n=re.subn(r"DL_SPI_setFrameFormat\(","spi_enabled=true; DL_SPI_setFrameFormat(",arm);assert n==1
     fixture=r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -57,19 +61,22 @@ static unsigned gTransmitIndex,gReceiveIndex;
 static uintptr_t source[2],destination[2];
 static unsigned remaining[2];
 static bool dma_enabled[2],spi_enabled;
+enum { DL_SPI_FRAME_FORMAT_MOTO4_POL0_PHA1=1 };
+static unsigned phase;
 static uint8_t fifo[4];static unsigned fifo_count,prefix_writes,barriers;
 static void DL_DMA_setSrcAddr(int d,int c,uintptr_t p) {(void)d;assert(!dma_enabled[c]);source[c]=p;}
 static void DL_DMA_setDestAddr(int d,int c,uintptr_t p) {(void)d;assert(!dma_enabled[c]);destination[c]=p;}
 static void DL_DMA_setTransferSize(int d,int c,unsigned n) {(void)d;assert(!dma_enabled[c]);remaining[c]=n;}
 static void DL_DMA_enableChannel(int d,int c) {(void)d;assert(!dma_enabled[c]);dma_enabled[c]=true;}
 static void DL_SPI_disable(void *p) {(void)p;assert(!dma_enabled[0] && !dma_enabled[1]);spi_enabled=false;}
+static void DL_SPI_setFrameFormat(void *p,unsigned value) {(void)p;assert(!spi_enabled && !fifo_count && !dma_enabled[0] && !dma_enabled[1]);phase=value;}
 static void DL_SPI_transmitData8(void *p,uint8_t b) {(void)p;assert(!spi_enabled && !dma_enabled[1] && !fifo_count);fifo[fifo_count++]=b;++prefix_writes;}
 static void __DSB(void) {++barriers;}
 static void DL_SPI_enable(void *p) {(void)p;assert(fifo_count==1 && barriers);assert(dma_enabled[0] && dma_enabled[1]);spi_enabled=true;}
 // ACTUAL_ARM
 static void reset_hardware(void) {
  memset(source,0,sizeof source);memset(destination,0,sizeof destination);memset(remaining,0,sizeof remaining);
- dma_enabled[0]=dma_enabled[1]=false;fifo_count=prefix_writes=barriers=0;spi_enabled=true;
+ dma_enabled[0]=dma_enabled[1]=false;fifo_count=prefix_writes=barriers=phase=0;spi_enabled=true;
 }
 static void dispatch_dma(void) {
  while(dma_enabled[1] && remaining[1] && fifo_count<4) {
@@ -100,6 +107,7 @@ int main(void) {
   uint8_t before[2][256];memcpy(before,gTransmitSlots,sizeof before);
   memset(gReceiveSlots,0xaa,sizeof gReceiveSlots);
   arm_spi_slot();
+  assert(phase==BODAQS_CAN_SPI_BENCH_MODE);
   assert(spi_enabled && dma_enabled[0] && dma_enabled[1]);
   assert(remaining[0]==256 && destination[0]==(uintptr_t)gReceiveSlots[gReceiveIndex]);
   assert(source[0]==(uintptr_t)&registers.RXDATA && destination[1]==(uintptr_t)&registers.TXDATA);
@@ -127,13 +135,16 @@ int main(void) {
     with tempfile.TemporaryDirectory(prefix="bodaqs-spi-prime-") as directory:
         source=Path(directory)/"fixture.c";exe=Path(directory)/"fixture.exe"
         source.write_text(fixture.replace("// ACTUAL_ARM",arm),encoding="utf-8")
-        for priming in ((1,) if args.negative else (0,1)):
+        variants=((1,1),) if args.negative in ("missing-mode","enabled-mode") else ((1,0),) if args.negative else ((0,0),(1,0),(1,1))
+        for priming,mode in variants:
             subprocess.run([args.cc,"-std=c11","-Wall","-Wextra","-Werror","-Wno-unused-function","-O2",
-                "-DBODAQS_SPI_MEASUREMENT_V2=1",f"-DBODAQS_MASTER_SPI_TX_PRIME={priming}",
+                "-DBODAQS_SPI_MEASUREMENT_V2=1",f"-DBODAQS_MASTER_SPI_TX_PRIME={priming}",f"-DBODAQS_CAN_SPI_BENCH_MODE={mode}",
                 "-I",str(root/"include"),str(source),"-o",str(exe)],check=True)
             subprocess.run([str(exe)],check=True)
         if not args.negative:
-            for flags in (("-DBODAQS_MASTER_SPI_TX_PRIME=2",),("-DBODAQS_MASTER_SPI_TX_PRIME=1","-DBODAQS_SPI_MEASUREMENT_V2=0")):
+            for flags in (("-DBODAQS_MASTER_SPI_TX_PRIME=2",),("-DBODAQS_MASTER_SPI_TX_PRIME=1","-DBODAQS_SPI_MEASUREMENT_V2=0"),
+                    ("-DBODAQS_CAN_SPI_BENCH_MODE=2",), ("-DBODAQS_CAN_SPI_BENCH_MODE=1","-DBODAQS_SPI_MEASUREMENT_V2=0"),
+                    ("-DBODAQS_CAN_SPI_BENCH_MODE=1","-DBODAQS_SPI_MEASUREMENT_V2=1","-DBODAQS_MASTER_SPI_TX_PRIME=0")):
                 checked=subprocess.run([args.cc,"-E","-x","c","-I",str(root/"include"),*flags,"-"],
                     input='#include "master_spi_priming.h"\n',text=True,capture_output=True)
                 assert checked.returncode,"Unsafe priming configuration was accepted"
