@@ -52,6 +52,13 @@ class BenchTools(unittest.TestCase):
             first=identity(root,"mixed",{"board":"a8"})
             board.write_text('{"build":{"f_cpu":"80000000L"}}')
             self.assertNotEqual(first["id"],identity(root,"mixed",{"board":"a8"})["id"])
+    def test_recipe_tracks_shared_spi_bench_header(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);header=root/"can-fd/common/transport/bodaqs_spi_bench.h"
+            header.parent.mkdir(parents=True);header.write_text("mode0")
+            first=identity(root,"mixed",{})
+            header.write_text("mode1")
+            self.assertNotEqual(first["id"],identity(root,"mixed",{})["id"])
     def test_snapshot_contract_covers_every_actual_master_member(self):
         import re
         text=(bench.ROOT/"firmware/can-fd/master/src/main.c").read_text(encoding="utf-8")

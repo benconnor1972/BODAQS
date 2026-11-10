@@ -165,7 +165,7 @@ def plan(args: argparse.Namespace, output: Path) -> list[dict]:
     return commands
 
 
-def load_fixed_bundle(bundle:Path) -> dict:
+def load_fixed_bundle(bundle:Path,experiment:str="spi-tx-prime-ab") -> dict:
     """Explicit compatibility reader for the sealed, physically observed r5 pair.
 
     This declaration is provenance, not runtime image attestation. Unknown node
@@ -173,7 +173,10 @@ def load_fixed_bundle(bundle:Path) -> dict:
     """
     bundle=bundle.resolve();path=bundle/"BUILD_MANIFEST.json"
     value=json.loads(path.read_text(encoding="utf-8"))
+    if experiment=="spi-mode-ab" and value.get("experiment")!="spi-tx-prime-ab":
+        raise ValueError("Mode comparison requires the sealed r6 primed-master bundle, not r5")
     if value.get("experiment")=="spi-tx-prime-ab":
+        if experiment!="spi-mode-ab":raise ValueError("Priming comparison requires the sealed r5 bundle")
         if value.get("status")!="passed" or value.get("candidate_profile")!="mixed-diagnostic" or value.get("variants",{}).get("B",{}).get("spi_tx_prime") is not True:
             raise ValueError("Mode comparison requires the passed r6 primed-master bundle")
         def one(items,predicate):
@@ -302,6 +305,7 @@ def build_environment(args: argparse.Namespace) -> dict[str, str]:
     env = os.environ.copy()
     compiler = shutil.which(args.cxx) or args.cxx
     env["PATH"] = str(Path(compiler).resolve().parent) + os.pathsep + env.get("PATH", "")
+    env["CXX"] = args.cxx
     env["PYTHONPATH"] = str(ROOT / "analysis")
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONUTF8"] = "1"
@@ -347,7 +351,7 @@ def main() -> int:
     source_tree=git("rev-parse",source_commit+"^{tree}")
     try:
         peers=load_peers(args.reuse_peers,args.profile) if args.reuse_peers else None
-        fixed=load_fixed_bundle(args.fixed_bundle) if args.fixed_bundle else None
+        fixed=load_fixed_bundle(args.fixed_bundle,args.experiment) if args.fixed_bundle else None
         review=None
         if args.review_result:
             review=review_result(json.loads(args.review_result.read_text(encoding="utf-8")),
@@ -392,7 +396,7 @@ def main() -> int:
         "sdk": str(args.sdk.resolve()) if args.mode == "candidate" else None,
         "validation_mode": args.mode, "qualification": "physical qualification deferred",
         "build_environment": {key: env.get(key) for key in (
-            "PATH", "PYTHONPATH", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "MAKEFLAGS",
+            "PATH", "PYTHONPATH", "CXX", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "MAKEFLAGS",
             "PLATFORMIO_BUILD_FLAGS", "PLATFORMIO_BUILD_SRC_FLAGS")},
         "production_remote_admission": "unqualified/unsupported until measured bounds supplied",
         "deferred": DEFERRED, "commands": [], "artifacts": [],
@@ -469,6 +473,9 @@ def main() -> int:
                 variants[label]={"spi_mode":mode,"spi_tx_prime":True,
                     "master":artifact(f"artifacts/master-{label}/bodaqs_can_master.out"),
                     "logger":artifact(f"artifacts/logger-{label}/firmware.bin")}
+                expected_name=f"bodaqs_a8_imu_adc_{label}_r7"
+                if expected_name.encode() not in (output/variants[label]["logger"]["path"]).read_bytes():
+                    raise RuntimeError("Logger binary is missing its selected mode identity")
                 recipe=json.loads((output/f"artifacts/logger-{label}/identity/build-recipe.json").read_text(encoding="utf-8"))
                 variants[label]["logger"]["recipe_id"]=recipe["id"]
                 variants[label]["logger"]["environment"]=f"bodaqs_s3_mini_n4r2_imu_adc_{label}"

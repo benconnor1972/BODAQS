@@ -10,7 +10,7 @@ def identity(root: Path, environment: str, options: dict) -> dict:
     board=root/"boards"/(str(options.get("board",""))+".json")
     if board.is_file():inputs[board.relative_to(root).as_posix()]=hashlib.sha256(
         board.read_bytes().replace(b"\r\n",b"\n")).hexdigest()
-    for folder in ("src", "variants", "can-fd/common/protocol"):
+    for folder in ("src", "variants", "can-fd/common/protocol", "can-fd/common/transport"):
         for path in sorted((root / folder).rglob("*")):
             if path.is_file() and path.suffix in (".h", ".c", ".cpp", ".S"):
                 inputs[path.relative_to(root).as_posix()] = hashlib.sha256(

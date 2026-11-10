@@ -29,7 +29,15 @@ class MasterAbCandidate(unittest.TestCase):
                 path=fixed/name;path.write_bytes(name.encode())
                 images[key]={"path":name,"sha256":hashlib.sha256(path.read_bytes()).hexdigest()}
             images["application"]["firmware_name"]="bodaqs_a8_imu_adc_buffers_r5"
-            (fixed/"BUILD_MANIFEST.json").write_text(json.dumps({"environment":"bodaqs_s3_mini_n4r2_imu_adc_smoke",**images}))
+            fixed_manifest={"environment":"bodaqs_s3_mini_n4r2_imu_adc_smoke",**images}
+            if experiment=="spi-mode-ab":
+                fixed_manifest={"status":"passed","experiment":"spi-tx-prime-ab","candidate_profile":"mixed-diagnostic",
+                    "source":{"commit":head},
+                    "variants":{"B":{**images["unchanged_master"],"spi_tx_prime":True}},
+                    "artifacts":[{**images["application"],"role":"logger"},{**images["unchanged_node"],"role":"node"},images["unchanged_master"]],
+                    "fixed_bundle":{"firmware_name":"bodaqs_a8_imu_adc_buffers_r5","images":[
+                        {"role":"logger","source_commit":head},{"role":"node","source_commit":None}]}}
+            (fixed/"BUILD_MANIFEST.json").write_text(json.dumps(fixed_manifest))
             review_text=temp/"review.txt";review_text.write_text("Fixture review evidence\n")
             review=temp/"review.json";review.write_text(json.dumps({"schema":"bodaqs.review.v1","base":head,"head":head,"outcome":"passed",
                 "findings":[],"evidence":[{"path":review_text.name,"sha256":hashlib.sha256(review_text.read_bytes()).hexdigest()}]}))
@@ -46,7 +54,8 @@ class MasterAbCandidate(unittest.TestCase):
                 commands.append({"name":"master-"+variant,"argv":[sys.executable,"-c","pass"],"cwd":str(root),
                     "artifacts":[(image.relative_to(root).as_posix(),f"artifacts/master-{variant}/bodaqs_can_master.out")]})
                 if experiment=="spi-mode-ab":
-                    mode=int(variant[-1]);logger=build/(variant+".bin");logger.write_bytes(b"same" if broken=="identical-logger" else variant.encode())
+                    mode=int(variant[-1]);logger=build/(variant+".bin")
+                    logger.write_bytes(b"bodaqs_a8_imu_adc_mode0_r7 bodaqs_a8_imu_adc_mode1_r7" if broken=="identical-logger" else b"unknown" if broken=="wrong-name" else f"bodaqs_a8_imu_adc_{variant}_r7".encode())
                     recipe=build/(variant+".json");recipe.write_text(json.dumps({"id":variant}))
                     commands.append({"name":"contract-"+variant,"argv":[sys.executable,"-c",
                         "from pathlib import Path; import sys; Path(sys.argv[1]).write_text(sys.argv[2])",
