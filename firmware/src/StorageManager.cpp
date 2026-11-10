@@ -10,6 +10,7 @@
 #include "BdqV2FileSink.h"
 #include "BdqV2PrimaryStream.h"
 #include "BdqV2Writer.h"
+#include "BdqAdcTimingJson.h"
 #include "LogMetadataWriter.h"
 #include "ZipArchiveWriter.h"
 #include "LoggingManager.h"
@@ -1712,11 +1713,18 @@ static bool drainOneReadyBdqV2Chunk_(uint64_t nowUs) {
   return writePendingBdqV2Marks_();
 }
 
+static void appendBdqV2AdcTiming_(JsonDocument& document, const BdqLogEndInfo& endInfo) {
+  document["external_adc_timing_status"] = endInfo.externalAdcTiming ? "complete" : "worker_not_retired";
+  if(endInfo.externalAdcTiming)
+    BdqAdcTimingJson::append(document["external_adc_timing"].to<JsonObject>(),*endInfo.externalAdcTiming);
+}
+
 static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
   // Finalization is serialized; avoid large diagnostics objects on loopTask.
   static SensorRuntimeDiagnostics diagnostics;
   JsonDocument document;
   document["summary_format"] = "bdq.final_summary.v2";
+  appendBdqV2AdcTiming_(document, endInfo);
   document["remote_imu_excluded"] = RemoteImuRecording::failed();
   const auto& admission=RemoteImuRecording::admission();
   document["remote_admission_attempted"]=admission.attempted;
@@ -2571,7 +2579,7 @@ static __attribute__((noinline)) void finalizeBdqV2_() {
   endInfo.sensorSampleUs = &stats.sensorSampleUs;
   endInfo.enqueueUs = &stats.enqueueUs;
   endInfo.storageTiming = &s_storageTiming;
-  endInfo.externalAdcTiming = &AnalogInputManager::timingStats();
+  endInfo.externalAdcTiming = AnalogInputManager::stoppedTimingStats();
   endInfo.sensorTiming = &SensorManager::timingStats();
   endInfo.i2cSchedulerTiming = &I2CBusScheduler::timingStats();
   endInfo.boardProfile = board::gBoard;

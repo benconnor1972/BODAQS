@@ -334,13 +334,25 @@ bool setAdmissionProfile(const ImuAdmission::Profile& p) {
 bool configure(const LoggerConfig& cfg) {
  if(selected) return false;
  report={};report.benchOnly=ImuAdmission::singleNodeSmokeBuild();SensorSpec chosen[4];uint8_t mask=0;
- bool otherActiveSensors=false;
+ bool otherActiveSensors=false;uint8_t benchAdcMask=0;
  for(uint8_t i=0;i<cfg.sensorCount();++i) {
   SensorSpec spec;bool muted=false;
   if(!cfg.getSensorSpec(i,spec)) continue;
   if(!SensorManager::getMuted(i,muted)) muted=spec.mutedDefault;
   if(muted) continue;
-  if(spec.type!=SensorType::LSM6DSO32XImu) {otherActiveSensors=true;continue;}
+  if(spec.type!=SensorType::LSM6DSO32XImu) {
+   const auto a=sensorAssignment(spec,board::gBoard);
+   long ain=-1,mode=1;bool includeRaw=false;
+   spec.params.getInt("ain",ain);spec.params.getInt("output_mode",mode);
+   spec.params.getBool("include_raw",includeRaw);
+   const uint8_t bit=ain==0?1:ain==4?2:0;
+   if(ImuAdmission::singleNodeAdcSmokeBuild() && spec.type==SensorType::AnalogPot &&
+      a.kind==SensorAssignment::Kind::ExternalAdc && a.input==0 &&
+      a.bus==(ain==4?1:0) && bit && !(benchAdcMask&bit) && !includeRaw && (mode==0 || mode==1))
+    benchAdcMask|=bit;
+   else otherActiveSensors=true;
+   continue;
+  }
   report.attempted=true;
   auto assignment=sensorAssignment(spec,board::gBoard);uint8_t n=assignment.provider.index;
   if(assignment.kind!=SensorAssignment::Kind::NodeImu || n>3 || (mask&(1u<<n)) || !CanMasterManager::configurationReconciled(n)) {
@@ -350,10 +362,14 @@ bool configure(const LoggerConfig& cfg) {
   chosen[n]=spec;mask|=1u<<n;
  }
  ImuAdmission::Demand demand;
+ demand.loggerRateHz=cfg.sampleRateHz;
  for(uint8_t n=0;n<4;++n) if(mask&(1u<<n)) ++demand.nodes;
  for(uint8_t a=0;a<2;++a) if(board::gBoard && a<board::gBoard->external_adc_count && AnalogInputManager::activeChannelCount(a))
-  demand.adc[a]={AnalogInputManager::configuredDataRateSps(a),board::gBoard->external_adcs[a].spi_hz};
- report=ImuAdmission::singleNodeSmokeBuild()
+  demand.adc[a]={AnalogInputManager::configuredDataRateSps(a),board::gBoard->external_adcs[a].spi_hz,
+                AnalogInputManager::activeChannelCount(a)};
+ report=ImuAdmission::singleNodeAdcSmokeBuild()
+     ? ImuAdmission::evaluateSingleNodeAdcSmoke(demand,otherActiveSensors || benchAdcMask!=3)
+     : ImuAdmission::singleNodeSmokeBuild()
      ? ImuAdmission::evaluateSingleNodeSmoke(demand,otherActiveSensors)
      : ImuAdmission::evaluate(demand,profile);
  if(report.reason!=ImuAdmission::Reason::None || !mask) return true;

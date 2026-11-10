@@ -26,6 +26,9 @@ namespace AnalogInputManager {
   uint16_t configuredDataRateSps(uint8_t externalAdcIndex);
   void resetTimingStats();
   const ExternalAdcTimingStats& timingStats();
+  // Finalization only, after the row producer stops. Null while an ADC worker
+  // can still mutate timing totals; a non-null result remains valid until start.
+  const ExternalAdcTimingStats* stoppedTimingStats();
   void onLoggingStart();
   void onLoggingStop();
 

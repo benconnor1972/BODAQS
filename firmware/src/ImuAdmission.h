@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <stddef.h>
 namespace ImuAdmission {
-enum class Reason : uint8_t { None, Unqualified, Link, CanCapacity, SpiCapacity, DrainCapacity, Coverage, Allocation, Eligibility, SmokeScope };
+enum class Reason : uint8_t { None, Unqualified, Link, CanCapacity, SpiCapacity, DrainCapacity, Coverage, Allocation, Eligibility, SmokeScope, MixedSmokeScope };
 constexpr bool singleNodeSmokeBuild() {
 #if defined(BODAQS_SINGLE_NODE_IMU_SMOKE) && BODAQS_SINGLE_NODE_IMU_SMOKE == 1
  return true;
@@ -11,9 +11,21 @@ constexpr bool singleNodeSmokeBuild() {
 #endif
 }
 constexpr const char* buildMode() {
+ #if defined(BODAQS_SINGLE_NODE_IMU_ADC_SMOKE) && BODAQS_SINGLE_NODE_IMU_ADC_SMOKE == 1
+ static_assert(singleNodeSmokeBuild(), "ADC smoke requires the compact single-node smoke build");
+ return "single_node_adc_smoke_unqualified";
+ #else
  return singleNodeSmokeBuild()?"single_node_smoke_unqualified":"production";
+ #endif
 }
-struct Adc { uint32_t conversionsPerSecond=0, spiHz=0; };
+constexpr bool singleNodeAdcSmokeBuild() {
+#if defined(BODAQS_SINGLE_NODE_IMU_ADC_SMOKE) && BODAQS_SINGLE_NODE_IMU_ADC_SMOKE == 1
+ return true;
+#else
+ return false;
+#endif
+}
+struct Adc { uint32_t conversionsPerSecond=0, spiHz=0; uint8_t activeChannels=0; };
 // Bounds include all software, CS, arbitration and non-overlapped rearm work.
 // A profile is supplied only by qualification or a deterministic host fixture.
 struct Profile {
@@ -32,7 +44,7 @@ struct Profile {
  uint32_t arrivalBurstPackets=0, arrivalBurstEvidence=0;
  uint32_t sampleDrainSlotsPerSecond=0;
 };
-struct Demand { uint8_t nodes=0; Adc adc[2]; };
+struct Demand { uint8_t nodes=0; Adc adc[2]; uint16_t loggerRateHz=0; };
 struct Report {
  Reason reason=Reason::None; bool qualified=false, attempted=false, benchOnly=false;
  double canOccupancy=0, spiOccupancy=0, drainRatio=0;
@@ -42,8 +54,12 @@ struct Report {
 Report evaluate(const Demand&,const Profile&);
 // Experimental opt-in only: no measured costs, capacity or readiness is claimed.
 Report evaluateSingleNodeSmoke(const Demand&,bool otherActiveSensors);
+// Exact bench load only, with an ADC-only control using the same image.
+Report evaluateSingleNodeAdcSmoke(const Demand&,bool otherActiveSensors);
 const char* reasonText(Reason);
 inline const char* reportText(const Report& r) {
- return r.benchOnly && r.reason==Reason::None ? "single-node smoke test (unqualified)" : reasonText(r.reason);
+ return r.benchOnly && r.reason==Reason::None
+     ? (singleNodeAdcSmokeBuild()?"single-node plus two ADC channels (unqualified)":"single-node smoke test (unqualified)")
+     : reasonText(r.reason);
 }
 }

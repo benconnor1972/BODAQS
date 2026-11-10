@@ -81,6 +81,13 @@ Report evaluateSingleNodeSmoke(const Demand& d,bool otherActiveSensors) {
   r.reason=Reason::SmokeScope;
  return r;
 }
+Report evaluateSingleNodeAdcSmoke(const Demand& d,bool otherActiveSensors) {
+ Report r;r.attempted=d.nodes!=0;r.benchOnly=true;
+ if(d.nodes>1 || otherActiveSensors || d.loggerRateHz!=500) r.reason=Reason::MixedSmokeScope;
+ for(const auto& a:d.adc) if(a.activeChannels!=1 || a.conversionsPerSecond!=1000 || a.spiHz!=1000000)
+  r.reason=Reason::MixedSmokeScope;
+ return r;
+}
 const char* reasonText(Reason r) {
  switch(r) {
  case Reason::None:return "admitted";case Reason::Unqualified:return "unqualified scheduling costs";
@@ -89,6 +96,7 @@ const char* reasonText(Reason r) {
  case Reason::Coverage:return "burst/backlog coverage";case Reason::Allocation:return "remote allocation failed";
  case Reason::Eligibility:return "remote configuration unavailable";
  case Reason::SmokeScope:return "smoke build requires one CAN IMU; mute all other sensors";
+ case Reason::MixedSmokeScope:return "ADC smoke requires 500 Hz, ain0/4 only, and at most one CAN IMU";
  }return "unsupported";
 }
 }

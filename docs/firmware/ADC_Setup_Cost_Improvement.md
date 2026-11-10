@@ -64,9 +64,10 @@ operation (count zero). Compare old `configUs + startUs` with new `configUs` for
 the combined setup cost, using totals/counts from matching workloads. Existing
 acquisition, ready-wait, row-fresh/reused/no-sample and row-age statistics remain.
 The current compact-binary (BDQ v1) final summary serializes these ADC statistics.
-The separate multistream (BDQ v2) summary does not: use compact binary for this
-ADC-only comparison. A v2 file can establish logger-row delivery but cannot
-establish per-ADC setup cost or freshness from its saved footer.
+The earlier multistream (BDQ v2) images omitted these statistics; use compact
+binary for the historical ADC-only comparison. The separate
+[mixed servicing candidate](CAN-FD_IMU_ADC_Bench.md) adds the same aggregate ADC
+counters to its v2 footer, with an explicit worker-retirement availability check.
 
 `firmware/tools/test_adc_setup_runtime.py` compiles the full production manager
 with only includes replaced, against a command/register/DRDY model. It checks

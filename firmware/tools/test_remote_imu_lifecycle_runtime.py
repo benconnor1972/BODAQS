@@ -25,7 +25,7 @@ def fixture_source(root):
     coordinator = (root / "src/RemoteImuRecording.cpp").read_text()
     for header in ('#include <Arduino.h>', '#include <esp_timer.h>', '#include <esp_system.h>', '#include "SensorManager.h"', '#include "DebugLog.h"'):
         coordinator = coordinator.replace(header, '')
-    fixture += '\nstatic uint8_t fixtureAdcChannels=0;\nnamespace AnalogInputManager { uint8_t activeChannelCount(uint8_t) {return fixtureAdcChannels;} uint16_t configuredDataRateSps(uint8_t) {return 100;} }\n'
+    fixture += '\nstatic uint8_t fixtureAdcChannels=0;static uint16_t fixtureAdcSps=100;\nnamespace AnalogInputManager { uint8_t activeChannelCount(uint8_t) {return fixtureAdcChannels;} uint16_t configuredDataRateSps(uint8_t) {return fixtureAdcSps;} }\n'
     fixture = fixture.replace('static SensorSpec saved;', 'static SensorSpec saved; static unsigned fixtureSensorCount=1; static SensorSpec extra[3]; static ParamStore extraParams[3];')
     fixture = fixture.replace('return 1; }\nbool LoggerConfig::getSensorSpec', 'return fixtureSensorCount; }\nbool LoggerConfig::getSensorSpec')
     fixture = fixture.replace('if(i) return false; spec=saved;', 'if(i>=fixtureSensorCount) return false; spec=i?extra[i-1]:saved;')
@@ -42,9 +42,14 @@ def main():
                         help="Verify measurement pacing propagation; physical clock tested separately")
     parser.add_argument("--v2", action="store_true", help="Exercise coordinated 256-byte measurement profile")
     parser.add_argument("--smoke", action="store_true", help="Exercise opt-in unqualified single-node build without installing synthetic costs")
+    parser.add_argument("--mixed", action="store_true", help="Exact 500 Hz two-ADC bench scope plus one compact IMU")
     args = parser.parse_args()
+    if args.mixed: args.smoke=True;args.v2=True
     root = Path(__file__).resolve().parents[1]
     fixture = fixture_source(root)
+    if args.mixed:
+        fixture=fixture.replace('bool getMuted(uint8_t,bool& value) { value=muted; return true; }',
+            'bool getMuted(uint8_t i,bool& value) {SensorSpec s;if(!config.getSensorSpec(i,s)) return false;value=muted || s.mutedDefault;return true;}')
     if args.flow_diagnostics:
         fixture=fixture.replace('#include "RemoteImuRecording.h"', '''
 static unsigned flowLogCalls=0;
@@ -60,6 +65,7 @@ static void captureFlowLog(const char* tag,const char*,...) {if(!std::strcmp(tag
         cpp, exe = Path(temp)/"fixture.cpp", Path(temp)/"fixture.exe"
         cpp.write_text(fixture)
         flags=["-DBODAQS_SINGLE_NODE_IMU_SMOKE=1"] if args.smoke else []
+        if args.mixed: flags.append("-DBODAQS_SINGLE_NODE_IMU_ADC_SMOKE=1")
         if args.v2:
             flags.append("-DBODAQS_SPI_MEASUREMENT_V2=1")
         if args.start_spacing_us:
@@ -88,6 +94,10 @@ static void captureFlowLog(const char* tag,const char*,...) {if(!std::strcmp(tag
         if args.smoke:
             for scenario in ("scope-two", "scope-other", "scope-adc"):
                 subprocess.run([str(exe), scenario], check=True)
+            if args.mixed:
+                for scenario in ("mixed-control","mixed-reject-ain","mixed-reject-rate",
+                                 "mixed-reject-channels","mixed-reject-duplicate","mixed-reject-transform"):
+                    subprocess.run([str(exe),scenario],check=True)
             return
         subprocess.run([str(exe), "four"], check=True)
         for scenario in ("node-reboot", "master-reboot", "bus-off", "lease-expiry", "four-bus-off"):

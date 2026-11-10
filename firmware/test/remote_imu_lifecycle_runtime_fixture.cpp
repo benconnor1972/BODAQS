@@ -37,8 +37,9 @@ int main(int argc,char** argv) {
   assert(savedParams.set("profile","imu6_3333_32g_2000dps_v1"));
   saved.params.bind(&savedParams);
   fixtureSensorCount=argc>1 && (!std::strcmp(argv[1],"four") || !std::strcmp(argv[1],"four-bus-off"))?4:1;
-  const bool scopeRejected=argc>1 && (!std::strcmp(argv[1],"scope-two") || !std::strcmp(argv[1],"scope-other") || !std::strcmp(argv[1],"scope-adc"));
-  if(scopeRejected && std::strcmp(argv[1],"scope-adc")) fixtureSensorCount=2;
+  const bool mixedRejected=argc>1 && !std::strncmp(argv[1],"mixed-reject-",13);
+  const bool scopeRejected=mixedRejected || (argc>1 && (!std::strcmp(argv[1],"scope-two") || !std::strcmp(argv[1],"scope-other") || !std::strcmp(argv[1],"scope-adc")));
+  if(scopeRejected && !mixedRejected && std::strcmp(argv[1],"scope-adc")) fixtureSensorCount=2;
   for(unsigned n=1;n<fixtureSensorCount;++n) {
     extra[n-1]=saved;extraParams[n-1]=savedParams;
     char provider[8];std::snprintf(provider,sizeof provider,"can:%u",n);
@@ -73,6 +74,36 @@ int main(int argc,char** argv) {
   // pinned effective snapshot makes the next acquisition snapshot reject BUSY.
   CanMasterManager::beginRecordingHandoff();advance(4000);
   assert(CanMasterManager::recordingHandoffReady());
+  const unsigned remoteNodes=fixtureSensorCount;
+  if(ImuAdmission::singleNodeAdcSmokeBuild()) {
+    config.sampleRateHz=500;
+    profile.external_adc_count=2;profile.analog.count=8;
+    for(unsigned a=0;a<2;++a) {
+      profile.external_adcs[a].spi_hz=1000000;
+      auto& input=profile.analog.inputs[a*4];
+      input.source=board::AnalogSourceType::ExternalAdc;
+      input.external_adc_index=a;input.external_channel=0;
+      const unsigned index=fixtureSensorCount++-1;
+      extra[index]={};extra[index].type=SensorType::AnalogPot;
+      assert(extraParams[index].set("ain",a?"4":"0"));
+      extra[index].params.bind(&extraParams[index]);
+    }
+    fixtureAdcChannels=1;fixtureAdcSps=1000;
+    if(argc>1 && !std::strcmp(argv[1],"mixed-control")) {
+      saved.mutedDefault=true;
+      assert(RemoteImuRecording::configure(config));
+      assert(!RemoteImuRecording::configured() && !RemoteImuRecording::failed());
+      assert(!AcquisitionControl::active() && DynamicSpscQueueDetail::liveAllocations==0);
+      puts("same-image ADC-only control creates no remote authorization: PASS");return 0;
+    }
+    if(mixedRejected) {
+      if(!std::strcmp(argv[1],"mixed-reject-ain")) assert(extraParams[0].set("ain","1"));
+      if(!std::strcmp(argv[1],"mixed-reject-rate")) config.sampleRateHz=200;
+      if(!std::strcmp(argv[1],"mixed-reject-channels")) fixtureAdcChannels=2;
+      if(!std::strcmp(argv[1],"mixed-reject-duplicate")) assert(extraParams[1].set("ain","0"));
+      if(!std::strcmp(argv[1],"mixed-reject-transform")) assert(extraParams[0].set("output_mode","2"));
+    }
+  }
   if(scopeRejected) {
     assert(ImuAdmission::singleNodeSmokeBuild());
     if(!std::strcmp(argv[1],"scope-other")) extra[0].type=SensorType::BMI270ImuI2C;
@@ -82,7 +113,8 @@ int main(int argc,char** argv) {
     }
     assert(RemoteImuRecording::configure(config));
     assert(!RemoteImuRecording::configured());
-    assert(RemoteImuRecording::admission().reason==ImuAdmission::Reason::SmokeScope);
+    assert(RemoteImuRecording::admission().reason==(ImuAdmission::singleNodeAdcSmokeBuild()
+        ?ImuAdmission::Reason::MixedSmokeScope:ImuAdmission::Reason::SmokeScope));
     assert(RemoteImuRecording::admission().benchOnly && !RemoteImuRecording::admission().qualified);
     assert(!AcquisitionControl::active() && DynamicSpscQueueDetail::liveAllocations==0);
     puts("restricted workload rejected before authorization: PASS");return 0;
@@ -96,7 +128,7 @@ int main(int argc,char** argv) {
     puts("legacy polling escapes alternating physical RX loss: PASS");return 0;
   }
   // Fail a real queue/model allocation, before any control owner is entered.
-  DynamicSpscQueueDetail::allocationsBeforeFailure=fixtureSensorCount==4?7:2;
+  DynamicSpscQueueDetail::allocationsBeforeFailure=remoteNodes==4?7:2;
   assert(RemoteImuRecording::configure(config));
   assert(!RemoteImuRecording::configured() && RemoteImuRecording::failed());
   assert(RemoteImuRecording::admission().reason==ImuAdmission::Reason::Allocation);
@@ -123,7 +155,7 @@ int main(int argc,char** argv) {
   }
   assert(!RemoteImuRecording::prepared());
   recordingSteps(100);
-  for(unsigned n=0;n<fixtureSensorCount;++n) assert(!acquisitions[n].recording && !acquisitions[n].phase);
+  for(unsigned n=0;n<remoteNodes;++n) assert(!acquisitions[n].recording && !acquisitions[n].phase);
   assert(!AcquisitionControl::active()); // no PREPARE before storage allocation
   assert(RemoteImuRecording::resourcesReady());
   if(argc>1 && !std::strcmp(argv[1],"start-clock-boundary")) {
@@ -216,8 +248,8 @@ int main(int argc,char** argv) {
   assert(acquisitions[0].phase==2 && acquisitions[0].lease_valid);
   assert(!RemoteImuRecording::recording()); // Preparation cannot start samples.
   BdqV2StreamDescriptor descriptors[8];
-  assert(RemoteImuRecording::describe(descriptors,8,2)==2*fixtureSensorCount);
-  for(unsigned n=0;n<fixtureSensorCount;++n) simulatedStorage.push_back(descriptors[n*2+1].source);
+  assert(RemoteImuRecording::describe(descriptors,8,2)==2*remoteNodes);
+  for(unsigned n=0;n<remoteNodes;++n) simulatedStorage.push_back(descriptors[n*2+1].source);
   assert(!strcmp(descriptors[0].payloadSchema,ImuAdmission::singleNodeSmokeBuild()?"bodaqs.can_imu_packets.v1":"bodaqs.can_imu6.v1"));
   assert(!strcmp(descriptors[1].payloadSchema,"bodaqs.can_timing_evidence.v1"));
   RemoteImuRecording::start();recordingSteps(2000);
@@ -364,7 +396,7 @@ int main(int argc,char** argv) {
     puts("STOP retry and explicit confirmed/uncertain tail basis: PASS");return 0;
   }
 
-  for(unsigned n=0;n<fixtureSensorCount;++n) assert(acquisitions[n].phase==3 && acquisitions[n].lease_valid);
+  for(unsigned n=0;n<remoteNodes;++n) assert(acquisitions[n].phase==3 && acquisitions[n].lease_valid);
 
   assert(acquisitions[0].phase==3 && acquisitions[0].lease_valid);
   if(argc>1 && std::strcmp(argv[1],"four")) {
@@ -390,7 +422,7 @@ int main(int argc,char** argv) {
     AcquisitionControl::Request rejoin;rejoin.node=0;rejoin.action=AcquisitionControl::Action::Prepare;rejoin.recording=1;
     assert(!AcquisitionControl::enqueue(rejoin));
     recordingSteps(11000);
-    if(fixtureSensorCount==4) {
+    if(remoteNodes==4) {
       assert(!RemoteImuRecording::tailDrained() && AcquisitionControl::active());
       for(unsigned n=1;n<4;++n) {
         AcquisitionControl::Outcome check;AcquisitionControl::outcome(n,check);
@@ -446,7 +478,7 @@ int main(int argc,char** argv) {
   RemoteImuRecording::stop();RemoteImuRecording::service();
   assert(!RemoteImuRecording::tailDrained());
   clockMs=confirmedAt+5000;RemoteImuRecording::service();
-  if(fixtureSensorCount==1) assert(RemoteImuRecording::tailDrained());
+  if(remoteNodes==1) assert(RemoteImuRecording::tailDrained());
   // Each participant's interval begins at its own confirmed STOP result.
   retirePhysicalMaster=false;
   for(unsigned i=0;i<1600 && !RemoteImuRecording::tailDrained();++i) recordingSteps(1);
@@ -472,7 +504,7 @@ int main(int argc,char** argv) {
   simulatedStorage.clear();RemoteImuRecording::release();
   assert(!RemoteImuRecording::configured());
   CanMasterManager::endRecordingHandoff();
-  if(fixtureSensorCount==4) {puts("production four-node resource/lifecycle isolation passed");return 0;}
+  if(remoteNodes==4) {puts("production four-node resource/lifecycle isolation passed");return 0;}
   // Restart the logger while a previous measurement context survives. A node
   // reboot leaves no membership, but old master retention still needs an
   // explicit current-boot hardware fence before context retirement.

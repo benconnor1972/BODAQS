@@ -5,6 +5,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <string.h>
+#include <atomic>
 
 #include "ConfigManager.h"
 #include "Rates.h"
@@ -102,6 +103,9 @@ volatile bool s_asyncLoggingActive = false;
 uint16_t s_requestedHz = 100;
 uint16_t s_effectiveHz = 100;
 ExternalAdcTimingStats s_timingStats;
+// Publication of final worker statistics, independent of task-handle cleanup.
+std::atomic<uint8_t> s_timingWorkers{0};
+static_assert(board::BOARD_MAX_EXTERNAL_ADCS <= 8);
 
 #if defined(ESP32)
 portMUX_TYPE s_cacheMux = portMUX_INITIALIZER_UNLOCKED;
@@ -632,6 +636,7 @@ void adcTaskFn_(void* arg) {
     s_timingStats.adc[adc].asyncRunning = false;
   }
   AIN_LOGI("ADS%u async scheduler stopped\n", (unsigned)adc);
+  s_timingWorkers.fetch_and(static_cast<uint8_t>(~(1u << adc)), std::memory_order_release);
   vTaskDelete(nullptr);
 }
 #endif
@@ -878,6 +883,10 @@ const ExternalAdcTimingStats& timingStats() {
   return s_timingStats;
 }
 
+const ExternalAdcTimingStats* stoppedTimingStats() {
+  return s_timingWorkers.load(std::memory_order_acquire) ? nullptr : &s_timingStats;
+}
+
 void onLoggingStart() {
   s_asyncLoggingActive = false;
   clearCachedSamples_();
@@ -907,6 +916,7 @@ void onLoggingStart() {
     }
 
     dev.asyncRun = true;
+    s_timingWorkers.fetch_or(static_cast<uint8_t>(1u << adc), std::memory_order_relaxed);
     const BaseType_t ok = xTaskCreatePinnedToCore(
       adcTaskFn_,
       "ADSAsync",
@@ -921,6 +931,7 @@ void onLoggingStart() {
     } else {
       dev.asyncTask = nullptr;
       dev.asyncRun = false;
+      s_timingWorkers.fetch_and(static_cast<uint8_t>(~(1u << adc)), std::memory_order_release);
       AIN_LOGW("ADS%u async scheduler failed to start; falling back to synchronous scan\n",
                (unsigned)adc);
     }
@@ -942,20 +953,8 @@ void onLoggingStop() {
   const uint32_t t0 = millis();
   bool any = true;
   while (any && (uint32_t)(millis() - t0) < kAsyncStopWaitMs) {
-    any = false;
-    for (uint8_t adc = 0; adc < board::BOARD_MAX_EXTERNAL_ADCS; ++adc) {
-      if (s_ads[adc].asyncTask) {
-        any = true;
-        break;
-      }
-    }
+    any = s_timingWorkers.load(std::memory_order_acquire) != 0;
     if (any) vTaskDelay(1);
-  }
-
-  for (uint8_t adc = 0; adc < board::BOARD_MAX_EXTERNAL_ADCS; ++adc) {
-    if (adc < ExternalAdcTimingStats::kMaxAdcs) {
-      s_timingStats.adc[adc].asyncRunning = s_ads[adc].asyncRunning;
-    }
   }
 #endif
 }

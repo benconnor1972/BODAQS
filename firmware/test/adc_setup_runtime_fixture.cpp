@@ -3,6 +3,7 @@
 #include <functional>
 #include <vector>
 #include <array>
+#include <atomic>
 #include "AnalogInputManager.h"
 #include "SharedSpiBus.h"
 #include "AdcReadyWait.h"
@@ -50,8 +51,10 @@ void vTaskDelay(TickType_t ticks) { nowUs += ticks*1000; }
 void vTaskDelete(TaskHandle_t) {}
 void attachInterruptArg(uint8_t, void (*)(void*), void*, int) {}
 void detachInterrupt(uint8_t) {}
-int xTaskCreatePinnedToCore(void (*)(void*), const char*, uint32_t, void*, int,
+unsigned failCreateAdc=4;
+int xTaskCreatePinnedToCore(void (*)(void*), const char*, uint32_t, void* argument, int,
                             TaskHandle_t* handle, int) {
+  if(reinterpret_cast<uintptr_t>(argument)==failCreateAdc) return pdFALSE;
   *handle=xTaskGetCurrentTaskHandle(); return pdPASS;
 }
 #endif
@@ -230,6 +233,7 @@ int main() {
   assert(readAdsChannelLive_(0,0,untouched));
 #if ADC_TEST_ASYNC
   wire.clear();
+  assert(AnalogInputManager::stoppedTimingStats()==nullptr);
   // Run real worker twice; notification/ready wait and cache publication are real.
   for (unsigned a=0;a<2;++a) {
     unsigned reads=0;
@@ -237,7 +241,9 @@ int main() {
     adcTaskFn_(reinterpret_cast<void*>(static_cast<uintptr_t>(a)));
     afterRead={};
     assert(s_ads[a].nextSeq[0]==3 && !s_ads[a].asyncRunning);
+    if(a==0) assert(AnalogInputManager::stoppedTimingStats()==nullptr);
   }
+  assert(AnalogInputManager::stoppedTimingStats()==&AnalogInputManager::timingStats());
   assert(commands(0x43)==4 && commands(0x08)==0 && commands(0x10)==4 && wire.size()==8);
   // A conversion may complete during the configuration transfer. Clear only
   // before that write; a late clear would discard the new notification.
@@ -261,6 +267,15 @@ int main() {
   AnalogInputManager::onLoggingStop();
   wire.clear(); AnalogInputManager::onLoggingStart();
   assert(commands(0x43)==2); AnalogInputManager::onLoggingStop();
+#if ADC_TEST_ASYNC
+  // Task creation is deferred in this fake scheduler: both workers outlive the
+  // bounded STOP wait. Publishing live 64-bit totals must remain impossible.
+  assert(AnalogInputManager::stoppedTimingStats()==nullptr);
+  adcTaskFn_(nullptr);
+  assert(AnalogInputManager::stoppedTimingStats()==nullptr);
+  adcTaskFn_(reinterpret_cast<void*>(1));
+#endif
+  assert(AnalogInputManager::stoppedTimingStats()==&AnalogInputManager::timingStats());
   // Synchronous multi-channel scan applies each mux independently on each chip.
   // This also exercises the fallback even in an ESP32 build with workers stopped.
   s_ads[0].channelUsed[1]=true; s_ads[0].activeChannels=2;
@@ -279,6 +294,14 @@ int main() {
   AnalogInputManager::endSample();
   assert(AnalogInputManager::timingStats().adc[0].configUs.count>0);
   assert(AnalogInputManager::timingStats().adc[0].startUs.count==0);
+#if ADC_TEST_ASYNC
+  failCreateAdc=1;
+  AnalogInputManager::onLoggingStart();
+  assert(AnalogInputManager::stoppedTimingStats()==nullptr); // ADC0 still live
+  AnalogInputManager::onLoggingStop();
+  adcTaskFn_(nullptr);
+  assert(AnalogInputManager::stoppedTimingStats()!=nullptr); // failed ADC1 has no bit
+#endif
   printf("ADC setup: %s path WREG-starts=%d, explicit START, full restore, mux/config, failures/restart PASS\n",
          ADC_TEST_ASYNC?"worker":"synchronous",ADC_TEST_WREG_STARTS);
 }

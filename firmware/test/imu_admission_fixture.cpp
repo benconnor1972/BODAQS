@@ -32,5 +32,26 @@ int main() {
  d.nodes=2;assert(ImuAdmission::evaluateSingleNodeSmoke(d,false).reason==ImuAdmission::Reason::SmokeScope);
  d.nodes=1;assert(ImuAdmission::evaluateSingleNodeSmoke(d,true).reason==ImuAdmission::Reason::SmokeScope);
  d.adc[0]={1,1000000};assert(ImuAdmission::evaluateSingleNodeSmoke(d,false).reason==ImuAdmission::Reason::SmokeScope);
+ // Separate explicit mixed bench opt-in. No production timing bounds claimed.
+ d={};d.nodes=1;d.loggerRateHz=500;
+ d.adc[0]={1000,1000000,1};d.adc[1]={1000,1000000,1};
+ r=ImuAdmission::evaluateSingleNodeAdcSmoke(d,false);
+ assert(r.reason==ImuAdmission::Reason::None && r.benchOnly && !r.qualified);
+ assert(r.canOccupancy==0 && r.spiOccupancy==0 && r.drainRatio==0);
+ assert(ImuAdmission::evaluateSingleNodeSmoke(d,false).reason==ImuAdmission::Reason::SmokeScope);
+ assert(ImuAdmission::evaluate(d,ImuAdmission::Profile{}).reason==ImuAdmission::Reason::Unqualified);
+ d.nodes=0;assert(ImuAdmission::evaluateSingleNodeAdcSmoke(d,false).reason==ImuAdmission::Reason::None);
+ d.nodes=2;assert(ImuAdmission::evaluateSingleNodeAdcSmoke(d,false).reason==ImuAdmission::Reason::MixedSmokeScope);
+ d.nodes=1;d.loggerRateHz=200;assert(ImuAdmission::evaluateSingleNodeAdcSmoke(d,false).reason==ImuAdmission::Reason::MixedSmokeScope);
+ d.loggerRateHz=500;
+ for(unsigned a=0;a<2;++a) {
+  d.adc[a].activeChannels=2;assert(ImuAdmission::evaluateSingleNodeAdcSmoke(d,false).reason==ImuAdmission::Reason::MixedSmokeScope);
+  d.adc[a].activeChannels=1;d.adc[a].conversionsPerSecond=2000;
+  assert(ImuAdmission::evaluateSingleNodeAdcSmoke(d,false).reason==ImuAdmission::Reason::MixedSmokeScope);
+  d.adc[a].conversionsPerSecond=1000;d.adc[a].spiHz=8000000;
+  assert(ImuAdmission::evaluateSingleNodeAdcSmoke(d,false).reason==ImuAdmission::Reason::MixedSmokeScope);
+  d.adc[a].spiHz=1000000;
+ }
+ assert(ImuAdmission::evaluateSingleNodeAdcSmoke(d,true).reason==ImuAdmission::Reason::MixedSmokeScope);
 }
 
