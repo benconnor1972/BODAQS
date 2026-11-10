@@ -54,7 +54,7 @@ def test_ready_gate_rejects_wrong_images_and_unreconciled_imu(tmp_path):
     spec["expected_images"]={"logger":"1"*64,"master":"2"*64,"node":"3"*64}
     observation={"installed_images":spec["expected_images"],"configuration_sha256":spec["configuration_sha256"],
         "sensors":[{"provider":"can:0","endpoint":"imu","remote_control":{
-            "configuration_reconciled":True,"acquisition_link_compatible":True,"effective":{"available":True,"current":True}}}]}
+            "configuration_reconciled":True,"acquisition_link_compatible":True,"effective":{"available":True,"current":True,"observed_hardware_uid":"123","observed_node_boot_id":1}}}]}
     assert readiness(spec,observation)["ready"]
     observation["installed_images"]={"logger":"9"*64}
     assert not readiness(spec,observation)["ready"]
@@ -93,7 +93,7 @@ def test_new_identity_allows_complete_comparison_and_missing_file_is_retained(tm
     observed=tmp_path/"ready.json"
     observed.write_text(json.dumps({"installed_images":spec["expected_images"],"configuration_sha256":spec["configuration_sha256"],
         "sensors":[{"provider":"can:0","endpoint":"imu","remote_control":{"configuration_reconciled":True,
-            "acquisition_link_compatible":True,"effective":{"available":True,"current":True}}}]}))
+            "acquisition_link_compatible":True,"effective":{"available":True,"current":True,"observed_hardware_uid":"123","observed_node_boot_id":7}}}]}))
     inputs={"bdq":bdq,"manifest":manifest,"serial":serial,"readiness":observed}
     result=ingest(tmp_path/"evidence",spec,inputs)
     report=json.loads((result/"report.json").read_text())
@@ -102,3 +102,8 @@ def test_new_identity_allows_complete_comparison_and_missing_file_is_retained(tm
     result2=ingest(tmp_path/"evidence",spec,{**inputs,"snapshot_missing":tmp_path/"missing.json"})
     report2=json.loads((result2/"report.json").read_text())
     assert not report2["comparison_ready"] and report2["missing_files"]==["snapshot_missing"]
+    for overrides in ({"node_address":1},{"master_boot":"0"},{"provider_uid":"999"},{"node_boot":8}):
+        recording(tmp_path,recipe=spec["logger_recipe_id"],source_overrides=overrides)
+        bad=ingest(tmp_path/"evidence",spec,inputs)
+        report=json.loads((bad/"report.json").read_text())
+        assert not report["comparison_ready"] and report["gates"]["recorded_source"]=="failed"

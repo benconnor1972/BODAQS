@@ -37,6 +37,14 @@
         assert(gMasterDrainInfo.ack_fetches[0]==3 && gMasterDrainInfo.ack_fetch_targets[1]==3);
         assert(!gMasterDrainInfo.acks[0]); // Separate-ACK denominator stays separate.
         assert(gMasterDrainInfo.version==5);
+        unsigned layout=0;
+#if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
+        layout|=1;
+#endif
+#if defined(BODAQS_MASTER_QUEUE_TIMING) && BODAQS_MASTER_QUEUE_TIMING
+        layout|=2;
+#endif
+        assert(gMasterDrainInfo.layout_flags==layout && gMasterDrainInfo.size_bytes==sizeof(gMasterDrainInfo));
 #undef SUBMIT_ACCOUNTING_SLOT
         puts("actual ACK_FETCH accounting: old multi-record batch, cross-class fetch, invalid proof and duplicate PASS");
     }

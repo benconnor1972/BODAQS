@@ -16,6 +16,42 @@ import build_imu_software_candidate as runner
 
 
 class BenchTools(unittest.TestCase):
+    def test_operator_packet_hashes_inputs_and_public_gate_stays_closed(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);artifacts=[]
+            for name in ("a8/firmware.bin","master-acquisition/master.out","node-acquisition/node.out"):
+                path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(name.encode())
+                artifacts.append({"path":name,"sha256":hashlib.sha256(path.read_bytes()).hexdigest()})
+            manifest=root/"BUILD_MANIFEST.json"
+            manifest.write_text(json.dumps({"status":"passed","candidate_profile":"mixed-diagnostic","artifacts":artifacts}))
+            config=root/"loggercfg.txt";config.write_bytes(b"configuration\n")
+            packet=root/"packet"
+            result=subprocess.run([sys.executable,"-B",str(Path(bench.__file__)),"packet","--manifest",str(manifest),
+                "--config",str(config),"--run-id","one","--output-dir",str(packet)],capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual((packet/"configuration.txt").read_bytes(),config.read_bytes())
+            self.assertEqual((packet/"candidate-manifest.json").read_bytes(),manifest.read_bytes())
+            spec=json.loads((packet/"run-spec.json").read_text())
+            self.assertEqual(set(spec["expected_images"]),{"logger","master","node"})
+            self.assertIsNone(json.loads((packet/"readiness-template.json").read_text())["installed_images"])
+            gate=subprocess.run([sys.executable,"-B",str(Path(bench.__file__)),"gate","--spec",str(packet/"run-spec.json"),
+                "--observations",str(packet/"readiness-template.json")],capture_output=True,text=True)
+            self.assertEqual(gate.returncode,1,gate.stderr)
+    def test_historical_source_contrast_contains_adc_buffer_fix(self):
+        value=bench.contrast({"source_commit":"e7613577c92bb1ab88e7c8db59d474864daa11d0","application":{}},
+            {"source_commit":"3ef8a34b3c65b2227d8b616dff606e5d5d193f8d","application":{}})
+        # A source archive alone may not retain historical objects.
+        if value["source_contrast"] is None:self.skipTest("Historical commits unavailable")
+        self.assertIn("AnalogInputManager.cpp",value["source_contrast"])
+        self.assertIn("alignas(4)",value["source_contrast"])
+    def test_recipe_tracks_selected_custom_board_configuration(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);(root/"boards").mkdir()
+            board=root/"boards/a8.json";board.write_text('{"build":{"f_cpu":"240000000L"}}')
+            first=identity(root,"mixed",{"board":"a8"})
+            board.write_text('{"build":{"f_cpu":"80000000L"}}')
+            self.assertNotEqual(first["id"],identity(root,"mixed",{"board":"a8"})["id"])
     def test_snapshot_contract_covers_every_actual_master_member(self):
         import re
         text=(bench.ROOT/"firmware/can-fd/master/src/main.c").read_text(encoding="utf-8")
@@ -68,6 +104,7 @@ class BenchTools(unittest.TestCase):
         spec={"schema":"bodaqs.bench-run.v1","run_id":"one","profile":"mixed-diagnostic",
             "candidate_manifest_sha256":"0"*64,"configuration_sha256":"0"*64,"adc_columns":["analog1"],
             "minimum_imu_readings":1,"expected_images":{"logger":"1"*64,"master":"2"*64,"node":"3"*64}}
+        spec["expected_imu"]={"provider":"can:0","endpoint":"imu"}
         scope={"schema":"bodaqs.bench-device-scope.v1","run_id":"one","action":"serial_observe","port":"COM9",
             "duration_seconds":30,"expected_images":spec["expected_images"],
             "expires_utc":(datetime.now(timezone.utc)+timedelta(hours=1)).isoformat(),"commands":[]}

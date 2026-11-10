@@ -22,13 +22,13 @@ int main() {
 ''',encoding="utf-8")
         subprocess.run([compiler,"-std=gnu++2a","-I",str(root/"test/stubs"),"-I",str(root/"src"),str(source),str(root/"src/BoardProfile.cpp"),"-o",str(exe)],check=True)
         result=json.loads(subprocess.check_output([str(exe)]))
-    files=("src/CanMasterManager.cpp","src/SharedSpiBus.cpp","src/ADS1220.cpp")
+    files=("src/CanMasterManager.cpp","src/SharedSpiBus.cpp","src/AnalogInputManager.cpp")
     result["buffer_and_transfer_declarations"]={}
     for name in files:
         path=root/name
         if path.exists():result["buffer_and_transfer_declarations"][name]=[
             {"line":i,"source":line.strip()} for i,line in enumerate(path.read_text(encoding="utf-8").splitlines(),1)
-            if re.search(r"uint8_t .*\b(?:tx|rx)\[|transferBytes\(",line)]
+            if re.search(r"uint8_t .*\b(?:tx|rx|command|setup|cmd)\[|transferBytes\(",line)]
     result["basis"]="compiled_A8_board_table_and_literal_source_declarations_not_physical_observation"
     return result
 

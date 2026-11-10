@@ -8,7 +8,7 @@ from test_io_bdq_can_imu import _sample_descriptor, _evidence_descriptor
 from test_io_bdq_v2 import FILE_HEADER, FILE_MAGIC_V2, _catalog, _metadata, _chunk, _json_chunk, _stream_data
 
 
-def recording(tmp_path, *, gap=False, footer=True, confirmed=True, discarded=False, torn=False, source_loss=0, capture_loss=0, valid_raw=True, recipe=None):
+def recording(tmp_path, *, gap=False, footer=True, confirmed=True, discarded=False, torn=False, source_loss=0, capture_loss=0, valid_raw=True, recipe=None, source_overrides=None, lost_segment=False):
     sample=_sample_descriptor()
     sample.update(stream_kind="intermittent",record_size_bytes=100)
     sample["acquisition"].update(payload_schema="bodaqs.can_imu_packets.v1", provider_uid="123",
@@ -17,6 +17,7 @@ def recording(tmp_path, *, gap=False, footer=True, confirmed=True, discarded=Fal
     effective=bytearray(192);effective[0]=3;effective[2]=1;effective[4]=2;effective[5]=3
     struct.pack_into("<6I",effective,48,3333,1,3333,1,32000,2000000)
     sample["acquisition"]["effective_descriptor_hex"]=effective.hex()
+    sample["acquisition"].update(source_overrides or {})
     fields=[("source_segment_id",12,"uint32"),("sequence_floor",16,"uint32"),
         ("master_receive_tick",20,"uint32"),("master_receive_ordinal_low",24,"uint32"),
         ("master_receive_ordinal_high",28,"uint32"),("first_sequence_low",32,"uint16"),
@@ -33,10 +34,12 @@ def recording(tmp_path, *, gap=False, footer=True, confirmed=True, discarded=Fal
         rows.append(bytes(row))
     last=14 if gap else 9
     observations=[]
-    for index,kind,seq in ((0,2,0),(1,0,last),(2,8,last)):
+    events=[(0,2,0,1),(1,0,last,1),(2,8,last,1)]
+    if lost_segment:events += [(3,2,0,2),(4,8,9,2)]
+    for index,kind,seq,segment in events:
         row=bytearray(224);struct.pack_into("<II",row,0,index,100+index)
         row[12]=1 if kind==0 else 6;row[14]=1
-        struct.pack_into("<II",row,20,1,seq);row[200]=kind
+        struct.pack_into("<II",row,20,segment,seq);row[200]=kind
         struct.pack_into("<H",row,208,1 if kind else 0)
         if kind==0:
             if valid_raw:
@@ -76,6 +79,20 @@ def test_one_accounted_packet_gap_is_warning(tmp_path):
     report,_=assess_first_imu_recording(recording(tmp_path,gap=True))
     assert report["file_outcome"]=="isolated_five_sample_gap_warning"
     assert report["gaps"]==[{"source_segment_id":1,"first":5,"last":9,"count":5,"extent":"known"}]
+
+
+def test_missing_source_identity_never_claims_whole_run_percentage(tmp_path):
+    report,_=assess_first_imu_recording(recording(tmp_path,source_overrides={"master_boot":"0"}))
+    assert not report["source_identity_present"]
+    assert report["metrics"]["sample_delivery"]["denominator"] is None
+    assert report["metrics"]["sample_delivery"]["whole_run_missing_percent"] is None
+
+
+def test_entirely_lost_bounded_segment_is_in_denominator(tmp_path):
+    report,_=assess_first_imu_recording(recording(tmp_path,lost_segment=True))
+    metric=report["metrics"]["sample_delivery"]
+    assert not report["file_errors"] and metric["denominator"]==20
+    assert metric["missing"]==10 and metric["whole_run_missing_percent"]==50
 
 
 @pytest.mark.parametrize("kwargs",[{"footer":False},{"confirmed":False},{"discarded":True},{"torn":True}])

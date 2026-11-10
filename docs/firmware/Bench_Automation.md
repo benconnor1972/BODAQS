@@ -47,7 +47,7 @@ logs remain active.
 Each PlatformIO build emits `identity/build-recipe.json` and a generated header.
 `[BUILD] recipe=...` and BDQ v1/v2 `firmware_recipe_id` identify normalized relevant
 firmware sources and resolved project options. Tests and unrelated project files
-are excluded. The fingerprint is a recipe identity; external SHA256 identifies
+are excluded; the selected custom board JSON is included. The fingerprint is a recipe identity; external SHA256 identifies
 the binary. Arduino/non-PlatformIO and historical images explicitly report
 `unknown`. Logger identity does not attest the installed master/node.
 
@@ -76,6 +76,8 @@ compatible CAN links and current reconciled effective configuration. It does not
 require `acquisition_ready` before the unqualified smoke-mode admission step.
 Readiness alone cannot prove actual participation: intake separately requires
 IMU samples and rows containing every declared ADC field.
+The recorded CAN address, provider UID and node boot must match the selected
+endpoint and the readiness snapshot; absent source identity fails the join.
 
 ```text
 python firmware/tools/bench.py gate --spec PACKET/run-spec.json --observations PACKET/readiness.json

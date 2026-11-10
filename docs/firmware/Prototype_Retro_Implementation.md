@@ -67,6 +67,12 @@ The complete CCS helper is validated offline only; live CCS execution remains
 unexercised. Branch workflow presence is not a remotely exercised/default-branch
 guardrail. See `Bench_Automation.md` for commands and exact remaining scopes.
 
+Whole-change reviews found and corrected: missing recorded-source binding,
+identity-free/partially counted whole-run denominators, omitted selected board
+JSON, missing ADC buffer source contrast and a review/source race during preflight.
+Regression checks cover these paths. Source identity and strict delivery remain
+separate verdicts, and no physical or admission qualification is claimed.
+
 Implementation evidence belongs outside the source worktree in
 `drain-capacity-evidence/prototype-retro-implementation-2026-11-10`.
 Physical first-byte cause and mixed-load qualification remain unresolved.

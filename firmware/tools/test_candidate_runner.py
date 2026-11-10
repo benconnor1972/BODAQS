@@ -70,7 +70,7 @@ class CandidateRunnerTests(unittest.TestCase):
                 self.assertEqual(runner.main(), 1)
             self.assertFalse(output.exists())
 
-    def run_bundle(self, exit_code, mode="candidate", archive_failure=False, late_change=False):
+    def run_bundle(self, exit_code, mode="candidate", archive_failure=False, late_change=False, preflight_change=False):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "source"
             root.mkdir()
@@ -101,13 +101,22 @@ class CandidateRunnerTests(unittest.TestCase):
                 if argv[:2] == ["git", "archive"] and late_change:
                     (root / "input.txt").write_bytes(b"late writer\n")
                 return result
-            expected_success = exit_code == 0 and not archive_failure and not late_change
+            def observed_preflight(_):
+                if preflight_change:
+                    (root/"input.txt").write_bytes(b"new committed source\n")
+                    run(["git","add","input.txt"],cwd=root,check=True)
+                    run(["git","-c","user.name=Fixture","-c","user.email=fixture@example.invalid","commit","-qm","changed during preflight"],cwd=root,check=True)
+                return []
+            expected_success = exit_code == 0 and not archive_failure and not late_change and not preflight_change
             with patch.object(runner, "ROOT", root), patch.object(runner, "arguments", return_value=args), \
-                    patch.object(runner, "preflight", return_value=[]), \
+                    patch.object(runner, "preflight", side_effect=observed_preflight), \
                     patch.object(runner, "plan", return_value=[command]), \
                     patch.object(runner.subprocess, "run", side_effect=run_external), \
                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(runner.main(), 0 if expected_success else 1)
+            if preflight_change:
+                self.assertFalse(output.exists())
+                return
             manifest = json.loads((output / "BUILD_MANIFEST.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["status"], "passed" if expected_success else "failed")
             self.assertEqual((output / "SOURCE.zip").exists(), expected_success and mode == "candidate")
@@ -132,6 +141,9 @@ class CandidateRunnerTests(unittest.TestCase):
 
     def test_source_change_after_archive_removes_candidate_archive(self):
         self.run_bundle(0, late_change=True)
+
+    def test_clean_commit_change_during_preflight_is_rejected_before_output(self):
+        self.run_bundle(0,preflight_change=True)
 
     def test_preflight_rejects_python_without_test_dependencies(self):
         with tempfile.TemporaryDirectory() as temp:

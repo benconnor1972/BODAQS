@@ -24,7 +24,13 @@ def assess_first_imu_recording(path: str | Path) -> tuple[dict, dict]:
     decoded = read_can_imu_packets(path, descriptor["stream_key"])
     source = decoded["source"]
     required = ("provider_uid", "node_boot", "master_boot", "recording_id", "control_session", "measurement_context")
-    identity = all(int(source.get(key, 0)) > 0 for key in required)
+    def exact_identity(value,bits):
+        if isinstance(value,str):
+            if not value.isascii() or not value.isdecimal():return False
+            value=int(value)
+        elif type(value) is not int or bits==64 and value>2**53-1:return False
+        return 0<value<2**bits
+    identity = all(exact_identity(source.get(key),32 if key=="node_boot" else 64) for key in required)
     effective = source.get("effective_descriptor_hex", "")
     try:
         image = bytes.fromhex(effective)
@@ -105,9 +111,11 @@ def assess_first_imu_recording(path: str | Path) -> tuple[dict, dict]:
     # Independent verdicts retain the strict legacy outcome above. Footer closure
     # alone cannot prove source delivery; observed loss categories may overlap.
     starts_by_segment={r["source_segment_id"]:r["related_sequence"] for r in starts if r["boundary_validity_flags"]&1}
-    bounded=complete_bounds and sequence_known and all(
-        terminal[s]>=starts_by_segment[s] for s in segments)
-    expected=sum(terminal[s]-starts_by_segment[s]+1 for s in segments) if bounded else None
+    metric_segments=set(segments)|set(starts_by_segment)|set(terminal)
+    bounded=bool(metric_segments) and identity and sequence_known and not info.detected_errors and all(
+        s in terminal and s in starts_by_segment and terminal[s]>=starts_by_segment[s] for s in metric_segments)
+    # Include a source-bounded segment even when every sample in it was lost.
+    expected=sum(terminal[s]-starts_by_segment[s]+1 for s in metric_segments) if bounded else None
     unique={(r["source_segment_id"],r["sequence"]) for r in decoded["readings"] if r["sequence"] is not None}
     if bounded and any(s not in terminal or not starts_by_segment[s]<=seq<=terminal[s] for s,seq in unique):
         bounded=False;expected=None

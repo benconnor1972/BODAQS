@@ -44,6 +44,12 @@ def git(*args: str) -> str:
     return subprocess.check_output(["git", *args], cwd=ROOT, text=True).strip()
 
 
+def source_unchanged(commit:str) -> bool:
+    return (git("rev-parse","HEAD")==commit and
+            not git("status","--porcelain","--untracked-files=no") and
+            not any(not p.startswith(".scratch/") for p in git("ls-files","--others","--exclude-standard").splitlines()))
+
+
 def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("preflight", "host", "candidate"), default="candidate",
@@ -151,6 +157,8 @@ def load_peers(path: Path, profile: str) -> dict:
             raise ValueError("Peer image hash/source missing or mismatched")
         if image.get("can_link_profile")!="acquisition":
             raise ValueError("Reused peers must declare matching acquisition link")
+        if image["role"]=="master" and image.get("settings",{}).get("measurement_version")!=(1 if profile=="production" else 2):
+            raise ValueError("Reused master measurement version does not match logger")
         if image["role"]=="master" and profile=="mixed-diagnostic" and image.get("settings")!={
                 "spi_rx_capacity":2,"measurement_version":2,"phase_timing":True,"queue_timing":True}:
             raise ValueError("Reused mixed master must declare RX2/v2/phase/queue diagnostics")
@@ -257,12 +265,14 @@ def main() -> int:
     unexpected = [name for name in untracked if not name.startswith(".scratch/")]
     if unexpected and args.mode == "candidate":
         raise SystemExit("Untracked files could affect the build: " + ", ".join(unexpected))
+    source_commit=git("rev-parse","HEAD")
+    source_tree=git("rev-parse",source_commit+"^{tree}")
     try:
         peers=load_peers(args.reuse_peers,args.profile) if args.reuse_peers else None
         review=None
         if args.review_result:
             review=review_result(json.loads(args.review_result.read_text(encoding="utf-8")),
-                                 args.review_base,git("rev-parse","HEAD"))
+                                 args.review_base,source_commit)
             for item in review["evidence"]:
                 if sha256((args.review_result.parent / item["path"]).resolve())!=item["sha256"]:
                     raise ValueError("Review evidence hash mismatch")
@@ -279,6 +289,9 @@ def main() -> int:
     if args.mode == "preflight":
         print("Tool, Python dependency and SDK preflight passed; no output, builds or device access.")
         return 0
+    if args.mode=="candidate" and not source_unchanged(source_commit):
+        print("Source changed during preflight; refusing a different reviewed candidate",file=sys.stderr)
+        return 1
 
     output.mkdir(parents=True)
     (output / "logs").mkdir()
@@ -286,7 +299,7 @@ def main() -> int:
     manifest = {
         "kind": "local-software-candidate" if args.mode == "candidate" else "host-validation", "status": "running",
         "created_utc": datetime.now(timezone.utc).isoformat(),
-        "source": {"commit": git("rev-parse", "HEAD"), "tree": git("rev-parse", "HEAD^{tree}"),
+        "source": {"commit": source_commit, "tree": source_tree,
                    "tracked_dirty_before": bool(dirty), "untracked_before": untracked},
         "targets": {"node": "MSPM0G3507", "master": "MSPM0G3518",
                     "logger": PROFILES[args.profile]["logger_env"]},
@@ -370,7 +383,7 @@ def main() -> int:
                 target=output / destination;shutil.copyfile(source,target)
                 manifest["artifacts"].append({"path":destination,"bytes":target.stat().st_size,"sha256":sha256(target)})
         if args.mode == "candidate":
-            if git("status", "--porcelain", "--untracked-files=no") or git("rev-parse", "HEAD") != manifest["source"]["commit"]:
+            if not source_unchanged(source_commit):
                 raise RuntimeError("Source changed during validation; refusing to archive")
             subprocess.run(["git", "archive", "--format=zip", "--output", str(output / "SOURCE.zip"),
                             manifest["source"]["commit"]], cwd=ROOT, check=True)
@@ -382,8 +395,7 @@ def main() -> int:
     finally:
         manifest["source"]["tracked_changes_after"] = git("status", "--porcelain", "--untracked-files=no")
         manifest["source"]["commit_after"] = git("rev-parse", "HEAD")
-        if args.mode == "candidate" and (manifest["source"]["tracked_changes_after"] or
-                manifest["source"]["commit_after"] != manifest["source"]["commit"]):
+        if args.mode == "candidate" and not source_unchanged(source_commit):
             manifest["status"] = "failed"
             manifest["error"] = "Source changed during acceptance; candidate is not a fixed-source pass"
         if manifest["status"] != "passed":

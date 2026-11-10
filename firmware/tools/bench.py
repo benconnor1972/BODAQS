@@ -18,6 +18,18 @@ def load(path):return json.loads(Path(path).read_text(encoding="utf-8"))
 
 def contrast(before:dict,after:dict) -> dict:
     """Facts only; differences are not causal explanations."""
+    def normalized(value):
+        # Retained r2-r5 bundles predate the shared schema. Read only their
+        # explicitly declared facts; do not fabricate status/profile/identity.
+        if "source_commit" not in value or "application" not in value:return value
+        return {"source":{"commit":value["source_commit"]},"targets":{"logger":value.get("environment")},
+            "candidate_profile":None,"logger_recipe_id":None,
+            "measurement":{"cs_setup_us":value.get("measurement_cs_setup_us"),
+                "spi_rx_capacity":value.get("unchanged_master",{}).get("spi_request_capacity"),"capture":value.get("capture")},
+            "bus_contract":{"adc_backing_buffers":value.get("adc_backing_buffers")},
+            "artifacts":[value[k] for k in ("application","unchanged_master","unchanged_node") if k in value],
+            "legacy_manifest":True}
+    before,after=normalized(before),normalized(after)
     keys=("candidate_profile","targets","measurement","validation_scope","source","reused_peers","logger_recipe_id")
     result={"schema":"bodaqs.candidate-contrast.v1","changed":{
         k:{"before":before.get(k),"after":after.get(k)} for k in keys if before.get(k)!=after.get(k)},
@@ -34,7 +46,7 @@ def contrast(before:dict,after:dict) -> dict:
     import re
     if all(re.fullmatch("[0-9a-f]{40}",commit) for commit in commits):
         diff=subprocess.run(["git","diff","--no-ext-diff","--unified=3",*commits,"--",
-            "firmware/src/SharedSpiBus.cpp","firmware/src/CanMasterManager.cpp","firmware/src/BoardProfile.cpp",
+            "firmware/src/SharedSpiBus.cpp","firmware/src/CanMasterManager.cpp","firmware/src/AnalogInputManager.cpp","firmware/src/BoardProfile.cpp",
             "firmware/platformio.ini","firmware/can-fd/master/src/main.c","firmware/can-fd/master/src/master_spi.c"],
             cwd=ROOT,capture_output=True,text=True,check=False)
         result["source_contrast"]=diff.stdout if diff.returncode==0 else None

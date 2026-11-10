@@ -49,6 +49,9 @@ def validate_spec(spec:dict) -> dict:
         raise ValueError("Explicit ADC columns required (empty for IMU only)")
     if type(spec.get("minimum_imu_readings")) is not int or spec["minimum_imu_readings"]<1:
         raise ValueError("Minimum IMU participation must be positive")
+    expected=spec.get("expected_imu",{})
+    if not re.fullmatch(r"can:[0-3]",expected.get("provider","")) or expected.get("endpoint")!="imu":
+        raise ValueError("Declare one supported CAN IMU endpoint")
     return spec
 
 
@@ -81,12 +84,16 @@ def readiness(spec:dict,observations:dict) -> dict:
     effective=remote.get("effective",{})
     checks["imu_reconciled"]=len(matches)==1 and not matches[0].get("muted",False) and not matches[0].get("runtime_muted",False) and all(
         value is True for value in (remote.get("configuration_reconciled"),remote.get("acquisition_link_compatible"),effective.get("available"),effective.get("current")))
+    try:
+        checks["imu_identity"]=exact64(effective.get("observed_hardware_uid"))>0 and type(effective.get("observed_node_boot_id")) is int and 0<effective["observed_node_boot_id"]<2**32
+    except ValueError:checks["imu_identity"]=False
     return {"schema":"bodaqs.bench-readiness.v1","run_id":spec["run_id"],"ready":all(checks.values()),
         "checks":checks,"image_basis":"operator_declared_installed_hashes_not_runtime_attestation"}
 
 
 def _assess(spec:dict,paths:dict[str,Path]) -> dict:
-    gates={name:"unknown" for name in ("manifest_identity","logger_identity","serial_context","snapshot_context","readiness","imu_participation","adc_participation")}
+    gates={name:"unknown" for name in ("manifest_identity","logger_identity","serial_context","snapshot_context","readiness","imu_participation","recorded_source","adc_participation")}
+    observed=None
     report={"schema":"bodaqs.bench-evidence.v1","run_id":spec["run_id"],"gates":gates,
             "physical_qualification":"unqualified","whole_run_loss_percent":None,"issues":[]}
     if "manifest" in paths:
@@ -114,6 +121,19 @@ def _assess(spec:dict,paths:dict[str,Path]) -> dict:
                 report["assessment"]=assessment
                 gates["imu_participation"]="passed" if assessment["sample_count"]>=spec["minimum_imu_readings"] else "failed"
                 source=assessment["source"]
+                expected=spec["expected_imu"]
+                matches=bool(assessment["source_identity_present"] and assessment["effective_configuration_present"] and
+                    type(source.get("node_address")) is int and source["node_address"]==int(expected["provider"].split(":")[1]))
+                gates["recorded_source"]="passed" if matches else "failed"
+                if matches and observed:
+                    entries=[s for s in observed.get("sensors",[]) if s.get("provider")==expected["provider"] and s.get("endpoint")==expected["endpoint"]]
+                    effective=entries[0].get("remote_control",{}).get("effective",{}) if len(entries)==1 else {}
+                    uid=effective.get("observed_hardware_uid");boot=effective.get("observed_node_boot_id")
+                    if uid is None or boot is None:gates["recorded_source"]="unknown"
+                    else:
+                        try:matched=exact64(uid)==int(source["provider_uid"]) and type(boot) is int and boot==int(source["node_boot"])
+                        except ValueError:matched=False
+                        gates["recorded_source"]="passed" if matched else "failed"
                 report["whole_run_loss_percent"]=assessment["metrics"]["sample_delivery"]["whole_run_missing_percent"]
                 if "serial" in paths:
                     serial=paths["serial"].read_text(encoding="utf-8",errors="replace")
@@ -150,7 +170,7 @@ def _assess(spec:dict,paths:dict[str,Path]) -> dict:
                 gates["imu_participation"]="failed";report["issues"].append(str(error))
         except (OSError,ValueError,KeyError) as error:
             report["issues"].append(str(error))
-    required=["manifest_identity","logger_identity","serial_context","readiness","imu_participation","adc_participation"]
+    required=["manifest_identity","logger_identity","serial_context","readiness","imu_participation","recorded_source","adc_participation"]
     if any(k.startswith("snapshot") for k in paths):required.append("snapshot_context")
     closed=report.get("file",{}).get("footer_present",False) and report.get("file",{}).get("integrity",False)
     report["comparison_ready"]=closed and all(gates[k]=="passed" for k in required)
