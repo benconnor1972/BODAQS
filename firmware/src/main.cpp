@@ -460,6 +460,7 @@ void loop() {
   WiFiManager::loop();
   RTCManager_loop();
   ButtonManager_loop();
+  UploadModeManager::loop();
   StorageManager_loop();       
   WebServerManager::loop();
   LoggingManager::loop();

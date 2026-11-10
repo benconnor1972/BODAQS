@@ -451,12 +451,26 @@ class ImportAgentLock:
     Best-effort single-writer lock per artifact library.
     """
 
+    _threads_guard = RLock()
+    _thread_locks: dict[str, Any] = {}
+
     def __init__(self, path: Path, *, stale_after_s: float = 12 * 60 * 60) -> None:
         self.path = path
         self.stale_after_s = float(stale_after_s)
         self._held = False
+        key = os.path.normcase(str(path.resolve()))
+        with self._threads_guard:
+            self._thread_lock = self._thread_locks.setdefault(key, RLock())
 
     def acquire(self) -> None:
+        self._thread_lock.acquire()
+        try:
+            self._acquire_file()
+        except BaseException:
+            self._thread_lock.release()
+            raise
+
+    def _acquire_file(self) -> None:
         _ensure_dir(self.path.parent)
         payload = {
             "schema": "bodaqs.import_agent.lock",
@@ -504,6 +518,7 @@ class ImportAgentLock:
                 self.path.unlink()
         finally:
             self._held = False
+            self._thread_lock.release()
 
     def __enter__(self) -> "ImportAgentLock":
         self.acquire()

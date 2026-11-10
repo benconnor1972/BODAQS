@@ -19,23 +19,40 @@ Development branch: `feat/a8-usb-drive-access`, based on `origin/main` at
   acquisition is available through Import Manager's local-source context menu.
   Completed copies enter the existing local import pipeline; originals remain.
 
-Normal logger firmware continues to use its existing USB configuration. Production
-USB drive activation, asynchronous exit/cancellation, lifecycle recovery, automatic
-discovery/pairing, and full platform acceptance remain the later tickets #194-#196
-and #198-#199. Compilation is not evidence that physical USB/SD operation works.
-No ticket has been closed and no device has been flashed.
+- #194-#196 now have an integrated, opt-in development build with automatic
+  cable/UPLOAD activation, exclusive SD ownership, asynchronous exit/cancellation,
+  host-eject suppression, card-removal errors, and explicit reclaim retry. OLED,
+  menu, web UI, and API expose transfer status. Active USB sessions prevent idle
+  sleep; sleep is refused while storage belongs to the computer.
+- #198 now has mounted-volume discovery, validated identity markers, persistent
+  local pairing, and acquisition through existing enabled filesystem sources.
+- #199 has usage/identity/API documentation and automated lifecycle/import tests.
+  Integrated hardware and cross-platform acceptance remain pending.
+
+Normal logger firmware continues to use its existing USB configuration. Build
+the integration explicitly with `pio run -d firmware -e bodaqs_a8_usb_drive_dev`.
+This environment pins Espressif32 6.12.0 and enables USB-OTG CDC/MSC. It is not
+enabled in normal release environments and has not been flashed. Compilation
+is not evidence that physical USB/SD operation works.
+No ticket has been closed. The diagnostic has now been flashed for the
+[Windows bench](A8_USB_Windows_Bench_2026-11-10.md); its data-path checks passed,
+but the software bootloader transition failed. Restoration was deferred at the
+user's request for manual reflashing; the recovery requirement remains unresolved.
 
 ## Automated validation on Windows, 2026-11-10
 
 | Check | Result |
 | --- | --- |
-| Tracked Python analysis test set | 565 passed, 1 skipped |
-| Mounted-folder acquisition/runner tests | 6 passed, including interrupted-copy retry and capped-scan progress |
-| Firmware host harness and four runtime fixtures | Passed, including storage ownership admission/drain/reclaim checks |
+| Tracked Python analysis test set | 576 passed, 1 skipped |
+| Import agent tests | 165 passed, 1 skipped; covers mounted acquisition, USB identity/pairing, and concurrent watcher access |
+| Firmware host harness and four runtime fixtures | Passed, including ownership and USB upload lifecycle checks |
 | Isolated A8 USB diagnostic build | Passed |
 | Normal A8 build | Passed |
 | Prototype F build | Passed |
-| Real USB/SD, OS enumeration, serial/flashing checks | Pending; A8 not connected |
+| Opt-in integrated A8 USB development build | Passed; not flashed |
+| Real USB/SD and Windows enumeration/CDC | Diagnostic data-path checks passed; see Windows bench report |
+| Firmware restoration/recovery | Software transition failed; user chose manual reflashing, recovery check unresolved |
+| macOS/Linux and integrated physical acceptance | Pending |
 
 The broad local Python run also collected older untracked tests previously hidden
 by the old branch's ignore rules: 635 passed, 1 skipped, and 10 failures in those
@@ -46,7 +63,32 @@ Standards and specification reviews each identified the same two defects: an
 unmigrated transform-reload filesystem reference and starvation with a configured
 import scan limit. Both were fixed; review confirmed resolution and the added
 scan-limit regression test passes. No further concrete defect was reported in
-this checkpoint. This does not establish completion of the deferred USB tickets.
+the initial checkpoint. The continuation also reproduced and fixed in-process
+contention between USB acquisition and the watcher; its regression test passes.
+USB session checks cover both connection orders, actual local-lease draining,
+quiet-time boundaries, cancellation, ten minutes of simulated traffic without a
+forced exit, timer wraparound, eject/reconnect, card removal, and reclaim retry.
+This does not establish completion of the physical acceptance gates.
+
+## Remaining integrated bench acceptance
+
+After reliable normal updating and recovery have been restored, test the opt-in
+build on disposable media. Do not interpret the diagnostic's Windows result as
+an integrated pass. Record each host OS, A8 revision, firmware SHA, and SD card.
+
+- Check both cable/mode activation orders, normal boot, recording entry refusal,
+  and simultaneous CDC visibility. Confirm normal updating and recovery.
+- Complete an existing Wi-Fi transfer before USB exposure; reject new SD work
+  while shared and verify independent status, cancel, and retry controls.
+- Check writable browse/copy/add/delete and independent checksums in both
+  directions. Exercise timed exit during quiet, continuous reads and writes,
+  cancellation, and record/verify a new session after successful reclaim.
+- Exercise host eject, reconnect, missing/full cards, physical removal/reinsert,
+  cable loss, I/O failure, and remount failure/retry without automatic formatting.
+- Check discovery and first-use pairing, repeated/reconnected acquisition,
+  multiple loggers, ZIP/BDQ import, source retention, and manual fallback.
+- Repeat host-specific enumeration, ejection, discovery, and transfer checks on
+  Windows, macOS, and Linux. A cache-loss guarantee is not an acceptance claim.
 
 ## Ownership interface
 
@@ -61,8 +103,9 @@ report paused access while external ownership is pending or active.
 An external transport must wait for the `external` state before initializing raw
 card access. Stop/deinitialize that transport before requesting local reclaim.
 USB callbacks must queue requests for main-loop processing rather than mounting
-or unmounting the card themselves. The production transport is not connected to
-this interface until the feasibility gate is satisfied.
+or unmounting the card themselves. The development transport connects to this
+interface only in the opt-in build; the production default remains gated on
+physical feasibility and recovery.
 
 ## Isolated diagnostic
 
@@ -101,7 +144,7 @@ internal DMA memory, and serialized raw-sector callbacks. It handles partial
 sector transfers without treating USB buffers as SDMMC DMA memory. It is not
 the acceptance implementation for all host-eject or cable-loss behavior.
 
-## Physical feasibility procedure (not yet performed)
+## Repeatable physical feasibility procedure
 
 1. Identify the A8, disposable SD card, host OS, firmware/toolchain versions,
    known-good recovery firmware, and authorized flashing port.
@@ -118,6 +161,6 @@ the acceptance implementation for all host-eject or cable-loss behavior.
 7. Record observations and failures. Repeat platform-dependent checks on Windows,
    macOS, and Linux before claiming cross-platform support.
 
-The only serial device detected during development was an unrelated Marlin port;
-no A8 feasibility test or flashing was attempted. Hardware evidence is required
-before completing #192 and enabling its dependent production USB tickets.
+An A8 was subsequently connected and tested. Refer to the Windows bench report
+for performed checks and the remaining recovery blocker; hardware evidence is
+still incomplete for #192 and its dependent production USB tickets.

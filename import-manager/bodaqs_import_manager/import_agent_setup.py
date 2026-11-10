@@ -40,6 +40,7 @@ except Exception:  # pragma: no cover - dependency presence is checked in packag
 
 from bodaqs_analysis.import_agent import ImportAgentSupervisor, load_import_source_config
 from bodaqs_analysis.import_agent_logger_wifi import LoggerWifiApiClient
+from bodaqs_analysis.import_agent_usb import UsbLoggerService
 from bodaqs_analysis.import_agent_logger_wifi_discovery import (
     LoggerWifiDiscoveryResult,
     discover_logger_wifi_sources,
@@ -1047,6 +1048,12 @@ class ImportAgentManagerWindow:
         self.args = args
         self.event_queue: "queue.Queue[dict[str, Any]]" = queue.Queue()
         self.watch_service: Optional[ImportAgentWatchService] = None
+        self._usb_service = UsbLoggerService(Path(args.app_config).expanduser().resolve().parent / "usb_logger_pairings.json")
+        self._usb_scan_running = False
+        self._usb_acquiring = False
+        self._usb_prompt_open = False
+        self._usb_seen_unpaired: set[str] = set()
+        self._usb_issues: set[str] = set()
         self.library_api_service: Optional[LibraryApiServiceProcess] = None
         self.import_now_thread: Optional[threading.Thread] = None
         self.tray_icon: Optional[ImportAgentTrayIcon] = None
@@ -1133,6 +1140,7 @@ class ImportAgentManagerWindow:
         self.root.after(250, self._poll_event_queue)
         self.root.after(400, self._apply_launch_behavior)
         self.root.after(900, self._check_workspace_sync_on_startup)
+        self.root.after(3000, self._poll_usb_loggers)
 
     def _configure_initial_window_geometry(self) -> None:
         screen_width = max(800, int(self.root.winfo_screenwidth()))
@@ -4808,6 +4816,7 @@ class ImportAgentManagerWindow:
         elif source.source_type == SOURCE_TYPE_FILESYSTEM_ARCHIVE:
             menu.add_separator()
             menu.add_command(label="Import from mounted card...", command=self._import_from_mounted_card)
+            menu.add_command(label="Discover / pair USB loggers...", command=lambda: self._scan_usb_loggers(force=True))
         menu.add_separator()
         menu.add_command(label="Validate", command=self._validate_sources)
         menu.add_command(label="Rename source", command=self._rename_selected_source)
@@ -5555,6 +5564,9 @@ class ImportAgentManagerWindow:
         return self.root.state() != "withdrawn"
 
     def _guard_watch_inactive(self, *, action_label: str, parent: Optional[tk.Misc] = None) -> bool:
+        if getattr(self, "_usb_acquiring", False):
+            messagebox.showinfo(_APP_DISPLAY_NAME, "Wait for the current USB acquisition to finish.", parent=parent or self.root)
+            return False
         if self._watch_running():
             messagebox.showinfo(
                 _APP_DISPLAY_NAME,
@@ -6065,6 +6077,77 @@ class ImportAgentManagerWindow:
             for item in result.get("warnings", []):
                 self._append_log(f"  warning: {item}")
 
+    def _poll_usb_loggers(self) -> None:
+        self._scan_usb_loggers()
+        self.root.after(5000, self._poll_usb_loggers)
+
+    def _scan_usb_loggers(self, *, force: bool = False) -> None:
+        if self._usb_scan_running or self._usb_prompt_open or self._import_now_running():
+            return
+        self._usb_scan_running = True
+        supervisor = self.watch_service.supervisor if self._watch_running() else None
+        self._usb_acquiring = supervisor is not None
+
+        def worker() -> None:
+            try:
+                result = self._usb_service.scan(supervisor=supervisor)
+            except Exception as exc:
+                result = {"devices": [], "unpaired": [], "acquisitions": {}, "issues": [str(exc)]}
+            self.event_queue.put({"kind": "usb_loggers", "result": result, "force": force})
+
+        threading.Thread(target=worker, name="ImportAgentUsbDiscovery", daemon=True).start()
+
+    def _handle_usb_loggers(self, result: Mapping[str, Any], *, force: bool = False) -> None:
+        self._usb_scan_running = False
+        self._usb_acquiring = False
+        connected = {device.device_id for device in result["devices"]}
+        self._usb_seen_unpaired.intersection_update(connected)
+        issues = set(result["issues"])
+        for issue in issues - self._usb_issues:
+            self._append_log(f"USB logger: {issue}")
+            self._set_manager_status(f"USB logger: {issue}")
+        self._usb_issues = issues
+        for identity, acquisition in result["acquisitions"].items():
+            self._append_log(f"USB {identity}: copied={len(acquisition['copied'])}, "
+                             f"deferred={len(acquisition['deferred'])}, errors={len(acquisition['errors'])}; originals kept.")
+            for error in acquisition["errors"]:
+                self._append_log(f"  {error['file']}: {error['error']}")
+        candidates = result["devices"] if force else result["unpaired"]
+        if not force and self.root.grab_current() is not None:
+            return  # Offer pairing after the existing modal interaction ends.
+        for device in candidates:
+            if not force and device.device_id in self._usb_seen_unpaired:
+                continue
+            self._usb_seen_unpaired.add(device.device_id)
+            if not self.controller.has_config():
+                self._set_manager_status(f"USB logger {device.display_name} detected. Create a local source to pair it.")
+                continue
+            sources = [source for source in load_managed_import_source_configs(
+                self.controller.require_config(), enabled_only=True)
+                       if source.source_type == SOURCE_TYPE_FILESYSTEM_ARCHIVE]
+            if not sources:
+                self._set_manager_status("Create or enable a local archive source, then choose Discover / pair USB loggers.")
+                continue
+            choices = "\n".join(f"{i}. {source.description or source.source_id} → {source.library_id or source.artifacts_dir.name}"
+                                for i, source in enumerate(sources, 1))
+            self._usb_prompt_open = True
+            try:
+                self._show_window()
+                selected = simpledialog.askinteger(
+                    "Pair USB logger",
+                    f"{device.display_name} ({device.device_id[-6:]})\n\n"
+                    f"Choose the source whose bike, profile, and library should be used:\n{choices}\n\n"
+                    "Original recordings will be kept. Automatic copying follows the watcher.",
+                    minvalue=1, maxvalue=len(sources), parent=self.root,
+                )
+                if selected is not None:
+                    self._usb_service.pair(device, sources[selected - 1])
+                    self._set_manager_status(f"Paired {device.display_name}; start the watcher for automatic import.")
+            except Exception as exc:
+                self._set_manager_status(f"USB pairing failed: {exc}")
+            finally:
+                self._usb_prompt_open = False
+
     def _import_from_mounted_card(self) -> None:
         if not self._guard_watch_inactive(action_label="Import from mounted card"):
             return
@@ -6421,6 +6504,8 @@ class ImportAgentManagerWindow:
                         progress,
                         origin=str(item.get("origin") or ""),
                     )
+            elif kind == "usb_loggers":
+                self._handle_usb_loggers(item["result"], force=bool(item.get("force")))
             elif kind == "import_now_complete":
                 report = item.get("report", {})
                 snapshot = item.get("snapshot", {})

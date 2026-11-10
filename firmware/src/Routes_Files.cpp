@@ -346,6 +346,11 @@ static void appendUploadModePanel_(String& html) {
   const bool uploadMode = UploadModeManager::isActive();
   const bool logging = LoggingManager::isRunning();
 
+  html += F("<section id='logger-upload-panel'");
+  if (UploadModeManager::usbEnabled() && uploadMode) {
+    html += F(" hx-get='/upload-mode/status' hx-trigger='every 1s' hx-swap='outerHTML'");
+  }
+  html += F(">");
   html += F("<fieldset><legend>Logger upload</legend>");
   html += F("<p><b>Upload mode:</b> ");
   html += uploadMode ? F("active") : F("inactive");
@@ -353,6 +358,13 @@ static void appendUploadModePanel_(String& html) {
     html += F(" <span style='color:#b60'>(logging active)</span>");
   }
   html += F("</p>");
+  if (UploadModeManager::usbEnabled()) {
+    html += F("<p><b>USB:</b> ");
+    html += htmlEscape(UploadModeManager::transferLabel());
+    html += F("</p><p>Finish copying before leaving upload mode. The disconnect delay reduces interruptions "
+              "but cannot guarantee that computer write caches are saved. Ejecting on the computer offers "
+              "better protection. Wi-Fi file access pauses while USB owns the SD card.</p>");
+  }
 
   html += F("<p><b>Network:</b> ");
   html += htmlEscape(ConfigManager::wifiModeLabel(st.mode));
@@ -380,9 +392,20 @@ static void appendUploadModePanel_(String& html) {
   html += F("</p>");
 
   if (uploadMode) {
-    html += F("<form method='POST' action='/upload-mode/exit'"
-              " hx-post='/upload-mode/exit' hx-target='this' hx-swap='outerHTML' hx-sync='this:replace'>"
-              "<button type='submit'>Exit upload mode</button></form>");
+    if (UploadModeManager::exitPending()) {
+      html += F("<form method='POST' action='/upload-mode/cancel-exit' hx-post='/upload-mode/cancel-exit' "
+                "hx-target='#logger-upload-panel' hx-swap='outerHTML'>"
+                "<button type='submit'>Cancel exit</button></form>");
+    } else {
+      html += F("<form method='POST' action='/upload-mode/exit'"
+                " hx-post='/upload-mode/exit' hx-target='this' hx-swap='outerHTML' hx-sync='this:replace'>"
+                "<button type='submit'>Exit upload mode</button></form>");
+    }
+    if (strcmp(UploadModeManager::usbStateKey(), "error") == 0) {
+      html += F("<form method='POST' action='/upload-mode/retry-storage' hx-post='/upload-mode/retry-storage' "
+                "hx-target='#logger-upload-panel' hx-swap='outerHTML'>"
+                "<button type='submit'>Retry storage</button></form>");
+    }
   } else {
     html += F("<form method='POST' action='/upload-mode/enter'"
               " hx-post='/upload-mode/enter' hx-target='this' hx-swap='outerHTML' hx-sync='this:replace'>"
@@ -393,11 +416,34 @@ static void appendUploadModePanel_(String& html) {
     html += F(">Enter upload mode</button></form>");
   }
 
-  html += F("</fieldset>");
+  html += F("</fieldset></section>");
 }
 
 void registerFileRoutes(WebServer& srv) {
   WebServer* S = &srv;
+
+  S->on("/upload-mode/status", HTTP_GET, [S]() {
+    noteHttpActivity_();
+    String html;
+    appendUploadModePanel_(html);
+    S->send(200, F("text/html"), html);
+  });
+  S->on("/upload-mode/cancel-exit", HTTP_POST, [S]() {
+    noteHttpActivity_();
+    UploadModeManager::cancelExit();
+    if (!isHtmxRequest(*S)) { redirectToFiles_(*S); return; }
+    String html;
+    appendUploadModePanel_(html);
+    S->send(200, F("text/html"), html);
+  });
+  S->on("/upload-mode/retry-storage", HTTP_POST, [S]() {
+    noteHttpActivity_();
+    UploadModeManager::retryStorage();
+    if (!isHtmxRequest(*S)) { redirectToFiles_(*S); return; }
+    String html;
+    appendUploadModePanel_(html);
+    S->send(200, F("text/html"), html);
+  });
 
   S->on("/upload-mode/enter", HTTP_POST, [S](){
     auto& srv = *S;
@@ -427,7 +473,9 @@ void registerFileRoutes(WebServer& srv) {
     if (isHtmxRequest(srv)) {
       srv.sendHeader(F("HX-Redirect"), F("/files"));
       HttpFileSender::sendText(srv, 200, F("text/html"),
-        F("<div class='alert-ok'>Upload mode exited.</div>"), F("no-store"));
+        UploadModeManager::isActive()
+          ? F("<div class='alert-ok'>Exit requested; waiting for storage reclaim.</div>")
+          : F("<div class='alert-ok'>Upload mode exited.</div>"), F("no-store"));
       return;
     }
 

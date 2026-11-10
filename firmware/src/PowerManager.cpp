@@ -8,6 +8,7 @@
 #include "WebServerManager.h"
 #include "DisplayManager.h"
 #include "StorageManager.h"    // if you have a flush/close; otherwise remove
+#include "UploadModeManager.h"
 #include "UI.h"
 #include "I2CManager.h"
 #include "ConfigManager.h"
@@ -385,6 +386,10 @@ static void preSleep_() {
 
 void PowerManager::sleepOnEnterEXT0()
 {
+  if (UploadModeManager::usbEnabled() && !StorageFilesystem::ownership().localAvailable()) {
+    UI::toast("Exit upload first", 1500, 1);
+    return;
+  }
   preSleep_();
 
   if (g_enterWakePin == GPIO_NUM_NC) {

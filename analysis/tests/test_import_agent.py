@@ -1469,6 +1469,150 @@ def test_mounted_folder_scan_limit_does_not_starve_later_recordings(tmp_path):
     assert first.exists() and second.exists()
 
 
+def test_usb_logger_discovery_pairs_and_imports_without_consuming_card(tmp_path):
+    from bodaqs_analysis.import_agent_usb import UsbLoggerService
+
+    workspace = _prepare_source(tmp_path, "usb", tmp_path / "library")
+    card = tmp_path / "volume"
+    card.mkdir()
+    (card / ".bodaqs-logger.json").write_text(json.dumps({
+        "schema": "bodaqs.logger.usb", "version": 1,
+        "device_id": "esp32s3-1cdbd4bc5e2c", "logger_id": "Bike_logger",
+        "display_name": "Bike logger", "recordings_path": ".",
+    }), encoding="utf-8")
+    original = _write_session_archive(card, stem="usb_discovered")
+    _set_old_mtime(original)
+    supervisor = ImportAgentSupervisor([load_import_source_config(workspace)])
+    service = UsbLoggerService(tmp_path / "pairings.json")
+    first = service.scan(roots=[card])
+    assert len(first["devices"]) == 1
+    service.pair(first["devices"][0], supervisor.get_state("usb").runner.source)
+    service.scan(roots=[card], supervisor=supervisor)
+    assert supervisor.scan_all_once()["totals"]["imported"] == 1
+    assert original.exists()
+    assert not service.scan(roots=[card], supervisor=supervisor)["acquisitions"]
+
+
+def test_usb_pairing_survives_mount_path_and_logger_name_changes(tmp_path):
+    from bodaqs_analysis.import_agent_usb import UsbLoggerService
+
+    workspace = _prepare_source(tmp_path, "usb", tmp_path / "library")
+    first, second = tmp_path / "old_drive", tmp_path / "new_drive"
+    first.mkdir()
+    second.mkdir()
+    marker = {"schema": "bodaqs.logger.usb", "version": 1,
+              "device_id": "esp32s3-010203040506", "logger_id": "old",
+              "display_name": "Old name", "recordings_path": "."}
+    (first / ".bodaqs-logger.json").write_text(json.dumps(marker))
+    service = UsbLoggerService(tmp_path / "pairings.json")
+    source = load_import_source_config(workspace)
+    service.pair(service.scan(roots=[first])["devices"][0], source)
+    marker.update(logger_id="new", display_name="New name")
+    (second / ".bodaqs-logger.json").write_text(json.dumps(marker))
+    recording = _write_bdq_input(second, stem="new_mount")
+    _set_old_mtime(recording)
+    supervisor = ImportAgentSupervisor([source])
+    reopened = UsbLoggerService(tmp_path / "pairings.json")
+    result = reopened.scan(roots=[second], supervisor=supervisor)
+    assert result["devices"][0].display_name == "New name"
+    assert not result["unpaired"]
+    assert supervisor.scan_all_once()["totals"]["imported"] == 1
+
+
+@pytest.mark.parametrize("field,value", [
+    ("recordings_path", "../outside"), ("recordings_path", "/outside"),
+    ("recordings_path", "C:\\outside"), ("version", True),
+    ("device_id", "a-name-that-can-change"), ("display_name", "bad\x00name"),
+])
+def test_usb_discovery_rejects_unsafe_or_invalid_markers(tmp_path, field, value):
+    from bodaqs_analysis.import_agent_usb import UsbLoggerService
+
+    card = tmp_path / "card"
+    card.mkdir()
+    marker = {"schema": "bodaqs.logger.usb", "version": 1,
+              "device_id": "esp32s3-010203040506", "logger_id": "logger",
+              "display_name": "Logger", "recordings_path": "."}
+    marker[field] = value
+    (card / ".bodaqs-logger.json").write_text(json.dumps(marker))
+    result = UsbLoggerService(tmp_path / "pairings.json").scan(roots=[card])
+    assert not result["devices"]
+    assert result["issues"]
+    assert not result["acquisitions"]
+
+
+def test_usb_duplicate_identities_are_not_assigned_to_a_destination(tmp_path):
+    from bodaqs_analysis.import_agent_usb import UsbLoggerService
+
+    roots = [tmp_path / "one", tmp_path / "two"]
+    for card in roots:
+        card.mkdir()
+        (card / ".bodaqs-logger.json").write_text(json.dumps({
+            "schema": "bodaqs.logger.usb", "version": 1,
+            "device_id": "esp32s3-010203040506", "logger_id": "logger",
+            "display_name": "Logger", "recordings_path": ".",
+        }))
+    result = UsbLoggerService(tmp_path / "pairings.json").scan(roots=roots)
+    assert not result["devices"] and not result["acquisitions"]
+    assert "Ambiguous" in result["issues"][0]
+
+
+def test_usb_pairing_respects_stopped_watcher_and_paused_source(tmp_path):
+    from bodaqs_analysis.import_agent_usb import UsbLoggerService
+
+    workspace = _prepare_source(tmp_path, "usb", tmp_path / "library")
+    card = tmp_path / "card"
+    card.mkdir()
+    (card / ".bodaqs-logger.json").write_text(json.dumps({
+        "schema": "bodaqs.logger.usb", "version": 1,
+        "device_id": "esp32s3-010203040506", "logger_id": "logger",
+        "display_name": "Logger", "recordings_path": ".",
+    }))
+    recording = _write_session_archive(card, stem="paused")
+    _set_old_mtime(recording)
+    supervisor = ImportAgentSupervisor([load_import_source_config(workspace)])
+    service = UsbLoggerService(tmp_path / "pairings.json")
+    service.pair(service.scan(roots=[card])["devices"][0], supervisor.get_state("usb").runner.source)
+    assert not service.scan(roots=[card])["acquisitions"]
+    supervisor.pause_source("usb")
+    assert not service.scan(roots=[card], supervisor=supervisor)["acquisitions"]
+    assert not list((workspace / "inbox").iterdir())
+    supervisor.resume_source("usb")
+    assert service.scan(roots=[card], supervisor=supervisor)["acquisitions"]
+    assert supervisor.scan_all_once()["totals"]["imported"] == 1
+
+
+def test_usb_acquisition_and_watcher_serialize_library_access(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    workspace = _prepare_source(tmp_path, "usb", tmp_path / "library")
+    card = tmp_path / "card"
+    card.mkdir()
+    original = _write_session_archive(card, stem="concurrent")
+    _set_old_mtime(original)
+    config = load_import_source_config(workspace)
+    acquiring, watcher = ImportSourceRunner(config), ImportSourceRunner(config)
+    copying, release = Event(), Event()
+    fsync = os.fsync
+
+    def paused_write(fd):
+        copying.set()
+        assert release.wait(5)
+        fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", paused_write)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        copy_future = workers.submit(acquiring.acquire_folder, card)
+        assert copying.wait(3)
+        scan_future = workers.submit(watcher.scan_once)
+        time.sleep(0.1)
+        release.set()
+        assert copy_future.result()["copied"]
+        report = scan_future.result()
+    assert len(report["imported"]) == 1
+    assert original.exists()
+
+
 def test_processed_archive_retention_uses_processed_time_and_sweeps_existing_files(tmp_path):
     artifacts_dir = tmp_path / "artifacts"
     source_root = _prepare_source(tmp_path, "retention_source", artifacts_dir)

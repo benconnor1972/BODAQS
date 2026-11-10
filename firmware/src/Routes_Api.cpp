@@ -73,12 +73,15 @@ static void addLoggerIdentity_(JsonDocument& doc) {
   doc["display_name"] = ConfigManager::get().loggerName;
 }
 
-static void sendUploadModeState_(WebServer& srv) {
+static void sendUploadModeState_(WebServer& srv, int responseCode = 0) {
   JsonDocument doc;
   addEnvelope_(doc, "bodaqs.logger.upload_mode");
   addLoggerIdentity_(doc);
   doc["upload_mode"] = UploadModeManager::isActive();
-  sendJson_(srv, 200, doc);
+  doc["exit_pending"] = UploadModeManager::exitPending();
+  doc["usb_state"] = UploadModeManager::usbStateKey();
+  doc["transfer_status"] = UploadModeManager::transferLabel();
+  sendJson_(srv, responseCode ? responseCode : (UploadModeManager::exitPending() ? 202 : 200), doc);
 }
 
 static void handleDevice_(WebServer& srv) {
@@ -100,6 +103,7 @@ static void handleDevice_(WebServer& srv) {
 
   JsonArray caps = doc["capabilities"].to<JsonArray>();
   caps.add("upload_mode");
+  if (UploadModeManager::usbEnabled()) caps.add("usb_drive");
   caps.add("session_discovery");
   caps.add("session_archive_zip");
   caps.add("session_data");
@@ -120,6 +124,9 @@ static void handleStatus_(WebServer& srv) {
   addLoggerIdentity_(doc);
   doc["upload_mode"] = UploadModeManager::isActive();
   doc["logging_active"] = LoggingManager::isRunning();
+  doc["exit_pending"] = UploadModeManager::exitPending();
+  doc["usb_state"] = UploadModeManager::usbStateKey();
+  doc["transfer_status"] = UploadModeManager::transferLabel();
   doc["storage_available"] = scanSummary.storageAvailable;
   doc["storage_directory_opened"] = scanSummary.directoryOpened;
   JsonObject storage = doc["storage"].to<JsonObject>();
@@ -946,6 +953,22 @@ void registerApiRoutes(WebServer& srv) {
     noteHttpActivity_();
     UploadModeManager::exit();
     sendUploadModeState_(*S);
+  });
+  S->on("/api/v1/upload-mode/cancel-exit", HTTP_POST, [S]() {
+    noteHttpActivity_();
+    if (!UploadModeManager::cancelExit()) {
+      sendError_(*S, 409, "exit_not_cancellable", "No cancellable upload exit is pending.");
+      return;
+    }
+    sendUploadModeState_(*S);
+  });
+  S->on("/api/v1/upload-mode/retry-storage", HTTP_POST, [S]() {
+    noteHttpActivity_();
+    if (!UploadModeManager::retryStorage()) {
+      sendError_(*S, 409, "storage_retry_unavailable", "No USB storage recovery is awaiting retry.");
+      return;
+    }
+    sendUploadModeState_(*S, 202);
   });
 
   S->on("/api/v1/sessions", HTTP_GET, [S]() {

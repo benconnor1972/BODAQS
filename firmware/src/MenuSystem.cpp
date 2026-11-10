@@ -921,7 +921,8 @@ namespace {
 
     const String sd =
         !StorageManager_cardDetected() ? "absent" :
-        StorageManager_isMounted() ? "ready" : "not ready";
+        StorageManager_isMounted() ? "ready" :
+        (strcmp(UploadModeManager::usbStateKey(), "shared") == 0 ? "USB active" : "not ready");
     UI::oledText(0, 12, truncateForOled_(String("SD: ") + sd, 21));
 
     String batt = "Batt: --";
@@ -977,7 +978,9 @@ namespace {
 
     UI::clear(UI::TARGET_OLED);
     UI::oledText(0, 0, "Upload mode");
-    UI::oledText(0, 12, String("State: ") + (uploadMode ? "ON" : "OFF"));
+    UI::oledText(0, 12, UploadModeManager::usbEnabled()
+        ? UploadModeManager::shortTransferLabel()
+        : String("State: ") + (uploadMode ? "ON" : "OFF"));
 
     String network = st.networkUp ? st.ssid : String("off");
     if (!network.length()) network = ConfigManager::wifiModeLabel(st.mode);
@@ -993,12 +996,23 @@ namespace {
     if (LoggingManager::isRunning() && !uploadMode) {
       UI::oledText(0, 54, "Stop log first");
     } else {
-      UI::oledText(0, 54, "Enter toggle");
+      UI::oledText(0, 54, UploadModeManager::exitPending() ? "Enter cancel exit" :
+          (strcmp(UploadModeManager::usbStateKey(), "error") == 0 ? "Enter retry storage" : "Enter toggle"));
     }
     DisplayManager::present();
   }
 
   static void toggleUploadModeFromMenu_() {
+    if (UploadModeManager::exitPending()) {
+      UploadModeManager::cancelExit();
+      drawUploadStatus_();
+      return;
+    }
+    if (strcmp(UploadModeManager::usbStateKey(), "error") == 0) {
+      UploadModeManager::retryStorage();
+      drawUploadStatus_();
+      return;
+    }
     if (UploadModeManager::isActive()) {
       UploadModeManager::exit();
       deferUiFor(1200);
@@ -2048,6 +2062,11 @@ void MenuSystem::select()   { onNav(Dir::Enter, BUTTON_PRESSED); }
 
 void MenuSystem::loop() {
   if (s_state == State::Inactive) return;
+  if (s_state == State::UploadStatus && UploadModeManager::usbEnabled()) {
+    static uint8_t previousUsbPhase = 255;
+    const uint8_t phase = UploadModeManager::usbPhase();
+    if (phase != previousUsbPhase) { previousUsbPhase = phase; drawUploadStatus_(); }
+  }
 
   tickActiveRangeCalibration_();
 
