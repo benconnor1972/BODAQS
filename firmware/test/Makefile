@@ -32,6 +32,7 @@ TEST_BIN = $(BUILD_DIR)/test_runner.exe
 test: $(TEST_BIN)
 	@echo "Running tests..."
 	"$(TEST_BIN)"
+	$(PYTHON) ../tools/test_adc_setup_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_i2c_schedule_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_i2c_startup_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_startup_log_runtime.py --compiler "$(CXX)"

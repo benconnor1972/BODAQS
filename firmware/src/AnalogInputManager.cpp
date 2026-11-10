@@ -25,7 +25,6 @@
 namespace {
 
 constexpr uint8_t ADS1220_CMD_RESET = 0x06;
-constexpr uint8_t ADS1220_CMD_START = 0x08;
 constexpr uint8_t ADS1220_CMD_RDATA = 0x10;
 constexpr uint8_t ADS1220_CMD_WREG  = 0x40;
 constexpr uint8_t kInvalidChannel = 0xFF;
@@ -331,7 +330,7 @@ int32_t scaleRaw24ToEffectiveBits_(int32_t raw24, uint8_t bits) {
   return (int32_t)scaled;
 }
 
-bool configureAdsChannel_(AdsDevice& dev, uint8_t channel) {
+bool configureAndStartAdsChannel_(AdsDevice& dev, uint8_t channel) {
   if (!validChannel_(dev, channel)) return false;
 
   const uint8_t reg0 =
@@ -343,6 +342,10 @@ bool configureAdsChannel_(AdsDevice& dev, uint8_t channel) {
   const uint8_t reg3 = 0x00;
   const uint8_t regs[4] = { reg0, reg1, reg2, reg3 };
 
+  // CM remains zero (single-shot). WREG itself starts a fresh conversion,
+  // including when the bytes are unchanged (ADS1220 datasheet 8.4.2.1).
+  // Keep the full image on every conversion so an ADC-only reset cannot leave
+  // cached mux/gain/reference settings inconsistent with the physical device.
   return adsWriteRegisters_(dev, 0, regs, sizeof(regs));
 }
 
@@ -361,22 +364,17 @@ bool readAdsChannelLive_(uint8_t adcIndex, uint8_t channel, int32_t& outCounts) 
 
   uint32_t t0 = micros();
 #endif
-  if (!configureAdsChannel_(dev, channel)) return false;
 #if defined(ESP32)
   if (dev.drdyTask == xTaskGetCurrentTaskHandle()) {
-    // Discard the previous conversion's notification before issuing START;
-    // never clear it after START, which could lose a fast completion.
+    // WREG starts the conversion: discard the previous notification before it,
+    // never afterwards, which could lose a fast completion.
     (void)ulTaskNotifyTake(pdTRUE, 0);
   }
 #endif
+  if (!configureAndStartAdsChannel_(dev, channel)) return false;
 #if BODAQS_TIMING_INSTRUMENTATION
+  // configUs now covers both setup and conversion start; no separate startUs.
   TimingStats_record(adcStats.configUs, (uint32_t)(micros() - t0));
-
-  t0 = micros();
-#endif
-  if (!adsCommand_(dev, ADS1220_CMD_START)) return false;
-#if BODAQS_TIMING_INSTRUMENTATION
-  TimingStats_record(adcStats.startUs, (uint32_t)(micros() - t0));
 #endif
 
   uint32_t waitUs = 0;
@@ -1007,15 +1005,9 @@ void beginSample() {
 
       uint32_t t0 = micros();
 #endif
-      if (!configureAdsChannel_(dev, ch)) continue;
+      if (!configureAndStartAdsChannel_(dev, ch)) continue;
 #if BODAQS_TIMING_INSTRUMENTATION
       TimingStats_record(adcStats.configUs, (uint32_t)(micros() - t0));
-
-      t0 = micros();
-#endif
-      if (!adsCommand_(dev, ADS1220_CMD_START)) continue;
-#if BODAQS_TIMING_INSTRUMENTATION
-      TimingStats_record(adcStats.startUs, (uint32_t)(micros() - t0));
 #endif
 
       startedChannel[adc] = ch;
@@ -1032,6 +1024,7 @@ void beginSample() {
       uint32_t waitUs = 0;
       bool readyImmediately = false;
       if (!adsWaitReady_(dev, conversionTimeoutUs_(dev), &waitUs, &readyImmediately)) {
+        startedChannel[adc] = kInvalidChannel;
 #if BODAQS_TIMING_INSTRUMENTATION
         TimingStats_record(adcStats.waitUs, waitUs);
         TimingStats_record(adcStats.channel[ch].waitUs, waitUs);
