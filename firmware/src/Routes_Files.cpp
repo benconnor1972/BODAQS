@@ -1,7 +1,7 @@
 #include "Routes_Files.h"
 #include <Arduino.h>
 #include <time.h>
-#include "SD_MMC.h"   // for SD_MMC backend
+#include "StorageFilesystem.h"   // for SD_MMC backend
 
 #include "ConfigManager.h"
 #include "HtmlUtil.h"
@@ -134,8 +134,8 @@ static String dirOpenPath_(const String& dir) {
 }
 
 static void appendSdDiagnostics_(String& html, const String& openDir) {
-  const uint8_t cardType = SD_MMC.cardType();
-  File probe = SD_MMC.open(openDir.c_str());
+  const uint8_t cardType = StorageFilesystem::card().cardType();
+  File probe = StorageFilesystem::card().open(openDir.c_str());
   html += F("<p><small>SD_MMC cardType=");
   html += String((unsigned)cardType);
   html += F(", openPath=");
@@ -146,9 +146,9 @@ static void appendSdDiagnostics_(String& html, const String& openDir) {
   html += (probe && probe.isDirectory()) ? F("true") : F("false");
   if (cardType != CARD_NONE) {
     html += F(", sizeMB=");
-    html += String((unsigned long long)(SD_MMC.cardSize() / (1024ULL * 1024ULL)));
+    html += String((unsigned long long)(StorageFilesystem::card().cardSize() / (1024ULL * 1024ULL)));
     html += F(", totalMB=");
-    html += String((unsigned long long)(SD_MMC.totalBytes() / (1024ULL * 1024ULL)));
+    html += String((unsigned long long)(StorageFilesystem::card().totalBytes() / (1024ULL * 1024ULL)));
   }
   html += F("</small></p>");
   if (probe) probe.close();
@@ -231,7 +231,7 @@ static String makeZipName_() {
 
 static void listDirMMC_(const String& dir, String& html, bool allowDelete) {
   const String openDir = dirOpenPath_(dir);
-  File d = SD_MMC.open(openDir.c_str());
+  File d = StorageFilesystem::card().open(openDir.c_str());
   if (!d || !d.isDirectory()) {
     html += F("<p>Failed to open directory.</p>");
     appendSdDiagnostics_(html, openDir);
@@ -269,7 +269,7 @@ static void listDirMMC_(const String& dir, String& html, bool allowDelete) {
   }
 
   // --- Files ---
-  d = SD_MMC.open(openDir.c_str());
+  d = StorageFilesystem::card().open(openDir.c_str());
   if (!d || !d.isDirectory()) {
     if (d) d.close();
     return;
@@ -447,6 +447,13 @@ void registerFileRoutes(WebServer& srv) {
     html += F("<h2>Files</h2>");
     appendUploadModePanel_(html);
 
+    if (!StorageFilesystem::ownership().localAvailable()) {
+      html += F("<p>SD file access is paused while storage is handed to an external connection.</p>");
+      html += htmlFooter();
+      srv.send(200, F("text/html"), html);
+      return;
+    }
+
     // Breadcrumbs
     emitBreadcrumbs_(dir, html);
 
@@ -575,8 +582,8 @@ S->on("/delete", HTTP_GET, [S](){
   bool exists = false;
   bool removed = false;
 
-  exists = SD_MMC.exists(path.c_str());
-  if (exists) removed = SD_MMC.remove(path.c_str());
+  exists = StorageFilesystem::card().exists(path.c_str());
+  if (exists) removed = StorageFilesystem::card().remove(path.c_str());
 
   if (!exists) {
     srv.send(404, F("text/plain"), F("Not found"));
@@ -755,7 +762,7 @@ S->on("/delete_multi", HTTP_POST, [S](){
     int okCount = 0;
     for (int i = 0; i < nSel; ++i) {
       const String& p = paths[i];
-      if (SD_MMC.exists(p.c_str()) && SD_MMC.remove(p.c_str())) {
+      if (StorageFilesystem::card().exists(p.c_str()) && StorageFilesystem::card().remove(p.c_str())) {
         ++okCount;
       }
       delay(0);
@@ -780,8 +787,8 @@ S->on("/delete_multi", HTTP_POST, [S](){
     bool exists = false;
     bool removed = false;
 
-    exists = SD_MMC.exists(p.c_str());
-    if (exists) removed = SD_MMC.remove(p.c_str());
+    exists = StorageFilesystem::card().exists(p.c_str());
+    if (exists) removed = StorageFilesystem::card().remove(p.c_str());
 
     html += F("<tr><td><code>");
     html += htmlEscape(p);
@@ -905,7 +912,7 @@ S->on("/delete_multi", HTTP_POST, [S](){
       uint32_t crc = 0;
       uint32_t size = 0;
 
-      File f = SD_MMC.open(fullPath.c_str(), FILE_READ);
+      File f = StorageFilesystem::card().open(fullPath.c_str(), FILE_READ);
       if (f) {
         int32_t n;
         while ((n = f.read(buf, sizeof(buf))) > 0) {
@@ -1002,7 +1009,7 @@ S->on("/rmdir", HTTP_GET, [S](){
   bool existsDir = false;
 
   const String openPath = dirOpenPath_(p);
-  File d = SD_MMC.open(openPath.c_str());
+  File d = StorageFilesystem::card().open(openPath.c_str());
   if (!d || !d.isDirectory()) {
     if (d) d.close();
     srv.send(404, F("text/plain"), F("Not found"));
@@ -1025,7 +1032,7 @@ S->on("/rmdir", HTTP_GET, [S](){
     return;
   }
 
-  bool ok = SD_MMC.rmdir(p.c_str());
+  bool ok = StorageFilesystem::card().rmdir(p.c_str());
 
   if (!ok) {
     srv.send(500, F("text/plain"), F("rmdir failed"));
@@ -1053,7 +1060,7 @@ S->on("/mkdir", HTTP_POST, [S](){
 
   const String full = normDir(base) + name + "/";
 
-  bool ok = SD_MMC.mkdir(full.c_str());
+  bool ok = StorageFilesystem::card().mkdir(full.c_str());
 
   if (!ok) {
     srv.send(500, F("text/plain"), F("mkdir failed"));
@@ -1087,7 +1094,7 @@ S->on("/rmdir", HTTP_POST, [S](){
   bool existsDir = false;
 
   const String openPath = dirOpenPath_(p);
-  File d = SD_MMC.open(openPath.c_str());
+  File d = StorageFilesystem::card().open(openPath.c_str());
   if (!d || !d.isDirectory()) {
     if (d) d.close();
     srv.send(404, F("text/plain"), F("Not found"));
@@ -1107,7 +1114,7 @@ S->on("/rmdir", HTTP_POST, [S](){
     return;
   }
 
-  bool ok = SD_MMC.rmdir(p.c_str());
+  bool ok = StorageFilesystem::card().rmdir(p.c_str());
 
   if (!ok) {
     srv.send(500, F("text/plain"), F("rmdir failed"));
@@ -1158,7 +1165,7 @@ S->on("/rmdir", HTTP_POST, [S](){
         }
 
         const String full = normDir(targetDir) + String(up.filename.c_str());
-        outMMC = SD_MMC.open(full.c_str(), FILE_WRITE);
+        outMMC = StorageFilesystem::card().open(full.c_str(), FILE_WRITE);
         if (!outMMC) {
           FILES_LOGE("upload: SD_MMC open failed\n");
           up.status = UPLOAD_FILE_ABORTED;
@@ -1181,7 +1188,7 @@ S->on("/rmdir", HTTP_POST, [S](){
         {
           if (outMMC) {
             outMMC.close();
-            // Optional: SD_MMC.remove((normDir(targetDir)+up.filename).c_str());
+            // Optional: StorageFilesystem::card().remove((normDir(targetDir)+up.filename).c_str());
           }
         }
       }

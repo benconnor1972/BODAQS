@@ -4805,6 +4805,9 @@ class ImportAgentManagerWindow:
             menu.add_command(label="Check Logger", command=self._check_selected_logger)
             menu.add_command(label="Request Upload Mode", command=self._request_selected_upload_mode)
             menu.add_command(label="Open Logger Web UI", command=self._open_selected_logger_web_ui)
+        elif source.source_type == SOURCE_TYPE_FILESYSTEM_ARCHIVE:
+            menu.add_separator()
+            menu.add_command(label="Import from mounted card...", command=self._import_from_mounted_card)
         menu.add_separator()
         menu.add_command(label="Validate", command=self._validate_sources)
         menu.add_command(label="Rename source", command=self._rename_selected_source)
@@ -6062,6 +6065,36 @@ class ImportAgentManagerWindow:
             for item in result.get("warnings", []):
                 self._append_log(f"  warning: {item}")
 
+    def _import_from_mounted_card(self) -> None:
+        if not self._guard_watch_inactive(action_label="Import from mounted card"):
+            return
+        if not self._guard_import_now_inactive(action_label="Import from mounted card"):
+            return
+        try:
+            source = self._selected_source_config()
+            if source.source_type != SOURCE_TYPE_FILESYSTEM_ARCHIVE:
+                raise ValueError("Select a local archive source with the desired bike, profile, and target library.")
+            folder = filedialog.askdirectory(
+                parent=self.root,
+                title="Select card recording folder (originals will be kept)",
+            )
+            if not folder:
+                return
+            supervisor = ImportAgentSupervisor([source])
+        except Exception as exc:
+            messagebox.showerror(_APP_DISPLAY_NAME, str(exc), parent=self.root)
+            return
+        self.import_now_thread = threading.Thread(
+            target=self._run_import_now_worker,
+            args=(supervisor, None, (source.source_id, Path(folder))),
+            name="ImportAgentMountedCard",
+            daemon=True,
+        )
+        self.import_now_thread.start()
+        self._set_manager_status("Copying card recordings locally; originals will be kept.")
+        self._refresh_watch_toggle_button()
+        self._refresh_tray()
+
     def _import_now(self) -> None:
         if not self._guard_watch_inactive(action_label="Import Now"):
             return
@@ -6105,12 +6138,19 @@ class ImportAgentManagerWindow:
         self,
         supervisor: ImportAgentSupervisor,
         run_description_override: Optional[str],
+        mounted_folder: Optional[tuple[str, Path]] = None,
     ) -> None:
         try:
+            acquisition = None
+            if mounted_folder is not None:
+                source_id, folder = mounted_folder
+                acquisition = supervisor.get_state(source_id).runner.acquire_folder(folder)
             report = supervisor.scan_all_once(
                 progress_callback=self._queue_import_now_progress,
                 run_description_override=run_description_override,
             )
+            if acquisition is not None:
+                report["mounted_folder_acquisition"] = acquisition
             self.event_queue.put(
                 {
                     "kind": "import_now_complete",
@@ -6135,6 +6175,18 @@ class ImportAgentManagerWindow:
             f"seen={totals.get('seen', 0)} imported={totals.get('imported', 0)} "
             f"deferred={totals.get('deferred_unsettled', 0)} failed={totals.get('failed', 0)}"
         )
+        acquisition = report.get("mounted_folder_acquisition")
+        if acquisition is not None:
+            note = (
+                f"Card copy: copied={len(acquisition['copied'])} "
+                f"deferred={len(acquisition['deferred'])} errors={len(acquisition['errors'])}. "
+                "Originals kept. Retry deferred or failed copies after transfers finish."
+            )
+            self._append_log(note)
+            if acquisition["errors"] or acquisition["deferred"]:
+                self._set_manager_status(note)
+            for error in acquisition["errors"]:
+                self._append_log(f"  {error['file']}: {error['error']}")
         for source_report in report.get("sources", []):
             self._update_source_status_from_report(source_report)
             source_totals = _aggregate_reports([source_report])

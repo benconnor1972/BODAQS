@@ -2,7 +2,7 @@
 #define STORAGE_MANAGER_H
 
 #include <Arduino.h>
-#include "SD_MMC.h"
+#include "StorageFilesystem.h"
 #include "BoardProfile.h"   // make sure this is available
 #include "TimingStats.h"
 
@@ -47,6 +47,13 @@ bool StorageManager_isMounted();
 bool StorageManager_readyForLogging();
 bool StorageManager_remountIfPresent();
 const char* StorageManager_lastStatus();
+// External handoff is requested in UPLOAD mode and granted from the main loop
+// only after every admitted local file has closed. Callers must stop raw USB
+// I/O before requesting local reclaim.
+bool StorageManager_requestExternalAccess();
+bool StorageManager_cancelExternalAccess();
+bool StorageManager_reclaimLocalAccess();
+const char* StorageManager_ownershipStatus();
 
 
 // Debug: SD write tracking flag (set when any SD write occurred since last sample)

@@ -1,4 +1,5 @@
 #include "StorageManager.h"
+#include "UploadModeManager.h"
 #include "RTCManager.h"
 #include "ConfigManager.h"
 #include "SensorManager.h"
@@ -298,7 +299,7 @@ static bool fileSize_(const String& path, uint32_t& sizeOut) {
   sizeOut = 0;
   if (!path.length()) return false;
 
-  File f = SD_MMC.open(path.c_str(), FILE_READ);
+  File f = StorageFilesystem::card().open(path.c_str(), FILE_READ);
   if (!f || f.isDirectory()) {
     if (f) f.close();
     return false;
@@ -310,7 +311,7 @@ static bool fileSize_(const String& path, uint32_t& sizeOut) {
 }
 
 static bool completedZipFile_(const String& path) {
-  File f = SD_MMC.open(path.c_str(), FILE_READ);
+  File f = StorageFilesystem::card().open(path.c_str(), FILE_READ);
   if (!f || f.isDirectory()) {
     if (f) f.close();
     return false;
@@ -339,19 +340,19 @@ static bool copyFile_(const String& srcPath, const String& dstPath, String* erro
     if (error) *error = F("missing source or destination");
     return false;
   }
-  if (SD_MMC.exists(dstPath.c_str())) {
+  if (StorageFilesystem::card().exists(dstPath.c_str())) {
     if (error) *error = String(F("destination exists: ")) + dstPath;
     return false;
   }
 
-  File in = SD_MMC.open(srcPath.c_str(), FILE_READ);
+  File in = StorageFilesystem::card().open(srcPath.c_str(), FILE_READ);
   if (!in || in.isDirectory()) {
     if (in) in.close();
     if (error) *error = String(F("source open failed: ")) + srcPath;
     return false;
   }
 
-  File out = SD_MMC.open(dstPath.c_str(), FILE_WRITE);
+  File out = StorageFilesystem::card().open(dstPath.c_str(), FILE_WRITE);
   if (!out) {
     in.close();
     if (error) *error = String(F("destination open failed: ")) + dstPath;
@@ -391,17 +392,17 @@ static bool copyFile_(const String& srcPath, const String& dstPath, String* erro
   }
 
   if (!ok) {
-    SD_MMC.remove(dstPath.c_str());
+    StorageFilesystem::card().remove(dstPath.c_str());
   }
   return ok;
 }
 
 static void removeArchivedSourceFile_(const String& path, const __FlashStringHelper* label) {
   if (!path.length()) return;
-  if (!SD_MMC.exists(path.c_str())) return;
+  if (!StorageFilesystem::card().exists(path.c_str())) return;
 
   const String labelText(label);
-  if (SD_MMC.remove(path.c_str())) {
+  if (StorageFilesystem::card().remove(path.c_str())) {
     STOR_LOGI("%s removed after archive: %s\n", labelText.c_str(), path.c_str());
   } else {
     STOR_LOGW("%s left in place after archive: %s\n", labelText.c_str(), path.c_str());
@@ -411,10 +412,10 @@ static void removeArchivedSourceFile_(const String& path, const __FlashStringHel
 static bool commitArchiveTemp_(const String& tempPath, const String& archivePath) {
   if (!tempPath.length() || !archivePath.length()) return false;
 
-  if (SD_MMC.exists(archivePath.c_str())) {
+  if (StorageFilesystem::card().exists(archivePath.c_str())) {
     if (completedZipFile_(archivePath)) {
-      if (SD_MMC.exists(tempPath.c_str())) {
-        SD_MMC.remove(tempPath.c_str());
+      if (StorageFilesystem::card().exists(tempPath.c_str())) {
+        StorageFilesystem::card().remove(tempPath.c_str());
       }
       return true;
     }
@@ -428,12 +429,12 @@ static bool commitArchiveTemp_(const String& tempPath, const String& archivePath
     return false;
   }
 
-  if (SD_MMC.rename(tempPath.c_str(), archivePath.c_str())) {
+  if (StorageFilesystem::card().rename(tempPath.c_str(), archivePath.c_str())) {
     if (completedZipFile_(archivePath)) {
       return true;
     }
     STOR_LOGW("Session archive rename produced incomplete final archive: %s\n", archivePath.c_str());
-    SD_MMC.remove(archivePath.c_str());
+    StorageFilesystem::card().remove(archivePath.c_str());
     return false;
   }
 
@@ -449,11 +450,11 @@ static bool commitArchiveTemp_(const String& tempPath, const String& archivePath
 
   if (!completedZipFile_(archivePath)) {
     STOR_LOGW("Session archive copy fallback produced incomplete final archive: %s\n", archivePath.c_str());
-    SD_MMC.remove(archivePath.c_str());
+    StorageFilesystem::card().remove(archivePath.c_str());
     return false;
   }
 
-  if (!SD_MMC.remove(tempPath.c_str())) {
+  if (!StorageFilesystem::card().remove(tempPath.c_str())) {
     STOR_LOGW("Session archive temp left after copy fallback: %s\n", tempPath.c_str());
   }
   return true;
@@ -465,7 +466,7 @@ static void removeArchivedSourceFilesForArchive_(const String& archivePath) {
 }
 
 static void promoteStaleSessionArchives_() {
-  File root = SD_MMC.open("/");
+  File root = StorageFilesystem::card().open("/");
   if (!root || !root.isDirectory()) {
     if (root) root.close();
     return;
@@ -525,7 +526,7 @@ static void createSessionArchive_(const String& csvPath, const String& metadataP
   const String archivePath = archivePathForCsv_(csvPath);
   const String tempPath = archivePath + F(".tmp");
 
-  if (SD_MMC.exists(archivePath.c_str())) {
+  if (StorageFilesystem::card().exists(archivePath.c_str())) {
     STOR_LOGW("Session archive skipped: final archive already exists: %s\n", archivePath.c_str());
     if (completedZipFile_(archivePath)) {
       removeArchivedSourceFile_(csvPath, F("CSV source"));
@@ -533,14 +534,14 @@ static void createSessionArchive_(const String& csvPath, const String& metadataP
     }
     return;
   }
-  if (SD_MMC.exists(tempPath.c_str())) {
+  if (StorageFilesystem::card().exists(tempPath.c_str())) {
     if (commitArchiveTemp_(tempPath, archivePath)) {
       STOR_LOGI("Session archive recovered before rewrite: %s\n", archivePath.c_str());
       removeArchivedSourceFile_(csvPath, F("CSV source"));
       removeArchivedSourceFile_(metadataPath, F("metadata source"));
       return;
     }
-    if (!SD_MMC.remove(tempPath.c_str())) {
+    if (!StorageFilesystem::card().remove(tempPath.c_str())) {
       STOR_LOGW("Session archive skipped: could not remove stale temp archive: %s\n", tempPath.c_str());
       return;
     }
@@ -556,8 +557,8 @@ static void createSessionArchive_(const String& csvPath, const String& metadataP
   String error;
   if (!ZipArchiveWriter_createStoreOnly(tempPath.c_str(), entries, 2, &error)) {
     STOR_LOGW("Session archive failed: %s (%s)\n", tempPath.c_str(), error.c_str());
-    if (SD_MMC.exists(tempPath.c_str())) {
-      SD_MMC.remove(tempPath.c_str());
+    if (StorageFilesystem::card().exists(tempPath.c_str())) {
+      StorageFilesystem::card().remove(tempPath.c_str());
     }
     return;
   }
@@ -719,6 +720,7 @@ static bool prepareLogSessionBuffers_() {
 }
 
 static bool mountSdmmc_() {
+  if (!StorageFilesystem::ownership().localAvailable()) return false;
   if (!isSdmmcBackend()) {
     setStatus_("storage disabled");
     return false;
@@ -726,7 +728,7 @@ static bool mountSdmmc_() {
 
   if (s_haveDetectPin && !s_cardDetectedCached) {
     if (s_sdMounted) {
-      SD_MMC.end();
+      StorageFilesystem::card().end();
       s_sdMounted = false;
     }
     setStatus_("card not detected");
@@ -734,13 +736,13 @@ static bool mountSdmmc_() {
     return false;
   }
 
-  if (s_sdMounted && SD_MMC.cardType() != CARD_NONE) {
+  if (s_sdMounted && StorageFilesystem::card().cardType() != CARD_NONE) {
     setStatus_("mounted");
     return true;
   }
 
   if (s_sdMounted) {
-    SD_MMC.end();
+    StorageFilesystem::card().end();
     s_sdMounted = false;
   }
 
@@ -758,7 +760,7 @@ static bool mountSdmmc_() {
   }
 
   if (s_storage->sdmmc_1bit) {
-    SD_MMC.setPins(clk, cmd, d0);
+    StorageFilesystem::card().setPins(clk, cmd, d0);
   } else {
     const int d1 = s_storage->sdmmc_d1;
     const int d2 = s_storage->sdmmc_d2;
@@ -768,23 +770,23 @@ static bool mountSdmmc_() {
       STOR_LOGE("SDMMC 4-bit selected but d1/d2/d3 not set\n");
       return false;
     }
-    SD_MMC.setPins(clk, cmd, d0, d1, d2, d3);
+    StorageFilesystem::card().setPins(clk, cmd, d0, d1, d2, d3);
   }
 
-  const bool ok = SD_MMC.begin("/sdcard", s_storage->sdmmc_1bit);
-  STOR_LOGI("SD_MMC.begin result: %s\n", ok ? "OK (true)" : "FAILED (false)");
+  const bool ok = StorageFilesystem::card().begin("/sdcard", s_storage->sdmmc_1bit);
+  STOR_LOGI("StorageFilesystem::card().begin result: %s\n", ok ? "OK (true)" : "FAILED (false)");
 
   if (!ok) {
     setStatus_("mount failed");
-    STOR_LOGE("SD_MMC.begin FAILED, returning\n");
+    STOR_LOGE("StorageFilesystem::card().begin FAILED, returning\n");
     return false;
   }
 
-  uint8_t cardType = SD_MMC.cardType();
+  uint8_t cardType = StorageFilesystem::card().cardType();
   if (cardType == CARD_NONE) {
     setStatus_("no card");
     STOR_LOGW("No SD card attached (cardType=CARD_NONE)\n");
-    SD_MMC.end();
+    StorageFilesystem::card().end();
     s_sdMounted = false;
     return false;
   }
@@ -793,12 +795,12 @@ static bool mountSdmmc_() {
   setStatus_("mounted");
   STOR_LOGI("SD_MMC cardType = %u\n", (unsigned)cardType);
 
-  uint64_t sizeMB = SD_MMC.cardSize() / (1024ULL * 1024ULL);
+  uint64_t sizeMB = StorageFilesystem::card().cardSize() / (1024ULL * 1024ULL);
   STOR_LOGI("SD card size: %llu MB\n", (unsigned long long)sizeMB);
 
   promoteStaleSessionArchives_();
 
-  STOR_LOGI("SD_MMC.begin OK.\n");
+  STOR_LOGI("StorageFilesystem::card().begin OK.\n");
   return true;
 }
 
@@ -1129,7 +1131,7 @@ bool StorageManager_loadTextFile(const char* path, String& out) {
     if (!path || !*path) return false;
 
     String absPath = (path[0] == '/') ? String(path) : (String("/") + path);
-    File f = SD_MMC.open(absPath.c_str(), FILE_READ);
+    File f = StorageFilesystem::card().open(absPath.c_str(), FILE_READ);
     if (!f) {
         STOR_LOGW("loadTextFile: SD_MMC open failed for %s\n", path);
         return false;
@@ -1152,8 +1154,8 @@ static bool ensureParentDirs_(const String& absPath) {
   int slash = absPath.indexOf('/', 1);
   while (slash > 0 && slash <= lastSlash) {
     String dir = absPath.substring(0, slash);
-    if (dir.length() && !SD_MMC.exists(dir.c_str())) {
-      if (!SD_MMC.mkdir(dir.c_str())) {
+    if (dir.length() && !StorageFilesystem::card().exists(dir.c_str())) {
+      if (!StorageFilesystem::card().mkdir(dir.c_str())) {
         STOR_LOGW("saveTextFile: mkdir failed for %s\n", dir.c_str());
         return false;
       }
@@ -1162,8 +1164,8 @@ static bool ensureParentDirs_(const String& absPath) {
   }
 
   String parent = absPath.substring(0, lastSlash);
-  if (parent.length() && !SD_MMC.exists(parent.c_str())) {
-    if (!SD_MMC.mkdir(parent.c_str())) {
+  if (parent.length() && !StorageFilesystem::card().exists(parent.c_str())) {
+    if (!StorageFilesystem::card().mkdir(parent.c_str())) {
       STOR_LOGW("saveTextFile: mkdir failed for %s\n", parent.c_str());
       return false;
     }
@@ -1181,9 +1183,9 @@ bool StorageManager_saveTextFile(const char* path, const String& data) {
   // Normalize to absolute path (SD_MMC expects paths like "/config.txt")
   String absPath = (path[0] == '/') ? String(path) : (String("/") + path);
 
-  // StorageManager_begin() already did SD_MMC.begin() on this backend.
+  // StorageManager_begin() already did StorageFilesystem::card().begin() on this backend.
   // But we still guard against "no card".
-  if (SD_MMC.cardType() == CARD_NONE) {
+  if (StorageFilesystem::card().cardType() == CARD_NONE) {
     STOR_LOGW("saveTextFile: SD_MMC not mounted / no card\n");
     return false;
   }
@@ -1195,12 +1197,12 @@ bool StorageManager_saveTextFile(const char* path, const String& data) {
   String tmpPath = absPath + F(".tmp");
   String bakPath = absPath + F(".bak");
 
-  if (SD_MMC.exists(tmpPath.c_str()) && !SD_MMC.remove(tmpPath.c_str())) {
+  if (StorageFilesystem::card().exists(tmpPath.c_str()) && !StorageFilesystem::card().remove(tmpPath.c_str())) {
     STOR_LOGW("saveTextFile: remove stale temp failed for %s\n", tmpPath.c_str());
     return false;
   }
 
-  File f = SD_MMC.open(tmpPath.c_str(), FILE_WRITE);
+  File f = StorageFilesystem::card().open(tmpPath.c_str(), FILE_WRITE);
   if (!f) {
     STOR_LOGW("saveTextFile: SD_MMC open failed for %s\n", tmpPath.c_str());
     return false;
@@ -1213,34 +1215,34 @@ bool StorageManager_saveTextFile(const char* path, const String& data) {
   if (written != len) {
     STOR_LOGW("saveTextFile: SD_MMC short write (%u/%u)\n",
               (unsigned)written, (unsigned)len);
-    SD_MMC.remove(tmpPath.c_str());
+    StorageFilesystem::card().remove(tmpPath.c_str());
     return false;
   }
 
-  if (SD_MMC.exists(bakPath.c_str()) && !SD_MMC.remove(bakPath.c_str())) {
+  if (StorageFilesystem::card().exists(bakPath.c_str()) && !StorageFilesystem::card().remove(bakPath.c_str())) {
     STOR_LOGW("saveTextFile: remove stale backup failed for %s\n", bakPath.c_str());
-    SD_MMC.remove(tmpPath.c_str());
+    StorageFilesystem::card().remove(tmpPath.c_str());
     return false;
   }
 
-  const bool hadExisting = SD_MMC.exists(absPath.c_str());
-  if (hadExisting && !SD_MMC.rename(absPath.c_str(), bakPath.c_str())) {
+  const bool hadExisting = StorageFilesystem::card().exists(absPath.c_str());
+  if (hadExisting && !StorageFilesystem::card().rename(absPath.c_str(), bakPath.c_str())) {
     STOR_LOGW("saveTextFile: backup rename failed for %s\n", absPath.c_str());
-    SD_MMC.remove(tmpPath.c_str());
+    StorageFilesystem::card().remove(tmpPath.c_str());
     return false;
   }
 
-  if (!SD_MMC.rename(tmpPath.c_str(), absPath.c_str())) {
+  if (!StorageFilesystem::card().rename(tmpPath.c_str(), absPath.c_str())) {
     STOR_LOGW("saveTextFile: final rename failed for %s\n", absPath.c_str());
-    if (hadExisting && SD_MMC.exists(bakPath.c_str())) {
-      SD_MMC.rename(bakPath.c_str(), absPath.c_str());
+    if (hadExisting && StorageFilesystem::card().exists(bakPath.c_str())) {
+      StorageFilesystem::card().rename(bakPath.c_str(), absPath.c_str());
     }
-    SD_MMC.remove(tmpPath.c_str());
+    StorageFilesystem::card().remove(tmpPath.c_str());
     return false;
   }
 
-  if (hadExisting && SD_MMC.exists(bakPath.c_str())) {
-    SD_MMC.remove(bakPath.c_str());
+  if (hadExisting && StorageFilesystem::card().exists(bakPath.c_str())) {
+    StorageFilesystem::card().remove(bakPath.c_str());
   }
 
   return true;
@@ -1248,7 +1250,7 @@ bool StorageManager_saveTextFile(const char* path, const String& data) {
 
 bool StorageManager_saveStartupReport(const char* body, char* savedPath, size_t pathCapacity) {
   if (savedPath && pathCapacity) savedPath[0] = '\0';
-  if (!body || !s_sdMounted || SD_MMC.cardType() == CARD_NONE ||
+  if (!body || !s_sdMounted || StorageFilesystem::card().cardType() == CARD_NONE ||
       LoggingManager::isRunning() || I2CBusScheduler::isRunning()) return false;
   if (strlen(body) > 32768) return false;
 
@@ -1258,7 +1260,7 @@ bool StorageManager_saveStartupReport(const char* body, char* savedPath, size_t 
   for (unsigned slot = 0; slot < 32; ++slot) {
     char path[48];
     snprintf(path, sizeof(path), "/startup/boot-%02u.txt", slot);
-    File file = SD_MMC.open(path, FILE_READ);
+    File file = StorageFilesystem::card().open(path, FILE_READ);
     if (!file) continue;
     char header[80] = {};
     const int received = file.read(reinterpret_cast<uint8_t*>(header), sizeof(header) - 1);
@@ -1349,9 +1351,9 @@ static bool tryCreateLogFile_SDMMC_(const String& name, File& out) {
   String abs = name;
   if (!abs.startsWith("/")) abs = "/" + abs;
 
-  if (SD_MMC.exists(abs)) return false;
+  if (StorageFilesystem::card().exists(abs)) return false;
 
-  out = SD_MMC.open(abs, FILE_WRITE);
+  out = StorageFilesystem::card().open(abs, FILE_WRITE);
   if (!out) return false;
 
   // Ensure we start from an empty file even if FILE_WRITE appends on this FS.
@@ -2287,7 +2289,7 @@ void StorageManager_drainQueuedSamples() {
 }
 
 static bool metadataSidecarLooksComplete_(const String& path) {
-  File file = SD_MMC.open(path.c_str(), FILE_READ);
+  File file = StorageFilesystem::card().open(path.c_str(), FILE_READ);
   if (!file || file.isDirectory()) {
     if (file) file.close();
     return false;
@@ -2306,17 +2308,17 @@ static bool metadataSidecarLooksComplete_(const String& path) {
 }
 
 static bool writeLogMetadataSidecar_(const String& path, const LogMetadataContext& ctx) {
-  if (!path.length() || SD_MMC.cardType() == CARD_NONE) return false;
+  if (!path.length() || StorageFilesystem::card().cardType() == CARD_NONE) return false;
   if (!ensureParentDirs_(path)) return false;
 
   const String tempPath = path + F(".tmp");
   const String backupPath = path + F(".bak");
-  if (SD_MMC.exists(tempPath.c_str()) && !SD_MMC.remove(tempPath.c_str())) {
+  if (StorageFilesystem::card().exists(tempPath.c_str()) && !StorageFilesystem::card().remove(tempPath.c_str())) {
     STOR_LOGW("Metadata sidecar: could not remove stale temp file: %s\n", tempPath.c_str());
     return false;
   }
 
-  File file = SD_MMC.open(tempPath.c_str(), FILE_WRITE);
+  File file = StorageFilesystem::card().open(tempPath.c_str(), FILE_WRITE);
   if (!file) {
     STOR_LOGW("Metadata sidecar: open failed: %s\n", tempPath.c_str());
     return false;
@@ -2327,32 +2329,32 @@ static bool writeLogMetadataSidecar_(const String& path, const LogMetadataContex
   file.close();
   if (!writeOk || !metadataSidecarLooksComplete_(tempPath)) {
     STOR_LOGW("Metadata sidecar: generation or validation failed: %s\n", tempPath.c_str());
-    SD_MMC.remove(tempPath.c_str());
+    StorageFilesystem::card().remove(tempPath.c_str());
     return false;
   }
 
-  if (SD_MMC.exists(backupPath.c_str()) && !SD_MMC.remove(backupPath.c_str())) {
+  if (StorageFilesystem::card().exists(backupPath.c_str()) && !StorageFilesystem::card().remove(backupPath.c_str())) {
     STOR_LOGW("Metadata sidecar: could not remove stale backup: %s\n", backupPath.c_str());
-    SD_MMC.remove(tempPath.c_str());
+    StorageFilesystem::card().remove(tempPath.c_str());
     return false;
   }
 
-  const bool hadExisting = SD_MMC.exists(path.c_str());
-  if (hadExisting && !SD_MMC.rename(path.c_str(), backupPath.c_str())) {
+  const bool hadExisting = StorageFilesystem::card().exists(path.c_str());
+  if (hadExisting && !StorageFilesystem::card().rename(path.c_str(), backupPath.c_str())) {
     STOR_LOGW("Metadata sidecar: backup rename failed: %s\n", path.c_str());
-    SD_MMC.remove(tempPath.c_str());
+    StorageFilesystem::card().remove(tempPath.c_str());
     return false;
   }
-  if (!SD_MMC.rename(tempPath.c_str(), path.c_str())) {
+  if (!StorageFilesystem::card().rename(tempPath.c_str(), path.c_str())) {
     STOR_LOGW("Metadata sidecar: final rename failed: %s\n", path.c_str());
-    if (hadExisting && SD_MMC.exists(backupPath.c_str())) {
-      SD_MMC.rename(backupPath.c_str(), path.c_str());
+    if (hadExisting && StorageFilesystem::card().exists(backupPath.c_str())) {
+      StorageFilesystem::card().rename(backupPath.c_str(), path.c_str());
     }
-    SD_MMC.remove(tempPath.c_str());
+    StorageFilesystem::card().remove(tempPath.c_str());
     return false;
   }
-  if (hadExisting && SD_MMC.exists(backupPath.c_str())) {
-    SD_MMC.remove(backupPath.c_str());
+  if (hadExisting && StorageFilesystem::card().exists(backupPath.c_str())) {
+    StorageFilesystem::card().remove(backupPath.c_str());
   }
   return true;
 }
@@ -2551,7 +2553,7 @@ bool StorageManager_cardDetected() {
     return readCardDetectPin_();
   }
   if (!isSdmmcBackend()) return false;
-  return s_sdMounted && SD_MMC.cardType() != CARD_NONE;
+  return s_sdMounted && StorageFilesystem::card().cardType() != CARD_NONE;
 }
 
 bool StorageManager_cardDetectAvailable() {
@@ -2564,7 +2566,7 @@ bool StorageManager_cardDetectedCached() {
 
 bool StorageManager_isMounted() {
   if (!s_storage) return true;
-  return s_sdMounted && SD_MMC.cardType() != CARD_NONE;
+  return s_sdMounted && StorageFilesystem::card().cardType() != CARD_NONE;
 }
 
 bool StorageManager_remountIfPresent() {
@@ -2584,6 +2586,41 @@ bool StorageManager_readyForLogging() {
 
 const char* StorageManager_lastStatus() {
   return s_lastStatus;
+}
+
+bool StorageManager_requestExternalAccess() {
+  if (LoggingManager::isRunning() || loggingActive || !UploadModeManager::isActive() || !s_sdMounted) return false;
+  return StorageFilesystem::ownership().requestExternal();
+}
+
+bool StorageManager_cancelExternalAccess() {
+  return StorageFilesystem::ownership().cancelExternal();
+}
+
+bool StorageManager_reclaimLocalAccess() {
+#if defined(ARDUINO_ARCH_ESP32)
+  if (!StorageFilesystem::card().reclaim()) {
+    setStatus_("local remount failed");
+    return false;
+  }
+  s_sdMounted = false;
+  return mountSdmmc_();
+#else
+  return false;
+#endif
+}
+
+const char* StorageManager_ownershipStatus() {
+  using State = StorageOwnership::State;
+  switch (StorageFilesystem::ownership().state()) {
+    case State::Local: return "logger";
+    case State::Draining: return "waiting_for_local_transfers";
+    case State::Unmounting: return "unmounting";
+    case State::External: return "external";
+    case State::Reclaiming: return "reclaiming";
+    case State::Error: return "remount_failed";
+  }
+  return "unknown";
 }
 
 static uint32_t formatRawForCsv_(float raw) {
@@ -2731,6 +2768,14 @@ static void refreshValueColumnTypes_()
 
 // Background flush
 void StorageManager_loop() {
+#if defined(ARDUINO_ARCH_ESP32)
+  StorageFilesystem::card().service();
+#endif
+  if (!StorageFilesystem::ownership().localAvailable()) {
+    if (StorageFilesystem::ownership().state() == StorageOwnership::State::External) s_sdMounted = false;
+    setStatus_(StorageManager_ownershipStatus());
+    return;
+  }
   static unsigned long lastFlush = 0;
   unsigned long now = millis();
   static uint32_t s_rowCount = 0;
@@ -2760,10 +2805,10 @@ void StorageManager_loop() {
           LoggingManager::stop(
               LoggingManager::StopReason::SdCardRemoved,
               "sd_detect_absent");
-          SD_MMC.end();
+          StorageFilesystem::card().end();
           s_sdMounted = false;
         } else if (s_sdMounted) {
-          SD_MMC.end();
+          StorageFilesystem::card().end();
           s_sdMounted = false;
         }
       } else {

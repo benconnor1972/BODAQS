@@ -893,6 +893,27 @@ def load_import_source_config(path_or_dir: str | Path) -> ImportSourceConfig:
 
 
 class ImportSourceRunner:
+    def acquire_folder(self, folder: str | Path) -> Dict[str, Any]:
+        """Acquire card recordings for this source without consuming originals."""
+        from .import_agent_mounted_folder import acquire_mounted_folder
+
+        if self.source.source_type != SOURCE_TYPE_FILESYSTEM_ARCHIVE:
+            raise ValueError("Choose a local archive source for mounted-folder import")
+        selected = Path(folder).expanduser().resolve()
+        for local in (
+            self.source.source_root, self.source.artifacts_dir, self.source.fit_dir,
+            self.source.inbox_dir, self.source.staging_dir, self.source.done_dir,
+            self.source.failed_dir,
+        ):
+            if local.resolve() == selected or local.resolve().is_relative_to(selected):
+                raise ValueError("Import workspace and library must be outside the selected card folder")
+        with self.lock:
+            return acquire_mounted_folder(
+                selected, self.source.inbox_dir,
+                settle_time_s=self.source.settle_time_s,
+                max_files=self.source.max_archives_per_scan,
+            )
+
     def __init__(
         self,
         source: ImportSourceConfig,

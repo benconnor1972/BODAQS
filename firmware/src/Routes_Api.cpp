@@ -3,7 +3,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
-#include "SD_MMC.h"
+#include "StorageFilesystem.h"
 
 #include "ConfigManager.h"
 #include "DisplayManager.h"
@@ -54,7 +54,11 @@ static void sendError_(WebServer& srv, int statusCode, const char* error, const 
 }
 
 static bool requireUploadMode_(WebServer& srv) {
-  if (UploadModeManager::isActive()) return true;
+  if (UploadModeManager::isActive()) {
+    if (StorageFilesystem::ownership().localAvailable()) return true;
+    sendError_(srv, 409, "storage_externally_owned", "Local SD access is paused for external storage access.");
+    return false;
+  }
   sendError_(srv, 409, "upload_mode_required", "Upload mode is required for this endpoint.");
   return false;
 }
@@ -122,6 +126,7 @@ static void handleStatus_(WebServer& srv) {
   storage["card_detected"] = StorageManager_cardDetected();
   storage["mounted"] = StorageManager_isMounted();
   storage["status"] = StorageManager_lastStatus();
+  storage["ownership"] = StorageManager_ownershipStatus();
 
   JsonObject battery = doc["battery"].to<JsonObject>();
   battery["gauge_ok"] = PowerManager::fuelGaugeOk();
@@ -170,7 +175,7 @@ static void handleStatus_(WebServer& srv) {
 static void handleSessions_(WebServer& srv) {
   if (!requireUploadMode_(srv)) return;
 
-  if (SD_MMC.cardType() == CARD_NONE) {
+  if (StorageFilesystem::card().cardType() == CARD_NONE) {
     sendError_(srv, 503, "storage_unavailable", "SD storage is not available.");
     return;
   }
@@ -216,7 +221,7 @@ static void handleArchive_(WebServer& srv) {
     sendError_(srv, 400, "missing_session_id", "Missing required query argument: id.");
     return;
   }
-  if (SD_MMC.cardType() == CARD_NONE) {
+  if (StorageFilesystem::card().cardType() == CARD_NONE) {
     sendError_(srv, 503, "storage_unavailable", "SD storage is not available.");
     return;
   }
@@ -244,7 +249,7 @@ static void handleData_(WebServer& srv) {
     sendError_(srv, 400, "missing_session_id", "Missing required query argument: id.");
     return;
   }
-  if (SD_MMC.cardType() == CARD_NONE) {
+  if (StorageFilesystem::card().cardType() == CARD_NONE) {
     sendError_(srv, 503, "storage_unavailable", "SD storage is not available.");
     return;
   }
@@ -283,7 +288,7 @@ static bool readJsonBody_(WebServer& srv, JsonDocument& doc) {
 
 static void handleAck_(WebServer& srv) {
   if (!requireUploadMode_(srv)) return;
-  if (SD_MMC.cardType() == CARD_NONE) {
+  if (StorageFilesystem::card().cardType() == CARD_NONE) {
     sendError_(srv, 503, "storage_unavailable", "SD storage is not available.");
     return;
   }
@@ -362,7 +367,7 @@ static void addCleanupResult_(JsonDocument& doc, const UploadSessionCleanup::Cle
 
 static void handleDelete_(WebServer& srv) {
   if (!requireUploadMode_(srv)) return;
-  if (SD_MMC.cardType() == CARD_NONE) {
+  if (StorageFilesystem::card().cardType() == CARD_NONE) {
     sendError_(srv, 503, "storage_unavailable", "SD storage is not available.");
     return;
   }

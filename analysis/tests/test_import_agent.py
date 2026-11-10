@@ -2,6 +2,7 @@ import binascii
 import json
 import math
 import os
+import queue
 import re
 import shutil
 import stat
@@ -1357,6 +1358,94 @@ def test_run_sources_once_imports_archive_and_moves_it_to_done(tmp_path):
     assert manifest["source"]["archive_csv_member"] == "session_001.CSV"
     assert manifest["source"]["archive_log_metadata_member"] == "session_001.json"
     assert manifest["source"]["import_source_id"] == "source_a"
+
+
+def test_mounted_folder_acquisition_imports_local_copy_and_retains_original(tmp_path):
+    artifacts = tmp_path / "library"
+    workspace = _prepare_source(tmp_path, "usb", artifacts)
+    volume = tmp_path / "mounted_card"
+    volume.mkdir()
+    original = _write_session_archive(volume, stem="usb_session")
+    _set_old_mtime(original)
+    original_bytes = original.read_bytes()
+    runner = ImportSourceRunner(load_import_source_config(workspace))
+
+    acquired = runner.acquire_folder(volume)
+    assert len(acquired["copied"]) == 1
+    assert original.read_bytes() == original_bytes
+    report = runner.scan_once()
+    assert len(report["imported"]) == 1
+    assert not report["failed"]
+    assert original.read_bytes() == original_bytes
+    assert list((workspace / "done").glob("*.zip"))
+
+    runner.acquire_folder(volume)
+    repeated = runner.scan_once()
+    assert not repeated["imported"]
+    assert len(repeated["skipped_succeeded"]) == 1
+
+
+def test_mounted_folder_failure_leaves_no_importable_partial_and_can_retry(tmp_path, monkeypatch):
+    source = _prepare_source(tmp_path, "usb", tmp_path / "library")
+    card = tmp_path / "card"
+    card.mkdir()
+    recording = _write_session_archive(card, stem="retry")
+    _set_old_mtime(recording)
+    original_bytes = recording.read_bytes()
+    runner = ImportSourceRunner(load_import_source_config(source))
+
+    with monkeypatch.context() as context:
+        context.setattr(os, "fsync", lambda _: (_ for _ in ()).throw(OSError("disk full")))
+        result = runner.acquire_folder(card)
+    assert result["errors"]
+    assert not list((source / "inbox").iterdir())
+    assert not runner.scan_once()["imported"]
+    assert recording.read_bytes() == original_bytes
+    assert runner.acquire_folder(card)["copied"]
+    assert len(runner.scan_once()["imported"]) == 1
+
+
+def test_mounted_folder_rejects_runtime_directories_on_card(tmp_path):
+    source = _prepare_source(tmp_path, "usb", tmp_path / "library")
+    runner = ImportSourceRunner(load_import_source_config(source))
+    with pytest.raises(ValueError, match="outside"):
+        runner.acquire_folder(tmp_path)
+
+
+def test_mounted_folder_defers_recent_files_and_imports_bdq(tmp_path):
+    source = _prepare_source(tmp_path, "usb", tmp_path / "library")
+    card = tmp_path / "card"
+    card.mkdir()
+    recording = _write_bdq_input(card, stem="bdq_usb")
+    runner = ImportSourceRunner(load_import_source_config(source))
+    assert runner.acquire_folder(card)["deferred"] == [recording.name]
+    assert not runner.scan_once()["imported"]
+    _set_old_mtime(recording)
+    runner.acquire_folder(card)
+    assert len(runner.scan_once()["imported"]) == 1
+    assert recording.exists()
+
+
+def test_mounted_folder_manager_worker_acquires_and_imports_selected_source(tmp_path):
+    workspace = _prepare_source(tmp_path, "usb", tmp_path / "library")
+    card = tmp_path / "card"
+    card.mkdir()
+    original = _write_session_archive(card, stem="manager_usb")
+    _set_old_mtime(original)
+    supervisor = ImportAgentSupervisor([load_import_source_config(workspace)])
+    window = object.__new__(import_agent_setup_module.ImportAgentManagerWindow)
+    window.event_queue = queue.Queue()
+
+    window._run_import_now_worker(supervisor, None, ("usb", card))
+
+    events = []
+    while not window.event_queue.empty():
+        events.append(window.event_queue.get_nowait())
+    completed = next(event for event in events if event["kind"] == "import_now_complete")
+    assert completed["report"]["totals"]["imported"] == 1
+    assert len(completed["report"]["mounted_folder_acquisition"]["copied"]) == 1
+    assert events[-1]["kind"] == "import_now_finished"
+    assert original.exists()
 
 
 def test_processed_archive_retention_uses_processed_time_and_sweeps_existing_files(tmp_path):

@@ -3,6 +3,7 @@
 #include "DebugLog.h"
 #include "UI.h"
 #include "WiFiManager.h"
+#include "StorageManager.h"
 
 #define UPLOAD_LOGI(...) LOGI_TAG("Upload", __VA_ARGS__)
 #define UPLOAD_LOGW(...) LOGW_TAG("Upload", __VA_ARGS__)
@@ -52,6 +53,12 @@ void UploadModeManager::exit() {
     return;
   }
 
+  if (!StorageFilesystem::ownership().localAvailable() &&
+      !StorageManager_cancelExternalAccess()) {
+    UI::println("Storage reclaim required before exit.", "Storage busy", UI::TARGET_BOTH, UI::LVL_WARN, 1500, 2);
+    return;
+  }
+
   s_active = false;
   UPLOAD_LOGI("Upload mode exited\n");
   UI::println("Upload mode exited.", "Upload off", UI::TARGET_BOTH, UI::LVL_INFO, 1200, 2);
@@ -62,7 +69,7 @@ void UploadModeManager::exit() {
 bool UploadModeManager::toggle() {
   if (s_active) {
     exit();
-    return false;
+    return s_active;
   }
   return enter();
 }
