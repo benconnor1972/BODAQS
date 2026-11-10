@@ -4,6 +4,15 @@ Implemented after the first real single-IMU recording milestone. Controlled SD
 stall tests remain deferred; this change does not expand IMU admission or change
 the selected master/node firmware.
 
+Physical status (10 November 2026): the WREG-only candidate failed the first
+counter-bearing test. `261110_091939.bdq` matches the optimized build08:28:23;
+each ADC made904 attempts with904 timeouts and zero successful readings. The
+preceding baseline-build08:31:00 v2 file omitted ADC counters. This does not
+isolate format from firmware changes. Hold the candidate pending a short
+same-format baseline control; command-count savings are not a working ADC result.
+The sections below describe the implementation and host model, not physical
+qualification of WREG-only triggering.
+
 ## Conversion trigger
 
 Previously each conversion used three shared-SPI transactions: full four-register
