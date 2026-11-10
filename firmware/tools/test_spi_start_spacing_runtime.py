@@ -12,6 +12,7 @@ def main():
     parser.add_argument("--cs-setup", action="store_true", help="Check CS-to-clock setup and ordinary caller isolation")
     parser.add_argument("--without-setup-delay",action="store_true",help="Negative proof: remove only the production setup wait")
     parser.add_argument("--capture-disabled",action="store_true")
+    parser.add_argument("--boundary-trace",action="store_true")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix="bodaqs-spi-spacing-") as temp:
@@ -177,6 +178,31 @@ int main() {
  puts("production CS setup: slave first-byte readiness, locked/selected setup, ADC isolation, pacing and wrap PASS");
 '''))
         bus=args.bus_source or root / 'src/SharedSpiBus.cpp'
+        if args.boundary_trace:
+            assert not args.capture_disabled
+            cpp.write_text(cpp.read_text().replace(' // CS_SETUP_CHECK','''
+ SpiTransactionContext before,after;
+ assert(SharedSpiBus::transfer(4,settings,tx,rx,256,10,0,0,&before));
+ assert(before.deviceSequenceValid && before.deviceSequence>1);
+ assert(SharedSpiBus::transfer(5,settings,tx,rx,6));
+ assert(SharedSpiBus::transfer(4,settings,tx,rx,256,10,0,0,&after));
+ assert(after.deviceSequence==before.deviceSequence+1); // ADC has its own counter
+ before=after;
+ assert(SharedSpiBus::transfer(4,settings,tx,rx,84)); // no context requested
+ assert(SharedSpiBus::transfer(4,settings,tx,rx,256,10,0,0,&after));
+ assert(after.deviceSequence==before.deviceSequence+2);
+ SharedSpiBus::testSeedSequence(4,UINT32_MAX-1);
+ assert(SharedSpiBus::transfer(4,settings,tx,rx,256,10,0,0,&after));
+ assert(!after.deviceSequenceValid && after.deviceSequence==UINT32_MAX);
+ assert(SharedSpiBus::transfer(4,settings,tx,rx,256,10,0,0,&after));
+ assert(!after.deviceSequenceValid && after.deviceSequence==UINT32_MAX);
+ puts("actual bus: per-CS identity, foreign same-CS callers, saturation PASS");
+ // CS_SETUP_CHECK
+''').replace('int main() {','namespace SharedSpiBus {void testSeedSequence(unsigned,uint32_t);}\nint main() {'))
+            # Test-only seed in the real translation unit reaches the otherwise
+            # private counter; production has no reset/setter interface.
+            injected=bus.read_text()+ '\nnamespace SharedSpiBus {void testSeedSequence(unsigned cs,uint32_t n) {s_deviceSequence[cs]=n;}}\n'
+            bus=temp/'trace-bus.cpp';bus.write_text(injected)
         if args.without_setup_delay:
             assert args.cs_setup
             text=bus.read_text();line='  if(csSetupUs) delayMicroseconds(csSetupUs);'
@@ -186,7 +212,7 @@ int main() {
             bus=temp/'without-setup.cpp';bus.write_text(changed)
         exe = temp / "fixture.exe"
         subprocess.run([args.compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
-                        "-DESP32", f"-DBODAQS_MEASUREMENT_REPLY_CAPTURE={int(not args.capture_disabled)}", "-I", str(temp), "-I", str(root / "src"),
+                        "-DESP32", f"-DBODAQS_MEASUREMENT_REPLY_CAPTURE={int(not args.capture_disabled)}", f"-DBODAQS_SPI_BOUNDARY_TRACE={int(args.boundary_trace)}", "-I", str(temp), "-I", str(root / "src"),
                         str(cpp), str(bus), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
 

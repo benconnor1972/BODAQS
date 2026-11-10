@@ -51,6 +51,18 @@ endif
 endif
 
 NAME := bodaqs_can_master
+SPI_BOUNDARY_TRACE ?= 0
+ifneq ($(SPI_BOUNDARY_TRACE),0)
+ifneq ($(SPI_BOUNDARY_TRACE),1)
+$(error SPI_BOUNDARY_TRACE must be 0 or 1)
+endif
+ifneq ($(SPI_MEASUREMENT_PROFILE),first-recording)
+$(error SPI_BOUNDARY_TRACE requires first-recording)
+endif
+ifneq ($(SPI_TX_PRIME),1)
+$(error SPI_BOUNDARY_TRACE requires SPI_TX_PRIME=1)
+endif
+endif
 SPI_BENCH_MODE ?= 0
 ifneq ($(SPI_BENCH_MODE),0)
 ifneq ($(SPI_BENCH_MODE),1)
@@ -129,6 +141,7 @@ CFLAGS := -I../include \
     -DBODAQS_MASTER_SPI_RX_CAPACITY=$(SPI_RX_CAPACITY) \
     -DBODAQS_MASTER_SPI_TX_PRIME=$(SPI_TX_PRIME) \
     -DBODAQS_CAN_SPI_BENCH_MODE=$(SPI_BENCH_MODE) \
+    -DBODAQS_SPI_BOUNDARY_TRACE=$(SPI_BOUNDARY_TRACE) \
     -Werror \
     $(CFLAGS_EXTRA)
 

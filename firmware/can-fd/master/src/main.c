@@ -12,6 +12,9 @@
 #include "master_spi_priming.h"
 #include "ti_msp_dl_config.h"
 #include "bodaqs_can_link_ti.h"
+#if BODAQS_SPI_BOUNDARY_TRACE
+#include "bodaqs_spi_trace.h"
+#endif
 
 #define NODE_STALE_AFTER_MS (3000U)
 #define DISCOVERY_INTERVAL_MS (5000U)
@@ -225,6 +228,37 @@ typedef struct { uint32_t generation; uint64_t context; } SpiRetirement;
 static volatile SpiRetirement gSpiRetirementRequest, gSpiRetirementProof;
 static volatile bool gSpiRetiring;
 static volatile bool gSpiTransmitReady;
+#if BODAQS_SPI_BOUNDARY_TRACE
+/* Startup then physical-retirement owner only; immutable after frozen. */
+BodaqsSpiTrace gMasterSpiTrace BODAQS_SPI_BUFFER_STORAGE;
+static uint8_t gSpiTracePostTx[256] BODAQS_SPI_BUFFER_STORAGE;
+static BodaqsSpiTraceHardware gSpiTraceEndHardware;
+static BodaqsSpiTraceHardware spi_trace_hardware(void) {
+    BodaqsSpiTraceHardware h;
+    h.tick=bodaqs_master_timing_clock(NULL,&h.epoch);
+    h.stat=SPI_A8_INST->STAT;h.ctl0=SPI_A8_INST->CTL0;h.ctl1=SPI_A8_INST->CTL1;
+    h.tx_src=DL_DMA_getSrcAddr(DMA,DMA_SPI_TX_CHAN_ID);
+    h.tx_dst=DL_DMA_getDestAddr(DMA,DMA_SPI_TX_CHAN_ID);
+    h.rx_src=DL_DMA_getSrcAddr(DMA,DMA_SPI_RX_CHAN_ID);
+    h.rx_dst=DL_DMA_getDestAddr(DMA,DMA_SPI_RX_CHAN_ID);
+    h.tx_remaining=DL_DMA_getTransferSize(DMA,DMA_SPI_TX_CHAN_ID);
+    h.rx_remaining=DL_DMA_getTransferSize(DMA,DMA_SPI_RX_CHAN_ID);
+    return h;
+}
+static void spi_trace_barrier(void) { __DMB(); }
+static void spi_trace_cost(uint32_t started,uint32_t epoch,uint32_t *maximum) {
+    uint32_t ended_epoch,ended=bodaqs_master_timing_clock(NULL,&ended_epoch);
+    if(!epoch || epoch!=ended_epoch) {gMasterSpiTrace.overflow=1;return;}
+    const uint32_t elapsed=ended-started;if(elapsed>*maximum)*maximum=elapsed;
+}
+static void spi_trace_arm(void) {
+    if(gMasterSpiTrace.frozen || gMasterSpiTrace.overflow)return;
+    BodaqsSpiTraceHardware h=spi_trace_hardware();
+    bodaqs_spi_trace_arm(&gMasterSpiTrace,gTransmitSlots[gTransmitIndex],
+        (uint32_t)(uintptr_t)gTransmitSlots[gTransmitIndex],&h);
+    spi_trace_cost(h.tick,h.epoch,&gMasterSpiTrace.arm_max_us);
+}
+#endif
 /* End SPI adapter ownership storage. */
 static volatile uint32_t gUptimeMs;
 static volatile bool gDiscoveryDue;
@@ -763,6 +797,9 @@ static void arm_spi_slot(void)
     __DSB();
     DL_SPI_enable(SPI_A8_INST);
 #endif
+#if BODAQS_SPI_BOUNDARY_TRACE
+    spi_trace_arm();
+#endif
 }
 
 
@@ -1001,6 +1038,9 @@ int main(void)
     gCanRecoveryDue = false;
     gCanWasBusOff = false;
     gLoggerCommunicationEstablished = false;
+#if BODAQS_SPI_BOUNDARY_TRACE
+    bodaqs_spi_trace_init(&gMasterSpiTrace,gService.control.master_boot_id);
+#endif
     arm_spi_slot();
 
     /* Prepare the trunk supply, but leave both branches off until the logger
@@ -1200,6 +1240,14 @@ static void retire_spi_boundary(void)
         DL_GPIO_readPins(GPIO_SPI_A8_CS_PORT, GPIO_SPI_A8_CS_PIN) == 0U) {
         gSpiRetiring=false; return;
     }
+#if BODAQS_SPI_BOUNDARY_TRACE
+    const bool trace_active=!gMasterSpiTrace.frozen && !gMasterSpiTrace.overflow;
+    if(trace_active) {
+        gSpiTraceEndHardware=spi_trace_hardware();
+        /* Before fence rewriting or a selected-buffer swap. DMA only reads TX. */
+        memcpy(gSpiTracePostTx,gTransmitSlots[gTransmitIndex],256);
+    }
+#endif
     DL_DMA_disableChannel(DMA, DMA_SPI_RX_CHAN_ID);
     DL_DMA_disableChannel(DMA, DMA_SPI_TX_CHAN_ID);
     /* Snapshot the owner-published identity, never partially updated service
@@ -1215,6 +1263,15 @@ static void retire_spi_boundary(void)
     length += DL_SPI_drainRXFIFO8(SPI_A8_INST,
         &gReceiveSlots[gReceiveIndex][length], (uint32_t)remaining);
     if (DL_SPI_drainRXFIFO8(SPI_A8_INST, &excess, 1U)) length = BODAQS_MASTER_TRANSFER_BYTES+1U;
+#if BODAQS_SPI_BOUNDARY_TRACE
+    const bool trace_marker=bodaqs_spi_trace_end(&gMasterSpiTrace,gSpiTracePostTx,
+        gReceiveSlots[gReceiveIndex],length,&gSpiTraceEndHardware,spi_trace_barrier);
+    if(trace_active && !gMasterSpiTrace.frozen && !gMasterSpiTrace.overflow)
+        spi_trace_cost(gSpiTraceEndHardware.tick,gSpiTraceEndHardware.epoch,&gMasterSpiTrace.end_max_us);
+    /* The diagnostic marker has no application semantics. Physical reset,
+     * selected publication and retirement proof still follow this CS. */
+    if(!trace_marker) {
+#endif
     if(gSpiReceiveQueue.depth<gSpiReceiveQueue.capacity) {
         gSpiReceiveLengths[gSpiReceiveQueue.tail]=(uint16_t)length;
 #if defined(BODAQS_MASTER_QUEUE_TIMING) && BODAQS_MASTER_QUEUE_TIMING
@@ -1223,6 +1280,9 @@ static void retire_spi_boundary(void)
 #endif
     }
     (void)bodaqs_record_queue_push(&gSpiReceiveQueue,gReceiveSlots[gReceiveIndex]);
+#if BODAQS_SPI_BOUNDARY_TRACE
+    }
+#endif
     /* Publish only a fully prepared response at a physical boundary. Parsing,
      * control dispatch and all ownership changes remain in the main loop. */
     if (gSpiTransmitReady) {

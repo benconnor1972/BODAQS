@@ -16,6 +16,9 @@ SharedSpiBus::Diagnostics s_diagnostics;
 // Every nonnegative int8_t CS value has a stable slot; no eviction can erase
 // another device's pacing origin. Access only under the shared bus mutex.
 bool s_haveTransactionStart[128] = {};
+#if defined(BODAQS_SPI_BOUNDARY_TRACE) && BODAQS_SPI_BOUNDARY_TRACE
+uint32_t s_deviceSequence[128] = {};
+#endif
 uint32_t s_lastTransactionStartUs[128] = {};
 #if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
 SpiTransactionContext s_previousTransaction;
@@ -120,6 +123,11 @@ bool transfer(
   observed.previousBytes=s_previousTransaction.bytes;
   observed.previousCommand=s_previousTransaction.command;
   observed.previousCommandValid=s_previousTransaction.commandValid;
+#if defined(BODAQS_SPI_BOUNDARY_TRACE) && BODAQS_SPI_BOUNDARY_TRACE
+  if(s_deviceSequence[cs]!=UINT32_MAX)++s_deviceSequence[cs];
+  observed.deviceSequence=s_deviceSequence[cs];
+  observed.deviceSequenceValid=s_deviceSequence[cs]!=UINT32_MAX;
+#endif
 #endif
   if(csSetupUs) delayMicroseconds(csSetupUs);
 #if defined(ESP32)

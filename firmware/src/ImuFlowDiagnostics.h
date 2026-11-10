@@ -38,12 +38,18 @@ inline bool active=false,haveFirstLoss=false,haveFinished=false;
 inline MeasurementReplyCapture liveReplies,finishedReplies;
 // Acquisition owner only. No allocation, serialization or logging in this path.
 inline void rejectedReply(uint64_t context,uint32_t slot,uint8_t kind,const uint8_t* bytes,
-                          uint8_t reason=0,const SpiTransactionContext& bus={}) {
+                          uint8_t reason=0,const SpiTransactionContext& bus={},const uint8_t* request=nullptr) {
   if(!active || live.context!=context || liveReplies.count==MeasurementReplyCapture::capacity) return;
   auto& entry=liveReplies.entries[liveReplies.count++];
   entry.slot=slot;entry.requestKind=kind;
   entry.decodeReason=reason;entry.bus=bus;
   for(unsigned i=0;i<MeasurementReplyCapture::replyBytes;++i) entry.reply[i]=bytes[i];
+#if defined(BODAQS_SPI_BOUNDARY_TRACE) && BODAQS_SPI_BOUNDARY_TRACE
+  entry.requestValid=request!=nullptr;
+  if(request)for(unsigned i=0;i<256;++i)entry.request[i]=request[i];
+#else
+  (void)request;
+#endif
 }
 #endif
 inline size_t reservedBytes() {

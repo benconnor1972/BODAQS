@@ -71,7 +71,7 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--validation-scope", choices=("full", "logger", "master"), default="full",
                         help="Logger scope requires declared unchanged peer images; no full-suite claim")
     parser.add_argument("--reuse-peers", type=Path, help="bodaqs.peer-images.v1 JSON with immutable image paths/hashes")
-    parser.add_argument("--experiment",choices=("spi-tx-prime-ab","spi-mode-ab"))
+    parser.add_argument("--experiment",choices=("spi-tx-prime-ab","spi-mode-ab","spi-boundary-trace"))
     parser.add_argument("--fixed-bundle",type=Path,help="Sealed r5/r6 bundle: preserve exact reference logger/node/master")
     parser.add_argument("--review-result", type=Path, help="bodaqs.review.v1 source-bound result")
     parser.add_argument("--review-base", help="Exact commit reviewed against HEAD")
@@ -135,10 +135,11 @@ def plan(args: argparse.Namespace, output: Path) -> list[dict]:
         for label,enabled in (("A",0),("B",1)):
             commands.append(ti_step("master","acquisition","master-"+label,[f"SPI_TX_PRIME={enabled}"]))
         return commands
-    if args.experiment=="spi-mode-ab":
-        for mode in (0,1):
-            label=f"mode{mode}"
-            commands.append(ti_step("master","acquisition","master-"+label,["SPI_TX_PRIME=1",f"SPI_BENCH_MODE={mode}"]))
+    if args.experiment in ("spi-mode-ab","spi-boundary-trace"):
+        trace=args.experiment=="spi-boundary-trace"
+        for mode in ((0,) if trace else (0,1)):
+            label="trace" if trace else f"mode{mode}"
+            commands.append(ti_step("master","acquisition","master-"+label,["SPI_TX_PRIME=1",f"SPI_BENCH_MODE={mode}",*(["SPI_BOUNDARY_TRACE=1"] if trace else [])]))
             logger_env=f"bodaqs_s3_mini_n4r2_imu_adc_{label}"
             folder=f"firmware/.pio/build/{logger_env}"
             commands.append(step("contract-"+label,[sys.executable,"firmware/tools/collect_spi_contract.py",
@@ -173,6 +174,25 @@ def load_fixed_bundle(bundle:Path,experiment:str="spi-tx-prime-ab") -> dict:
     """
     bundle=bundle.resolve();path=bundle/"BUILD_MANIFEST.json"
     value=json.loads(path.read_text(encoding="utf-8"))
+    if experiment=="spi-boundary-trace":
+        if value.get("status")!="passed" or value.get("candidate_profile")!="mixed-diagnostic" or value.get("experiment")!="spi-mode-ab":
+            raise ValueError("Boundary trace requires the passed r7 mode bundle")
+        selected=value.get("variants",{}).get("mode0",{})
+        if selected.get("spi_mode")!=0 or selected.get("spi_tx_prime") is not True:
+            raise ValueError("Boundary trace rollback requires r7 primed mode0")
+        images=[]
+        for role,key in (("logger","logger"),("rollback-master","master"),("node",None)):
+            matches=([a for a in value["artifacts"] if a.get("role")=="node"] if key is None else
+                     [a for a in value["artifacts"] if a["path"]==selected[key]["path"] and a["sha256"]==selected[key]["sha256"]])
+            if len(matches)!=1:raise ValueError("Missing or duplicate r7 fixed artifact")
+            image=matches[0];source=(bundle/image["path"]).resolve()
+            if bundle not in source.parents or sha256(source)!=image["sha256"]:raise ValueError("r7 fixed image path/hash mismatch")
+            provenance=([a for a in value["fixed_bundle"]["images"] if a["role"]=="node"] if key is None else [])
+            if key is None and len(provenance)!=1:raise ValueError("Missing r7 node provenance")
+            images.append({"role":role,"path":image["path"],"sha256":image["sha256"],
+                           "source_commit":provenance[0].get("source_commit") if key is None else value["source"]["commit"]})
+        return {"manifest_sha256":sha256(path),"bundle":str(bundle),"images":images,
+                "firmware_name":"bodaqs_a8_imu_adc_mode0_r7","configuration":"operator_preserves_same_mixed_configuration"}
     if experiment=="spi-mode-ab" and value.get("experiment")!="spi-tx-prime-ab":
         raise ValueError("Mode comparison requires the sealed r6 primed-master bundle, not r5")
     if value.get("experiment")=="spi-tx-prime-ab":
@@ -286,6 +306,8 @@ print(f'Validated {len(required)} Python test dependency versions/imports')
                  "print('\\n'.join(sorted(str(d.metadata['Name'])+'=='+d.version for d in m.distributions())))"],
                 [args.cxx, "--version"], [args.cc, "--version"], [args.make, "--version"],
                 [args.pio, "--version"]]
+    if args.experiment=="spi-boundary-trace":
+        versions.append([shutil.which("node") or "node","--version"])
     if args.mode != "host":
         compiler = args.ti_compiler / "bin" / ("tiarmclang.exe" if os.name == "nt" else "tiarmclang")
         versions += [[str(compiler), "--version"], [str(args.sysconfig), "--version"]]
@@ -322,7 +344,7 @@ def main() -> int:
     if args.experiment:
         if args.mode!="candidate" or args.profile!="mixed-diagnostic" or not args.fixed_bundle or args.reuse_peers:
             raise SystemExit("SPI comparison requires candidate/mixed-diagnostic, --fixed-bundle and no --reuse-peers")
-        if args.experiment=="spi-mode-ab" and args.validation_scope!="full":
+        if args.experiment in ("spi-mode-ab","spi-boundary-trace") and args.validation_scope!="full":
             raise SystemExit("Mode comparison changes both endpoints and requires full validation scope")
     elif args.fixed_bundle or args.validation_scope=="master":
         raise SystemExit("Fixed bundle/master-only scope requires an explicit experiment")
@@ -462,10 +484,11 @@ def main() -> int:
                 variants[variant]={"spi_tx_prime":enabled,"path":image["path"],"sha256":image["sha256"]}
             if variants["A"]["sha256"]==variants["B"]["sha256"]:raise RuntimeError("A/B images are identical; priming control was not built")
             manifest["variants"]=variants
-        if args.experiment=="spi-mode-ab":
+        if args.experiment in ("spi-mode-ab","spi-boundary-trace"):
             variants={}
-            for mode in (0,1):
-                label=f"mode{mode}"
+            trace=args.experiment=="spi-boundary-trace"
+            for mode in ((0,) if trace else (0,1)):
+                label="trace" if trace else f"mode{mode}"
                 def artifact(path):
                     selected=next((a for a in manifest["artifacts"] if a["path"]==path),None)
                     if selected is None:raise RuntimeError("Missing paired mode artifact: "+path)
@@ -473,7 +496,7 @@ def main() -> int:
                 variants[label]={"spi_mode":mode,"spi_tx_prime":True,
                     "master":artifact(f"artifacts/master-{label}/bodaqs_can_master.out"),
                     "logger":artifact(f"artifacts/logger-{label}/firmware.bin")}
-                expected_name=f"bodaqs_a8_imu_adc_{label}_r7"
+                expected_name="bodaqs_a8_imu_adc_trace_r8" if trace else f"bodaqs_a8_imu_adc_{label}_r7"
                 if expected_name.encode() not in (output/variants[label]["logger"]["path"]).read_bytes():
                     raise RuntimeError("Logger binary is missing its selected mode identity")
                 recipe=json.loads((output/f"artifacts/logger-{label}/identity/build-recipe.json").read_text(encoding="utf-8"))
@@ -484,7 +507,7 @@ def main() -> int:
                 source=boot_app0_path()
                 target=output/f"artifacts/logger-{label}/boot_app0.bin";shutil.copyfile(source,target)
                 manifest["artifacts"].append({"path":target.relative_to(output).as_posix(),"sha256":sha256(target),"bytes":target.stat().st_size})
-            for role in ("master","logger"):
+            for role in (() if trace else ("master","logger")):
                 if variants["mode0"][role]["sha256"]==variants["mode1"][role]["sha256"]:
                     raise RuntimeError("Mode0/1 images are identical: "+role)
             manifest["variants"]=variants
@@ -503,8 +526,13 @@ def main() -> int:
         if (output/"SPI_SOURCE_CONTRACT.json").exists():
             manifest["bus_contract"]=json.loads((output/"SPI_SOURCE_CONTRACT.json").read_text(encoding="utf-8"))
         if args.mode=="candidate" and args.experiment:
-            runbook="CAN-FD_SPI_Mode_Bench.md" if args.experiment=="spi-mode-ab" else "CAN-FD_SPI_TX_Priming_Bench.md"
+            runbook={"spi-mode-ab":"CAN-FD_SPI_Mode_Bench.md","spi-boundary-trace":"CAN-FD_SPI_Boundary_Trace_Runbook.md"}.get(args.experiment,"CAN-FD_SPI_TX_Priming_Bench.md")
             shutil.copyfile(ROOT/"docs/firmware"/runbook,output/"RUNBOOK.md")
+            if args.experiment=="spi-boundary-trace":
+                shutil.copyfile(ROOT/"firmware/tools/export_spi_trace.js",output/"export_spi_trace.js")
+                shutil.copyfile(ROOT/"firmware/can-fd/master/ticlang/MSPM0G3518_XDS110.ccxml",output/"MASTER_TARGET.ccxml")
+                manifest["variants"]["trace"]["boundary_trace_version"]=1
+                manifest["variants"]["trace"]["boundary_trace_bytes"]=7328
         if args.mode == "candidate" and args.profile!="production" and not args.experiment:
             runbook="Bench_Automation.md" if args.profile=="mixed-diagnostic" else "CAN-FD_First_Recording_Runbook.md"
             extras=[(ROOT / "docs/firmware" / runbook, "RUNBOOK.md"),
@@ -539,7 +567,8 @@ def main() -> int:
              "Host validation only; no target images or source archive were produced.\n") +
             "No devices were accessed.\n"
             "Inspect BUILD_MANIFEST.json status and logs before using artifacts.\n" +
-            ("Paired mode trial: select BOTH logger and master from the same variant. Keep fixed node. See RUNBOOK.md.\n" if args.experiment=="spi-mode-ab" else
+            ("Matched r8 trace pair: flash BOTH logger and master manually. Keep fixed node. See RUNBOOK.md.\n" if args.experiment=="spi-boundary-trace" else
+             "Paired mode trial: select BOTH logger and master from the same variant. Keep fixed node. See RUNBOOK.md.\n" if args.experiment=="spi-mode-ab" else
              "Master-only A/B; keep fixed r5 logger/node installed. See RUNBOOK.md and variants in BUILD_MANIFEST.json.\n" if args.experiment else
              "Both TI profiles are separate artifacts; both endpoints must match.\n"
              "A8 images are separate bootloader/partition/application outputs, not a merged flash image.\n"

@@ -48,6 +48,7 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_master_timing_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_measurement_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_measurement_runtime.py --reply-capture --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_measurement_runtime.py --reply-capture --boundary-trace --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_measurement_reply_replay.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_measurement_decode_runtime.py --compiler "$(CXX)"
 	$(PYTHON) -m unittest discover -s ../tools -p test_bench_tools.py
@@ -60,6 +61,7 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_measurement_v2_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_master_phase_timing_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --boundary-trace --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --cs-setup --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --smoke --v2 --start-spacing-us 500 --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --smoke --v2 --start-spacing-us 500 --flow-diagnostics --compiler "$(CXX)"

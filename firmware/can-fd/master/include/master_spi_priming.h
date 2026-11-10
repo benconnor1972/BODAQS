@@ -14,4 +14,7 @@
 #if BODAQS_CAN_SPI_BENCH_MODE && !BODAQS_MASTER_SPI_TX_PRIME
 #error "Mode1 comparison keeps TX priming enabled"
 #endif
+#if BODAQS_SPI_BOUNDARY_TRACE && !BODAQS_MASTER_SPI_TX_PRIME
+#error "SPI boundary trace keeps TX priming enabled"
+#endif
 #endif

@@ -25,10 +25,12 @@ def function(text,name):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cc",default="gcc")
+    parser.add_argument("--boundary-trace",action="store_true")
     parser.add_argument("--negative",choices=("missing-preload","duplicate-prefix","early-enable","missing-mode","enabled-mode"))
     args=parser.parse_args()
     root=Path(__file__).resolve().parents[1]
-    arm=function((root/"src/main.c").read_text(encoding="utf-8"),"arm_spi_slot")
+    production=(root/"src/main.c").read_text(encoding="utf-8")
+    arm=function(production,"arm_spi_slot")
     # No semantic mutation: pointers must fit the native host's SDK stand-in.
     assert arm.count("(uint32_t)")==4
     arm=arm.replace("(uint32_t)","(uintptr_t)")
@@ -54,7 +56,7 @@ def main():
 #define DMA 0
 #define DMA_SPI_RX_CHAN_ID 0
 #define DMA_SPI_TX_CHAN_ID 1
-static struct { uint8_t TXDATA,RXDATA; } registers;
+static struct { uint8_t TXDATA,RXDATA; uint32_t STAT,CTL0,CTL1; } registers;
 #define SPI_A8_INST (&registers)
 static uint8_t gTransmitSlots[2][256],gReceiveSlots[2][256];
 static unsigned gTransmitIndex,gReceiveIndex;
@@ -73,6 +75,8 @@ static void DL_SPI_setFrameFormat(void *p,unsigned value) {(void)p;assert(!spi_e
 static void DL_SPI_transmitData8(void *p,uint8_t b) {(void)p;assert(!spi_enabled && !dma_enabled[1] && !fifo_count);fifo[fifo_count++]=b;++prefix_writes;}
 static void __DSB(void) {++barriers;}
 static void DL_SPI_enable(void *p) {(void)p;assert(fifo_count==1 && barriers);assert(dma_enabled[0] && dma_enabled[1]);spi_enabled=true;}
+static unsigned traced_arms;
+static void spi_trace_arm(void) {assert(spi_enabled && dma_enabled[0] && dma_enabled[1]);++traced_arms;}
 // ACTUAL_ARM
 static void reset_hardware(void) {
  memset(source,0,sizeof source);memset(destination,0,sizeof destination);memset(remaining,0,sizeof remaining);
@@ -107,6 +111,9 @@ int main(void) {
   uint8_t before[2][256];memcpy(before,gTransmitSlots,sizeof before);
   memset(gReceiveSlots,0xaa,sizeof gReceiveSlots);
   arm_spi_slot();
+#if BODAQS_SPI_BOUNDARY_TRACE
+  assert(traced_arms==trial+2);
+#endif
   assert(phase==BODAQS_CAN_SPI_BENCH_MODE);
   assert(spi_enabled && dma_enabled[0] && dma_enabled[1]);
   assert(remaining[0]==256 && destination[0]==(uintptr_t)gReceiveSlots[gReceiveIndex]);
@@ -134,17 +141,47 @@ int main(void) {
 '''
     with tempfile.TemporaryDirectory(prefix="bodaqs-spi-prime-") as directory:
         source=Path(directory)/"fixture.c";exe=Path(directory)/"fixture.exe"
+        if args.boundary_trace:
+            # Extract all four production observer bodies; only hardware/time
+            # are stand-ins. Exact SDK raw address/masked size representation.
+            def observer(name):
+                match=re.search(r"static [\w *]+ "+name+r"\([^;{}]*\)\s*\{",production)
+                assert match,name
+                end=match.end();depth=1
+                while depth:
+                    depth+=(production[end]=='{')-(production[end]=='}');end+=1
+                return production[match.start():end]
+            helpers='\n'.join(observer(n) for n in ('spi_trace_hardware','spi_trace_barrier','spi_trace_cost','spi_trace_arm'))
+            fixture=fixture.replace('static unsigned traced_arms;\nstatic void spi_trace_arm(void) {assert(spi_enabled && dma_enabled[0] && dma_enabled[1]);++traced_arms;}', '''
+#include "bodaqs_spi_trace.h"
+static BodaqsSpiTrace gMasterSpiTrace;
+static uint32_t bodaqs_master_timing_clock(void *p,uint32_t *epoch) {(void)p;*epoch=7;return 100;}
+static void __DMB(void) {}
+static uint32_t DL_DMA_getSrcAddr(int d,int c) {(void)d;return (uint32_t)source[c];}
+static uint32_t DL_DMA_getDestAddr(int d,int c) {(void)d;return (uint32_t)destination[c];}
+static uint32_t DL_DMA_getTransferSize(int d,int c) {(void)d;return remaining[c];}
+'''+helpers)
+            fixture=fixture.replace('assert(traced_arms==trial+2);','''
+  assert(gMasterSpiTrace.armed.tx_src==(uint32_t)source[1]);
+  assert(gMasterSpiTrace.armed.rx_dst==(uint32_t)destination[0]);
+  assert(gMasterSpiTrace.armed.tx_remaining==255 && gMasterSpiTrace.armed.rx_remaining==256);
+  assert(!memcmp(gMasterSpiTrace.tx_armed,gTransmitSlots[gTransmitIndex],256));
+  assert(gMasterSpiTrace.armed.stat==registers.STAT && gMasterSpiTrace.armed.epoch==7);
+''')
         source.write_text(fixture.replace("// ACTUAL_ARM",arm),encoding="utf-8")
-        variants=((1,1),) if args.negative in ("missing-mode","enabled-mode") else ((1,0),) if args.negative else ((0,0),(1,0),(1,1))
+        variants=((1,0),) if args.boundary_trace else ((1,1),) if args.negative in ("missing-mode","enabled-mode") else ((1,0),) if args.negative else ((0,0),(1,0),(1,1))
         for priming,mode in variants:
             subprocess.run([args.cc,"-std=c11","-Wall","-Wextra","-Werror","-Wno-unused-function","-O2",
-                "-DBODAQS_SPI_MEASUREMENT_V2=1",f"-DBODAQS_MASTER_SPI_TX_PRIME={priming}",f"-DBODAQS_CAN_SPI_BENCH_MODE={mode}",
-                "-I",str(root/"include"),str(source),"-o",str(exe)],check=True)
+                "-DBODAQS_SPI_MEASUREMENT_V2=1",f"-DBODAQS_SPI_BOUNDARY_TRACE={int(args.boundary_trace)}",f"-DBODAQS_MASTER_SPI_TX_PRIME={priming}",f"-DBODAQS_CAN_SPI_BENCH_MODE={mode}",
+                "-I",str(root/"include"),"-I",str(root.parent/'common/transport'),str(source),"-o",str(exe)],check=True)
             subprocess.run([str(exe)],check=True)
         if not args.negative:
             for flags in (("-DBODAQS_MASTER_SPI_TX_PRIME=2",),("-DBODAQS_MASTER_SPI_TX_PRIME=1","-DBODAQS_SPI_MEASUREMENT_V2=0"),
                     ("-DBODAQS_CAN_SPI_BENCH_MODE=2",), ("-DBODAQS_CAN_SPI_BENCH_MODE=1","-DBODAQS_SPI_MEASUREMENT_V2=0"),
-                    ("-DBODAQS_CAN_SPI_BENCH_MODE=1","-DBODAQS_SPI_MEASUREMENT_V2=1","-DBODAQS_MASTER_SPI_TX_PRIME=0")):
+                    ("-DBODAQS_CAN_SPI_BENCH_MODE=1","-DBODAQS_SPI_MEASUREMENT_V2=1","-DBODAQS_MASTER_SPI_TX_PRIME=0"),
+                    ("-DBODAQS_SPI_BOUNDARY_TRACE=1",),
+                    ("-DBODAQS_SPI_BOUNDARY_TRACE=1","-DBODAQS_SPI_MEASUREMENT_V2=1","-DBODAQS_MASTER_SPI_TX_PRIME=0"),
+                    ("-DBODAQS_SPI_BOUNDARY_TRACE=1","-DBODAQS_SPI_MEASUREMENT_V2=1","-DBODAQS_MASTER_SPI_TX_PRIME=1","-DBODAQS_CAN_SPI_BENCH_MODE=1")):
                 checked=subprocess.run([args.cc,"-E","-x","c","-I",str(root/"include"),*flags,"-"],
                     input='#include "master_spi_priming.h"\n',text=True,capture_output=True)
                 assert checked.returncode,"Unsafe priming configuration was accepted"

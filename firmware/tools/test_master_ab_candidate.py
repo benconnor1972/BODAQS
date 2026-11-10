@@ -19,6 +19,10 @@ class MasterAbCandidate(unittest.TestCase):
             docs=root/"docs/firmware";docs.mkdir(parents=True)
             (docs/"CAN-FD_SPI_TX_Priming_Bench.md").write_text("Matched master A/B fixture runbook\n")
             (docs/"CAN-FD_SPI_Mode_Bench.md").write_text("Matched mode0/1 fixture runbook\n")
+            if experiment=="spi-boundary-trace":
+                (docs/"CAN-FD_SPI_Boundary_Trace_Runbook.md").write_text("Trace fixture runbook\n")
+                for filename in ("firmware/tools/export_spi_trace.js","firmware/can-fd/master/ticlang/MSPM0G3518_XDS110.ccxml"):
+                    p=root/filename;p.parent.mkdir(parents=True,exist_ok=True);p.write_text("export fixture\n")
             (root/".gitignore").write_text(".build/\n")
             subprocess.run(["git","init","-q",str(root)],check=True)
             subprocess.run(["git","add","."],cwd=root,check=True)
@@ -37,29 +41,35 @@ class MasterAbCandidate(unittest.TestCase):
                     "artifacts":[{**images["application"],"role":"logger"},{**images["unchanged_node"],"role":"node"},images["unchanged_master"]],
                     "fixed_bundle":{"firmware_name":"bodaqs_a8_imu_adc_buffers_r5","images":[
                         {"role":"logger","source_commit":head},{"role":"node","source_commit":None}]}}
+            if experiment=="spi-boundary-trace":
+                fixed_manifest={"status":"passed","experiment":"spi-mode-ab","candidate_profile":"mixed-diagnostic",
+                    "source":{"commit":head},"variants":{"mode0":{"spi_mode":0,"spi_tx_prime":True,
+                        "master":images["unchanged_master"],"logger":images["application"]}},
+                    "artifacts":[images["application"],{**images["unchanged_node"],"role":"node"},images["unchanged_master"]],
+                    "fixed_bundle":{"images":[{"role":"node","source_commit":None}]}}
             (fixed/"BUILD_MANIFEST.json").write_text(json.dumps(fixed_manifest))
             review_text=temp/"review.txt";review_text.write_text("Fixture review evidence\n")
             review=temp/"review.json";review.write_text(json.dumps({"schema":"bodaqs.review.v1","base":head,"head":head,"outcome":"passed",
                 "findings":[],"evidence":[{"path":review_text.name,"sha256":hashlib.sha256(review_text.read_bytes()).hexdigest()}]}))
             output=temp/"bundle"
-            argv=["candidate","--profile","mixed-diagnostic","--experiment",experiment,"--validation-scope","full" if experiment=="spi-mode-ab" else "master",
+            argv=["candidate","--profile","mixed-diagnostic","--experiment",experiment,"--validation-scope","master" if experiment=="spi-tx-prime-ab" else "full",
                 "--fixed-bundle",str(fixed),"--review-result",str(review),"--review-base",head,"--output-dir",str(output)]
             with patch.object(sys,"argv",argv):args=runner.arguments()
             sdk=temp/"sdk/.metadata";sdk.mkdir(parents=True);(sdk/"product.json").write_text('{"version":"fixture"}')
             args.sdk=sdk.parent
             build=root/".build";build.mkdir();commands=[]
-            variants=("mode0","mode1") if experiment=="spi-mode-ab" else ("A","B")
+            variants=("trace",) if experiment=="spi-boundary-trace" else ("mode0","mode1") if experiment=="spi-mode-ab" else ("A","B")
             for variant in variants:
                 image=build/(variant+".out");image.write_bytes(b"A" if identical else variant.encode())
                 commands.append({"name":"master-"+variant,"argv":[sys.executable,"-c","pass"],"cwd":str(root),
                     "artifacts":[(image.relative_to(root).as_posix(),f"artifacts/master-{variant}/bodaqs_can_master.out")]})
-                if experiment=="spi-mode-ab":
-                    mode=int(variant[-1]);logger=build/(variant+".bin")
-                    logger.write_bytes(b"bodaqs_a8_imu_adc_mode0_r7 bodaqs_a8_imu_adc_mode1_r7" if broken=="identical-logger" else b"unknown" if broken=="wrong-name" else f"bodaqs_a8_imu_adc_{variant}_r7".encode())
+                if experiment in ("spi-mode-ab","spi-boundary-trace"):
+                    mode=0 if variant=="trace" else int(variant[-1]);logger=build/(variant+".bin")
+                    logger.write_bytes(b"bodaqs_a8_imu_adc_mode0_r7 bodaqs_a8_imu_adc_mode1_r7" if broken=="identical-logger" else b"unknown" if broken=="wrong-name" else b"bodaqs_a8_imu_adc_trace_r8" if variant=="trace" else f"bodaqs_a8_imu_adc_{variant}_r7".encode())
                     recipe=build/(variant+".json");recipe.write_text(json.dumps({"id":variant}))
                     commands.append({"name":"contract-"+variant,"argv":[sys.executable,"-c",
                         "from pathlib import Path; import sys; Path(sys.argv[1]).write_text(sys.argv[2])",
-                        str(output/f"SPI_SOURCE_CONTRACT_{variant}.json"),json.dumps({"spi_mode":0 if broken=="wrong-mode" else mode})],"cwd":str(root),"artifacts":[]})
+                        str(output/f"SPI_SOURCE_CONTRACT_{variant}.json"),json.dumps({"spi_mode":(1-mode) if broken=="wrong-mode" else mode})],"cwd":str(root),"artifacts":[]})
                     commands.append({"name":"logger-"+variant,"argv":[sys.executable,"-c","pass"],"cwd":str(root),
                         "artifacts":([] if broken=="missing-logger" else [(logger.relative_to(root).as_posix(),f"artifacts/logger-{variant}/firmware.bin")])+
                             [(recipe.relative_to(root).as_posix(),f"artifacts/logger-{variant}/identity/build-recipe.json")]})
@@ -80,6 +90,11 @@ class MasterAbCandidate(unittest.TestCase):
             if not fails and experiment=="spi-mode-ab":
                 self.assertEqual(manifest["variants"]["mode1"]["spi_mode"],1)
                 self.assertEqual((output/"RUNBOOK.md").read_text(),"Matched mode0/1 fixture runbook\n")
+            if not fails and experiment=="spi-boundary-trace":
+                self.assertEqual(manifest["variants"]["trace"]["boundary_trace_bytes"],7328)
+                self.assertEqual((output/"RUNBOOK.md").read_text(),"Trace fixture runbook\n")
+                self.assertTrue((output/"export_spi_trace.js").exists())
+                self.assertTrue((output/"MASTER_TARGET.ccxml").exists())
             for line in (output/"SHA256SUMS.txt").read_text().splitlines():
                 sha,name=line.split("  ",1);self.assertEqual(hashlib.sha256((output/name).read_bytes()).hexdigest(),sha)
 

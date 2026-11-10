@@ -11,7 +11,17 @@ struct MeasurementReplyCapture {
     uint8_t decodeReason=0;
     SpiTransactionContext bus;
     uint8_t reply[replyBytes]={};
+#if defined(BODAQS_SPI_BOUNDARY_TRACE) && BODAQS_SPI_BOUNDARY_TRACE
+    uint8_t request[replyBytes]={};
+    bool requestValid=false;
+#endif
   };
   unsigned count=0;
   Entry entries[capacity];
+#if defined(BODAQS_SPI_BOUNDARY_TRACE) && BODAQS_SPI_BOUNDARY_TRACE
+  struct BoundaryProbe {
+    bool attempted=false,transferred=false,adjacent=false;
+    uint32_t nonce=0,failedDeviceSequence=0,markerDeviceSequence=0,durationUs=0;
+  } boundary;
+#endif
 };

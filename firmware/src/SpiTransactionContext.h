@@ -12,4 +12,6 @@ struct SpiTransactionContext {
   uint8_t previousCommand=0;
   bool previousCommandValid=false;
   bool valid=false, previousValid=false, commandValid=false;
+  uint32_t deviceSequence=0;
+  bool deviceSequenceValid=false;
 };

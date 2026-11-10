@@ -6,6 +6,9 @@
 #include "bodaqs_record_queue.h"
 #include "bodaqs_measurement.h"
 #include "bodaqs_can_network.h"
+#if defined(BODAQS_SPI_BOUNDARY_TRACE) && BODAQS_SPI_BOUNDARY_TRACE
+#include "bodaqs_spi_trace.h"
+#endif
 #include "bodaqs_master_service.h"
 /* DRAIN_TYPES */
 #define CAN_RX_CAPACITY 8U
@@ -34,7 +37,13 @@ static uint32_t bodaqs_master_timing_clock(void *c,uint32_t *epoch) {(void)c;*ep
 #define DMA_SPI_TX_CHAN_ID 1
 #define GPIO_SPI_A8_CS_PORT 0
 #define GPIO_SPI_A8_CS_PIN 1
+#if defined(BODAQS_SPI_BOUNDARY_TRACE) && BODAQS_SPI_BOUNDARY_TRACE
+static struct {uint32_t STAT,CTL0,CTL1;} trace_spi_registers;
+#define SPI_A8_INST (&trace_spi_registers)
+static void spi_trace_arm(void);
+#else
 #define SPI_A8_INST 0
+#endif
 #define POWER_STARTUP_DELAY 0
 static BodaqsMasterService gService;
 /* SPI_ADAPTER_STORAGE */
@@ -60,19 +69,25 @@ static void __disable_irq(void) {irq_mask=1;}
 static void __DMB(void) {}
 static void __set_PRIMASK(uint32_t p) {irq_mask=p;}
 static unsigned DL_DMA_getTransferSize(int d,int c) {(void)d;(void)c;return remaining;}
+static inline uint32_t DL_DMA_getSrcAddr(int d,int c) {(void)d;return 0x20210101U+c;}
+static inline uint32_t DL_DMA_getDestAddr(int d,int c) {(void)d;return 0x40000000U+c;}
 static unsigned DL_GPIO_readPins(int p,int m) {(void)p;(void)m;return cs_high;}
 /* TI STAT.BUSY includes a nonempty TX FIFO, even with CS inactive. */
-static inline bool DL_SPI_isBusy(int d) {(void)d;return !cs_high || prefetched_tx!=0;}
+static inline bool DL_SPI_isBusy(void *d) {(void)d;return !cs_high || prefetched_tx!=0;}
 static void DL_DMA_disableChannel(int d,int c) {(void)d;disabled|=1U<<c;}
 static bool extra_rx_byte;
-static unsigned DL_SPI_drainRXFIFO8(int d,uint8_t *p,unsigned n) {(void)d;if(n==1 && extra_rx_byte) {extra_rx_byte=false;*p=0xff;return 1;}return 0;}
-static void DL_SPI_disable(int d) {(void)d;}
-static void DL_SPI_reset(int d) {(void)d;assert(disabled==3);prefetched_tx=0;++reset_count;}
-static void DL_SPI_enablePower(int d) {(void)d;}
+static unsigned DL_SPI_drainRXFIFO8(void *d,uint8_t *p,unsigned n) {(void)d;if(n==1 && extra_rx_byte) {extra_rx_byte=false;*p=0xff;return 1;}return 0;}
+static void DL_SPI_disable(void *d) {(void)d;}
+static void DL_SPI_reset(void *d) {(void)d;assert(disabled==3);prefetched_tx=0;++reset_count;}
+static void DL_SPI_enablePower(void *d) {(void)d;}
 static void delay_cycles(int d) {(void)d;}
 static void SYSCFG_DL_SPI_A8_init(void) {}
-static int DL_SPI_getPendingInterrupt(int d) {(void)d;return 0;}
-static void arm_spi_slot(void) {assert(reset_count);disabled=0;++arm_count;}
+static int DL_SPI_getPendingInterrupt(void *d) {(void)d;return 0;}
+static void arm_spi_slot(void) {assert(reset_count);disabled=0;++arm_count;
+#if defined(BODAQS_SPI_BOUNDARY_TRACE) && BODAQS_SPI_BOUNDARY_TRACE
+    spi_trace_arm();
+#endif
+}
 static unsigned processed_can;
 static uint64_t processed_ordinal;
 static bool refill_during_decode;

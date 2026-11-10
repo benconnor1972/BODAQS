@@ -1741,6 +1741,17 @@ static void appendBdqV2MeasurementFailures_(JsonDocument& document) {
     replies["capacity"]=MeasurementReplyCapture::capacity;
     replies["captured"]=capture->count;
     replies["selection"]="first_decode_failures_while_confirmed";
+#if defined(BODAQS_SPI_BOUNDARY_TRACE) && BODAQS_SPI_BOUNDARY_TRACE
+    JsonObject probe=replies["boundary_trace"].to<JsonObject>();
+    probe["attempted"]=capture->boundary.attempted;
+    probe["transferred"]=capture->boundary.transferred;
+    probe["adjacent"]=capture->boundary.adjacent;
+    probe["nonce"]=capture->boundary.nonce;
+    probe["failed_device_sequence"]=capture->boundary.failedDeviceSequence;
+    probe["marker_device_sequence"]=capture->boundary.markerDeviceSequence;
+    probe["duration_us"]=capture->boundary.durationUs;
+    probe["completion_is_freeze_acknowledgement"]=false;
+#endif
     JsonArray entries=replies["entries"].to<JsonArray>();
     for(unsigned i=0;i<capture->count;++i) {
       const auto& entry=capture->entries[i];
@@ -1754,6 +1765,10 @@ static void appendBdqV2MeasurementFailures_(JsonDocument& document) {
         bus["bytes"]=entry.bus.bytes;bus["selected_us"]=entry.bus.selectedUs;
         bus["released_us"]=entry.bus.releasedUs;
         bus["command_valid"]=entry.bus.commandValid;bus["command"]=entry.bus.command;
+#if defined(BODAQS_SPI_BOUNDARY_TRACE) && BODAQS_SPI_BOUNDARY_TRACE
+        bus["device_sequence"]=entry.bus.deviceSequence;
+        bus["device_sequence_valid"]=entry.bus.deviceSequenceValid;
+#endif
         bus["previous_valid"]=entry.bus.previousValid;
         bus["previous_cs"]=entry.bus.previousCs;bus["previous_release_us"]=entry.bus.previousReleaseUs;
         bus["previous_bytes"]=entry.bus.previousBytes;bus["previous_command"]=entry.bus.previousCommand;
@@ -1766,6 +1781,15 @@ static void appendBdqV2MeasurementFailures_(JsonDocument& document) {
       }
       hex[sizeof(hex)-1]=0;
       row["reply_hex"]=hex; // ArduinoJson copies the temporary array.
+#if defined(BODAQS_SPI_BOUNDARY_TRACE) && BODAQS_SPI_BOUNDARY_TRACE
+      row["request_available"]=entry.requestValid;
+      if(entry.requestValid) {
+        for(unsigned b=0;b<256;++b) {
+          hex[2*b]=digits[entry.request[b]>>4];hex[2*b+1]=digits[entry.request[b]&15];
+        }
+        row["request_hex"]=hex;
+      }
+#endif
     }
   }
 }

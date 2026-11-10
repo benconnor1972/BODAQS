@@ -15,6 +15,7 @@ parser.add_argument("--v2", action="store_true")
 parser.add_argument("--phase-timing", action="store_true")
 parser.add_argument("--queue-timing", action="store_true")
 parser.add_argument("--rx-capacity", type=int, choices=(2,4))
+parser.add_argument("--boundary-trace",action="store_true")
 args = parser.parse_args()
 if args.rx_capacity:
     assert args.v2
@@ -62,6 +63,13 @@ functions += "\n" + result.replace("s->acquisition_retirement_pending=true;",
     "s->acquisition_retirement_pending=true; injected_cs_preemption();")
 fixture = Path(__file__).with_name("adapter_fixture.c").read_text().replace("/* DRAIN_TYPES */", drain_types)
 owned=source[source.index("/* SPI adapter ownership storage. */"):source.index("/* End SPI adapter ownership storage. */")]
+if args.boundary_trace:
+    assert args.v2
+    # Same functions, declared after SDK stand-ins rather than before them.
+    helpers="\n".join(function(n) for n in ("spi_trace_hardware","spi_trace_barrier","spi_trace_cost","spi_trace_arm"))
+    for name in ("spi_trace_hardware","spi_trace_barrier","spi_trace_cost","spi_trace_arm"):
+        owned=owned.replace(function(name),"")
+    functions=helpers+"\n"+functions
 fixture=fixture.replace("/* SPI_ADAPTER_STORAGE */",owned)
 if args.v2:
     assert "/* SPI adapter ownership storage. */" in source, "v2 DMA storage must match production"
@@ -69,6 +77,10 @@ if args.v2:
     fixture=fixture.replace("/* RX_RETRY_CASES */",Path(__file__).with_name("adapter_v2_retry_cases.c").read_text())
 if args.queue_timing:
     fixture=fixture.replace("/* QUEUE_TIMING_CASES */",Path(__file__).with_name("adapter_queue_cases.c").read_text())
+if args.boundary_trace:
+    pos=fixture.rfind("\n}")
+    assert pos>0
+    fixture=fixture[:pos]+Path(__file__).with_name("adapter_trace_cases.c").read_text()+fixture[pos:]
 with tempfile.TemporaryDirectory() as temp:
     c = Path(temp) / "adapter.c"
     exe = Path(temp) / "adapter.exe"
@@ -80,6 +92,7 @@ with tempfile.TemporaryDirectory() as temp:
         flags.append("-DBODAQS_MASTER_QUEUE_TIMING=1")
     if args.rx_capacity:
         flags.append(f"-DBODAQS_MASTER_SPI_RX_CAPACITY={args.rx_capacity}")
+    if args.boundary_trace:flags.append("-DBODAQS_SPI_BOUNDARY_TRACE=1")
     subprocess.run([args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-O2",*flags,
         "-I" + str(ROOT / "firmware/can-fd/common/protocol"),
         "-I" + str(ROOT / "firmware/can-fd/common/network"),

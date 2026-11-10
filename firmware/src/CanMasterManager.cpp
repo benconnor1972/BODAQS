@@ -5,6 +5,13 @@
 #endif
 #include "CanMasterManager.h"
 #include "ImuFlowDiagnostics.h"
+#include "../can-fd/common/transport/bodaqs_spi_bench.h"
+#if BODAQS_SPI_BOUNDARY_TRACE
+#include "../can-fd/common/transport/bodaqs_spi_trace.h"
+#if !defined(BODAQS_SINGLE_NODE_IMU_ADC_SMOKE) || !BODAQS_SINGLE_NODE_IMU_ADC_SMOKE || !defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) || !BODAQS_MEASUREMENT_REPLY_CAPTURE
+#error "Boundary trace requires the explicit mixed reply-capture logger"
+#endif
+#endif
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -709,6 +716,33 @@ void retainMeasurementAllocators(uint32_t read,const uint32_t mutations[4],uint6
 }
 
 static bool modeObservation_(const BodaqsMeasurementSlot&,uint32_t,uint64_t,const BodaqsMeasurementMode*);
+#if BODAQS_SPI_BOUNDARY_TRACE
+static void freezeBoundary_(uint64_t context) {
+  if(!ImuFlowDiagnostics::active || ImuFlowDiagnostics::live.context!=context)return;
+  auto& capture=ImuFlowDiagnostics::liveReplies;
+  if(capture.count!=1 || capture.boundary.attempted)return;
+  auto& probe=capture.boundary;const auto& failed=capture.entries[0];
+  probe.attempted=true;probe.nonce=failed.slot;probe.failedDeviceSequence=failed.bus.deviceSequence;
+  if(!failed.requestValid || !failed.bus.valid || !failed.bus.deviceSequenceValid ||
+     !failed.slot || failed.slot==UINT32_MAX)return;
+  static BodaqsMeasurementSlot marker;
+  alignas(4) static uint8_t tx[256],rx[256];
+  bodaqs_spi_trace_request(&marker,context,failed.slot,failed.bus.deviceSequence,
+      static_cast<uint32_t>(bodaqs_measurement_get(failed.request+252,4)),
+      static_cast<uint32_t>(bodaqs_measurement_get(failed.reply+252,4)));
+  if(!bodaqs_measurement_encode(&marker,tx,sizeof tx))return;
+  SpiTransactionContext bus;
+  const SPISettings settings(BODAQS_MEASUREMENT_HZ,MSBFIRST,spiDataMode_(s_profile.spi_mode));
+  const uint32_t began=micros();
+  // One diagnostic frame after the original exchange. Its pipelined reply is
+  // discarded, never admitted or repaired. Master export proves freeze later.
+  probe.transferred=transferSlot_(settings,tx,rx,sizeof tx,25,
+      BODAQS_MEASUREMENT_START_SPACING_US,BODAQS_MEASUREMENT_CS_SETUP_US,&bus);
+  probe.durationUs=micros()-began;probe.markerDeviceSequence=bus.deviceSequence;
+  probe.adjacent=probe.transferred && bus.deviceSequenceValid &&
+      bus.deviceSequence==failed.bus.deviceSequence+1;
+}
+#endif
 static uint32_t measurementTimingStartUs,measurementTimingEndUs;
 bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
                              BodaqsMeasurementSlot& response) {
@@ -744,7 +778,7 @@ bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
     // Entry may still receive a legacy-width pipeline reply. Sample only after
     // the larger measurement profile has been confirmed for this recording.
     if(s_diagnostics.measurementConfirmed)
-      ImuFlowDiagnostics::rejectedReply(s_diagnostics.measurementTimingContext,timing.slots+1,request.kind,rx,decodeResult,bus);
+      ImuFlowDiagnostics::rejectedReply(s_diagnostics.measurementTimingContext,timing.slots+1,request.kind,rx,decodeResult,bus,tx);
 #endif
   }
   measurementTimingEndUs=micros();
@@ -766,6 +800,10 @@ bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
      static_cast<uint32_t>(millis()-s_modeInspection.startedMs)<300 &&
      modeObservation_(response,s_modeInspection.token,s_modeInspection.context,nullptr))
     s_modeInspection.ready=true;
+#if BODAQS_SPI_BOUNDARY_TRACE
+  if(!valid && transferred && s_diagnostics.measurementConfirmed)
+    freezeBoundary_(s_diagnostics.measurementTimingContext);
+#endif
   return valid;
 }
 
