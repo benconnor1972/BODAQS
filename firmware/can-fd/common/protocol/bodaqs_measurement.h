@@ -161,25 +161,50 @@ static inline bool bodaqs_measurement_encode(const BodaqsMeasurementSlot *s, uin
     bodaqs_measurement_put(p+BODAQS_MEASUREMENT_BYTES-4,bodaqs_measurement_crc(p,BODAQS_MEASUREMENT_BYTES-4),4);
     return true;
 }
-static inline bool bodaqs_measurement_decode(const uint8_t *p,size_t n,BodaqsMeasurementSlot *s) {
-    if(!p || !s || n!=BODAQS_MEASUREMENT_BYTES || p[0]!='B' || p[1]!='M' || p[2]!=BODAQS_MEASUREMENT_VERSION || p[3]>BODAQS_MEASUREMENT_MAX_KIND ||
-       bodaqs_measurement_crc(p,BODAQS_MEASUREMENT_BYTES-4)!=bodaqs_measurement_get(p+BODAQS_MEASUREMENT_BYTES-4,4)) return false;
+typedef enum {
+    BODAQS_MEASUREMENT_DECODE_OK=0, BODAQS_MEASUREMENT_DECODE_ARGUMENT,
+    BODAQS_MEASUREMENT_DECODE_SIZE, BODAQS_MEASUREMENT_DECODE_MAGIC,
+    BODAQS_MEASUREMENT_DECODE_VERSION, BODAQS_MEASUREMENT_DECODE_KIND,
+    BODAQS_MEASUREMENT_DECODE_CRC, BODAQS_MEASUREMENT_DECODE_RESERVED,
+    BODAQS_MEASUREMENT_DECODE_RETIRED_FLAG, BODAQS_MEASUREMENT_DECODE_AVAILABILITY,
+    BODAQS_MEASUREMENT_DECODE_RETIREMENT, BODAQS_MEASUREMENT_DECODE_UNEXPECTED_RETIREMENT,
+    BODAQS_MEASUREMENT_DECODE_PADDING, BODAQS_MEASUREMENT_DECODE_COUNT
+} BodaqsMeasurementDecodeResult;
+static inline const char *bodaqs_measurement_decode_name(BodaqsMeasurementDecodeResult result) {
+    static const char *const names[]={"ok","argument","size","magic","version","kind","crc",
+        "reserved","retired_flag","availability","retirement","unexpected_retirement","padding"};
+    return (unsigned)result<BODAQS_MEASUREMENT_DECODE_COUNT?names[result]:"unknown";
+}
+/* First failed check, not a physical cause. Preserve the original bool API's
+ * order and partial output semantics; callers must ignore rejected outputs. */
+static inline BodaqsMeasurementDecodeResult bodaqs_measurement_decode_result(const uint8_t *p,size_t n,BodaqsMeasurementSlot *s) {
+    if(!p || !s) return BODAQS_MEASUREMENT_DECODE_ARGUMENT;
+    if(n!=BODAQS_MEASUREMENT_BYTES) return BODAQS_MEASUREMENT_DECODE_SIZE;
+    if(p[0]!='B' || p[1]!='M') return BODAQS_MEASUREMENT_DECODE_MAGIC;
+    if(p[2]!=BODAQS_MEASUREMENT_VERSION) return BODAQS_MEASUREMENT_DECODE_VERSION;
+    if(p[3]>BODAQS_MEASUREMENT_MAX_KIND) return BODAQS_MEASUREMENT_DECODE_KIND;
+    if(bodaqs_measurement_crc(p,BODAQS_MEASUREMENT_BYTES-4)!=bodaqs_measurement_get(p+BODAQS_MEASUREMENT_BYTES-4,4)) return BODAQS_MEASUREMENT_DECODE_CRC;
     memset(s,0,sizeof(*s)); s->kind=p[3]; s->context=bodaqs_measurement_get(p+4,8);
     s->object=(uint32_t)bodaqs_measurement_get(p+12,4); s->node=p[16]; s->index=p[17];
     s->total=(uint16_t)bodaqs_measurement_get(p+18,2); memcpy(s->body,p+20,BODAQS_MEASUREMENT_BODY_BYTES);
 #if BODAQS_MEASUREMENT_VERSION == 2
-    if(p[239] || p[238]>1 || (bodaqs_measurement_get(p+246,2)&~255ULL)) return false;
+    if(p[239]) return BODAQS_MEASUREMENT_DECODE_RESERVED;
+    if(p[238]>1) return BODAQS_MEASUREMENT_DECODE_RETIRED_FLAG;
+    if(bodaqs_measurement_get(p+246,2)&~255ULL) return BODAQS_MEASUREMENT_DECODE_AVAILABILITY;
     if(p[238]) {
         if(p[236]<1 || p[236]>5 || (p[236]==5?p[237]!=255:p[237]>3) ||
-           !bodaqs_measurement_get(p+240,4) || bodaqs_measurement_get(p+244,2)<4 || bodaqs_measurement_get(p+244,2)>1024) return false;
-    } else if(!bodaqs_measurement_zero(p+236,10) || !bodaqs_measurement_zero(p+248,4)) return false;
+           !bodaqs_measurement_get(p+240,4) || bodaqs_measurement_get(p+244,2)<4 || bodaqs_measurement_get(p+244,2)>1024) return BODAQS_MEASUREMENT_DECODE_RETIREMENT;
+    } else if(!bodaqs_measurement_zero(p+236,10) || !bodaqs_measurement_zero(p+248,4)) return BODAQS_MEASUREMENT_DECODE_UNEXPECTED_RETIREMENT;
     s->retired=p[238]!=0;s->retiredClass=p[236];s->retiredNode=p[237];
     s->retiredObject=(uint32_t)bodaqs_measurement_get(p+240,4);s->retiredTotal=(uint16_t)bodaqs_measurement_get(p+244,2);
     s->available=(uint16_t)bodaqs_measurement_get(p+246,2);s->retiredChecksum=(uint32_t)bodaqs_measurement_get(p+248,4);
     if(s->kind!=2 && s->kind!=3 && s->kind!=4 && s->kind!=12 && s->kind!=13 &&
-       !bodaqs_measurement_zero(s->body+40,BODAQS_MEASUREMENT_BODY_BYTES-40)) return false;
+       !bodaqs_measurement_zero(s->body+40,BODAQS_MEASUREMENT_BODY_BYTES-40)) return BODAQS_MEASUREMENT_DECODE_PADDING;
 #endif
-    return true;
+    return BODAQS_MEASUREMENT_DECODE_OK;
+}
+static inline bool bodaqs_measurement_decode(const uint8_t *p,size_t n,BodaqsMeasurementSlot *s) {
+    return bodaqs_measurement_decode_result(p,n,s)==BODAQS_MEASUREMENT_DECODE_OK;
 }
 static inline void bodaqs_measurement_mode_encode(const BodaqsMeasurementMode *m,uint8_t p[64]) {
     memset(p,0,64);

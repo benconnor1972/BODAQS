@@ -10,7 +10,7 @@
     assert(bodaqs_measurement_encode(&idle,scope_wire,256));
     assert(bodaqs_master_service_process_transfer(&gService,scope_wire,256,0,scope_reply)==BODAQS_MASTER_SLOT_PROCESSED);
     gService.acquisition_started=1;
-    test_epoch=1;test_tick=1000;drain_check();assert(gMasterDrainInfo.version==4);
+    test_epoch=1;test_tick=1000;drain_check();assert(gMasterDrainInfo.version==5);
     idle.context=91;assert(bodaqs_measurement_encode(&idle,gReceiveSlots[gReceiveIndex],256));
     test_tick=1100;remaining=0;retire_spi_boundary();
     test_tick=1300;assert(bodaqs_measurement_encode(&idle,gReceiveSlots[gReceiveIndex],256));

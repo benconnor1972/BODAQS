@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "BoardProfile.h"
+#include "SpiTransactionContext.h"
 #include "CanMasterProtocol.h"
 #include "../can-fd/common/protocol/bodaqs_fragment_transport.h"
 #include "CanControlProtocol.h"
@@ -24,6 +25,7 @@ enum class State : uint8_t {
 struct MeasurementTiming {
   uint32_t slots=0,failedSlots=0,emptySlots=0,elapsedUs=0;
   uint32_t transferFailedSlots=0,decodeFailedSlots=0;
+  uint32_t decodeReasons[BODAQS_MEASUREMENT_DECODE_COUNT]={};
   uint64_t exchangeUs=0;
   uint32_t maxExchangeUs=0,maxIdleUs=0;
   uint32_t polls[5]={},fragments[5]={},deferrals[2]={};

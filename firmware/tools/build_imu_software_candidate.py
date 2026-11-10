@@ -16,6 +16,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from bench_profiles import PROFILES, review_result
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -35,6 +36,7 @@ TEST_IMPORTS = {
     "fitparse": "fitparse", "fastapi": "fastapi", "uvicorn": "uvicorn",
     "IPython": "IPython", "ipywidgets": "ipywidgets", "traitlets": "traitlets",
     "anywidget": "anywidget", "ipydatagrid": "ipydatagrid", "ipyleaflet": "ipyleaflet",
+    "zeroconf": "zeroconf",
 }
 
 
@@ -57,9 +59,14 @@ def arguments() -> argparse.Namespace:
         "C:/ti/ccs2101/ccs/utils/sysconfig_1.28.1/sysconfig_cli.bat"))
     parser.add_argument("--pio", default=shutil.which("pio") or str(
         Path.home() / ".platformio/penv" / ("Scripts/pio.exe" if os.name == "nt" else "bin/pio")))
-    parser.add_argument("--profile", choices=("production", "first-recording"), default="production",
+    parser.add_argument("--profile", choices=tuple(PROFILES), default="production",
                         help="Select restricted single-IMU v2 candidate explicitly")
     parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument("--validation-scope", choices=("full", "logger"), default="full",
+                        help="Logger scope requires declared unchanged peer images; no full-suite claim")
+    parser.add_argument("--reuse-peers", type=Path, help="bodaqs.peer-images.v1 JSON with immutable image paths/hashes")
+    parser.add_argument("--review-result", type=Path, help="bodaqs.review.v1 source-bound result")
+    parser.add_argument("--review-base", help="Exact commit reviewed against HEAD")
     parser.add_argument("--list-commands", action="store_true",
                         help="Print command plan without running or creating files")
     return parser.parse_args()
@@ -72,7 +79,8 @@ def plan(args: argparse.Namespace, output: Path) -> list[dict]:
                 "artifacts": artifacts or []}
 
     make = [args.make, "-B"]
-    logger_env = "bodaqs_s3_mini_n4r2_imu_smoke" if args.profile=="first-recording" else "bodaqs_s3_mini_n4r2"
+    recipe = PROFILES[args.profile]
+    logger_env = recipe["logger_env"]
     commands = [
         step("a8-dependencies", [args.pio, "pkg", "install", "-d", "firmware", "-e",
              "bodaqs_s3_mini_n4r2"]),
@@ -92,16 +100,20 @@ def plan(args: argparse.Namespace, output: Path) -> list[dict]:
              "--output-dir", str(output / "scenarios")]),
         step("analysis", [sys.executable, "-m", "pytest", "-q"], cwd=ROOT / "analysis"),
     ]
-    if args.profile=="first-recording":
+    if args.profile!="production":
         commands.insert(1,step("restricted-a8-dependencies", [args.pio,"pkg","install","-d","firmware","-e",logger_env]))
         commands.append(step("integrated-first-recording", [sys.executable,
             "firmware/tools/test_integrated_imu_recording_runtime.py", "--first-recording",
             "--compiler", args.cxx, "--cc", args.cc,
             "--output-dir", str(output / "scenarios-first-recording")]))
+    if args.validation_scope=="logger":
+        commands=[c for c in commands if c["name"] in ("a8-dependencies", "restricted-a8-dependencies", "firmware-host")]
     if args.mode == "host":
         return commands
     for profile in ("bringup", "acquisition"):
         for target in ("node", "master"):
+            if args.reuse_peers:
+                continue
             folder = f"firmware/can-fd/{target}/ticlang"
             basename = f"bodaqs_can_{target}"
             artifacts = [(f"{folder}/{basename}.{suffix}",
@@ -112,9 +124,11 @@ def plan(args: argparse.Namespace, output: Path) -> list[dict]:
                 f"TICLANG_ARMCOMPILER={args.ti_compiler.as_posix()}",
                 f"SYSCONFIG_TOOL={args.sysconfig.as_posix()}",
                 f"CAN_LINK_PROFILE={profile}",
-                *([f"SPI_MEASUREMENT_PROFILE={args.profile if args.profile=='first-recording' else 'legacy'}",
+                *([*recipe["master_flags"],
                    "CFLAGS_EXTRA=-fstack-usage"] if target=="master" else [])], artifacts))
     a8 = f"firmware/.pio/build/{logger_env}"
+    commands.append(step("spi-source-contract",[sys.executable,"firmware/tools/collect_spi_contract.py",
+        "--compiler",args.cxx,"--output",str(output/"SPI_SOURCE_CONTRACT.json")]))
     commands.append(step("a8-clean", [args.pio, "run", "-d", "firmware", "-e",
         logger_env, "-t", "clean"]))
     commands.append(step("a8-build", [args.pio, "run", "-d", "firmware", "-e",
@@ -122,6 +136,25 @@ def plan(args: argparse.Namespace, output: Path) -> list[dict]:
         [(f"{a8}/{name}", f"artifacts/a8-{logger_env}/{name}") for name in
          ("firmware.elf", "firmware.bin", "bootloader.bin", "partitions.bin")]))
     return commands
+
+
+def load_peers(path: Path, profile: str) -> dict:
+    import re
+    value=json.loads(path.read_text(encoding="utf-8"))
+    if value.get("schema")!="bodaqs.peer-images.v1" or value.get("profile")!=profile:
+        raise ValueError("Peer declaration schema/profile mismatch")
+    if {i.get("role") for i in value.get("images", [])}!={"master", "node"} or len(value["images"])!=2:
+        raise ValueError("Declare exactly master and node images")
+    for image in value["images"]:
+        source=(path.parent / image["path"]).resolve()
+        if source.suffix!=".out" or image.get("sha256")!=sha256(source) or not re.fullmatch("[0-9a-f]{40}",image.get("source_commit","")):
+            raise ValueError("Peer image hash/source missing or mismatched")
+        if image.get("can_link_profile")!="acquisition":
+            raise ValueError("Reused peers must declare matching acquisition link")
+        if image["role"]=="master" and profile=="mixed-diagnostic" and image.get("settings")!={
+                "spi_rx_capacity":2,"measurement_version":2,"phase_timing":True,"queue_timing":True}:
+            raise ValueError("Reused mixed master must declare RX2/v2/phase/queue diagnostics")
+    return value
 
 
 def sha256(path: Path) -> str:
@@ -201,6 +234,8 @@ def main() -> int:
     args = arguments()
     if args.jobs < 1:
         raise SystemExit("--jobs must be positive")
+    if args.validation_scope=="logger" and not args.reuse_peers:
+        raise SystemExit("Logger-only validation requires --reuse-peers")
     if sys.flags.optimize or os.environ.get("PYTHONOPTIMIZE"):
         raise SystemExit("Run acceptance with Python assertions enabled (no PYTHONOPTIMIZE or -O)")
     if args.mode != "preflight" and args.output_dir is None:
@@ -223,6 +258,20 @@ def main() -> int:
     if unexpected and args.mode == "candidate":
         raise SystemExit("Untracked files could affect the build: " + ", ".join(unexpected))
     try:
+        peers=load_peers(args.reuse_peers,args.profile) if args.reuse_peers else None
+        review=None
+        if args.review_result:
+            review=review_result(json.loads(args.review_result.read_text(encoding="utf-8")),
+                                 args.review_base,git("rev-parse","HEAD"))
+            for item in review["evidence"]:
+                if sha256((args.review_result.parent / item["path"]).resolve())!=item["sha256"]:
+                    raise ValueError("Review evidence hash mismatch")
+        if args.mode=="candidate" and args.profile=="mixed-diagnostic" and not review:
+            raise ValueError("Mixed candidate requires --review-result and --review-base")
+    except (OSError, ValueError, KeyError) as error:
+        print(error,file=sys.stderr)
+        return 1
+    try:
         tools = preflight(args)
     except (OSError, RuntimeError) as error:
         print(error, file=sys.stderr)
@@ -240,9 +289,11 @@ def main() -> int:
         "source": {"commit": git("rev-parse", "HEAD"), "tree": git("rev-parse", "HEAD^{tree}"),
                    "tracked_dirty_before": bool(dirty), "untracked_before": untracked},
         "targets": {"node": "MSPM0G3507", "master": "MSPM0G3518",
-                    "logger": "bodaqs_s3_mini_n4r2_imu_smoke" if args.profile=="first-recording" else "bodaqs_s3_mini_n4r2"},
+                    "logger": PROFILES[args.profile]["logger_env"]},
         "candidate_profile": args.profile,
-        "measurement": {"version": 2, "physical_bytes":256,"requested_hz":16000000,"guard_us":25,"publication":"boundary_only"} if args.profile=="first-recording" else {"version":1},
+        "measurement": PROFILES[args.profile]["measurement"],
+        "validation_scope":args.validation_scope,"review":review,"reused_peers":peers,
+        "logger_flash_offsets":{"bootloader.bin":"0x0","partitions.bin":"0x8000","boot_app0.bin":"0xe000","firmware.bin":"0x10000"},
         "acquisition": {"lease_ms":5000,"renewal_ms":1000,"challenge_ms":300},
         "link_profiles": {"bringup": [500000, 2000000], "acquisition": [1000000, 4000000]},
         "sdk": str(args.sdk.resolve()) if args.mode == "candidate" else None,
@@ -254,6 +305,14 @@ def main() -> int:
         "deferred": DEFERRED, "commands": [], "artifacts": [],
     }
     try:
+        if peers:
+            for image in peers["images"]:
+                source=(args.reuse_peers.parent/image["path"]).resolve()
+                destination=f"artifacts/{image['role']}-acquisition/{source.name}"
+                target=output/destination;target.parent.mkdir(parents=True,exist_ok=True)
+                shutil.copyfile(source,target)
+                if sha256(target)!=image["sha256"]: raise RuntimeError("Peer changed during copy")
+                manifest["artifacts"].append({"path":destination,"sha256":sha256(target),"bytes":target.stat().st_size,"reused":True})
         if args.mode == "candidate":
             shutil.copyfile(args.sdk / ".metadata/product.json", output / "MSPM0_SDK_PRODUCT.json")
         for index, tool in enumerate(tools):
@@ -292,12 +351,19 @@ def main() -> int:
         # Existing toolchains create these optional diagnostics on some versions.
         logger_env=manifest["targets"]["logger"]
         a8_folder = ROOT / f"firmware/.pio/build/{logger_env}"
-        for optional in ("firmware.map", "idedata.json"):
+        for optional in ("firmware.map", "idedata.json", "identity/build-recipe.json"):
             source = a8_folder / optional
             if args.mode == "candidate" and source.exists():
-                shutil.copyfile(source, output / f"artifacts/a8-{logger_env}" / optional)
-        if args.mode == "candidate" and args.profile=="first-recording":
-            extras=[(ROOT / "docs/firmware/CAN-FD_First_Recording_Runbook.md", "RUNBOOK.md"),
+                target=output/f"artifacts/a8-{logger_env}"/optional
+                target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(source,target)
+                manifest["artifacts"].append({"path":target.relative_to(output).as_posix(),"sha256":sha256(target),"bytes":target.stat().st_size})
+                if optional.endswith("build-recipe.json"):
+                    manifest["logger_recipe_id"]=json.loads(target.read_text(encoding="utf-8"))["id"]
+        if (output/"SPI_SOURCE_CONTRACT.json").exists():
+            manifest["bus_contract"]=json.loads((output/"SPI_SOURCE_CONTRACT.json").read_text(encoding="utf-8"))
+        if args.mode == "candidate" and args.profile!="production":
+            runbook="Bench_Automation.md" if args.profile=="mixed-diagnostic" else "CAN-FD_First_Recording_Runbook.md"
+            extras=[(ROOT / "docs/firmware" / runbook, "RUNBOOK.md"),
                     (Path.home() / ".platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin",
                      f"artifacts/a8-{logger_env}/boot_app0.bin")]
             for source,destination in extras:

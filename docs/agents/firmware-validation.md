@@ -35,6 +35,10 @@ retains logs and a failed manifest without a source archive. See
 
 For focused work use existing targets with compiler paths when needed:
 
+For real-acquisition run specs, mixed/RX2 candidate profiles, immutable evidence
+intake, exact snapshots and workspace status, use
+[bench automation](../firmware/Bench_Automation.md).
+
 ```text
 make -C firmware/test test
 make -C firmware/can-fd/common/test test

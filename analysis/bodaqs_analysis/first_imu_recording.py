@@ -102,4 +102,34 @@ def assess_first_imu_recording(path: str | Path) -> tuple[dict, dict]:
         "operator_review": ["one IMU, ADC and unrelated sensors disabled", "matched candidate images/configuration",
                             "approximately 30 seconds acquired", "no persistent queue growth or repeated overload"],
     }
+    # Independent verdicts retain the strict legacy outcome above. Footer closure
+    # alone cannot prove source delivery; observed loss categories may overlap.
+    starts_by_segment={r["source_segment_id"]:r["related_sequence"] for r in starts if r["boundary_validity_flags"]&1}
+    bounded=complete_bounds and sequence_known and all(
+        terminal[s]>=starts_by_segment[s] for s in segments)
+    expected=sum(terminal[s]-starts_by_segment[s]+1 for s in segments) if bounded else None
+    unique={(r["source_segment_id"],r["sequence"]) for r in decoded["readings"] if r["sequence"] is not None}
+    if bounded and any(s not in terminal or not starts_by_segment[s]<=seq<=terminal[s] for s,seq in unique):
+        bounded=False;expected=None
+    missing=expected-len(unique) if bounded else None
+    report["verdicts"]={
+        "file_integrity":not bool(info.detected_errors),"footer_closed":clean_file,
+        "control_stop":len(windows)==1 and windows[0].get("cessation_status")=="confirmed_stop",
+        "cleanup":cleanup,"source_terminal_boundary":complete_bounds,
+        "sample_identity":sequence_known and identity,"source_loss_observed":lost_counts["source_loss_delta"]>0,
+        "capture_loss_observed":lost_counts["capture_loss_delta"]>0,
+        "evidence_loss_observed":lost_counts["evidence_loss_delta"]>0,
+        "physical_qualification":"unqualified",
+    }
+    report["metrics"]={"sample_delivery":{
+        "unit":"samples","window":"source_START_to_inclusive_source_STOP" if bounded else "observed_prefix",
+        "baseline":starts_by_segment,"endpoints":terminal,"denominator":expected,
+        "unique_received":len(unique),"missing":missing,
+        "whole_run_missing_percent":100*missing/expected if expected else None,
+        "unresolved_readings":sum(r["sequence"] is None for r in decoded["readings"]),
+    },"loss_observations":{
+        "unit":"reported_loss_count","window":"stored_timing_observations",
+        "baseline":None,"denominator":None,"categories":lost_counts,
+        "additive_unique_sample_loss":False,
+    }}
     return report, decoded

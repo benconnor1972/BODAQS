@@ -61,6 +61,7 @@ int main() {
             category = ("accepted" if accepted else "framing" if not header_ok else
                         "crc_mismatch" if crc != received_crc else "protocol_fields")
             result["entries"].append({"slot": entry["slot"], "request_kind": entry["request_kind"],
+                "reported_decode_reason":entry.get("decode_reason"),"bus":entry.get("bus"),
                 "canonical_decoder_accepts": accepted, "category": category,
                 "magic_hex": raw[:2].hex(), "version": raw[2], "kind": raw[3],
                 "crc_matches": crc == received_crc, "computed_crc": f"{crc:08x}",

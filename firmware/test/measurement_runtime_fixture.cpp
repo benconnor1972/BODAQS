@@ -83,7 +83,8 @@ static bool allowMalformedMeasurement=false;
 static uint32_t dropBindReplyUntil=0;
 namespace SharedSpiBus {
 bool begin(const board::SPIProfile&) { return spiAvailable; }
-bool transfer(int8_t,const SPISettings& settings,const uint8_t*tx,uint8_t*rx,size_t length,uint32_t,uint32_t startSpacingUs=0,uint32_t csSetupUs=0) {
+bool transfer(int8_t,const SPISettings& settings,const uint8_t*tx,uint8_t*rx,size_t length,uint32_t,uint32_t startSpacingUs=0,uint32_t csSetupUs=0,SpiTransactionContext* context=nullptr) {
+ if(context) { *context={};context->valid=true;context->cs=4;context->previousCs=10;context->previousValid=true; }
 #if defined(BODAQS_MEASUREMENT_CS_SETUP_US)
  assert(csSetupUs==(length==BODAQS_MEASUREMENT_BYTES?BODAQS_MEASUREMENT_CS_SETUP_US:0));
 #else
@@ -322,6 +323,7 @@ static void measurementFailureSplit() {
  after=CanMasterManager::diagnostics().measurementTiming;
  assert(after.transferFailedSlots==before.transferFailedSlots+1 && after.decodeFailedSlots==before.decodeFailedSlots+1);
  assert(after.failedSlots==after.transferFailedSlots+after.decodeFailedSlots);
+ assert(after.decodeReasons[BODAQS_MEASUREMENT_DECODE_MAGIC]==before.decodeReasons[BODAQS_MEASUREMENT_DECODE_MAGIC]+1);
  assert(CanMasterManager::exchangeMeasurementSlot(request,response));
  after=CanMasterManager::diagnostics().measurementTiming;
  assert(after.slots==before.slots+3 && after.failedSlots==before.failedSlots+2);
@@ -343,6 +345,7 @@ int main() {
   assert(!bodaqs_measurement_decode(rejected[i],256,&captureResponse));
  }
  auto initialSlots=CanMasterManager::diagnostics().measurementTiming.slots;
+ const auto initialMagic=CanMasterManager::diagnostics().measurementTiming.decodeReasons[BODAQS_MEASUREMENT_DECODE_MAGIC];
  spiAvailable=false;assert(!CanMasterManager::exchangeMeasurementSlot(captureRequest,captureResponse));spiAvailable=true;
  assert(ImuFlowDiagnostics::liveReplies.count==0);
  for(unsigned i=0;i<6;++i) {
@@ -350,14 +353,19 @@ int main() {
   assert(!CanMasterManager::exchangeMeasurementSlot(captureRequest,captureResponse));
  }
  assert(ImuFlowDiagnostics::liveReplies.count==4);
+ assert(CanMasterManager::diagnostics().measurementTiming.decodeReasons[BODAQS_MEASUREMENT_DECODE_MAGIC]==initialMagic+1);
+ assert(CanMasterManager::diagnostics().measurementTiming.decodeReasons[BODAQS_MEASUREMENT_DECODE_CRC]>=1);
  for(unsigned i=0;i<4;++i) {
   const auto& entry=ImuFlowDiagnostics::liveReplies.entries[i];
   assert(entry.slot==initialSlots+2+i && entry.requestKind==1);
   assert(!memcmp(entry.reply,rejected[i],256));
+  assert(entry.bus.valid && entry.bus.cs==4 && entry.bus.previousCs==10);
  }
  assert(CanMasterManager::exchangeMeasurementSlot(captureRequest,captureResponse));
  assert(ImuFlowDiagnostics::liveReplies.count==4);
- ImuFlowDiagnostics::finish(clockMs,micros(),1,6);
+ const auto reasons=CanMasterManager::diagnostics().measurementTiming;
+ ImuFlowDiagnostics::finish(clockMs,micros(),1,6,true,reasons.decodeReasons);
+ assert(ImuFlowDiagnostics::finished.measurementDecodeReasons[BODAQS_MEASUREMENT_DECODE_MAGIC]==initialMagic+1);
  memset(ImuFlowDiagnostics::liveReplies.entries[0].reply,0,256);
  assert(!memcmp(ImuFlowDiagnostics::finishedReplies.entries[0].reply,rejected[0],256));
  ImuFlowDiagnostics::reset(789,clockMs);

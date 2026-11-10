@@ -220,6 +220,7 @@ static void setupBringupDiagnostics_() {
 void setup() {
   
     Serial.begin(115200);
+    Serial.printf("[BUILD] recipe=%s\n",FirmwareInfo::buildRecipe());
     SelectBoard(BoardID::BODAQS_BOARD_PROFILE);
     if (!gBoard) {
       BOOT_LOGE("FATAL: Board not selected\n");

@@ -1,6 +1,7 @@
 #include "BdqAdcTimingJson.h"
 #include "BdqLogWriter.h"
 #include "MeasurementReplyCapture.h"
+#include "../can-fd/common/protocol/bodaqs_measurement.h"
 #include <cassert>
 #include <string>
 #include <cstdio>
@@ -8,6 +9,10 @@
 static bool failuresAvailable=true;
 static MeasurementReplyCapture replyCapture;
 namespace RemoteImuRecording {
+const uint32_t* finalMeasurementDecodeReasons() {
+ static uint32_t reasons[BODAQS_MEASUREMENT_DECODE_COUNT]={};
+ reasons[BODAQS_MEASUREMENT_DECODE_MAGIC]=11;return failuresAvailable?reasons:nullptr;
+}
 const MeasurementReplyCapture* finalRejectedMeasurementReplies() {return failuresAvailable?&replyCapture:nullptr;}
 bool finalMeasurementFailures(uint32_t& transfer,uint32_t& decode) {
   if(!failuresAvailable) return false;
@@ -49,6 +54,9 @@ int main() {
   replyCapture.count=4;
   for(unsigned i=0;i<4;++i) {
     auto& entry=replyCapture.entries[i];entry.slot=100+i;entry.requestKind=14;
+    entry.decodeReason=BODAQS_MEASUREMENT_DECODE_MAGIC;
+    entry.bus.valid=true;entry.bus.cs=4;entry.bus.previousValid=true;
+    entry.bus.previousCs=10;entry.bus.previousCommand=0x12;entry.bus.previousBytes=4;
     for(unsigned b=0;b<256;++b) entry.reply[b]=uint8_t(b+i);
   }
   appendBdqV2MeasurementFailures_(document);
@@ -56,11 +64,14 @@ int main() {
   auto failures=parsed["remote_measurement_failures"];
   assert(failures["available"]==true && failures["transfer_failed_slots"]==7 && failures["decode_failed_slots"]==11);
   assert(failures["scope"]=="measurement_mode_through_cleanup");
+  assert(failures["decode_reasons"]["magic"]==11 && failures["decode_reasons"]["crc"]==0);
   auto replies=failures["rejected_replies"];
   assert(replies["available"]==true && replies["captured"]==4 && replies["capacity"]==4);
   assert(replies["entries"].size()==4);
   for(unsigned i=0;i<4;++i) {
     auto entry=replies["entries"][i];assert(entry["slot"]==100+i && entry["request_kind"]==14);
+    assert(entry["decode_reason"]=="magic" && entry["bus"]["available"]==true);
+    assert(entry["bus"]["previous_cs"]==10 && entry["bus"]["previous_command"]==0x12 && entry["bus"]["previous_bytes"]==4);
     const std::string hex=entry["reply_hex"].as<std::string>();assert(hex.size()==512);
     for(unsigned b=0;b<256;++b) assert(std::stoul(hex.substr(2*b,2),nullptr,16)==uint8_t(b+i));
   }

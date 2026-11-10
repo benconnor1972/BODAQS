@@ -134,6 +134,13 @@ typedef struct {
     uint32_t spi_queue_depth, spi_queue_peak, spi_queue_head_age_us, spi_queue_head_valid;
     uint64_t spi_queue_wait_total_us;
 #endif
+#if BODAQS_MEASUREMENT_VERSION == 2
+    /* Version5: processed ACK_FETCH requests by predecessor ACK class and
+     * successor fetch class. acks[] remains separate-ACK-only. Retirement
+     * counters credit a new object once, never a cached proof replay. */
+    uint32_t ack_fetches[5], ack_fetch_targets[5];
+    uint32_t layout_flags, size_bytes; /* bit0 phase timing, bit1 queue timing */
+#endif
 } MasterDrainInfo;
 volatile MasterDrainInfo gMasterDrainInfo;
 /* End drain diagnostic state. */
@@ -348,6 +355,16 @@ static void drain_check(void)
 #endif
 #if defined(BODAQS_MASTER_QUEUE_TIMING) && BODAQS_MASTER_QUEUE_TIMING
         gMasterDrainInfo.version=4;
+#endif
+#if BODAQS_MEASUREMENT_VERSION == 2
+        gMasterDrainInfo.version=5;
+    gMasterDrainInfo.size_bytes=sizeof(gMasterDrainInfo);
+#if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
+    gMasterDrainInfo.layout_flags|=1;
+#endif
+#if defined(BODAQS_MASTER_QUEUE_TIMING) && BODAQS_MASTER_QUEUE_TIMING
+    gMasterDrainInfo.layout_flags|=2;
+#endif
 #endif
         gMasterDrainInfo.context=context;gMasterDrainInfo.recording=recording;
         gMasterDrainInfo.started_tick=bodaqs_master_timing_clock(NULL,&epoch);
@@ -1084,7 +1101,7 @@ static void drain_transfer(const uint8_t *request,size_t length,const uint8_t *r
         if(request[3]==1) {
             if(!bodaqs_measurement_get(request+12,4)) ++gMasterDrainInfo.data_head_polls[cls-1];
             if(!reply[3]) ++gMasterDrainInfo.data_empty_polls[cls-1];
-        } else if(request[3]==5 && gService.objects_acked!=acked_before) {
+        } else if((request[3]==5 || request[3]==14) && gService.objects_acked!=acked_before) {
             ++gMasterDrainInfo.data_acked_objects[cls-1];
             gMasterDrainInfo.data_acked_records[cls-1]+=ack_records;
         }
@@ -1249,7 +1266,7 @@ static void service_spi_receive(void)
     drain_cost(0,started);
     started=gMasterDrainInfo.state==1?drain_clock():0;
     acked_before=gService.objects_acked;
-    if(length==BODAQS_MEASUREMENT_BYTES && received[3]==5 && received[16]<4 &&
+    if(length==BODAQS_MEASUREMENT_BYTES && (received[3]==5 || received[3]==14) && received[16]<4 &&
        (received[20]==1 || received[20]==2))
         ack_records=gService.receptions[received[16]].count;
     result=bodaqs_master_service_process_transfer(&gService,received,length,
@@ -1277,6 +1294,14 @@ static void service_spi_receive(void)
                 ++gMasterDrainInfo.polls[received[20]-1];
             if(received[3]==5 && received[20]>=1 && received[20]<=5)
                 ++gMasterDrainInfo.acks[received[20]-1];
+#if BODAQS_MEASUREMENT_VERSION == 2
+            if(received[3]==14) {
+                if(received[20]>=1 && received[20]<=5)
+                    ++gMasterDrainInfo.ack_fetches[received[20]-1];
+                if(received[22]>=1 && received[22]<=5)
+                    ++gMasterDrainInfo.ack_fetch_targets[received[22]-1];
+            }
+#endif
             if(cls) ++gMasterDrainInfo.fragments[cls-1];
             if(!reply_kind) ++gMasterDrainInfo.empty_replies;
         }

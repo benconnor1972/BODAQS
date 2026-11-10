@@ -11,6 +11,7 @@ def main():
     parser.add_argument("--bus-source", type=Path, help="Saved SharedSpiBus.cpp for regression checks")
     parser.add_argument("--cs-setup", action="store_true", help="Check CS-to-clock setup and ordinary caller isolation")
     parser.add_argument("--without-setup-delay",action="store_true",help="Negative proof: remove only the production setup wait")
+    parser.add_argument("--capture-disabled",action="store_true")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix="bodaqs-spi-spacing-") as temp:
@@ -24,6 +25,8 @@ extern bool lockOk;
 extern bool lockHeld, transactionActive;
 extern bool selected, requireSlaveSetup;
 extern uint32_t selectedAtUs,firstClockUs;
+extern size_t lastWireLength;
+extern uint8_t lastWireCommand;
 uint32_t micros();
 void delayMicroseconds(uint32_t);
 void digitalWrite(uint8_t, int);
@@ -36,8 +39,9 @@ struct SPISettings {};
 struct SPIClass {
  void begin(int,int,int) {}
  void beginTransaction(const SPISettings&) {assert(lockHeld && !transactionActive);transactionActive=true;nowUs+=setupUs;}
- void transferBytes(const uint8_t*,uint8_t* rx,size_t) {
+ void transferBytes(const uint8_t* tx,uint8_t* rx,size_t length) {
    assert(lockHeld && transactionActive && selected);firstClockUs=nowUs;
+   lastWireLength=length;lastWireCommand=tx?tx[0]:0;
    if(requireSlaveSetup && rx) rx[0]=uint32_t(nowUs-selectedAtUs)>=5?0x42:0;
    nowUs+=wireUs;
  }
@@ -68,6 +72,7 @@ bool lockOk=true;
 bool lockHeld=false,transactionActive=false;
 bool selected=false,requireSlaveSetup=false;
 uint32_t selectedAtUs=0,firstClockUs=0;
+size_t lastWireLength=0;uint8_t lastWireCommand=0;
 static std::function<void()> duringWait;
 SPIClass SPI;
 static std::vector<uint32_t> starts;
@@ -88,7 +93,13 @@ int main() {
  assert(SharedSpiBus::begin(profile));
  SPISettings settings;uint8_t tx[256]={},rx[256]={};
  auto transfer=[&](uint32_t pace) {return SharedSpiBus::transfer(4,settings,tx,rx,256,10,pace);};
- assert(transfer(500));assert(starts.back()==100); // no artificial first-slot delay
+ SpiTransactionContext first;
+ assert(SharedSpiBus::transfer(4,settings,tx,rx,256,10,500,0,&first));assert(starts.back()==100);
+#if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
+ assert(first.valid && !first.previousValid && first.previousCs==-1 && first.sequence==1);
+#else
+ assert(!first.valid);
+#endif
  assert(transfer(500));assert(starts.back()==600);
  lockWaitUs=700;setupUs=50;
  assert(transfer(500));assert(starts.back()==1478); // lock/setup delay already satisfies spacing
@@ -118,6 +129,26 @@ int main() {
  assert(transfer(500));assert(starts.back()==11128);
  assert(!lockHeld && !transactionActive);
  assert(SharedSpiBus::diagnostics().transactions==starts.size());
+ // The exact context is copied while locked, including intervening ADC traffic.
+ SpiTransactionContext observed;
+ nowUs=30000;tx[0]=0x12;
+ assert(SharedSpiBus::transfer(5,settings,tx,rx,6));
+ tx[0]=0x42;
+ assert(SharedSpiBus::transfer(4,settings,tx,rx,256,10,0,0,&observed));
+ assert(lastWireLength==256 && lastWireCommand==0x42 && tx[0]==0x42);
+#if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
+ assert(observed.valid && observed.previousValid && observed.previousCs==5 && observed.cs==4);
+ assert(observed.previousReleaseUs==30128 && observed.selectedUs==30128 && observed.releasedUs==30256);
+ assert(observed.commandValid && observed.command==0x42 && observed.bytes==256);
+ assert(observed.previousCommandValid && observed.previousCommand==0x12 && observed.previousBytes==6);
+ const auto saved=observed;
+ assert(SharedSpiBus::transfer(5,settings,tx,rx,6));
+ assert(observed.sequence==saved.sequence && observed.previousCs==5);
+#else
+ assert(!observed.valid);
+#endif
+ lockOk=false;assert(!SharedSpiBus::transfer(4,settings,tx,rx,256,10,0,0,&observed));
+ assert(!observed.valid);lockOk=true;
  // CS_SETUP_CHECK
  puts("production SPI spacing: unlocked ADC interleave, per-CS deadline, concurrent same-CS recheck, failure and wrap PASS");
 }
@@ -155,7 +186,7 @@ int main() {
             bus=temp/'without-setup.cpp';bus.write_text(changed)
         exe = temp / "fixture.exe"
         subprocess.run([args.compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
-                        "-DESP32", "-I", str(temp), "-I", str(root / "src"),
+                        "-DESP32", f"-DBODAQS_MEASUREMENT_REPLY_CAPTURE={int(not args.capture_disabled)}", "-I", str(temp), "-I", str(root / "src"),
                         str(cpp), str(bus), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
 

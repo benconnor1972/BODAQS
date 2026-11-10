@@ -452,7 +452,8 @@ void service() {
       ImuFlowDiagnostics::finish(millis(),micros(),
           CanMasterManager::diagnostics().measurementTiming.transferFailedSlots,
           CanMasterManager::diagnostics().measurementTiming.decodeFailedSlots,
-          CanMasterManager::diagnostics().measurementTimingContext==contextId);
+          CanMasterManager::diagnostics().measurementTimingContext==contextId,
+          CanMasterManager::diagnostics().measurementTiming.decodeReasons);
 #endif
       CanMasterManager::releaseMeasurementControl();
       {Lock lock;owned=false;exitPending=false;cleanupRequested=false;}
@@ -478,7 +479,8 @@ void service() {
       ImuFlowDiagnostics::finish(millis(),micros(),
           CanMasterManager::diagnostics().measurementTiming.transferFailedSlots,
           CanMasterManager::diagnostics().measurementTiming.decodeFailedSlots,
-          CanMasterManager::diagnostics().measurementTimingContext==contextId);
+          CanMasterManager::diagnostics().measurementTimingContext==contextId,
+          CanMasterManager::diagnostics().measurementTiming.decodeReasons);
 #endif
       CanMasterManager::releaseMeasurementControl();
       {Lock lock;owned=false;exitPending=false;}

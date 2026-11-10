@@ -8,7 +8,7 @@ from test_io_bdq_can_imu import _sample_descriptor, _evidence_descriptor
 from test_io_bdq_v2 import FILE_HEADER, FILE_MAGIC_V2, _catalog, _metadata, _chunk, _json_chunk, _stream_data
 
 
-def recording(tmp_path, *, gap=False, footer=True, confirmed=True, discarded=False, torn=False, source_loss=0, capture_loss=0, valid_raw=True):
+def recording(tmp_path, *, gap=False, footer=True, confirmed=True, discarded=False, torn=False, source_loss=0, capture_loss=0, valid_raw=True, recipe=None):
     sample=_sample_descriptor()
     sample.update(stream_kind="intermittent",record_size_bytes=100)
     sample["acquisition"].update(payload_schema="bodaqs.can_imu_packets.v1", provider_uid="123",
@@ -47,6 +47,7 @@ def recording(tmp_path, *, gap=False, footer=True, confirmed=True, discarded=Fal
         observations.append(bytes(row))
     catalog=_catalog();catalog["streams"]=[catalog["streams"][0],sample,timing]
     metadata=_metadata();metadata["stream_count"]=3
+    if recipe:metadata["firmware_recipe_id"]=recipe
     chunks=[_json_chunk(1,0,metadata),_json_chunk(2,1,catalog),
             _chunk(3,2,_stream_data(2,100,rows,[])),_chunk(3,3,_stream_data(3,224,observations,[]))]
     if footer:
@@ -66,6 +67,9 @@ def test_complete_values_and_separate_timing(tmp_path):
     assert decoded["readings"][0]["ax"]==-32768 and decoded["readings"][-1]["gz"]==-456
     assert report["timing_status"]=="unreconstructed" and report["capacity_qualification"]=="unqualified"
     assert all("time_s" not in row for row in decoded["readings"])
+    assert report["metrics"]["sample_delivery"]["denominator"]==10
+    assert report["metrics"]["sample_delivery"]["whole_run_missing_percent"]==0
+    assert report["verdicts"]["control_stop"] and report["verdicts"]["source_terminal_boundary"]
 
 
 def test_one_accounted_packet_gap_is_warning(tmp_path):
@@ -79,6 +83,9 @@ def test_prefix_uncertainty_and_discard_never_claim_delivery(tmp_path,kwargs):
     report,decoded=assess_first_imu_recording(recording(tmp_path,**kwargs))
     assert report["file_outcome"]=="incomplete_or_unresolved"
     assert len(decoded["readings"])==10
+    if not kwargs.get("footer",True) or kwargs.get("torn",False):
+        # A terminal boundary can exist in a torn file; integrity is independent.
+        assert report["verdicts"]["footer_closed"] is False
 
 
 @pytest.mark.parametrize("key",["source_loss","capture_loss"])

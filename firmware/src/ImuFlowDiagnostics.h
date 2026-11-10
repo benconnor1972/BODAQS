@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "MeasurementReplyCapture.h"
+#include "../can-fd/common/protocol/bodaqs_measurement.h"
 
 #if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
 #if !defined(BODAQS_IMU_FLOW_DIAGNOSTICS) || !BODAQS_IMU_FLOW_DIAGNOSTICS || !defined(BODAQS_SPI_MEASUREMENT_V2) || !BODAQS_SPI_MEASUREMENT_V2
@@ -26,6 +27,7 @@ struct Snapshot {
   uint32_t sampleQueuePeak=0,evidenceQueuePeak=0,sampleCapacity=0,evidenceCapacity=0;
   uint32_t lossCounter=0;
   uint32_t measurementTransferFailures=0,measurementDecodeFailures=0;
+  uint32_t measurementDecodeReasons[BODAQS_MEASUREMENT_DECODE_COUNT]={};
   bool measurementFailuresAvailable=false;
 };
 struct Wait {uint32_t object=0,startedUs=0;};
@@ -35,10 +37,12 @@ inline bool active=false,haveFirstLoss=false,haveFinished=false;
 #if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
 inline MeasurementReplyCapture liveReplies,finishedReplies;
 // Acquisition owner only. No allocation, serialization or logging in this path.
-inline void rejectedReply(uint64_t context,uint32_t slot,uint8_t kind,const uint8_t* bytes) {
+inline void rejectedReply(uint64_t context,uint32_t slot,uint8_t kind,const uint8_t* bytes,
+                          uint8_t reason=0,const SpiTransactionContext& bus={}) {
   if(!active || live.context!=context || liveReplies.count==MeasurementReplyCapture::capacity) return;
   auto& entry=liveReplies.entries[liveReplies.count++];
   entry.slot=slot;entry.requestKind=kind;
+  entry.decodeReason=reason;entry.bus=bus;
   for(unsigned i=0;i<MeasurementReplyCapture::replyBytes;++i) entry.reply[i]=bytes[i];
 }
 #endif
@@ -102,10 +106,13 @@ inline void loss(uint32_t counter,uint32_t now,uint32_t nowUs) {
   if(!active || haveFirstLoss || !counter) return;
   live.lossCounter=counter;firstLoss=capture(now,nowUs);haveFirstLoss=true;
 }
-inline void finish(uint32_t now,uint32_t nowUs,uint32_t transferFailures=0,uint32_t decodeFailures=0,bool measurementAvailable=true) {
+inline void finish(uint32_t now,uint32_t nowUs,uint32_t transferFailures=0,uint32_t decodeFailures=0,bool measurementAvailable=true,
+                   const uint32_t* decodeReasons=nullptr) {
   if(!active) return;
   live.measurementTransferFailures=transferFailures;live.measurementDecodeFailures=decodeFailures;
   live.measurementFailuresAvailable=measurementAvailable;
+  if(measurementAvailable && decodeReasons)
+    for(unsigned i=0;i<BODAQS_MEASUREMENT_DECODE_COUNT;++i) live.measurementDecodeReasons[i]=decodeReasons[i];
 #if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
   if(measurementAvailable) finishedReplies=liveReplies;
   else finishedReplies={};

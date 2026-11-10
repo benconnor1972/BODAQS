@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include "BoardProfile.h"
+#include "SpiTransactionContext.h"
 
 namespace SharedSpiBus {
 
@@ -36,7 +37,8 @@ bool transfer(
     size_t length,
     uint32_t lockTimeoutMs = 50,
     uint32_t minimumStartSpacingUs = 0,
-    uint32_t csSetupUs = 0);
+    uint32_t csSetupUs = 0,
+    SpiTransactionContext* context = nullptr);
 
 const Diagnostics& diagnostics();
 

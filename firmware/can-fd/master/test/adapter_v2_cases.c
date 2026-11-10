@@ -78,9 +78,9 @@ int main(void) {
     gService.measurement.mode.context=123;gService.measurement.mode.recording=456;
     gService.acquisition_started=1;drain_check();
 #if defined(BODAQS_MASTER_QUEUE_TIMING) && BODAQS_MASTER_QUEUE_TIMING
-    assert(gMasterDrainInfo.version==4 && gMasterDrainInfo.phase_calls[0]==0);
+    assert(gMasterDrainInfo.version==5 && gMasterDrainInfo.phase_calls[0]==0);
 #else
-    assert(gMasterDrainInfo.version==3 && gMasterDrainInfo.phase_calls[0]==0);
+    assert(gMasterDrainInfo.version==5 && gMasterDrainInfo.phase_calls[0]==0);
 #endif
     puts("production phase classification, accumulation, freeze and new-scope reset: PASS");
 #endif

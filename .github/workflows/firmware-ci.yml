@@ -67,6 +67,7 @@ jobs:
           MPLBACKEND: Agg
         run: >-
           python firmware/tools/build_imu_software_candidate.py --mode host
+          --profile mixed-diagnostic
           --output-dir "${{ runner.temp }}/firmware-host"
           --make make --cxx g++ --cc gcc --pio pio
       - uses: actions/upload-artifact@v4

@@ -17,6 +17,9 @@ SharedSpiBus::Diagnostics s_diagnostics;
 // another device's pacing origin. Access only under the shared bus mutex.
 bool s_haveTransactionStart[128] = {};
 uint32_t s_lastTransactionStartUs[128] = {};
+#if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
+SpiTransactionContext s_previousTransaction;
+#endif
 
 #if defined(ESP32)
 SemaphoreHandle_t s_mutex = nullptr;
@@ -80,7 +83,9 @@ bool transfer(
     size_t length,
     uint32_t lockTimeoutMs,
     uint32_t minimumStartSpacingUs,
-    uint32_t csSetupUs) {
+    uint32_t csSetupUs,
+    SpiTransactionContext* context) {
+  if(context) *context={};
   if (!s_ready || csPin < 0 || length == 0 || (!tx && !rx)) return false;
   const auto cs = static_cast<uint8_t>(csPin);
   for (;;) {
@@ -103,6 +108,19 @@ bool transfer(
   // lengthen the following interval, but cannot make the next start too early.
   s_lastTransactionStartUs[cs] = micros();
   s_haveTransactionStart[cs] = true;
+#if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
+  SpiTransactionContext observed;
+  observed.valid=true;observed.sequence=s_previousTransaction.sequence+1;
+  observed.cs=csPin;observed.selectedUs=s_lastTransactionStartUs[cs];
+  observed.bytes=length>UINT16_MAX?UINT16_MAX:static_cast<uint16_t>(length);
+  observed.commandValid=tx!=nullptr;observed.command=tx?tx[0]:0;
+  observed.previousValid=s_previousTransaction.valid;
+  observed.previousCs=s_previousTransaction.cs;
+  observed.previousReleaseUs=s_previousTransaction.releasedUs;
+  observed.previousBytes=s_previousTransaction.bytes;
+  observed.previousCommand=s_previousTransaction.command;
+  observed.previousCommandValid=s_previousTransaction.commandValid;
+#endif
   if(csSetupUs) delayMicroseconds(csSetupUs);
 #if defined(ESP32)
   s_spi->transferBytes(tx, rx, length);
@@ -114,6 +132,11 @@ bool transfer(
 #endif
   digitalWrite(static_cast<uint8_t>(csPin), HIGH);
   s_spi->endTransaction();
+#if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
+  observed.releasedUs=micros();
+  s_previousTransaction=observed;
+  if(context) *context=observed;
+#endif
   ++s_diagnostics.transactions;
   s_diagnostics.bytesTransferred += length;
   unlock_();

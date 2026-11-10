@@ -1727,6 +1727,12 @@ static void appendBdqV2MeasurementFailures_(JsonDocument& document) {
     failures["transfer_failed_slots"]=transfer;
     failures["decode_failed_slots"]=decode;
     failures["scope"]="measurement_mode_through_cleanup";
+    const auto* reasons=RemoteImuRecording::finalMeasurementDecodeReasons();
+    if(reasons) {
+      JsonObject counts=failures["decode_reasons"].to<JsonObject>();
+      for(unsigned i=1;i<BODAQS_MEASUREMENT_DECODE_COUNT;++i)
+        counts[bodaqs_measurement_decode_name(static_cast<BodaqsMeasurementDecodeResult>(i))]=reasons[i];
+    }
   }
   JsonObject replies=failures["rejected_replies"].to<JsonObject>();
   const auto* capture=RemoteImuRecording::finalRejectedMeasurementReplies();
@@ -1740,6 +1746,19 @@ static void appendBdqV2MeasurementFailures_(JsonDocument& document) {
       const auto& entry=capture->entries[i];
       JsonObject row=entries.add<JsonObject>();
       row["slot"]=entry.slot;row["request_kind"]=entry.requestKind;
+      row["decode_reason"]=bodaqs_measurement_decode_name(static_cast<BodaqsMeasurementDecodeResult>(entry.decodeReason));
+      JsonObject bus=row["bus"].to<JsonObject>();
+      bus["available"]=entry.bus.valid;
+      if(entry.bus.valid) {
+        bus["sequence"]=entry.bus.sequence;bus["cs"]=entry.bus.cs;
+        bus["bytes"]=entry.bus.bytes;bus["selected_us"]=entry.bus.selectedUs;
+        bus["released_us"]=entry.bus.releasedUs;
+        bus["command_valid"]=entry.bus.commandValid;bus["command"]=entry.bus.command;
+        bus["previous_valid"]=entry.bus.previousValid;
+        bus["previous_cs"]=entry.bus.previousCs;bus["previous_release_us"]=entry.bus.previousReleaseUs;
+        bus["previous_bytes"]=entry.bus.previousBytes;bus["previous_command"]=entry.bus.previousCommand;
+        bus["previous_command_valid"]=entry.bus.previousCommandValid;
+      }
       char hex[2*MeasurementReplyCapture::replyBytes+1];
       static constexpr char digits[]="0123456789abcdef";
       for(unsigned b=0;b<MeasurementReplyCapture::replyBytes;++b) {

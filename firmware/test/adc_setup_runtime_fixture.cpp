@@ -77,7 +77,8 @@ std::function<void()> afterRead;
 namespace SharedSpiBus {
 bool begin(const board::SPIProfile&) { return true; }
 bool transfer(int8_t cs, const SPISettings&, const uint8_t* tx, uint8_t* rx,
-              size_t len, uint32_t, uint32_t, uint32_t csSetupUs) {
+              size_t len, uint32_t, uint32_t, uint32_t csSetupUs,SpiTransactionContext* context) {
+  if(context) *context={};
   assert(csSetupUs==0); // CAN experiment must not delay the ADC.
   assert(cs==10 || cs==11);
   auto& chip=chips[cs-10];

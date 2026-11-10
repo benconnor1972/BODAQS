@@ -50,6 +50,7 @@ bool stopped();
 // Immutable completed measurement-scope counters; false until owner retirement
 // or when this build has no FLOW snapshot. Never reads live transport totals.
 bool finalMeasurementFailures(uint32_t& transfer,uint32_t& decode);
+const uint32_t* finalMeasurementDecodeReasons(); // Same retired/matching-context lifetime.
 // Same retirement/scope barrier as final counters. Borrowed immutable storage;
 // consume before release or configure starts another recording. Null if unavailable.
 const MeasurementReplyCapture* finalRejectedMeasurementReplies();

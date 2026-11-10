@@ -1615,6 +1615,7 @@ bool serializeMetadataJson_(
   appendKeyString_(out, 1, "firmware_name", FirmwareInfo::name());
   appendKeyString_(out, 1, "firmware_version", FirmwareInfo::version());
   appendKeyString_(out, 1, "firmware_build", FirmwareInfo::buildDateTime());
+  appendKeyString_(out, 1, "firmware_recipe_id", FirmwareInfo::buildRecipe());
   if(ImuAdmission::singleNodeSmokeBuild()) {
     appendKeyString_(out, 1, "acquisition_test_mode", ImuAdmission::buildMode());
     appendKeyBool_(out, 1, "acquisition_qualified", false);

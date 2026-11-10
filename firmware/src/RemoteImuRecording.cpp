@@ -443,6 +443,13 @@ const MeasurementReplyCapture* finalRejectedMeasurementReplies() {
 #endif
  return nullptr;
 }
+const uint32_t* finalMeasurementDecodeReasons() {
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+ uint32_t transfer=0,decode=0;
+ if(finalMeasurementFailures(transfer,decode)) return ImuFlowDiagnostics::finished.measurementDecodeReasons;
+#endif
+ return nullptr;
+}
 bool readyForFileFinalization() {
  for(uint8_t n=0;n<4;++n) if(selected&(1u<<n)) {
   Completion c;

@@ -55,7 +55,8 @@ static int sensorIo(void* context,bool write,uint8_t address,uint8_t* value,uint
 static uint64_t rng(void*) { return 0x12345678; }
 namespace SharedSpiBus {
 bool begin(const board::SPIProfile&) { return spiAvailable; }
-bool transfer(int8_t,const SPISettings&,const uint8_t*tx,uint8_t*rx,size_t length,uint32_t,uint32_t=0,uint32_t csSetupUs=0) {
+bool transfer(int8_t,const SPISettings&,const uint8_t*tx,uint8_t*rx,size_t length,uint32_t,uint32_t=0,uint32_t csSetupUs=0,SpiTransactionContext* context=nullptr) {
+ if(context) *context={};
  assert(csSetupUs==0);
  if(!spiAvailable) return false;
  assert(length==84);

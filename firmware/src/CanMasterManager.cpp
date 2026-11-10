@@ -266,7 +266,8 @@ void refreshInventoryIfStateChanged_(CanMasterManager::State previous,
 bool transferSlot_(
     const SPISettings& settings, const uint8_t* tx, uint8_t* rx,
     size_t length = CanMasterProtocol::kSlotBytes, uint32_t guardUs = kInterSlotGuardUs,
-    uint32_t minimumStartSpacingUs = 0, uint32_t csSetupUs = 0) {
+    uint32_t minimumStartSpacingUs = 0, uint32_t csSetupUs = 0,
+    SpiTransactionContext* context = nullptr) {
   if (s_haveCompletedSlot) {
     const uint32_t elapsedUs = micros() - s_lastSlotCompletedUs;
     if (elapsedUs < guardUs) {
@@ -275,7 +276,7 @@ bool transferSlot_(
   }
   if (!SharedSpiBus::transfer(
           s_profile.cs_pin, settings, tx, rx,
-          length, kSpiLockTimeoutMs, minimumStartSpacingUs, csSetupUs)) {
+          length, kSpiLockTimeoutMs, minimumStartSpacingUs, csSetupUs, context)) {
     return false;
   }
   s_lastSlotCompletedUs = micros();
@@ -724,18 +725,26 @@ bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
     const uint32_t idle=started-measurementTimingEndUs;
     if(idle>timing.maxIdleUs) timing.maxIdleUs=idle;
   }
+#if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
+  SpiTransactionContext bus;
+  auto* busContext=&bus;
+#else
+  SpiTransactionContext* busContext=nullptr;
+#endif
   const bool transferred=transferSlot_(settings,tx,rx,BODAQS_MEASUREMENT_BYTES,25,
-      BODAQS_MEASUREMENT_START_SPACING_US,BODAQS_MEASUREMENT_CS_SETUP_US);
-  const bool valid=transferred && bodaqs_measurement_decode(rx,BODAQS_MEASUREMENT_BYTES,&response);
+      BODAQS_MEASUREMENT_START_SPACING_US,BODAQS_MEASUREMENT_CS_SETUP_US,busContext);
+  const auto decodeResult=transferred?bodaqs_measurement_decode_result(rx,BODAQS_MEASUREMENT_BYTES,&response):BODAQS_MEASUREMENT_DECODE_OK;
+  const bool valid=transferred && decodeResult==BODAQS_MEASUREMENT_DECODE_OK;
   if(!transferred) ++timing.transferFailedSlots;
   else if(!valid) {
     ++timing.decodeFailedSlots;
+    ++timing.decodeReasons[decodeResult];
 #if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
     static_assert(BODAQS_MEASUREMENT_BYTES==MeasurementReplyCapture::replyBytes,"Capture wire size mismatch");
     // Entry may still receive a legacy-width pipeline reply. Sample only after
     // the larger measurement profile has been confirmed for this recording.
     if(s_diagnostics.measurementConfirmed)
-      ImuFlowDiagnostics::rejectedReply(s_diagnostics.measurementTimingContext,timing.slots+1,request.kind,rx);
+      ImuFlowDiagnostics::rejectedReply(s_diagnostics.measurementTimingContext,timing.slots+1,request.kind,rx,decodeResult,bus);
 #endif
   }
   measurementTimingEndUs=micros();
