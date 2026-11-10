@@ -720,8 +720,11 @@ bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
     const uint32_t idle=started-measurementTimingEndUs;
     if(idle>timing.maxIdleUs) timing.maxIdleUs=idle;
   }
-  const bool valid=transferSlot_(settings,tx,rx,BODAQS_MEASUREMENT_BYTES,25,
-      BODAQS_MEASUREMENT_START_SPACING_US) && bodaqs_measurement_decode(rx,BODAQS_MEASUREMENT_BYTES,&response);
+  const bool transferred=transferSlot_(settings,tx,rx,BODAQS_MEASUREMENT_BYTES,25,
+      BODAQS_MEASUREMENT_START_SPACING_US);
+  const bool valid=transferred && bodaqs_measurement_decode(rx,BODAQS_MEASUREMENT_BYTES,&response);
+  if(!transferred) ++timing.transferFailedSlots;
+  else if(!valid) ++timing.decodeFailedSlots;
   measurementTimingEndUs=micros();
   const uint32_t duration=measurementTimingEndUs-started;
   ++timing.slots;timing.exchangeUs+=duration;
@@ -1316,6 +1319,7 @@ bool enterMeasurementMode(uint64_t recording, uint64_t context) {
   BodaqsMeasurementMode requested = {};
   s_diagnostics.measurementTransferErrorMask=0;
   s_diagnostics.measurementTiming={};
+  s_diagnostics.measurementTimingContext=context;
   requested.boot=s_diagnostics.control.master_boot_id; requested.session=s_diagnostics.authority.session;
   requested.caller=requested.session; requested.recording=recording; requested.context=context;
   requested.version=BODAQS_MEASUREMENT_VERSION; requested.maximum=1024; requested.physical=BODAQS_MEASUREMENT_BYTES; requested.hz=BODAQS_MEASUREMENT_HZ; requested.gap=25;

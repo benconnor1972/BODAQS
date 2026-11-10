@@ -25,7 +25,7 @@ RemoteImuStream stream;
 
 std::atomic<Phase> phase{Idle};
 uint8_t node=0;
-uint64_t record=0,revision=0,epoch=0;
+uint64_t record=0,recordContext=0,revision=0,epoch=0;
 
 uint32_t serial=0,began=0,tailBegan=0;
 uint32_t stopRequestedMs=0,stopConfirmedMs=0;
@@ -110,7 +110,7 @@ bool configure(const SensorSpec& chosen,uint64_t sharedRecord,uint64_t sharedCon
   RemoteImuBinding b;b.node=node;b.boot=endpoint.effective_boot;b.uid=endpoint.effective_uid;b.masterBoot=d.control.master_boot_id;b.masterUid=d.hardwareUid;
   b.compactPackets=ImuAdmission::singleNodeSmokeBuild();
   b.session=d.authority.session;
-  record=sharedRecord;
+  record=sharedRecord;recordContext=sharedContext;
   b.recording=record;b.context=sharedContext;std::memcpy(b.effective,endpoint.effective,192);
   String text=chosen.name;chosen.params.get("imu_id",text);std::snprintf(b.sensorId,sizeof b.sensorId,"%s",text.c_str());
   text="";chosen.params.get("mount_point",text);std::snprintf(b.mountPoint,sizeof b.mountPoint,"%s",text.c_str());
@@ -170,7 +170,8 @@ void service() {
     firstFailure.measurementUnavailable=d.measurementUnavailable;
     firstFailure.objectsReceived=d.measurementObjectsReceived;firstFailure.transferErrors=d.measurementTransferErrors;
     firstFailure.transferErrorMask=d.measurementTransferErrorMask;
-    firstFailure.timing=d.measurementTiming;
+    firstFailure.timingAvailable=d.measurementTimingContext==recordContext;
+    if(firstFailure.timingAvailable) firstFailure.timing=d.measurementTiming;
     LOGW_TAG("REMOTEIMU","first failure node=%u phase=%u cause=%u action=%u result=%u reason=%u mode=%u modeReason=%u unavailable=%u objects=%lu errors=%lu\n",
       node,firstFailure.phase,firstFailure.cause,firstFailure.action,firstFailure.result,firstFailure.reason,
       firstFailure.measurementPhase,firstFailure.measurementReason,firstFailure.measurementUnavailable,
@@ -179,6 +180,8 @@ void service() {
     LOGW_TAG("DRAIN","window_us=%lu slots=%lu failed=%lu empty=%lu exchange_us=%llu max_exchange_us=%lu max_idle_us=%lu\n",
       (unsigned long)t.elapsedUs,(unsigned long)t.slots,(unsigned long)t.failedSlots,(unsigned long)t.emptySlots,
       (unsigned long long)t.exchangeUs,(unsigned long)t.maxExchangeUs,(unsigned long)t.maxIdleUs);
+    LOGW_TAG("DRAIN","stage=first_failure timing_available=%u transfer_failed=%lu decode_failed=%lu\n",
+      firstFailure.timingAvailable,(unsigned long)t.transferFailedSlots,(unsigned long)t.decodeFailedSlots);
     LOGW_TAG("DRAIN","polls sample=%lu evidence=%lu control=%lu protected=%lu shared=%lu fragments=%lu,%lu,%lu,%lu,%lu deferred=%lu,%lu\n",
       (unsigned long)t.polls[0],(unsigned long)t.polls[1],(unsigned long)t.polls[2],(unsigned long)t.polls[3],(unsigned long)t.polls[4],
       (unsigned long)t.fragments[0],(unsigned long)t.fragments[1],(unsigned long)t.fragments[2],(unsigned long)t.fragments[3],(unsigned long)t.fragments[4],
@@ -264,6 +267,9 @@ void logFlowSnapshot(const char* stage,[[maybe_unused]] const ImuFlowDiagnostics
   stage,
   (unsigned long)s.requests[0],(unsigned long)s.requests[1],(unsigned long)s.requests[2],(unsigned long)s.requests[3],
   (unsigned long)s.empty,(unsigned long)s.wireFailures,(unsigned long)s.deferred[0],(unsigned long)s.deferred[1]);
+ if(s.measurementFailuresAvailable)
+  LOGW_TAG("FLOW","stage=%s measurement_transfer_failed=%lu measurement_decode_failed=%lu\n",
+    stage,(unsigned long)s.measurementTransferFailures,(unsigned long)s.measurementDecodeFailures);
  LOGW_TAG("FLOW","stage=%s queue_packet_peak=%lu/%lu queue_evidence_peak=%lu/%lu gate_wait=%lu bridge_wait=%lu management_wait=%lu\n",
   stage,(unsigned long)s.sampleQueuePeak,(unsigned long)s.sampleCapacity,(unsigned long)s.evidenceQueuePeak,(unsigned long)s.evidenceCapacity,
   (unsigned long)s.gateWait,(unsigned long)s.consumerWait[5],(unsigned long)s.consumerWait[6]);
@@ -416,6 +422,16 @@ bool recording() {for(uint8_t n=0;n<4;++n) if((selected&(1u<<n)) && !peers[n].re
 void start() {for(uint8_t n=0;n<4;++n) if(selected&(1u<<n)) peers[n].start();}
 void stop() {for(uint8_t n=0;n<4;++n) if(selected&(1u<<n)) peers[n].stop();}
 bool stopped() {for(uint8_t n=0;n<4;++n) if((selected&(1u<<n)) && !peers[n].stopped()) return false;return true;}
+bool finalMeasurementFailures(uint32_t& transfer,uint32_t& decode) {
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+ if(!selected || !stopped() || !ImuFlowDiagnostics::haveFinished ||
+    ImuFlowDiagnostics::finished.context!=context || !ImuFlowDiagnostics::finished.measurementFailuresAvailable) return false;
+ transfer=ImuFlowDiagnostics::finished.measurementTransferFailures;
+ decode=ImuFlowDiagnostics::finished.measurementDecodeFailures;return true;
+#else
+ (void)transfer;(void)decode;return false;
+#endif
+}
 bool completion(uint8_t node,Completion& out) {
  if(node>3 || !(selected&(1u<<node)) || !peers[node].completionFrozen.load(std::memory_order_acquire)) return false;
  out=peers[node].frozenCompletion;return true;

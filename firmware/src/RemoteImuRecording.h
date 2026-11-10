@@ -16,6 +16,7 @@ struct Failure {
   bool measurementUnavailable=false;
   uint32_t objectsReceived=0,transferErrors=0;
   uint32_t transferErrorMask=0;
+  bool timingAvailable=false; // Matching scope only; the live first-failure copy is not atomic.
     CanMasterManager::MeasurementTiming timing;
 };
 bool failure(uint8_t node,Failure& out);
@@ -45,6 +46,9 @@ void start();
 void stop();
 void service(); // main-loop orchestration, never transport/storage progress
 bool stopped();
+// Immutable completed measurement-scope counters; false until owner retirement
+// or when this build has no FLOW snapshot. Never reads live transport totals.
+bool finalMeasurementFailures(uint32_t& transfer,uint32_t& decode);
 bool tailDrained();
 uint32_t discardedTailObjects();
 void release(); // after transport exit and storage finalization

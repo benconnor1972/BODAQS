@@ -1719,6 +1719,17 @@ static void appendBdqV2AdcTiming_(JsonDocument& document, const BdqLogEndInfo& e
     BdqAdcTimingJson::append(document["external_adc_timing"].to<JsonObject>(),*endInfo.externalAdcTiming);
 }
 
+static void appendBdqV2MeasurementFailures_(JsonDocument& document) {
+  uint32_t transfer=0,decode=0;
+  JsonObject failures=document["remote_measurement_failures"].to<JsonObject>();
+  failures["available"]=RemoteImuRecording::finalMeasurementFailures(transfer,decode);
+  if(failures["available"].as<bool>()) {
+    failures["transfer_failed_slots"]=transfer;
+    failures["decode_failed_slots"]=decode;
+    failures["scope"]="measurement_mode_through_cleanup";
+  }
+}
+
 static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
   // Finalization is serialized; avoid large diagnostics objects on loopTask.
   static SensorRuntimeDiagnostics diagnostics;
@@ -1733,6 +1744,7 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
   document["remote_admission_reason"]=admission.attempted?ImuAdmission::reportText(admission):"not evaluated";
   document["remote_reserved_bytes"]=admission.loggerBytes;
   document["remote_cleanup_complete"] = RemoteImuRecording::stopped();
+  appendBdqV2MeasurementFailures_(document);
   bool allStopConfirmed=true,allSourceFinal=true,sampleTailDiscarded=false;
   uint16_t completionCount=0,expectedCompletions=0;
   for(uint16_t i=0;i<s_bdqV2DescriptorCount;++i) {
@@ -1768,9 +1780,12 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
     entry["objects_received"]=failure.objectsReceived;entry["transfer_errors"]=failure.transferErrors;
     entry["transfer_error_mask"]=failure.transferErrorMask;
       auto timing=entry["transport_timing"].to<JsonObject>();
+      timing["available"]=failure.timingAvailable;
       const auto& t=failure.timing;
       timing["window_us"]=t.elapsedUs;timing["slots"]=t.slots;
       timing["failed_slots"]=t.failedSlots;timing["empty_slots"]=t.emptySlots;
+      timing["transfer_failed_slots"]=t.transferFailedSlots;
+      timing["decode_failed_slots"]=t.decodeFailedSlots;
       timing["exchange_us"]=t.exchangeUs;timing["max_exchange_us"]=t.maxExchangeUs;
       timing["max_idle_us"]=t.maxIdleUs;
       auto polls=timing["polls"].to<JsonArray>();

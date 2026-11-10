@@ -23,6 +23,7 @@ enum class State : uint8_t {
 
 struct MeasurementTiming {
   uint32_t slots=0,failedSlots=0,emptySlots=0,elapsedUs=0;
+  uint32_t transferFailedSlots=0,decodeFailedSlots=0;
   uint64_t exchangeUs=0;
   uint32_t maxExchangeUs=0,maxIdleUs=0;
   uint32_t polls[5]={},fragments[5]={},deferrals[2]={};
@@ -68,6 +69,7 @@ struct Diagnostics {
   uint32_t measurementTransferErrors = 0, measurementControlSubmitted = 0;
   uint32_t measurementTransferErrorMask = 0; // Bit N: transport error N seen in this context.
   MeasurementTiming measurementTiming;
+  uint64_t measurementTimingContext=0;
   uint16_t measurementAssemblyBytes = 0;
   uint8_t measurementLastClass = 0, measurementLastNode = 255;
   uint32_t measurementLastObject = 0;

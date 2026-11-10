@@ -32,13 +32,15 @@ int main() {
  fragment(1,true);fragment(1,false);admitted(1);
  loss(8,300,0x40u);
  assert(firstLoss.lossCounter==3 && firstLoss.observedMs==200 && firstLoss.sampleQueuePeak==0);
- finish(400,0x50u);
+ finish(400,0x50u,7,11);
+ assert(finished.measurementFailuresAvailable && finished.measurementTransferFailures==7 && finished.measurementDecodeFailures==11);
  assert(!active && haveFinished && finished.sampleQueuePeak==2048 && finished.consumerWait[0]==1);
  assert(finished.proofPending[0]==0 && finished.fetchTargets[1]==2);
  request(1,1,0,0,100);consumer(1,true,1,1,2048,512);finish(500,110);
  assert(finished.observedMs==400 && live.requests[0]==0); // frozen scope is immutable
  reset(456,600);
  assert(live.context==456 && !haveFirstLoss && !haveFinished && live.proofMatches[0]==0);
+ assert(!live.measurementFailuresAvailable && live.measurementTransferFailures==0 && live.measurementDecodeFailures==0);
  puts("flow snapshots: correlated proof/retry/wrap, first-loss freeze, final freeze/reset PASS");
 }
 ''')

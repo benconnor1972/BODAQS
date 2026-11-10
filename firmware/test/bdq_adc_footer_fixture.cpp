@@ -4,6 +4,13 @@
 #include <string>
 #include <cstdio>
 
+static bool failuresAvailable=true;
+namespace RemoteImuRecording {
+bool finalMeasurementFailures(uint32_t& transfer,uint32_t& decode) {
+  if(!failuresAvailable) return false;
+  transfer=7;decode=11;return true;
+}
+}
 // PRODUCTION_APPEND
 
 int main() {
@@ -35,5 +42,13 @@ int main() {
   JsonDocument empty;info.externalAdcTiming=nullptr;appendBdqV2AdcTiming_(empty,info);
   assert(empty["external_adc_timing"].isNull());
   assert(empty["external_adc_timing_status"]=="worker_not_retired");
+  appendBdqV2MeasurementFailures_(document);
+  bytes.clear();serializeJson(document,bytes);assert(!deserializeJson(parsed,bytes));
+  auto failures=parsed["remote_measurement_failures"];
+  assert(failures["available"]==true && failures["transfer_failed_slots"]==7 && failures["decode_failed_slots"]==11);
+  assert(failures["scope"]=="measurement_mode_through_cleanup");
+  failuresAvailable=false;appendBdqV2MeasurementFailures_(empty);
+  assert(empty["remote_measurement_failures"]["available"]==false);
+  assert(empty["remote_measurement_failures"]["transfer_failed_slots"].isNull());
   puts("Production v2 footer ADC snapshot: both ADCs, 64-bit costs, failure/freshness and absent snapshot PASS");
 }

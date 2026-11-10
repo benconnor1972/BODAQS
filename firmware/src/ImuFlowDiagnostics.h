@@ -18,6 +18,8 @@ struct Snapshot {
   uint32_t proofPending[5]={},proofOldestUs[5]={};
   uint32_t sampleQueuePeak=0,evidenceQueuePeak=0,sampleCapacity=0,evidenceCapacity=0;
   uint32_t lossCounter=0;
+  uint32_t measurementTransferFailures=0,measurementDecodeFailures=0;
+  bool measurementFailuresAvailable=false;
 };
 struct Wait {uint32_t object=0,startedUs=0;};
 inline Snapshot live,firstLoss,finished;
@@ -76,8 +78,10 @@ inline void loss(uint32_t counter,uint32_t now,uint32_t nowUs) {
   if(!active || haveFirstLoss || !counter) return;
   live.lossCounter=counter;firstLoss=capture(now,nowUs);haveFirstLoss=true;
 }
-inline void finish(uint32_t now,uint32_t nowUs) {
+inline void finish(uint32_t now,uint32_t nowUs,uint32_t transferFailures=0,uint32_t decodeFailures=0,bool measurementAvailable=true) {
   if(!active) return;
+  live.measurementTransferFailures=transferFailures;live.measurementDecodeFailures=decodeFailures;
+  live.measurementFailuresAvailable=measurementAvailable;
   finished=capture(now,nowUs);haveFinished=true;active=false;
 }
 } // namespace ImuFlowDiagnostics

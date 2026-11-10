@@ -11,7 +11,8 @@ policy or a qualified capacity profile.
 
 Environment `bodaqs_s3_mini_n4r2_imu_adc_smoke` sets both the existing single-node
 smoke flag and new `BODAQS_SINGLE_NODE_IMU_ADC_SMOKE=1`. Its distinct firmware name
-is `bodaqs_a8_imu_adc_bench`; metadata admission mode is
+is `bodaqs_a8_imu_adc_bench` for r1 and `bodaqs_a8_imu_adc_bench_r2` for the
+pacing correction below; metadata admission mode is
 `single_node_adc_smoke_unqualified`. The existing production and IMU-only smoke
 environments retain their previous admission behavior.
 
@@ -94,3 +95,64 @@ records source/artifact hashes, build logs and fresh boundary review.
 Controlled storage-stall testing remains deferred to the intended SD card. General
 admission development, multiple IMUs, analog accuracy/mux settling and per-reading
 ADC timing/freshness representation are not qualified by this candidate.
+
+## r2: release the shared bus during per-device pacing
+
+The actual r1 mixed recording `261110_103428.bdq` contained three streams but
+reused24.4%/24.7% of ADC rows and missed79.23% of IMU positions within the resolved
+prefix. Full-session IMU loss is unknown because terminal evidence is absent.
+Storage had no primary drops and queue peak102/4096. The master retained ingress
+queue filled128/128 after445899us; CAN receive drops and malformed SPI requests
+were zero. These results do not qualify the mixed workload or establish a physical
+capacity ceiling. See the preserved `imu-adc-mixed-r1-repeat-report` evidence.
+
+Previously,500us pacing referenced the most recent transaction on any shared CS
+and waited while holding the bus mutex and SPI transaction. r2 maintains a
+separate start timestamp for each nonnegative int8 CS value. Only the same
+device's starts affect its deadline; unpaced calls to that CS also count. The
+pacing wait releases the mutex before starting a SPI transaction, then rechecks
+the deadline under the mutex before asserting CS. ADC traffic can occupy this
+interval. The CAN master's own500us start spacing and25us inter-CS guard remain.
+The interface signature is unchanged; optional pacing semantics intentionally
+change from whole-bus to per-device. Unpaced callers retain their behavior.
+The fixed128-entry history cannot evict another device's origin; no allocation
+is added to a transfer. `lockTimeoutMs` bounds each mutex acquisition. A paced CS
+has one logical owner; competing same-CS traffic can extend its pacing wait.
+
+Measurement diagnostics now split failed exchanges into `transfer_failed_slots`
+(the shared-bus transfer returned false) and `decode_failed_slots` (transfer
+completed but measurement reply validation failed). Neither is a sensor-loss
+counter; decode failure alone does not distinguish CRC, framing or physical
+causes. The split is saved alongside the existing first-failure DRAIN snapshot.
+Its `available` flag establishes matching scope only: that existing live
+multi-field observation is not atomic. Use the owner-frozen final split for
+correlated totals; a failed early entry leaves first-failure timing unavailable.
+
+The acquisition owner freezes final split counts into FLOW before releasing
+ownership. Timing is tagged with its context when reset at actual mode entry;
+an entry precondition failure cannot relabel old counts as current. Finalization
+uses the matching immutable finished snapshot only after owner retirement, with
+`remote_measurement_failures.available=false` if unavailable. Its scope is
+`measurement_mode_through_cleanup`, distinct from the first-failure snapshot and
+FLOW's data-request-only `wire_failed` counter. The finished split also prints
+as `measurement_transfer_failed` and `measurement_decode_failed`. These optional
+JSON diagnostics do not change binary records or wire protocols.
+
+New tests exercise the actual shared-bus adapter with ADC work during the wait,
+different CS origins, concurrent same-CS rechecking, lock failure and clock wrap.
+The interleave test fails on the preserved r1 implementation. The actual
+measurement adapter distinguishes failed transfer from corrupted reply. Tests
+also cover final-snapshot scope/retirement, stale failed entry, release/reset,
+and the production footer adapter's available/unavailable serialization.
+The simulated hardware/RTOS clock does not establish electrical behavior or
+physical arbitration fairness.
+
+For the next check, upload only the r2 logger and repeat the same mixed load for
+about45seconds. The existing ADC-only control remains useful; no repeat is
+required first. Verify current enabled configuration reconciliation while stopped
+and `streams=3` at start. Preserve final BDQ, serial STOP/FLOW and existing master
+snapshots. Keep ADC rates/channels/output, node, two-cell master, SD card, CAN
+profile and transport unchanged. Review normalized ADC freshness, independent
+IMU sequence coverage, queues, split failures and STOP/terminal evidence before
+any further change. No general admission margin or percentage improvement is
+promised. Known-input/mux checks and controlled storage stalls remain deferred.

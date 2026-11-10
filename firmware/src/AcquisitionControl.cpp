@@ -449,7 +449,10 @@ void service() {
       }
       nextFenceSnapshot=millis();publishFenceDiagnostics(millis());
 #if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
-      ImuFlowDiagnostics::finish(millis(),micros());
+      ImuFlowDiagnostics::finish(millis(),micros(),
+          CanMasterManager::diagnostics().measurementTiming.transferFailedSlots,
+          CanMasterManager::diagnostics().measurementTiming.decodeFailedSlots,
+          CanMasterManager::diagnostics().measurementTimingContext==contextId);
 #endif
       CanMasterManager::releaseMeasurementControl();
       {Lock lock;owned=false;exitPending=false;cleanupRequested=false;}
@@ -472,7 +475,10 @@ void service() {
       CanMasterManager::retainMeasurementAllocators(nextRead,mutations,nextTransfer);
       nextFenceSnapshot=millis();publishFenceDiagnostics(millis());
 #if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
-      ImuFlowDiagnostics::finish(millis(),micros());
+      ImuFlowDiagnostics::finish(millis(),micros(),
+          CanMasterManager::diagnostics().measurementTiming.transferFailedSlots,
+          CanMasterManager::diagnostics().measurementTiming.decodeFailedSlots,
+          CanMasterManager::diagnostics().measurementTimingContext==contextId);
 #endif
       CanMasterManager::releaseMeasurementControl();
       {Lock lock;owned=false;exitPending=false;}

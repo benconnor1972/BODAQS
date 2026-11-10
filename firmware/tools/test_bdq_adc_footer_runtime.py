@@ -12,8 +12,10 @@ def main():
     root=Path(__file__).resolve().parents[1]
     storage=(root/"src/StorageManager.cpp").read_text(encoding="utf-8")
     append=definition(storage,"static void appendBdqV2AdcTiming_(")
+    append+="\n"+definition(storage,"static void appendBdqV2MeasurementFailures_(")
     footer=definition(storage,"static String buildBdqV2FinalSummary_(")
     assert "appendBdqV2AdcTiming_(document, endInfo);" in footer, "ADC adapter disconnected from final footer"
+    assert "appendBdqV2MeasurementFailures_(document);" in footer
     finalize=definition(storage,"static __attribute__((noinline)) void finalizeBdqV2_(")
     assert "endInfo.externalAdcTiming = AnalogInputManager::stoppedTimingStats();" in finalize
     fixture=(root/"test/bdq_adc_footer_fixture.cpp").read_text(encoding="utf-8")

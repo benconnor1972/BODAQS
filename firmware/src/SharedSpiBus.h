@@ -21,8 +21,11 @@ bool begin(const board::SPIProfile& profile);
 bool ready();
 
 // Performs one complete, mutually exclusive CS-bounded transaction.
-// Optional spacing is measured from the previous bus transaction's CS start,
-// after acquiring the lock. Zero preserves the normal unpaced behavior.
+// Optional spacing is measured from the previous start on this same CS, even
+// if that earlier call was unpaced. Waiting releases the mutex and SPI
+// transaction; the deadline is rechecked under the mutex before starting.
+// lockTimeoutMs bounds each mutex acquisition. A paced CS has one logical owner;
+// concurrent same-CS traffic can extend the wait. Zero spacing stays unpaced.
 bool transfer(
     int8_t csPin,
     const SPISettings& settings,

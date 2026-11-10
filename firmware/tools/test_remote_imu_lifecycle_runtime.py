@@ -84,6 +84,7 @@ static void captureFlowLog(const char* tag,const char*,...) {if(!std::strcmp(tag
         subprocess.run([str(exe), "delayed-cleanup-status"], check=True)
         subprocess.run([str(exe), "entry-timeout"], check=True)
         subprocess.run([str(exe), "entry-offline"], check=True)
+        subprocess.run([str(exe), "entry-precheck"], check=True)
         subprocess.run([str(exe), "lost-stop-result"], check=True)
         subprocess.run([str(exe), "uncertain-stop"], check=True)
         for scenario in ("lost-exit-request", "lost-exit-stage", "lost-exit-confirm", "expired-exit-stage"):

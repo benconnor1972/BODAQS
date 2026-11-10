@@ -304,7 +304,26 @@ static void mixedReceptionDrain(unsigned turns,bool loseFragment=false,unsigned 
  fixedMeasurementClock=false;
  delayStatusResponses=false;delayedResponseDepth=8;delayedSpiSlots.clear();
 }
+static void measurementFailureSplit() {
+ reset();assert(CanMasterManager::enterMeasurementMode(123,456));
+ BodaqsMeasurementSlot request={},response={};request.node=255;request.context=456;
+ const auto before=CanMasterManager::diagnostics().measurementTiming;
+ spiAvailable=false;
+ assert(!CanMasterManager::exchangeMeasurementSlot(request,response));
+ auto after=CanMasterManager::diagnostics().measurementTiming;
+ assert(after.transferFailedSlots==before.transferFailedSlots+1 && after.decodeFailedSlots==before.decodeFailedSlots);
+ spiAvailable=true;preloaded[0]^=0x80; // Valid MOSI; corrupt returned measurement magic.
+ assert(!CanMasterManager::exchangeMeasurementSlot(request,response));
+ after=CanMasterManager::diagnostics().measurementTiming;
+ assert(after.transferFailedSlots==before.transferFailedSlots+1 && after.decodeFailedSlots==before.decodeFailedSlots+1);
+ assert(after.failedSlots==after.transferFailedSlots+after.decodeFailedSlots);
+ assert(CanMasterManager::exchangeMeasurementSlot(request,response));
+ after=CanMasterManager::diagnostics().measurementTiming;
+ assert(after.slots==before.slots+3 && after.failedSlots==before.failedSlots+2);
+ puts("actual measurement adapter separates failed bus transfer from invalid reply: PASS");
+}
 int main() {
+ measurementFailureSplit();
  mixedReceptionDrain(8);
  mixedReceptionDrain(4);
  mixedReceptionDrain(4,true);

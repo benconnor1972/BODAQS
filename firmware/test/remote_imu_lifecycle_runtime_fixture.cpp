@@ -143,6 +143,8 @@ int main(int argc,char** argv) {
     ImuFlowDiagnostics::reset(9999,clockMs);ImuFlowDiagnostics::finish(clockMs,micros());
     assert(!AcquisitionControl::active());
     RemoteImuRecording::stop();assert(RemoteImuRecording::stopped());
+    uint32_t transfer=0,decode=0;
+    assert(!RemoteImuRecording::finalMeasurementFailures(transfer,decode)); // Stale completed context is not this allocation.
     flowLogCalls=0;RemoteImuRecording::release();
     assert(flowLogCalls==0); // Never attribute prior-context FLOW to this cancellation.
     assert(ImuFlowDiagnostics::finished.context==9999);
@@ -221,10 +223,16 @@ int main(int argc,char** argv) {
     puts("alternating physical RX loss: PREPARE and verified cleanup passed");return 0;
   }
   const bool entryOffline=argc>1 && !std::strcmp(argv[1],"entry-offline");
-  if(entryOffline || (argc>1 && !std::strcmp(argv[1],"entry-timeout"))) {
+  const bool entryPrecheck=argc>1 && !std::strcmp(argv[1],"entry-precheck");
+  if(entryOffline || entryPrecheck || (argc>1 && !std::strcmp(argv[1],"entry-timeout"))) {
     // The master may have accepted the mode change while every confirming
     // reply was lost. No PREPARE has run, and no remote lease exists.
-    loseMeasurementReplies=!entryOffline;spiAvailable=!entryOffline;
+    if(entryPrecheck) {
+      auto& diagnostic=const_cast<CanMasterManager::Diagnostics&>(CanMasterManager::diagnostics());
+      diagnostic.measurementTimingContext=9999;diagnostic.measurementTiming.transferFailedSlots=7;
+      diagnostic.measurementTiming.decodeFailedSlots=11;diagnostic.measurementUnavailable=true;
+    }
+    loseMeasurementReplies=!entryOffline && !entryPrecheck;spiAvailable=!entryOffline;
     recordingSteps(1300);
     loseMeasurementReplies=false;spiAvailable=true;
     assert(RemoteImuRecording::failed());
@@ -234,6 +242,15 @@ int main(int argc,char** argv) {
     for(unsigned i=0;i<30000 && !RemoteImuRecording::stopped();++i) recordingSteps(1);
     assert(RemoteImuRecording::stopped() && !AcquisitionControl::active());
     assert(!master.measurement.mode.phase);
+    if(entryPrecheck) {
+      uint32_t transfer=99,decode=88;
+      assert(!RemoteImuRecording::finalMeasurementFailures(transfer,decode));
+      assert(transfer==99 && decode==88); // Prior scope is unavailable, not current 7/11.
+      RemoteImuRecording::Failure firstFailure;
+      assert(RemoteImuRecording::failure(0,firstFailure) && !firstFailure.timingAvailable);
+      assert(!firstFailure.timing.transferFailedSlots && !firstFailure.timing.decodeFailedSlots);
+      puts("entry precheck failure cannot relabel prior measurement counters: PASS");
+    }
     simulatedStorage.clear();RemoteImuRecording::release();CanMasterManager::endRecordingHandoff();
     puts("failed measurement entry reaches verified cleanup without a remote lease: PASS");
     return 0;
@@ -501,8 +518,17 @@ int main(int argc,char** argv) {
   assert(!AcquisitionControl::active());
   assert(RemoteImuRecording::stopped());
   assert(!RemoteImuRecording::failed());
+  uint32_t finalTransfer=0,finalDecode=0;
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+  assert(RemoteImuRecording::finalMeasurementFailures(finalTransfer,finalDecode));
+  assert(finalTransfer==CanMasterManager::diagnostics().measurementTiming.transferFailedSlots);
+  assert(finalDecode==CanMasterManager::diagnostics().measurementTiming.decodeFailedSlots);
+#else
+  assert(!RemoteImuRecording::finalMeasurementFailures(finalTransfer,finalDecode));
+#endif
   simulatedStorage.clear();RemoteImuRecording::release();
   assert(!RemoteImuRecording::configured());
+  assert(!RemoteImuRecording::finalMeasurementFailures(finalTransfer,finalDecode));
   CanMasterManager::endRecordingHandoff();
   if(remoteNodes==4) {puts("production four-node resource/lifecycle isolation passed");return 0;}
   // Restart the logger while a previous measurement context survives. A node
@@ -562,8 +588,17 @@ int main(int argc,char** argv) {
          retainedFailure.action==originalFailure.action &&
          retainedFailure.reason==originalFailure.reason);
   assert(originalFailure.timing.slots && originalFailure.timing.failedSlots);
+  assert(originalFailure.timingAvailable);
   assert(retainedFailure.timing.slots==originalFailure.timing.slots &&
          retainedFailure.timing.exchangeUs==originalFailure.timing.exchangeUs);
+  uint32_t transfer=0,decode=0;
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+  assert(RemoteImuRecording::finalMeasurementFailures(transfer,decode));
+  assert(transfer==CanMasterManager::diagnostics().measurementTiming.transferFailedSlots);
+  assert(decode==CanMasterManager::diagnostics().measurementTiming.decodeFailedSlots);
+#else
+  assert(!RemoteImuRecording::finalMeasurementFailures(transfer,decode));
+#endif
   assert(!acquisitions[0].recording && acquisitions[0].fenced);
   simulatedStorage.clear();RemoteImuRecording::release();CanMasterManager::endRecordingHandoff();
   // A configured but unavailable remote sensor must not silently become ready.
