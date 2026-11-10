@@ -33,6 +33,7 @@ test: $(TEST_BIN)
 	@echo "Running tests..."
 	"$(TEST_BIN)"
 	$(PYTHON) ../tools/test_adc_setup_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_spi_buffer_bounds_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_bdq_adc_footer_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_i2c_schedule_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_i2c_startup_runtime.py --compiler "$(CXX)"

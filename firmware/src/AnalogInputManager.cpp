@@ -239,13 +239,17 @@ bool adsTransfer_(AdsDevice& dev, const uint8_t* tx, uint8_t* rx, size_t len) {
 
 bool adsCommand_(AdsDevice& dev, uint8_t cmd) {
   if (!dev.present || dev.cfg.cs_pin < 0 || !s_spiReady) return false;
-  return adsTransfer_(dev, &cmd, nullptr, 1);
+  // ESP32 transferBytes reads complete uint32_t source words, even when the
+  // selected wire length is shorter. Retain a full aligned backing word.
+  alignas(4) const uint8_t tx[4] = {cmd, 0, 0, 0};
+  return adsTransfer_(dev, tx, nullptr, 1);
 }
 
 bool adsWriteRegistersAndStart_(AdsDevice& dev, uint8_t startReg, const uint8_t* regs, size_t len) {
   if (!dev.present || !regs || len == 0 || len > 4 || !s_spiReady) return false;
 
-  uint8_t tx[6] = {0};
+  // Six wire bytes still cause two source-word reads in the ESP32 HAL.
+  alignas(4) uint8_t tx[8] = {0};
   tx[0] = (uint8_t)(ADS1220_CMD_WREG | ((startReg & 0x03U) << 2) | ((len - 1U) & 0x03U));
   for (size_t i = 0; i < len; ++i) tx[i + 1] = regs[i];
   tx[len + 1] = ADS1220_CMD_START;
@@ -258,8 +262,8 @@ bool adsWriteRegistersAndStart_(AdsDevice& dev, uint8_t startReg, const uint8_t*
 bool adsReadData_(AdsDevice& dev, int32_t& raw24) {
   if (!dev.present || !s_spiReady) return false;
 
-  uint8_t tx[4] = { ADS1220_CMD_RDATA, 0x00, 0x00, 0x00 };
-  uint8_t rx[4] = {0};
+  alignas(4) uint8_t tx[4] = { ADS1220_CMD_RDATA, 0x00, 0x00, 0x00 };
+  alignas(4) uint8_t rx[4] = {0};
 
   if (!adsTransfer_(dev, tx, rx, sizeof(tx))) return false;
 

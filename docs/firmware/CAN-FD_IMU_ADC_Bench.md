@@ -259,3 +259,22 @@ persists, inspect the preloaded master byte or a short physical trace before
 another timing/protocol change. No received bytes are repaired or admitted by
 this experiment. General admission and controlled storage-stall testing remain
 deferred.
+
+## r5: restore the tested ADC SPI-buffer contract
+
+The [software audit](SPI_First_Byte_Software_Audit.md) compares the successful
+round17 prototype with the actual r3/r4 failure path. It finds production ADC
+TX buffers smaller than the complete uint32_t words read by the installed ESP32
+HAL. The one-byte command gets an aligned4-byte backing object; combined6-byte
+WREG+START gets aligned8-byte backing; RDATA TX/RX explicitly retain word alignment.
+The wire lengths and command bytes remain1,6,4. No header repair is performed.
+
+The mixed bench name becomes `bodaqs_a8_imu_adc_buffers_r5`. All r4 settings,
+including its unsuccessful5us measurement setup delay, remain constant for this
+one-variable comparison. Buffer restoration fixes a demonstrated memory-contract
+defect, not a demonstrated cause of zeroed CAN RX byte0. Use a freshly restarted,
+reconciled one-IMU/two-ADC mixed run and the same final BDQ/serial evidence. The
+new bounds test runs actual helper definitions and the installed HAL word-read
+loop with bounds instrumentation; existing ADC command and lifecycle suites remain.
+If the physical first-byte fault persists, move to the targeted wire/receive
+boundary observation rather than another unsupported buffer/timing guess.
