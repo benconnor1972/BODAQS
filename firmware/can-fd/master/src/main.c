@@ -9,6 +9,7 @@
 #include "bodaqs_master_profile.h"
 #include "bodaqs_node_inventory.h"
 #include "master_identity.h"
+#include "master_spi_priming.h"
 #include "ti_msp_dl_config.h"
 #include "bodaqs_can_link_ti.h"
 
@@ -729,12 +730,20 @@ static void normalize_retained_clocks(void)
 
 static void arm_spi_slot(void)
 {
+#if BODAQS_MASTER_SPI_TX_PRIME
+    /* Caller has reset the peripheral/FIFOs and retired both DMA channels.
+     * Make byte0 independent of the first TX DMA event. The suffix DMA must
+     * start at byte1; RX keeps its complete physical extent. No wait/delay is
+     * added and this experiment does not change CS-boundary ownership. */
+    DL_SPI_disable(SPI_A8_INST);
+    DL_SPI_transmitData8(SPI_A8_INST,gTransmitSlots[gTransmitIndex][0]);
+#endif
     DL_DMA_setSrcAddr(DMA, DMA_SPI_TX_CHAN_ID,
-        (uint32_t) &gTransmitSlots[gTransmitIndex][0]);
+        (uint32_t) &gTransmitSlots[gTransmitIndex][BODAQS_MASTER_SPI_TX_PRIME]);
     DL_DMA_setDestAddr(DMA, DMA_SPI_TX_CHAN_ID,
         (uint32_t) &SPI_A8_INST->TXDATA);
     DL_DMA_setTransferSize(
-        DMA, DMA_SPI_TX_CHAN_ID, BODAQS_MASTER_TRANSFER_BYTES);
+        DMA, DMA_SPI_TX_CHAN_ID, BODAQS_MASTER_TRANSFER_BYTES-BODAQS_MASTER_SPI_TX_PRIME);
 
     DL_DMA_setSrcAddr(DMA, DMA_SPI_RX_CHAN_ID,
         (uint32_t) &SPI_A8_INST->RXDATA);
@@ -745,6 +754,10 @@ static void arm_spi_slot(void)
 
     DL_DMA_enableChannel(DMA, DMA_SPI_RX_CHAN_ID);
     DL_DMA_enableChannel(DMA, DMA_SPI_TX_CHAN_ID);
+#if BODAQS_MASTER_SPI_TX_PRIME
+    __DSB();
+    DL_SPI_enable(SPI_A8_INST);
+#endif
 }
 
 

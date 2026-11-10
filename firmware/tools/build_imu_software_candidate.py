@@ -68,9 +68,11 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--profile", choices=tuple(PROFILES), default="production",
                         help="Select restricted single-IMU v2 candidate explicitly")
     parser.add_argument("--jobs", type=int, default=4)
-    parser.add_argument("--validation-scope", choices=("full", "logger"), default="full",
+    parser.add_argument("--validation-scope", choices=("full", "logger", "master"), default="full",
                         help="Logger scope requires declared unchanged peer images; no full-suite claim")
     parser.add_argument("--reuse-peers", type=Path, help="bodaqs.peer-images.v1 JSON with immutable image paths/hashes")
+    parser.add_argument("--experiment",choices=("spi-tx-prime-ab",))
+    parser.add_argument("--fixed-bundle",type=Path,help="Sealed r5 bundle: reuse exact logger/node and preserve old master rollback")
     parser.add_argument("--review-result", type=Path, help="bodaqs.review.v1 source-bound result")
     parser.add_argument("--review-base", help="Exact commit reviewed against HEAD")
     parser.add_argument("--list-commands", action="store_true",
@@ -83,6 +85,14 @@ def plan(args: argparse.Namespace, output: Path) -> list[dict]:
              cwd: Path = ROOT) -> dict:
         return {"name": name, "argv": argv, "cwd": str(cwd),
                 "artifacts": artifacts or []}
+
+    def ti_step(target,link,label,extra=()):
+        folder=f"firmware/can-fd/{target}/ticlang";basename=f"bodaqs_can_{target}"
+        artifacts=[(f"{folder}/{basename}.{suffix}",f"artifacts/{label}/{basename}.{suffix}") for suffix in ("out","map")]
+        return step(label,[args.make,"-B","-C",folder,
+            f"MSPM0_SDK_INSTALL_DIR={args.sdk.as_posix()}",f"TICLANG_ARMCOMPILER={args.ti_compiler.as_posix()}",
+            f"SYSCONFIG_TOOL={args.sysconfig.as_posix()}",f"CAN_LINK_PROFILE={link}",
+            *([*PROFILES[args.profile]["master_flags"],"CFLAGS_EXTRA=-fstack-usage"] if target=="master" else []),*extra],artifacts)
 
     make = [args.make, "-B"]
     recipe = PROFILES[args.profile]
@@ -114,24 +124,20 @@ def plan(args: argparse.Namespace, output: Path) -> list[dict]:
             "--output-dir", str(output / "scenarios-first-recording")]))
     if args.validation_scope=="logger":
         commands=[c for c in commands if c["name"] in ("a8-dependencies", "restricted-a8-dependencies", "firmware-host")]
+    if args.validation_scope=="master":
+        commands=[c for c in commands if c["name"] in ("common-host","master-host")]
+        commands.append(step("candidate-runner-tests",[sys.executable,"-m","unittest","discover","-s","firmware/tools","-p","test_*candidate*.py"]))
     if args.mode == "host":
+        return commands
+    if args.experiment=="spi-tx-prime-ab":
+        for label,enabled in (("A",0),("B",1)):
+            commands.append(ti_step("master","acquisition","master-"+label,[f"SPI_TX_PRIME={enabled}"]))
         return commands
     for profile in ("bringup", "acquisition"):
         for target in ("node", "master"):
             if args.reuse_peers:
                 continue
-            folder = f"firmware/can-fd/{target}/ticlang"
-            basename = f"bodaqs_can_{target}"
-            artifacts = [(f"{folder}/{basename}.{suffix}",
-                          f"artifacts/{target}-{profile}/{basename}.{suffix}")
-                         for suffix in ("out", "map")]
-            commands.append(step(f"{target}-{profile}", [*make, "-C", folder,
-                f"MSPM0_SDK_INSTALL_DIR={args.sdk.as_posix()}",
-                f"TICLANG_ARMCOMPILER={args.ti_compiler.as_posix()}",
-                f"SYSCONFIG_TOOL={args.sysconfig.as_posix()}",
-                f"CAN_LINK_PROFILE={profile}",
-                *([*recipe["master_flags"],
-                   "CFLAGS_EXTRA=-fstack-usage"] if target=="master" else [])], artifacts))
+            commands.append(ti_step(target,profile,f"{target}-{profile}"))
     a8 = f"firmware/.pio/build/{logger_env}"
     commands.append(step("spi-source-contract",[sys.executable,"firmware/tools/collect_spi_contract.py",
         "--compiler",args.cxx,"--output",str(output/"SPI_SOURCE_CONTRACT.json")]))
@@ -142,6 +148,27 @@ def plan(args: argparse.Namespace, output: Path) -> list[dict]:
         [(f"{a8}/{name}", f"artifacts/a8-{logger_env}/{name}") for name in
          ("firmware.elf", "firmware.bin", "bootloader.bin", "partitions.bin")]))
     return commands
+
+
+def load_fixed_bundle(bundle:Path) -> dict:
+    """Explicit compatibility reader for the sealed, physically observed r5 pair.
+
+    This declaration is provenance, not runtime image attestation. Unknown node
+    source remains unknown. No member can escape the selected bundle directory.
+    """
+    bundle=bundle.resolve();path=bundle/"BUILD_MANIFEST.json"
+    value=json.loads(path.read_text(encoding="utf-8"))
+    if value.get("environment")!="bodaqs_s3_mini_n4r2_imu_adc_smoke" or value.get("application",{}).get("firmware_name")!="bodaqs_a8_imu_adc_buffers_r5":
+        raise ValueError("A/B requires the existing r5 logger bundle")
+    images=[]
+    for role,key in (("logger","application"),("node","unchanged_node"),("rollback-master","unchanged_master")):
+        image=value[key];source=(bundle/image["path"]).resolve()
+        if bundle not in source.parents:raise ValueError("Fixed image escapes selected bundle")
+        if sha256(source)!=image["sha256"]:raise ValueError("Fixed image hash mismatch")
+        images.append({"role":role,"path":image["path"],"sha256":image["sha256"],
+            "source_commit":value.get("source_commit") if role=="logger" else image.get("source_commit")})
+    return {"manifest_sha256":sha256(path),"bundle":str(bundle),"images":images,
+            "firmware_name":value["application"]["firmware_name"],"configuration":"operator_preserves_same_mixed_configuration"}
 
 
 def load_peers(path: Path, profile: str) -> dict:
@@ -244,6 +271,11 @@ def main() -> int:
         raise SystemExit("--jobs must be positive")
     if args.validation_scope=="logger" and not args.reuse_peers:
         raise SystemExit("Logger-only validation requires --reuse-peers")
+    if args.experiment:
+        if args.mode!="candidate" or args.profile!="mixed-diagnostic" or not args.fixed_bundle or args.reuse_peers:
+            raise SystemExit("Priming A/B requires candidate/mixed-diagnostic, --fixed-bundle and no --reuse-peers")
+    elif args.fixed_bundle or args.validation_scope=="master":
+        raise SystemExit("Fixed bundle/master-only scope requires an explicit experiment")
     if sys.flags.optimize or os.environ.get("PYTHONOPTIMIZE"):
         raise SystemExit("Run acceptance with Python assertions enabled (no PYTHONOPTIMIZE or -O)")
     if args.mode != "preflight" and args.output_dir is None:
@@ -269,6 +301,7 @@ def main() -> int:
     source_tree=git("rev-parse",source_commit+"^{tree}")
     try:
         peers=load_peers(args.reuse_peers,args.profile) if args.reuse_peers else None
+        fixed=load_fixed_bundle(args.fixed_bundle) if args.fixed_bundle else None
         review=None
         if args.review_result:
             review=review_result(json.loads(args.review_result.read_text(encoding="utf-8")),
@@ -306,6 +339,7 @@ def main() -> int:
         "candidate_profile": args.profile,
         "measurement": PROFILES[args.profile]["measurement"],
         "validation_scope":args.validation_scope,"review":review,"reused_peers":peers,
+        "experiment":args.experiment,"fixed_bundle":fixed,
         "logger_flash_offsets":{"bootloader.bin":"0x0","partitions.bin":"0x8000","boot_app0.bin":"0xe000","firmware.bin":"0x10000"},
         "acquisition": {"lease_ms":5000,"renewal_ms":1000,"challenge_ms":300},
         "link_profiles": {"bringup": [500000, 2000000], "acquisition": [1000000, 4000000]},
@@ -318,6 +352,15 @@ def main() -> int:
         "deferred": DEFERRED, "commands": [], "artifacts": [],
     }
     try:
+        if fixed:
+            for image in fixed["images"]:
+                source=Path(fixed["bundle"])/image["path"]
+                destination=f"artifacts/fixed-{image['role']}/{source.name}"
+                target=output/destination;target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(source,target)
+                if sha256(target)!=image["sha256"] or sha256(source)!=image["sha256"]:raise RuntimeError("Fixed image changed during copy")
+                manifest["artifacts"].append({"path":destination,"sha256":image["sha256"],"bytes":target.stat().st_size,"reused":True,"role":image["role"]})
+            shutil.copyfile(args.fixed_bundle/"BUILD_MANIFEST.json",output/"FIXED_BUNDLE_MANIFEST.json")
+            if sha256(output/"FIXED_BUNDLE_MANIFEST.json")!=fixed["manifest_sha256"]:raise RuntimeError("Fixed manifest changed")
         if peers:
             for image in peers["images"]:
                 source=(args.reuse_peers.parent/image["path"]).resolve()
@@ -361,12 +404,20 @@ def main() -> int:
                     shutil.copyfile(source,target)
                     manifest["artifacts"].append({"path":destination,"bytes":target.stat().st_size,"sha256":sha256(target)})
                     source.unlink() # Only generated compiler reports just collected.
+        if args.experiment:
+            variants={}
+            for variant,enabled in (("A",False),("B",True)):
+                image=next((item for item in manifest["artifacts"] if item["path"]==f"artifacts/master-{variant}/bodaqs_can_master.out"),None)
+                if image is None:raise RuntimeError("Missing A/B master image")
+                variants[variant]={"spi_tx_prime":enabled,"path":image["path"],"sha256":image["sha256"]}
+            if variants["A"]["sha256"]==variants["B"]["sha256"]:raise RuntimeError("A/B images are identical; priming control was not built")
+            manifest["variants"]=variants
         # Existing toolchains create these optional diagnostics on some versions.
         logger_env=manifest["targets"]["logger"]
         a8_folder = ROOT / f"firmware/.pio/build/{logger_env}"
         for optional in ("firmware.map", "idedata.json", "identity/build-recipe.json"):
             source = a8_folder / optional
-            if args.mode == "candidate" and source.exists():
+            if args.mode == "candidate" and not args.experiment and source.exists():
                 target=output/f"artifacts/a8-{logger_env}"/optional
                 target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(source,target)
                 manifest["artifacts"].append({"path":target.relative_to(output).as_posix(),"sha256":sha256(target),"bytes":target.stat().st_size})
@@ -374,7 +425,9 @@ def main() -> int:
                     manifest["logger_recipe_id"]=json.loads(target.read_text(encoding="utf-8"))["id"]
         if (output/"SPI_SOURCE_CONTRACT.json").exists():
             manifest["bus_contract"]=json.loads((output/"SPI_SOURCE_CONTRACT.json").read_text(encoding="utf-8"))
-        if args.mode == "candidate" and args.profile!="production":
+        if args.mode=="candidate" and args.experiment:
+            shutil.copyfile(ROOT/"docs/firmware/CAN-FD_SPI_TX_Priming_Bench.md",output/"RUNBOOK.md")
+        if args.mode == "candidate" and args.profile!="production" and not args.experiment:
             runbook="Bench_Automation.md" if args.profile=="mixed-diagnostic" else "CAN-FD_First_Recording_Runbook.md"
             extras=[(ROOT / "docs/firmware" / runbook, "RUNBOOK.md"),
                     (Path.home() / ".platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin",
@@ -408,7 +461,8 @@ def main() -> int:
              "Host validation only; no target images or source archive were produced.\n") +
             "No devices were accessed.\n"
             "Inspect BUILD_MANIFEST.json status and logs before using artifacts.\n" +
-            ("Both TI profiles are separate artifacts; both endpoints must match.\n"
+            ("Master-only A/B; keep fixed r5 logger/node installed. See RUNBOOK.md and variants in BUILD_MANIFEST.json.\n" if args.experiment else
+             "Both TI profiles are separate artifacts; both endpoints must match.\n"
              "A8 images are separate bootloader/partition/application outputs, not a merged flash image.\n"
              if args.mode == "candidate" else "Only host test evidence is included; target builds were not run.\n") +
             "Host results do not qualify electrical behavior, timing, throughput, or stack/heap headroom.\n"

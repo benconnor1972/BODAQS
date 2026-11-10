@@ -51,6 +51,15 @@ endif
 endif
 
 NAME := bodaqs_can_master
+SPI_TX_PRIME ?= 0
+ifneq ($(SPI_TX_PRIME),0)
+ifneq ($(SPI_TX_PRIME),1)
+$(error SPI_TX_PRIME must be 0 or 1)
+endif
+ifneq ($(SPI_MEASUREMENT_PROFILE),first-recording)
+$(error SPI_TX_PRIME=1 requires SPI_MEASUREMENT_PROFILE=first-recording)
+endif
+endif
 SPI_PHASE_TIMING ?= 0
 SPI_QUEUE_TIMING ?= 0
 ifeq ($(SPI_QUEUE_TIMING),1)
@@ -106,6 +115,7 @@ CFLAGS := -I../include \
     -DBODAQS_MASTER_PHASE_TIMING=$(SPI_PHASE_TIMING) \
     -DBODAQS_MASTER_QUEUE_TIMING=$(SPI_QUEUE_TIMING) \
     -DBODAQS_MASTER_SPI_RX_CAPACITY=$(SPI_RX_CAPACITY) \
+    -DBODAQS_MASTER_SPI_TX_PRIME=$(SPI_TX_PRIME) \
     -Werror \
     $(CFLAGS_EXTRA)
 
