@@ -1426,10 +1426,11 @@ def test_mounted_folder_defers_recent_files_and_imports_bdq(tmp_path):
     assert recording.exists()
 
 
-def test_mounted_folder_manager_worker_acquires_and_imports_selected_source(tmp_path):
+def test_mounted_folder_manager_worker_acquires_and_imports_selected_source(tmp_path, monkeypatch):
     workspace = _prepare_source(tmp_path, "usb", tmp_path / "library")
     card = tmp_path / "card"
     card.mkdir()
+    monkeypatch.setattr("bodaqs_analysis.import_agent_usb.mounted_volume_roots", lambda: [card])
     original = _write_session_archive(card, stem="manager_usb")
     _set_old_mtime(original)
     supervisor = ImportAgentSupervisor([load_import_source_config(workspace)])
@@ -1610,7 +1611,49 @@ def test_usb_acquisition_and_watcher_serialize_library_access(tmp_path, monkeypa
         assert copy_future.result()["copied"]
         report = scan_future.result()
     assert len(report["imported"]) == 1
+
+
+def test_usb_recording_subfolder_rejects_workspace_elsewhere_on_same_card(tmp_path):
+    from bodaqs_analysis.import_agent_usb import UsbLoggerService
+
+    card = tmp_path / "card"
+    recordings = card / "recordings"
+    recordings.mkdir(parents=True)
+    workspace = _prepare_source(card, "usb", tmp_path / "library")
+    original = _write_session_archive(recordings, stem="same_card")
+    _set_old_mtime(original)
+    (card / ".bodaqs-logger.json").write_text(json.dumps({
+        "schema": "bodaqs.logger.usb", "version": 1,
+        "device_id": "esp32s3-010203040506", "logger_id": "logger",
+        "display_name": "Logger", "recordings_path": "recordings",
+    }))
+    supervisor = ImportAgentSupervisor([load_import_source_config(workspace)])
+    service = UsbLoggerService(tmp_path / "pairings.json")
+    source = supervisor.get_state("usb").runner.source
+    with pytest.raises(ValueError, match="outside the selected card volume"):
+        service.pair(service.scan(roots=[card])["devices"][0], source)
+    # A pre-existing pairing is also rejected at acquisition time.
+    service.path.write_text(json.dumps({"schema": "bodaqs.usb_pairings", "version": 1,
+                                       "sources": {"esp32s3-010203040506": str(source.config_path)}}))
+    result = service.scan(roots=[card], supervisor=supervisor)
+    assert result["issues"]
+    assert not result["acquisitions"]
+    assert not list((workspace / "inbox").iterdir())
     assert original.exists()
+
+
+def test_manual_card_subfolder_uses_closest_mounted_volume_boundary(tmp_path):
+    from bodaqs_analysis.import_agent_usb import enclosing_volume_root
+
+    card = tmp_path / "card"
+    recordings = card / "recordings"
+    recordings.mkdir(parents=True)
+    workspace = _prepare_source(card, "usb", tmp_path / "library")
+    runner = ImportSourceRunner(load_import_source_config(workspace))
+    boundary = enclosing_volume_root(recordings, roots=[tmp_path, card])
+    assert boundary == card
+    with pytest.raises(ValueError, match="outside the selected card volume"):
+        runner.acquire_folder(recordings, volume_root=boundary)
 
 
 def test_processed_archive_retention_uses_processed_time_and_sweeps_existing_files(tmp_path):

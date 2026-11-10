@@ -43,8 +43,8 @@ user's request for manual reflashing; the recovery requirement remains unresolve
 
 | Check | Result |
 | --- | --- |
-| Tracked Python analysis test set | 576 passed, 1 skipped |
-| Import agent tests | 165 passed, 1 skipped; covers mounted acquisition, USB identity/pairing, and concurrent watcher access |
+| Tracked Python analysis test set | 578 passed, 1 skipped |
+| Import agent tests | 167 passed, 1 skipped; covers mounted acquisition, USB identity/pairing, concurrent watcher access, and whole-volume containment |
 | Firmware host harness and four runtime fixtures | Passed, including ownership and USB upload lifecycle checks |
 | Isolated A8 USB diagnostic build | Passed |
 | Normal A8 build | Passed |
@@ -65,6 +65,12 @@ import scan limit. Both were fixed; review confirmed resolution and the added
 scan-limit regression test passes. No further concrete defect was reported in
 the initial checkpoint. The continuation also reproduced and fixed in-process
 contention between USB acquisition and the watcher; its regression test passes.
+The continuation review identified a card-volume containment gap for recording
+subfolders. Pairing and both automatic/manual acquisition now validate the whole
+mounted volume; regression tests reject sibling workspace/output paths on it.
+Raw USB pin assignments also use the selected canonical board profile. No hard
+standards violation was found; two optional interface-design observations remain.
+
 USB session checks cover both connection orders, actual local-lease draining,
 quiet-time boundaries, cancellation, ten minutes of simulated traffic without a
 forced exit, timer wraparound, eject/reconnect, card removal, and reclaim retry.

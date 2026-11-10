@@ -9,7 +9,8 @@ ZIP or BDQ recordings.
 Import Manager copies settled recordings into that source's local inbox and
 imports completed copies through the usual pipeline. Recordings on the card
 are retained. Workspace, inbox, staging, and library output must be outside the
-selected card directory.
+selected card volume, including when you select a recording subfolder. Pairing
+and acquisition reject destinations elsewhere on that same volume.
 
 Import Manager also checks mounted volumes for the
 [USB logger identity marker](../../../docs/interchange/USB_Logger_Identity_v1.md).

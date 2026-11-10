@@ -12,6 +12,7 @@
 #include <freertos/semphr.h>
 #include <atomic>
 #include "ConfigManager.h"
+#include "BoardSelect.h"
 #include "StorageManager.h"
 #include "UI.h"
 #include "WiFiManager.h"
@@ -57,13 +58,16 @@ bool writeIdentity() {
 }
 
 bool beginRaw() {
+  if (!board::gBoard) return false;
+  const auto& storage = board::gBoard->storage;
   sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-  host.flags = SDMMC_HOST_FLAG_4BIT;
+  host.flags = storage.sdmmc_1bit ? SDMMC_HOST_FLAG_1BIT : SDMMC_HOST_FLAG_4BIT;
   host.max_freq_khz = SDMMC_FREQ_DEFAULT;
   sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
-  slot.width = 4;
-  slot.clk = GPIO_NUM_10; slot.cmd = GPIO_NUM_9; slot.d0 = GPIO_NUM_11;
-  slot.d1 = GPIO_NUM_12; slot.d2 = GPIO_NUM_7; slot.d3 = GPIO_NUM_8;
+  slot.width = storage.sdmmc_1bit ? 1 : 4;
+  slot.clk = gpio_num_t(storage.sdmmc_clk); slot.cmd = gpio_num_t(storage.sdmmc_cmd);
+  slot.d0 = gpio_num_t(storage.sdmmc_d0); slot.d1 = gpio_num_t(storage.sdmmc_d1);
+  slot.d2 = gpio_num_t(storage.sdmmc_d2); slot.d3 = gpio_num_t(storage.sdmmc_d3);
   esp_err_t result = host.init();
   if (result != ESP_OK) return false;
   result = sdmmc_host_init_slot(host.slot, &slot);

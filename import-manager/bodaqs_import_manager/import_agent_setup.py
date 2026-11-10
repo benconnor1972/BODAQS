@@ -40,7 +40,7 @@ except Exception:  # pragma: no cover - dependency presence is checked in packag
 
 from bodaqs_analysis.import_agent import ImportAgentSupervisor, load_import_source_config
 from bodaqs_analysis.import_agent_logger_wifi import LoggerWifiApiClient
-from bodaqs_analysis.import_agent_usb import UsbLoggerService
+from bodaqs_analysis.import_agent_usb import UsbLoggerService, enclosing_volume_root
 from bodaqs_analysis.import_agent_logger_wifi_discovery import (
     LoggerWifiDiscoveryResult,
     discover_logger_wifi_sources,
@@ -6227,7 +6227,8 @@ class ImportAgentManagerWindow:
             acquisition = None
             if mounted_folder is not None:
                 source_id, folder = mounted_folder
-                acquisition = supervisor.get_state(source_id).runner.acquire_folder(folder)
+                acquisition = supervisor.get_state(source_id).runner.acquire_folder(
+                    folder, volume_root=enclosing_volume_root(folder))
             report = supervisor.scan_all_once(
                 progress_callback=self._queue_import_now_progress,
                 run_description_override=run_description_override,

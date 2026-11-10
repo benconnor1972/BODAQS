@@ -50,6 +50,16 @@ def mounted_volume_roots() -> list[Path]:
     return sorted(roots)
 
 
+def enclosing_volume_root(folder: Path, *, roots: Iterable[Path] | None = None) -> Path:
+    """Find the closest mounted boundary, including nested mount points."""
+    selected = folder.expanduser().resolve()
+    candidates = [Path(root).resolve() for root in (mounted_volume_roots() if roots is None else roots)]
+    enclosing = [root for root in candidates if selected.is_relative_to(root)]
+    if not enclosing:
+        raise ValueError("Selected card folder is not on an available mounted volume")
+    return max(enclosing, key=lambda root: len(root.parts))
+
+
 def read_usb_logger(root: Path) -> UsbLogger | None:
     root = root.resolve()
     if not root.is_dir():
@@ -118,6 +128,7 @@ class UsbLoggerService:
             raise ValueError("Pair a USB logger with a local archive source")
         if self.path.is_relative_to(device.volume_root):
             raise ValueError("USB pairing settings must be stored on the computer")
+        source.require_local_paths_outside(device.volume_root)
         pairs = self.pairings()
         pairs[device.device_id] = str(source.config_path.resolve())
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -162,7 +173,7 @@ class UsbLoggerService:
                     fingerprint = (str(device.volume_root), id(state.runner), files)
                     if self._completed.get(device.device_id) == fingerprint:
                         continue
-                    result = state.runner.acquire_folder(device.recordings_root)
+                    result = state.runner.acquire_folder(device.recordings_root, volume_root=device.volume_root)
                     acquisitions[device.device_id] = result
                     if not result["errors"] and not result["deferred"]:
                         self._completed[device.device_id] = fingerprint

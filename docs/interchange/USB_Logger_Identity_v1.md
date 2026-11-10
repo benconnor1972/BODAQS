@@ -35,6 +35,11 @@ local-source configuration. That source supplies bike, profile, inbox, and
 library settings. Mount paths are not persisted as identity. Moving a source
 configuration requires pairing it again.
 
+Pairing and acquisition reject workspace, inbox, staging, library, state, and
+other output paths anywhere on the mounted card, including siblings of the
+recording directory. Manual acquisition uses the enclosing mounted volume as
+the same boundary.
+
 ## Upload control additions
 
 The development firmware retains `upload_mode` and adds `exit_pending`,

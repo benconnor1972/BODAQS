@@ -692,6 +692,14 @@ class ImportSourceConfig:
     session_note: ImportSourceSessionNoteConfig = field(default_factory=ImportSourceSessionNoteConfig)
     naming: ImportSourceNamingConfig = field(default_factory=ImportSourceNamingConfig)
 
+    def require_local_paths_outside(self, card_root: Path) -> None:
+        for local in (
+            self.config_path, self.source_root, self.artifacts_dir, self.fit_dir,
+            self.inbox_dir, self.staging_dir, self.done_dir, self.failed_dir,
+        ):
+            if local.resolve().is_relative_to(card_root):
+                raise ValueError("Import workspace and library must be outside the selected card volume")
+
     def __post_init__(self) -> None:
         if not self.source_id.strip():
             raise ValueError("Import source config must include a non-empty source_id")
@@ -908,20 +916,20 @@ def load_import_source_config(path_or_dir: str | Path) -> ImportSourceConfig:
 
 
 class ImportSourceRunner:
-    def acquire_folder(self, folder: str | Path) -> Dict[str, Any]:
+    def acquire_folder(self, folder: str | Path, *, volume_root: str | Path | None = None) -> Dict[str, Any]:
         """Acquire card recordings for this source without consuming originals."""
         from .import_agent_mounted_folder import acquire_mounted_folder
 
         if self.source.source_type != SOURCE_TYPE_FILESYSTEM_ARCHIVE:
             raise ValueError("Choose a local archive source for mounted-folder import")
         selected = Path(folder).expanduser().resolve()
-        for local in (
-            self.source.source_root, self.source.artifacts_dir, self.source.fit_dir,
-            self.source.inbox_dir, self.source.staging_dir, self.source.done_dir,
-            self.source.failed_dir,
-        ):
-            if local.resolve() == selected or local.resolve().is_relative_to(selected):
-                raise ValueError("Import workspace and library must be outside the selected card folder")
+        boundary = Path(volume_root).expanduser().resolve() if volume_root is not None else selected
+        if not selected.is_relative_to(boundary):
+            raise ValueError("Recording folder must be inside the selected card volume")
+        self.source.require_local_paths_outside(boundary)
+        for local in (self.state.path, self.lock.path):
+            if local.resolve().is_relative_to(boundary):
+                raise ValueError("Import workspace and library must be outside the selected card volume")
         with self.lock:
             return acquire_mounted_folder(
                 selected, self.source.inbox_dir,
