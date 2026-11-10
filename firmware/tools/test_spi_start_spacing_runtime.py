@@ -9,6 +9,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--compiler", default="g++")
     parser.add_argument("--bus-source", type=Path, help="Saved SharedSpiBus.cpp for regression checks")
+    parser.add_argument("--cs-setup", action="store_true", help="Check CS-to-clock setup and ordinary caller isolation")
+    parser.add_argument("--without-setup-delay",action="store_true",help="Negative proof: remove only the production setup wait")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix="bodaqs-spi-spacing-") as temp:
@@ -20,6 +22,8 @@ def main():
 extern uint32_t nowUs, lockWaitUs, setupUs, wireUs;
 extern bool lockOk;
 extern bool lockHeld, transactionActive;
+extern bool selected, requireSlaveSetup;
+extern uint32_t selectedAtUs,firstClockUs;
 uint32_t micros();
 void delayMicroseconds(uint32_t);
 void digitalWrite(uint8_t, int);
@@ -32,7 +36,11 @@ struct SPISettings {};
 struct SPIClass {
  void begin(int,int,int) {}
  void beginTransaction(const SPISettings&) {assert(lockHeld && !transactionActive);transactionActive=true;nowUs+=setupUs;}
- void transferBytes(const uint8_t*,uint8_t*,size_t) {nowUs+=wireUs;}
+ void transferBytes(const uint8_t*,uint8_t* rx,size_t) {
+   assert(lockHeld && transactionActive && selected);firstClockUs=nowUs;
+   if(requireSlaveSetup && rx) rx[0]=uint32_t(nowUs-selectedAtUs)>=5?0x42:0;
+   nowUs+=wireUs;
+ }
  void endTransaction() {assert(transactionActive);transactionActive=false;}
 };
 extern SPIClass SPI;
@@ -58,16 +66,23 @@ inline void xSemaphoreGive(SemaphoreHandle_t) {assert(lockHeld && !transactionAc
 uint32_t nowUs=100,lockWaitUs=0,setupUs=0,wireUs=128;
 bool lockOk=true;
 bool lockHeld=false,transactionActive=false;
+bool selected=false,requireSlaveSetup=false;
+uint32_t selectedAtUs=0,firstClockUs=0;
 static std::function<void()> duringWait;
 SPIClass SPI;
 static std::vector<uint32_t> starts;
 uint32_t micros() {return nowUs;}
 void delayMicroseconds(uint32_t us) {
+ if(selected) assert(lockHeld && transactionActive);
  const auto began=nowUs;
  if(duringWait) {auto callback=std::move(duringWait);duringWait={};callback();}
  const auto elapsed=nowUs-began;if(elapsed<us) nowUs+=us-elapsed;
 }
-void digitalWrite(uint8_t,int state) {assert(lockHeld && transactionActive);if(state==LOW) starts.push_back(nowUs);}
+void digitalWrite(uint8_t,int state) {
+ assert(lockHeld && transactionActive);
+ if(state==LOW) {assert(!selected);selected=true;selectedAtUs=nowUs;starts.push_back(nowUs);}
+ else {assert(selected);selected=false;}
+}
 int main() {
  board::SPIProfile profile={};profile.present=true;profile.sck=1;profile.miso=2;profile.mosi=3;
  assert(SharedSpiBus::begin(profile));
@@ -103,13 +118,45 @@ int main() {
  assert(transfer(500));assert(starts.back()==11128);
  assert(!lockHeld && !transactionActive);
  assert(SharedSpiBus::diagnostics().transactions==starts.size());
+ // CS_SETUP_CHECK
  puts("production SPI spacing: unlocked ADC interleave, per-CS deadline, concurrent same-CS recheck, failure and wrap PASS");
 }
 ''')
+        if args.cs_setup:
+            cpp.write_text(cpp.read_text().replace('// CS_SETUP_CHECK','''
+ requireSlaveSetup=true;nowUs=20000;wireUs=128;
+ auto setupTransfer=[&] {return SharedSpiBus::transfer(4,settings,tx,rx,256,10,500,5);};
+ assert(setupTransfer());assert(starts.back()==20000);
+ assert(firstClockUs-selectedAtUs>=5 && rx[0]==0x42);
+ assert(setupTransfer());assert(starts.back()==20500); // setup does not replace own-CS spacing
+ assert(firstClockUs==20505);
+ duringWait=[&] {
+   assert(!lockHeld && !transactionActive);
+   assert(SharedSpiBus::transfer(5,settings,tx,rx,6));
+   assert(firstClockUs==selectedAtUs); // ADC/default call adds no setup wait
+ };
+ assert(setupTransfer());assert(starts.back()==21000 && firstClockUs==21005);
+ nowUs=0xfffffffdu;assert(setupTransfer());
+ assert(uint32_t(firstClockUs-selectedAtUs)==5 && firstClockUs==2 && rx[0]==0x42);
+ const auto n=starts.size();lockOk=false;assert(!setupTransfer());assert(starts.size()==n);
+ lockOk=true;
+ assert(SharedSpiBus::transfer(5,settings,tx,rx,6));
+ assert(firstClockUs==selectedAtUs && rx[0]==0); // model alone is not a physical diagnosis
+ assert(!selected && !lockHeld && !transactionActive);
+ puts("production CS setup: slave first-byte readiness, locked/selected setup, ADC isolation, pacing and wrap PASS");
+'''))
+        bus=args.bus_source or root / 'src/SharedSpiBus.cpp'
+        if args.without_setup_delay:
+            assert args.cs_setup
+            text=bus.read_text();line='  if(csSetupUs) delayMicroseconds(csSetupUs);'
+            assert text.count(line)==1
+            changed=text.replace(line,'  (void)csSetupUs; // negative timing proof')
+            assert changed!=text and line not in changed
+            bus=temp/'without-setup.cpp';bus.write_text(changed)
         exe = temp / "fixture.exe"
         subprocess.run([args.compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
                         "-DESP32", "-I", str(temp), "-I", str(root / "src"),
-                        str(cpp), str(args.bus_source or root / "src/SharedSpiBus.cpp"), "-o", str(exe)], check=True)
+                        str(cpp), str(bus), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
 
 

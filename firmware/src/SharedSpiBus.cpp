@@ -79,7 +79,8 @@ bool transfer(
     uint8_t* rx,
     size_t length,
     uint32_t lockTimeoutMs,
-    uint32_t minimumStartSpacingUs) {
+    uint32_t minimumStartSpacingUs,
+    uint32_t csSetupUs) {
   if (!s_ready || csPin < 0 || length == 0 || (!tx && !rx)) return false;
   const auto cs = static_cast<uint8_t>(csPin);
   for (;;) {
@@ -102,6 +103,7 @@ bool transfer(
   // lengthen the following interval, but cannot make the next start too early.
   s_lastTransactionStartUs[cs] = micros();
   s_haveTransactionStart[cs] = true;
+  if(csSetupUs) delayMicroseconds(csSetupUs);
 #if defined(ESP32)
   s_spi->transferBytes(tx, rx, length);
 #else

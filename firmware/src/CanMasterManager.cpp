@@ -29,6 +29,10 @@
 #ifndef BODAQS_MEASUREMENT_START_SPACING_US
 #define BODAQS_MEASUREMENT_START_SPACING_US 0
 #endif
+// Opt-in measurement-only CS setup experiment; normal/legacy calls stay at0.
+#ifndef BODAQS_MEASUREMENT_CS_SETUP_US
+#define BODAQS_MEASUREMENT_CS_SETUP_US 0
+#endif
 
 namespace {
 
@@ -262,7 +266,7 @@ void refreshInventoryIfStateChanged_(CanMasterManager::State previous,
 bool transferSlot_(
     const SPISettings& settings, const uint8_t* tx, uint8_t* rx,
     size_t length = CanMasterProtocol::kSlotBytes, uint32_t guardUs = kInterSlotGuardUs,
-    uint32_t minimumStartSpacingUs = 0) {
+    uint32_t minimumStartSpacingUs = 0, uint32_t csSetupUs = 0) {
   if (s_haveCompletedSlot) {
     const uint32_t elapsedUs = micros() - s_lastSlotCompletedUs;
     if (elapsedUs < guardUs) {
@@ -271,7 +275,7 @@ bool transferSlot_(
   }
   if (!SharedSpiBus::transfer(
           s_profile.cs_pin, settings, tx, rx,
-          length, kSpiLockTimeoutMs, minimumStartSpacingUs)) {
+          length, kSpiLockTimeoutMs, minimumStartSpacingUs, csSetupUs)) {
     return false;
   }
   s_lastSlotCompletedUs = micros();
@@ -721,7 +725,7 @@ bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
     if(idle>timing.maxIdleUs) timing.maxIdleUs=idle;
   }
   const bool transferred=transferSlot_(settings,tx,rx,BODAQS_MEASUREMENT_BYTES,25,
-      BODAQS_MEASUREMENT_START_SPACING_US);
+      BODAQS_MEASUREMENT_START_SPACING_US,BODAQS_MEASUREMENT_CS_SETUP_US);
   const bool valid=transferred && bodaqs_measurement_decode(rx,BODAQS_MEASUREMENT_BYTES,&response);
   if(!transferred) ++timing.transferFailedSlots;
   else if(!valid) {

@@ -212,3 +212,50 @@ failures and a valid slot. These establish diagnostic behavior only; no physical
 mixed-load failure is claimed fixed. Repeat the same approximately45-second mixed
 recording, finalize normally, and preserve its BDQ/serial evidence before deciding
 whether a wire/configuration investigation is worthwhile.
+
+## r4: CAN-only CS setup trial
+
+The r3 capture `261110_122214.bdq` retained four replies beginning004d rather
+than424d. Replacing only byte0 with42 in offline copies made every unchanged
+stored CRC match and the canonical decoder accept all four. This identifies a
+first-byte pattern in that small sample, not its physical cause or the pattern
+of all603 rejected replies. The same run rejected IMU PREPARE with reason35
+(node timing/clock-integrity checks) and recorded no IMU samples; its mostly
+ADC-only freshness cannot qualify mixed throughput.
+
+The restricted bench image is now `bodaqs_a8_imu_adc_cs5_r4`, with
+`BODAQS_MEASUREMENT_CS_SETUP_US=5`. Only256-byte CAN measurement exchanges pass
+this value; legacy CAN transfers and ADC calls use0. All other builds default0.
+`SharedSpiBus::transfer` adds an optional final `csSetupUs` argument, default0,
+so existing call sites retain their behavior. Setup waits after CAN CS assertion
+and its start timestamp, before any transferBytes clocks, while retaining the
+bus mutex and SPI transaction. This prevents another device clocking in the
+selected interval. The existing500us per-CAN-CS start spacing still includes
+setup, and its pacing wait still releases the mutex. The25us CAN inter-CS guard,
+SPI mode/rate, reply capture, strict decoder and ADC commands remain unchanged.
+The additional selected-bus wait requests5us per measurement exchange; target
+preemption may lengthen it. It does not promise a measured5us electrical interval
+or a throughput improvement.
+
+Actual-bus host tests observe first-clock time relative to selected CS, use a
+synthetic first-byte readiness threshold, check lock/selection throughout setup,
+zero delay for ordinary callers, independent pacing, lock failure and micros wrap.
+Removing only the setup wait makes the test fail at first-byte readiness.
+That model validates the software seam, not a reproduction of the physical fault.
+The actual CAN manager fixture checks5us propagation for measurement and0 for
+legacy calls. Mixed lifecycle/retry/cleanup tests run with this flag; existing
+ADC fixtures reject accidental nonzero setup. Wire representation and raw
+capture publication are unchanged from r3.
+
+Before the next hardware trial freshly restart both CAN boards and the logger,
+then reconcile stopped IMU configuration. If the early first-failure line again
+shows phase2/reason35, stop that attempt and retain the existing node runtime
+timing/clock diagnostics rather than recording ADC-only for45seconds. A fresh
+restart only avoids carrying possibly stale state; reason35 remains unexplained.
+For a real mixed run retain final BDQ and serial start/STOP/FLOW. Compare reply
+rejects, captured bytes, independent IMU sequence coverage and ADC freshness with
+the actual r2 mixed run, not r3's failed-start result. If the first-byte pattern
+persists, inspect the preloaded master byte or a short physical trace before
+another timing/protocol change. No received bytes are repaired or admitted by
+this experiment. General admission and controlled storage-stall testing remain
+deferred.

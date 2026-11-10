@@ -26,6 +26,8 @@ bool ready();
 // transaction; the deadline is rechecked under the mutex before starting.
 // lockTimeoutMs bounds each mutex acquisition. A paced CS has one logical owner;
 // concurrent same-CS traffic can extend the wait. Zero spacing stays unpaced.
+// Optional CS setup runs after asserting CS and before clocking any bytes;
+// it retains the bus mutex and SPI transaction. Existing callers default to0.
 bool transfer(
     int8_t csPin,
     const SPISettings& settings,
@@ -33,7 +35,8 @@ bool transfer(
     uint8_t* rx,
     size_t length,
     uint32_t lockTimeoutMs = 50,
-    uint32_t minimumStartSpacingUs = 0);
+    uint32_t minimumStartSpacingUs = 0,
+    uint32_t csSetupUs = 0);
 
 const Diagnostics& diagnostics();
 

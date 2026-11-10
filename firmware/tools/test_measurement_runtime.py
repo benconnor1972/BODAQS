@@ -8,9 +8,11 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--compiler",default="g++")
     parser.add_argument("--reply-capture",action="store_true")
+    parser.add_argument("--cs-setup-us",type=int,default=0)
     parser.add_argument("--manager-source",type=Path,help="Negative proof against a saved production manager")
     args=parser.parse_args()
     flags=["-DBODAQS_SPI_MEASUREMENT_V2=1","-DBODAQS_IMU_FLOW_DIAGNOSTICS=1","-DBODAQS_MEASUREMENT_REPLY_CAPTURE=1"] if args.reply_capture else []
+    if args.cs_setup_us: flags.append(f"-DBODAQS_MEASUREMENT_CS_SETUP_US={args.cs_setup_us}")
     root=Path(__file__).resolve().parents[1]
     source=(args.manager_source or root/"src/CanMasterManager.cpp").read_text()
     boundary_headers=("Arduino.h","SPI.h","esp_system.h","DebugLog.h","LoggingManager.h","SensorManager.h","SharedSpiBus.h")
