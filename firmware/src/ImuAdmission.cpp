@@ -83,6 +83,18 @@ Report evaluateSingleNodeSmoke(const Demand& d,bool otherActiveSensors) {
 }
 Report evaluateSingleNodeAdcSmoke(const Demand& d,bool otherActiveSensors) {
  Report r;r.attempted=d.nodes!=0;r.benchOnly=true;
+ if(channelRateBenchBuild()) {
+  const auto& a=d.adc[0];const auto& b=d.adc[1];
+  const bool split=d.loggerRateHz==500 && a.activeChannels==1 && b.activeChannels==1 &&
+      a.conversionsPerSecond==1000 && b.conversionsPerSecond==1000 && a.spiHz==1000000 && b.spiHz==1000000;
+  // loggerRateHz is the saved request. The unchanged local ADC cap reduces
+  // a1000Hz request to700Hz for two channels; this is one explicit guard case.
+  const bool concentrated=(d.loggerRateHz==500 || d.loggerRateHz==700 || d.loggerRateHz==1000) &&
+      a.activeChannels==2 && a.conversionsPerSecond==2000 && a.spiHz==1000000 &&
+      b.activeChannels==0 && b.conversionsPerSecond==0;
+  if(d.nodes>1 || otherActiveSensors || (!split && !concentrated)) r.reason=Reason::MixedSmokeScope;
+  return r;
+ }
  if(d.nodes>1 || otherActiveSensors || d.loggerRateHz!=500) r.reason=Reason::MixedSmokeScope;
  for(const auto& a:d.adc) if(a.activeChannels!=1 || a.conversionsPerSecond!=1000 || a.spiHz!=1000000)
   r.reason=Reason::MixedSmokeScope;
@@ -96,7 +108,9 @@ const char* reasonText(Reason r) {
  case Reason::Coverage:return "burst/backlog coverage";case Reason::Allocation:return "remote allocation failed";
  case Reason::Eligibility:return "remote configuration unavailable";
  case Reason::SmokeScope:return "smoke build requires one CAN IMU; mute all other sensors";
- case Reason::MixedSmokeScope:return "ADC smoke requires 500 Hz, ain0/4 only, and at most one CAN IMU";
+ case Reason::MixedSmokeScope:return channelRateBenchBuild()
+     ?"channel/rate bench requires ain0/4 at500Hz or ain0/1 at500/700Hz (1000Hz request capped), at most one CAN IMU"
+     :"ADC smoke requires 500 Hz, ain0/4 only, and at most one CAN IMU";
  }return "unsupported";
 }
 }

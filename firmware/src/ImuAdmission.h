@@ -2,6 +2,19 @@
 #include <stdint.h>
 #include <stddef.h>
 namespace ImuAdmission {
+
+#if defined(BODAQS_ADC_CHANNEL_RATE_BENCH) && BODAQS_ADC_CHANNEL_RATE_BENCH != 0 && BODAQS_ADC_CHANNEL_RATE_BENCH != 1
+#error BODAQS_ADC_CHANNEL_RATE_BENCH must be 0 or 1
+#endif
+
+constexpr bool channelRateBenchBuild() {
+#if defined(BODAQS_ADC_CHANNEL_RATE_BENCH) && BODAQS_ADC_CHANNEL_RATE_BENCH == 1
+ static_assert(BODAQS_SINGLE_NODE_IMU_ADC_SMOKE == 1, "Channel/rate bench requires ADC smoke scope");
+ return true;
+#else
+ return false;
+#endif
+}
 enum class Reason : uint8_t { None, Unqualified, Link, CanCapacity, SpiCapacity, DrainCapacity, Coverage, Allocation, Eligibility, SmokeScope, MixedSmokeScope };
 constexpr bool singleNodeSmokeBuild() {
 #if defined(BODAQS_SINGLE_NODE_IMU_SMOKE) && BODAQS_SINGLE_NODE_IMU_SMOKE == 1
@@ -13,7 +26,7 @@ constexpr bool singleNodeSmokeBuild() {
 constexpr const char* buildMode() {
  #if defined(BODAQS_SINGLE_NODE_IMU_ADC_SMOKE) && BODAQS_SINGLE_NODE_IMU_ADC_SMOKE == 1
  static_assert(singleNodeSmokeBuild(), "ADC smoke requires the compact single-node smoke build");
- return "single_node_adc_smoke_unqualified";
+ return channelRateBenchBuild()?"single_node_adc_channel_rate_unqualified":"single_node_adc_smoke_unqualified";
  #else
  return singleNodeSmokeBuild()?"single_node_smoke_unqualified":"production";
  #endif

@@ -226,6 +226,16 @@ int main() {
     cfg.sensors[i].type=SensorType::AnalogPot; cfg.sensors[i].params.bind(&params[i]);
   }
   assert(AnalogInputManager::configureFromConfig(cfg,500)==500);
+  assert(params[1].set("ain","1"));
+  for (uint16_t requested: {500,700,1000}) {
+    assert(AnalogInputManager::configureFromConfig(cfg,requested)==(requested==500?500:700));
+    assert(AnalogInputManager::activeChannelCount(0)==2);
+    assert(AnalogInputManager::activeChannelCount(1)==0);
+    assert(AnalogInputManager::configuredDataRateSps(0)==2000);
+    assert(AnalogInputManager::requestedSampleRateHz()==requested);
+  }
+  assert(params[1].set("ain","4"));
+  assert(AnalogInputManager::configureFromConfig(cfg,500)==500);
   wire.clear(); AnalogInputManager::onLoggingStart();
   // Logging priming restores a full image even if an idle preview already ran.
   assert(commands(0x43)==2 && commands(0x08)==0 && commands(0x10)==2);

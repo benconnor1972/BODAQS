@@ -89,6 +89,14 @@ int main(int argc,char** argv) {
       extra[index].params.bind(&extraParams[index]);
     }
     fixtureAdcChannels=1;fixtureAdcSps=1000;
+    if(argc>1 && !std::strncmp(argv[1],"channel-rate-",13)) {
+      assert(ImuAdmission::channelRateBenchBuild());
+      fixtureConcentrated=true;
+      profile.analog.inputs[1]=profile.analog.inputs[0];
+      profile.analog.inputs[1].external_channel=1;
+      assert(extraParams[1].set("ain","1"));
+      config.sampleRateHz=uint16_t(std::atoi(argv[1]+13));
+    }
     if(argc>1 && !std::strcmp(argv[1],"mixed-control")) {
       saved.mutedDefault=true;
       assert(RemoteImuRecording::configure(config));
@@ -425,7 +433,7 @@ int main(int argc,char** argv) {
   for(unsigned n=0;n<remoteNodes;++n) assert(acquisitions[n].phase==3 && acquisitions[n].lease_valid);
 
   assert(acquisitions[0].phase==3 && acquisitions[0].lease_valid);
-  if(argc>1 && std::strcmp(argv[1],"four")) {
+  if(argc>1 && std::strcmp(argv[1],"four") && std::strncmp(argv[1],"channel-rate-",13)) {
     recording=true;
     if(!std::strcmp(argv[1],"node-reboot")) {
       ++node.view.boot_id;node.view.active_session=0;node.view.flags=0;node.authority={};

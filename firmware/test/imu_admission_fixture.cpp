@@ -1,6 +1,7 @@
 ﻿#include "ImuAdmission.h"
 #include <cassert>
 #include <cmath>
+#include <initializer_list>
 int main() {
  ImuAdmission::Demand d;d.nodes=4;
  ImuAdmission::Profile p;p.maximumSourceSamplesPerSecond=3333;p.qualified=true;p.adcAttemptsPerConversion=1;p.canBurstFrames=20;p.spiBurstSlots=32;p.sampleSlotUs=64;p.auxiliarySlotUs=64;p.sampleDrainSlotsPerSecond=14000;
@@ -53,5 +54,17 @@ int main() {
   d.adc[a].spiHz=1000000;
  }
  assert(ImuAdmission::evaluateSingleNodeAdcSmoke(d,true).reason==ImuAdmission::Reason::MixedSmokeScope);
+ d.adc[0]={2000,1000000,2};d.adc[1]={};
+ for(uint16_t rate:{500,700,1000}) {
+  d.loggerRateHz=rate;
+  assert((ImuAdmission::evaluateSingleNodeAdcSmoke(d,false).reason==ImuAdmission::Reason::None)==ImuAdmission::channelRateBenchBuild());
+ }
+ if(ImuAdmission::channelRateBenchBuild()) {
+  d.loggerRateHz=200;assert(ImuAdmission::evaluateSingleNodeAdcSmoke(d,false).reason==ImuAdmission::Reason::MixedSmokeScope);
+  d.loggerRateHz=700;d.adc[0].activeChannels=3;
+  assert(ImuAdmission::evaluateSingleNodeAdcSmoke(d,false).reason==ImuAdmission::Reason::MixedSmokeScope);
+  d.adc[0].activeChannels=2;d.nodes=2;
+  assert(ImuAdmission::evaluateSingleNodeAdcSmoke(d,false).reason==ImuAdmission::Reason::MixedSmokeScope);
+ }
 }
 

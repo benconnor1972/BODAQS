@@ -25,7 +25,7 @@ def fixture_source(root):
     coordinator = (root / "src/RemoteImuRecording.cpp").read_text()
     for header in ('#include <Arduino.h>', '#include <esp_timer.h>', '#include <esp_system.h>', '#include "SensorManager.h"', '#include "DebugLog.h"'):
         coordinator = coordinator.replace(header, '')
-    fixture += '\nstatic uint8_t fixtureAdcChannels=0;static uint16_t fixtureAdcSps=100;\nnamespace AnalogInputManager { uint8_t activeChannelCount(uint8_t) {return fixtureAdcChannels;} uint16_t configuredDataRateSps(uint8_t) {return fixtureAdcSps;} }\n'
+    fixture += '\nstatic uint8_t fixtureAdcChannels=0;static uint16_t fixtureAdcSps=100;static bool fixtureConcentrated=false;\nnamespace AnalogInputManager { uint8_t activeChannelCount(uint8_t a) {return fixtureConcentrated?(a?0:2):fixtureAdcChannels;} uint16_t configuredDataRateSps(uint8_t) {return fixtureConcentrated?2000:fixtureAdcSps;} }\n'
     fixture = fixture.replace('static SensorSpec saved;', 'static SensorSpec saved; static unsigned fixtureSensorCount=1; static SensorSpec extra[3]; static ParamStore extraParams[3];')
     fixture = fixture.replace('return 1; }\nbool LoggerConfig::getSensorSpec', 'return fixtureSensorCount; }\nbool LoggerConfig::getSensorSpec')
     fixture = fixture.replace('if(i) return false; spec=saved;', 'if(i>=fixtureSensorCount) return false; spec=i?extra[i-1]:saved;')
@@ -45,7 +45,9 @@ def main():
     parser.add_argument("--v2", action="store_true", help="Exercise coordinated 256-byte measurement profile")
     parser.add_argument("--smoke", action="store_true", help="Exercise opt-in unqualified single-node build without installing synthetic costs")
     parser.add_argument("--mixed", action="store_true", help="Exact 500 Hz two-ADC bench scope plus one compact IMU")
+    parser.add_argument("--channel-rate",action="store_true")
     args = parser.parse_args()
+    if args.channel_rate: args.mixed=True
     if args.mixed: args.smoke=True;args.v2=True
     if args.reply_capture:
         assert args.v2 or args.mixed
@@ -71,6 +73,7 @@ static void captureFlowLog(const char* tag,const char*,...) {if(!std::strcmp(tag
         cpp.write_text(fixture)
         flags=["-DBODAQS_SINGLE_NODE_IMU_SMOKE=1"] if args.smoke else []
         if args.mixed: flags.append("-DBODAQS_SINGLE_NODE_IMU_ADC_SMOKE=1")
+        if args.channel_rate: flags.append("-DBODAQS_ADC_CHANNEL_RATE_BENCH=1")
         if args.v2:
             flags.append("-DBODAQS_SPI_MEASUREMENT_V2=1")
         if args.start_spacing_us:
@@ -81,6 +84,9 @@ static void captureFlowLog(const char* tag,const char*,...) {if(!std::strcmp(tag
         if args.cs_setup_us: flags.append(f"-DBODAQS_MEASUREMENT_CS_SETUP_US={args.cs_setup_us}")
         subprocess.run([args.compiler, "-std=c++17", *flags, "-DBODAQS_QUEUE_ALLOCATION_TEST", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-I", str(root/"test/stubs"), "-I", str(root/"src"), "-I", str(protocol), "-I", str(root/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
+        if args.channel_rate:
+            for case in ("channel-rate-500","channel-rate-700","channel-rate-1000"):
+                subprocess.run([str(exe),case],check=True)
         if args.flow_diagnostics:
             subprocess.run([str(exe), "flow-cancel-scope"], check=True)
         subprocess.run([str(exe), "start-clock-boundary"], check=True)

@@ -351,10 +351,13 @@ bool configure(const LoggerConfig& cfg) {
    long ain=-1,mode=1;bool includeRaw=false;
    spec.params.getInt("ain",ain);spec.params.getInt("output_mode",mode);
    spec.params.getBool("include_raw",includeRaw);
-   const uint8_t bit=ain==0?1:ain==4?2:0;
+   const bool channelBench=ImuAdmission::channelRateBenchBuild();
+   const uint8_t bit=channelBench?(ain>=0 && ain<8?uint8_t(1u<<ain):0):(ain==0?1:ain==4?2:0);
+   const bool mapped=channelBench?(ain>=0 && a.input==ain%4 && a.bus==ain/4)
+                                :(a.input==0 && a.bus==(ain==4?1:0));
    if(ImuAdmission::singleNodeAdcSmokeBuild() && spec.type==SensorType::AnalogPot &&
-      a.kind==SensorAssignment::Kind::ExternalAdc && a.input==0 &&
-      a.bus==(ain==4?1:0) && bit && !(benchAdcMask&bit) && !includeRaw && (mode==0 || mode==1))
+      a.kind==SensorAssignment::Kind::ExternalAdc && mapped &&
+      bit && !(benchAdcMask&bit) && !includeRaw && (mode==0 || mode==1))
     benchAdcMask|=bit;
    else otherActiveSensors=true;
    continue;
@@ -373,8 +376,9 @@ bool configure(const LoggerConfig& cfg) {
  for(uint8_t a=0;a<2;++a) if(board::gBoard && a<board::gBoard->external_adc_count && AnalogInputManager::activeChannelCount(a))
   demand.adc[a]={AnalogInputManager::configuredDataRateSps(a),board::gBoard->external_adcs[a].spi_hz,
                 AnalogInputManager::activeChannelCount(a)};
+ const bool benchMaskAllowed=ImuAdmission::channelRateBenchBuild()?(benchAdcMask==0x03 || benchAdcMask==0x11):benchAdcMask==3;
  report=ImuAdmission::singleNodeAdcSmokeBuild()
-     ? ImuAdmission::evaluateSingleNodeAdcSmoke(demand,otherActiveSensors || benchAdcMask!=3)
+     ? ImuAdmission::evaluateSingleNodeAdcSmoke(demand,otherActiveSensors || !benchMaskAllowed)
      : ImuAdmission::singleNodeSmokeBuild()
      ? ImuAdmission::evaluateSingleNodeSmoke(demand,otherActiveSensors)
      : ImuAdmission::evaluate(demand,profile);

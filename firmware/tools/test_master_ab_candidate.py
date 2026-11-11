@@ -23,6 +23,9 @@ class MasterAbCandidate(unittest.TestCase):
             (docs/"ADC_SPI_Phase_Timing_Runbook.md").write_text("ADC phases fixture runbook\n")
             (docs/"ADC_Worker_Priority_Runbook.md").write_text("ADC priority fixture runbook\n")
             (docs/"Storage_Worker_Priority_Runbook.md").write_text("Storage priority fixture runbook\n")
+            (docs/"ADC_Channel_Rate_Runbook.md").write_text("Channel rate fixture runbook\n")
+            if experiment=="adc-channel-rate":
+                helper=root/"firmware/tools/prepare_adc_channel_cases.py";helper.parent.mkdir(parents=True,exist_ok=True);helper.write_text("# config helper fixture\n")
             if experiment in ("spi-boundary-trace","spi-disabled-init"):
                 (docs/"CAN-FD_SPI_Boundary_Trace_Runbook.md").write_text("Trace fixture runbook\n")
                 (docs/"CAN-FD_SPI_Disabled_Init_Runbook.md").write_text("Disabled init fixture runbook\n")
@@ -46,15 +49,15 @@ class MasterAbCandidate(unittest.TestCase):
                     "artifacts":[{**images["application"],"role":"logger"},{**images["unchanged_node"],"role":"node"},images["unchanged_master"]],
                     "fixed_bundle":{"firmware_name":"bodaqs_a8_imu_adc_buffers_r5","images":[
                         {"role":"logger","source_commit":head},{"role":"node","source_commit":None}]}}
-            if experiment in ("spi-boundary-trace","spi-disabled-init","spi-init-sustained","adc-spi-timing","adc-worker-priority","storage-worker-priority"):
-                fixed_manifest={"status":"passed","experiment":"adc-worker-priority" if experiment=="storage-worker-priority" else "adc-spi-timing" if experiment=="adc-worker-priority" else "spi-init-sustained" if experiment=="adc-spi-timing" else "spi-disabled-init" if experiment=="spi-init-sustained" else "spi-boundary-trace" if experiment=="spi-disabled-init" else "spi-mode-ab","candidate_profile":"mixed-diagnostic",
-                    "source":{"commit":head},"variants":{"priority" if experiment=="storage-worker-priority" else "spi_timing" if experiment=="adc-worker-priority" else "sustained" if experiment=="adc-spi-timing" else "trace" if experiment in ("spi-disabled-init","spi-init-sustained") else "mode0":{"spi_mode":0,"spi_tx_prime":True,"spi_disabled_init":True,"boundary_trace_enabled":False,
+            if experiment in ("spi-boundary-trace","spi-disabled-init","spi-init-sustained","adc-spi-timing","adc-worker-priority","storage-worker-priority","adc-channel-rate"):
+                fixed_manifest={"status":"passed","experiment":"storage-worker-priority" if experiment=="adc-channel-rate" else "adc-worker-priority" if experiment=="storage-worker-priority" else "adc-spi-timing" if experiment=="adc-worker-priority" else "spi-init-sustained" if experiment=="adc-spi-timing" else "spi-disabled-init" if experiment=="spi-init-sustained" else "spi-boundary-trace" if experiment=="spi-disabled-init" else "spi-mode-ab","candidate_profile":"mixed-diagnostic",
+                    "source":{"commit":head},"variants":{"storage_priority" if experiment=="adc-channel-rate" else "priority" if experiment=="storage-worker-priority" else "spi_timing" if experiment=="adc-worker-priority" else "sustained" if experiment=="adc-spi-timing" else "trace" if experiment in ("spi-disabled-init","spi-init-sustained") else "mode0":{"spi_mode":0,"spi_tx_prime":True,"spi_disabled_init":True,"boundary_trace_enabled":False,
                         "boundary_trace_version":1,"boundary_trace_bytes":7328,"master":images["unchanged_master"],"logger":images["application"]}},
                     "artifacts":[images["application"],{**images["unchanged_node"],"role":"node"},images["unchanged_master"]],
                     "fixed_bundle":{"images":[{"role":"node","source_commit":None}]}}
-                if experiment in ("adc-worker-priority","storage-worker-priority"):
-                    selected="priority" if experiment=="storage-worker-priority" else "spi_timing"
-                    fixed_manifest["variants"][selected].update(adc_spi_phase_timing=True,master_reused=True,adc_task_priority=3 if experiment=="storage-worker-priority" else 2)
+                if experiment in ("adc-worker-priority","storage-worker-priority","adc-channel-rate"):
+                    selected="storage_priority" if experiment=="adc-channel-rate" else "priority" if experiment=="storage-worker-priority" else "spi_timing"
+                    fixed_manifest["variants"][selected].update(adc_spi_phase_timing=True,master_reused=True,adc_task_priority=3 if experiment in ("storage-worker-priority","adc-channel-rate") else 2,storage_task_priority=2 if experiment=="adc-channel-rate" else 1)
                     fixed_manifest["fixed_bundle"]["images"].append({"role":"rollback-master","sha256":images["unchanged_master"]["sha256"],"source_commit":"c"*40})
                 if experiment=="spi-init-sustained":
                     fixed_manifest["fixed_bundle"]["images"].append({"role":"logger","sha256":images["application"]["sha256"],"source_commit":"b"*40})
@@ -63,13 +66,13 @@ class MasterAbCandidate(unittest.TestCase):
             review=temp/"review.json";review.write_text(json.dumps({"schema":"bodaqs.review.v1","base":head,"head":head,"outcome":"passed",
                 "findings":[],"evidence":[{"path":review_text.name,"sha256":hashlib.sha256(review_text.read_bytes()).hexdigest()}]}))
             output=temp/"bundle"
-            argv=["candidate","--profile","mixed-diagnostic","--experiment",experiment,"--validation-scope","logger" if experiment in ("adc-spi-timing","adc-worker-priority","storage-worker-priority") else "master" if experiment in ("spi-tx-prime-ab","spi-disabled-init") else "full",
+            argv=["candidate","--profile","mixed-diagnostic","--experiment",experiment,"--validation-scope","logger" if experiment in ("adc-spi-timing","adc-worker-priority","storage-worker-priority","adc-channel-rate") else "master" if experiment in ("spi-tx-prime-ab","spi-disabled-init") else "full",
                 "--fixed-bundle",str(fixed),"--review-result",str(review),"--review-base",head,"--output-dir",str(output)]
             with patch.object(sys,"argv",argv):args=runner.arguments()
             sdk=temp/"sdk/.metadata";sdk.mkdir(parents=True);(sdk/"product.json").write_text('{"version":"fixture"}')
             args.sdk=sdk.parent
             build=root/".build";build.mkdir();commands=[]
-            variants=("storage_priority",) if experiment=="storage-worker-priority" else ("priority",) if experiment=="adc-worker-priority" else ("spi_timing",) if experiment=="adc-spi-timing" else ("sustained",) if experiment=="spi-init-sustained" else ("init-reference","init-disabled") if experiment=="spi-disabled-init" else ("trace",) if experiment=="spi-boundary-trace" else ("mode0","mode1") if experiment=="spi-mode-ab" else ("A","B")
+            variants=("channel_rate",) if experiment=="adc-channel-rate" else ("storage_priority",) if experiment=="storage-worker-priority" else ("priority",) if experiment=="adc-worker-priority" else ("spi_timing",) if experiment=="adc-spi-timing" else ("sustained",) if experiment=="spi-init-sustained" else ("init-reference","init-disabled") if experiment=="spi-disabled-init" else ("trace",) if experiment=="spi-boundary-trace" else ("mode0","mode1") if experiment=="spi-mode-ab" else ("A","B")
             for variant in variants:
                 image=build/(variant+".out");image.write_bytes(b"A" if identical else variant.encode())
                 commands.append({"name":"master-"+variant,"argv":[sys.executable,"-c","pass"],"cwd":str(root),
@@ -77,9 +80,9 @@ class MasterAbCandidate(unittest.TestCase):
                 if experiment=="spi-disabled-init":
                     generated=build/(variant+'.c');generated.write_bytes(b'changed' if broken=="changed-config" and variant=="init-disabled" else b'generated config')
                     commands[-1]["artifacts"].append((generated.relative_to(root).as_posix(),f"artifacts/master-{variant}/generated/ti_msp_dl_config.c"))
-                if experiment in ("spi-mode-ab","spi-boundary-trace","spi-init-sustained","adc-spi-timing","adc-worker-priority","storage-worker-priority"):
-                    mode=0 if variant in ("trace","sustained","spi_timing","priority","storage_priority") else int(variant[-1]);logger=build/(variant+".bin")
-                    logger.write_bytes(b"bodaqs_a8_imu_adc_mode0_r7 bodaqs_a8_imu_adc_mode1_r7" if broken=="identical-logger" else b"unknown" if broken=="wrong-name" else b"bodaqs_a8_imu_adc_storage_priority_r13" if variant=="storage_priority" else b"bodaqs_a8_imu_adc_priority_r12" if variant=="priority" else b"bodaqs_a8_imu_adc_spi_timing_r11" if variant=="spi_timing" else b"bodaqs_a8_imu_adc_sustained_r10" if variant=="sustained" else b"bodaqs_a8_imu_adc_trace_r8" if variant=="trace" else f"bodaqs_a8_imu_adc_{variant}_r7".encode())
+                if experiment in ("spi-mode-ab","spi-boundary-trace","spi-init-sustained","adc-spi-timing","adc-worker-priority","storage-worker-priority","adc-channel-rate"):
+                    mode=0 if variant in ("trace","sustained","spi_timing","priority","storage_priority","channel_rate") else int(variant[-1]);logger=build/(variant+".bin")
+                    logger.write_bytes(b"bodaqs_a8_imu_adc_mode0_r7 bodaqs_a8_imu_adc_mode1_r7" if broken=="identical-logger" else b"unknown" if broken=="wrong-name" else b"bodaqs_a8_imu_adc_channel_rate_r14" if variant=="channel_rate" else b"bodaqs_a8_imu_adc_storage_priority_r13" if variant=="storage_priority" else b"bodaqs_a8_imu_adc_priority_r12" if variant=="priority" else b"bodaqs_a8_imu_adc_spi_timing_r11" if variant=="spi_timing" else b"bodaqs_a8_imu_adc_sustained_r10" if variant=="sustained" else b"bodaqs_a8_imu_adc_trace_r8" if variant=="trace" else f"bodaqs_a8_imu_adc_{variant}_r7".encode())
                     recipe=build/(variant+".json");recipe.write_text(json.dumps({"id":variant}))
                     commands.append({"name":"contract-"+variant,"argv":[sys.executable,"-c",
                         "from pathlib import Path; import sys; Path(sys.argv[1]).write_text(sys.argv[2])",
@@ -104,6 +107,14 @@ class MasterAbCandidate(unittest.TestCase):
                 self.assertEqual((output/"RUNBOOK.md").read_text(),"Sustained fixture runbook\n")
                 self.assertFalse((output/"export_spi_trace.js").exists())
                 self.assertEqual(next(i["source_commit"] for i in manifest["fixed_bundle"]["images"] if i["role"]=="logger"),"b"*40)
+            if not fails and experiment=="adc-channel-rate":
+                variant=manifest["variants"]["channel_rate"]
+                self.assertTrue(variant["adc_channel_rate_bench"])
+                self.assertEqual(variant["adc_task_priority"],3)
+                self.assertEqual(variant["storage_task_priority"],2)
+                self.assertTrue(variant["master_reused"])
+                self.assertEqual((output/"prepare_adc_channel_cases.py").read_text(),"# config helper fixture\n")
+                self.assertEqual((output/"RUNBOOK.md").read_text(),"Channel rate fixture runbook\n")
             if not fails and experiment=="storage-worker-priority":
                 variant=manifest["variants"]["storage_priority"]
                 self.assertEqual(variant["storage_task_priority"],2)
@@ -140,6 +151,10 @@ class MasterAbCandidate(unittest.TestCase):
                 self.assertEqual((output/"RUNBOOK.md").read_text(),"Disabled init fixture runbook\n")
             for line in (output/"SHA256SUMS.txt").read_text().splitlines():
                 sha,name=line.split("  ",1);self.assertEqual(hashlib.sha256((output/name).read_bytes()).hexdigest(),sha)
+
+    def test_channel_rate_packages_exact_peers(self):
+        self.packaged_fixture(experiment="adc-channel-rate")
+        self.packaged_fixture(experiment="adc-channel-rate",broken="wrong-name")
 
     def test_storage_priority_packages_reused_master_provenance(self):
         self.packaged_fixture(experiment="storage-worker-priority")
