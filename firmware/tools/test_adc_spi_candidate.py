@@ -26,6 +26,16 @@ class AdcSpiCandidate(unittest.TestCase):
         deps=next(c for c in commands if c["name"]=="restricted-a8-dependencies")
         self.assertIn("bodaqs_s3_mini_n4r2_imu_adc_spi_timing",deps["argv"])
 
+    def test_priority_plan_builds_only_logger_and_keeps_host_validation(self):
+        with patch.object(sys,"argv",["candidate","--profile","mixed-diagnostic","--experiment","adc-worker-priority",
+                                     "--validation-scope","logger","--fixed-bundle","fixed"]):args=runner.arguments()
+        commands=runner.plan(args,Path("out"))
+        self.assertEqual({c["name"] for c in commands},
+                         {"a8-dependencies","restricted-a8-dependencies","firmware-host","candidate-runner-tests",
+                          "contract-priority","logger-clean-priority","logger-priority"})
+        for name in ("restricted-a8-dependencies","logger-priority"):
+            self.assertIn("bodaqs_s3_mini_n4r2_imu_adc_priority",next(c["argv"] for c in commands if c["name"]==name))
+
     def test_requires_passed_r10_trace_off_master(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)

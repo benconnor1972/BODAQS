@@ -23,6 +23,15 @@
 #define AIN_LOGI(...) LOGI_TAG("AIN", __VA_ARGS__)
 #define AIN_LOGD(...) LOGD_TAG("AIN", __VA_ARGS__)
 
+// The higher-priority mixed-load trial is selected only by its bench environment.
+#ifndef BODAQS_ADC_TASK_PRIORITY
+#define BODAQS_ADC_TASK_PRIORITY 2
+#endif
+#if defined(ESP32)
+static_assert(BODAQS_ADC_TASK_PRIORITY > 0 && BODAQS_ADC_TASK_PRIORITY < configMAX_PRIORITIES,
+              "ADC task priority must fit the FreeRTOS priority range");
+#endif
+
 namespace {
 
 constexpr uint8_t ADS1220_CMD_RESET = 0x06;
@@ -947,7 +956,7 @@ void onLoggingStart() {
       "ADSAsync",
       kAsyncTaskStackBytes,
       (void*)(uintptr_t)adc,
-      2,
+      BODAQS_ADC_TASK_PRIORITY,
       &dev.asyncTask,
       0);
 

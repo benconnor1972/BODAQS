@@ -34,6 +34,7 @@ using TaskHandle_t=void*;
 using portMUX_TYPE=int;
 constexpr int portMUX_INITIALIZER_UNLOCKED=0, pdFALSE=0, pdTRUE=1, pdPASS=1;
 constexpr uint32_t configTICK_RATE_HZ=1000;
+constexpr int configMAX_PRIORITIES=25;
 #define pdMS_TO_TICKS(ms) (ms)
 #define portENTER_CRITICAL(m) ((void)(m))
 #define portEXIT_CRITICAL(m) ((void)(m))
@@ -52,8 +53,10 @@ void vTaskDelete(TaskHandle_t) {}
 void attachInterruptArg(uint8_t, void (*)(void*), void*, int) {}
 void detachInterrupt(uint8_t) {}
 unsigned failCreateAdc=4;
-int xTaskCreatePinnedToCore(void (*)(void*), const char*, uint32_t, void* argument, int,
-                            TaskHandle_t* handle, int) {
+int xTaskCreatePinnedToCore(void (*)(void*), const char*, uint32_t, void* argument, int priority,
+                            TaskHandle_t* handle, int core) {
+  assert(priority==ADC_TEST_EXPECTED_PRIORITY);
+  assert(core==0);
   if(reinterpret_cast<uintptr_t>(argument)==failCreateAdc) return pdFALSE;
   *handle=xTaskGetCurrentTaskHandle(); return pdPASS;
 }

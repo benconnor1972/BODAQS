@@ -34,6 +34,7 @@ test: $(TEST_BIN)
 	"$(TEST_BIN)"
 	$(PYTHON) ../tools/test_adc_setup_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_adc_setup_runtime.py --spi-phase-timing --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_adc_setup_runtime.py --spi-phase-timing --adc-task-priority 3 --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_spi_buffer_bounds_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_bdq_adc_footer_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_bdq_adc_footer_runtime.py --spi-phase-timing --compiler "$(CXX)"
