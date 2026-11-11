@@ -71,7 +71,7 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--validation-scope", choices=("full", "logger", "master"), default="full",
                         help="Logger scope requires declared unchanged peer images; no full-suite claim")
     parser.add_argument("--reuse-peers", type=Path, help="bodaqs.peer-images.v1 JSON with immutable image paths/hashes")
-    parser.add_argument("--experiment",choices=("spi-tx-prime-ab","spi-mode-ab","spi-boundary-trace"))
+    parser.add_argument("--experiment",choices=("spi-tx-prime-ab","spi-mode-ab","spi-boundary-trace","spi-disabled-init"))
     parser.add_argument("--fixed-bundle",type=Path,help="Sealed r5/r6 bundle: preserve exact reference logger/node/master")
     parser.add_argument("--review-result", type=Path, help="bodaqs.review.v1 source-bound result")
     parser.add_argument("--review-base", help="Exact commit reviewed against HEAD")
@@ -135,6 +135,14 @@ def plan(args: argparse.Namespace, output: Path) -> list[dict]:
         for label,enabled in (("A",0),("B",1)):
             commands.append(ti_step("master","acquisition","master-"+label,[f"SPI_TX_PRIME={enabled}"]))
         return commands
+    if args.experiment=="spi-disabled-init":
+        for label,enabled in (("init-reference",0),("init-disabled",1)):
+            command=ti_step("master","acquisition","master-"+label,
+                ["SPI_TX_PRIME=1","SPI_BENCH_MODE=0","SPI_BOUNDARY_TRACE=1",f"SPI_DISABLED_INIT={enabled}"])
+            command["artifacts"] += [(f"firmware/can-fd/master/ticlang/ti_msp_dl_config.{ext}",
+                f"artifacts/master-{label}/generated/ti_msp_dl_config.{ext}") for ext in ("c","h")]
+            commands.append(command)
+        return commands
     if args.experiment in ("spi-mode-ab","spi-boundary-trace"):
         trace=args.experiment=="spi-boundary-trace"
         for mode in ((0,) if trace else (0,1)):
@@ -174,12 +182,17 @@ def load_fixed_bundle(bundle:Path,experiment:str="spi-tx-prime-ab") -> dict:
     """
     bundle=bundle.resolve();path=bundle/"BUILD_MANIFEST.json"
     value=json.loads(path.read_text(encoding="utf-8"))
-    if experiment=="spi-boundary-trace":
-        if value.get("status")!="passed" or value.get("candidate_profile")!="mixed-diagnostic" or value.get("experiment")!="spi-mode-ab":
-            raise ValueError("Boundary trace requires the passed r7 mode bundle")
-        selected=value.get("variants",{}).get("mode0",{})
+    if experiment in ("spi-boundary-trace","spi-disabled-init"):
+        disabled_init=experiment=="spi-disabled-init"
+        expected="spi-boundary-trace" if disabled_init else "spi-mode-ab"
+        parent="r8 trace" if disabled_init else "r7 mode"
+        if value.get("status")!="passed" or value.get("candidate_profile")!="mixed-diagnostic" or value.get("experiment")!=expected:
+            raise ValueError(f"Experiment requires the passed {parent} bundle")
+        selected=value.get("variants",{}).get("trace" if disabled_init else "mode0",{})
         if selected.get("spi_mode")!=0 or selected.get("spi_tx_prime") is not True:
-            raise ValueError("Boundary trace rollback requires r7 primed mode0")
+            raise ValueError(f"Rollback requires {parent} primed mode0")
+        if disabled_init and (selected.get("boundary_trace_version"),selected.get("boundary_trace_bytes"))!=(1,7328):
+            raise ValueError("Disabled initialization requires the exact r8 trace layout")
         images=[]
         for role,key in (("logger","logger"),("rollback-master","master"),("node",None)):
             matches=([a for a in value["artifacts"] if a.get("role")=="node"] if key is None else
@@ -192,7 +205,8 @@ def load_fixed_bundle(bundle:Path,experiment:str="spi-tx-prime-ab") -> dict:
             images.append({"role":role,"path":image["path"],"sha256":image["sha256"],
                            "source_commit":provenance[0].get("source_commit") if key is None else value["source"]["commit"]})
         return {"manifest_sha256":sha256(path),"bundle":str(bundle),"images":images,
-                "firmware_name":"bodaqs_a8_imu_adc_mode0_r7","configuration":"operator_preserves_same_mixed_configuration"}
+                "firmware_name":"bodaqs_a8_imu_adc_trace_r8" if disabled_init else "bodaqs_a8_imu_adc_mode0_r7",
+                "configuration":"operator_preserves_same_mixed_configuration"}
     if experiment=="spi-mode-ab" and value.get("experiment")!="spi-tx-prime-ab":
         raise ValueError("Mode comparison requires the sealed r6 primed-master bundle, not r5")
     if value.get("experiment")=="spi-tx-prime-ab":
@@ -306,7 +320,7 @@ print(f'Validated {len(required)} Python test dependency versions/imports')
                  "print('\\n'.join(sorted(str(d.metadata['Name'])+'=='+d.version for d in m.distributions())))"],
                 [args.cxx, "--version"], [args.cc, "--version"], [args.make, "--version"],
                 [args.pio, "--version"]]
-    if args.experiment=="spi-boundary-trace":
+    if args.experiment in ("spi-boundary-trace","spi-disabled-init"):
         versions.append([shutil.which("node") or "node","--version"])
     if args.mode != "host":
         compiler = args.ti_compiler / "bin" / ("tiarmclang.exe" if os.name == "nt" else "tiarmclang")
@@ -484,6 +498,23 @@ def main() -> int:
                 variants[variant]={"spi_tx_prime":enabled,"path":image["path"],"sha256":image["sha256"]}
             if variants["A"]["sha256"]==variants["B"]["sha256"]:raise RuntimeError("A/B images are identical; priming control was not built")
             manifest["variants"]=variants
+        if args.experiment=="spi-disabled-init":
+            def unique_artifact(predicate):
+                matches=[a for a in manifest["artifacts"] if predicate(a)]
+                if len(matches)!=1:raise RuntimeError("Missing or duplicate initialization-control artifact")
+                return {key:matches[0][key] for key in ("path","sha256")}
+            selected=unique_artifact(lambda a:a["path"]=="artifacts/master-init-disabled/bodaqs_can_master.out")
+            reference=unique_artifact(lambda a:a["path"]=="artifacts/master-init-reference/bodaqs_can_master.out")
+            logger=unique_artifact(lambda a:a.get("role")=="logger")
+            if selected["sha256"]==reference["sha256"]:raise RuntimeError("Initialization control images are identical")
+            if b"bodaqs_a8_imu_adc_trace_r8" not in (output/logger["path"]).read_bytes():
+                raise RuntimeError("Fixed logger is not the r8 trace image")
+            generated=[output/f"artifacts/master-{label}/generated/ti_msp_dl_config.c" for label in ("init-reference","init-disabled")]
+            if generated[0].read_bytes()!=generated[1].read_bytes():raise RuntimeError("Generated configuration changed between initialization variants")
+            manifest["variants"]={"trace":{"spi_mode":0,"spi_tx_prime":True,"spi_disabled_init":True,
+                "boundary_trace_version":1,"boundary_trace_bytes":7328,"master":selected,"logger":logger}}
+            manifest["compatibility_reference"]={"spi_disabled_init":False,"master":reference}
+            manifest["targets"]["logger"]="unchanged sealed r8 trace image"
         if args.experiment in ("spi-mode-ab","spi-boundary-trace"):
             variants={}
             trace=args.experiment=="spi-boundary-trace"
@@ -526,9 +557,9 @@ def main() -> int:
         if (output/"SPI_SOURCE_CONTRACT.json").exists():
             manifest["bus_contract"]=json.loads((output/"SPI_SOURCE_CONTRACT.json").read_text(encoding="utf-8"))
         if args.mode=="candidate" and args.experiment:
-            runbook={"spi-mode-ab":"CAN-FD_SPI_Mode_Bench.md","spi-boundary-trace":"CAN-FD_SPI_Boundary_Trace_Runbook.md"}.get(args.experiment,"CAN-FD_SPI_TX_Priming_Bench.md")
+            runbook={"spi-mode-ab":"CAN-FD_SPI_Mode_Bench.md","spi-boundary-trace":"CAN-FD_SPI_Boundary_Trace_Runbook.md","spi-disabled-init":"CAN-FD_SPI_Disabled_Init_Runbook.md"}.get(args.experiment,"CAN-FD_SPI_TX_Priming_Bench.md")
             shutil.copyfile(ROOT/"docs/firmware"/runbook,output/"RUNBOOK.md")
-            if args.experiment=="spi-boundary-trace":
+            if args.experiment in ("spi-boundary-trace","spi-disabled-init"):
                 shutil.copyfile(ROOT/"firmware/tools/export_spi_trace.js",output/"export_spi_trace.js")
                 shutil.copyfile(ROOT/"firmware/can-fd/master/ticlang/MSPM0G3518_XDS110.ccxml",output/"MASTER_TARGET.ccxml")
                 manifest["variants"]["trace"]["boundary_trace_version"]=1
@@ -567,7 +598,8 @@ def main() -> int:
              "Host validation only; no target images or source archive were produced.\n") +
             "No devices were accessed.\n"
             "Inspect BUILD_MANIFEST.json status and logs before using artifacts.\n" +
-            ("Matched r8 trace pair: flash BOTH logger and master manually. Keep fixed node. See RUNBOOK.md.\n" if args.experiment=="spi-boundary-trace" else
+            ("r9 master-only initialization control; retain installed r8 logger and node. See RUNBOOK.md.\n" if args.experiment=="spi-disabled-init" else
+             "Matched r8 trace pair: flash BOTH logger and master manually. Keep fixed node. See RUNBOOK.md.\n" if args.experiment=="spi-boundary-trace" else
              "Paired mode trial: select BOTH logger and master from the same variant. Keep fixed node. See RUNBOOK.md.\n" if args.experiment=="spi-mode-ab" else
              "Master-only A/B; keep fixed r5 logger/node installed. See RUNBOOK.md and variants in BUILD_MANIFEST.json.\n" if args.experiment else
              "Both TI profiles are separate artifacts; both endpoints must match.\n"

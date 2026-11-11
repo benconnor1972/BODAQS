@@ -9,6 +9,8 @@ test: $(BUILD_DIR)/test_timing.exe $(BUILD_DIR)/test_spi_trace.exe
 	$(PYTHON) test_adapter_runtime.py --cc "$(CC)"
 	$(PYTHON) test_spi_priming_runtime.py --cc "$(CC)"
 	$(PYTHON) test_spi_priming_runtime.py --boundary-trace --cc "$(CC)"
+	$(PYTHON) test_spi_priming_runtime.py --disabled-init --boundary-trace --cc "$(CC)"
+	$(PYTHON) test_spi_initialization_runtime.py --cc "$(CC)"
 	$(PYTHON) test_adapter_runtime.py --v2 --cc "$(CC)"
 	$(PYTHON) test_adapter_runtime.py --v2 --phase-timing --cc "$(CC)"
 	$(PYTHON) test_adapter_runtime.py --v2 --phase-timing --queue-timing --cc "$(CC)"

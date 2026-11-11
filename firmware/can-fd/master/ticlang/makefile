@@ -51,6 +51,15 @@ endif
 endif
 
 NAME := bodaqs_can_master
+SPI_DISABLED_INIT ?= 0
+ifneq ($(SPI_DISABLED_INIT),0)
+ifneq ($(SPI_DISABLED_INIT),1)
+$(error SPI_DISABLED_INIT must be 0 or 1)
+endif
+ifneq ($(SPI_TX_PRIME),1)
+$(error SPI_DISABLED_INIT requires SPI_TX_PRIME=1)
+endif
+endif
 SPI_BOUNDARY_TRACE ?= 0
 ifneq ($(SPI_BOUNDARY_TRACE),0)
 ifneq ($(SPI_BOUNDARY_TRACE),1)
@@ -100,7 +109,7 @@ endif
 else ifneq ($(SPI_PHASE_TIMING),0)
 $(error SPI_PHASE_TIMING must be 0 or 1)
 endif
-SOURCES := ../src/main.c ../src/master_timing.c \
+SOURCES := ../src/main.c ../src/master_timing.c ../src/master_sysconfig.c \
     ../../common/protocol/bodaqs_control.c \
     ../../common/protocol/bodaqs_control_exchange.c \
     ../src/master_identity.c \
@@ -111,7 +120,7 @@ SOURCES := ../src/main.c ../src/master_timing.c \
 OBJECTS := master_timing.obj bodaqs_control.obj bodaqs_control_exchange.obj main.obj master_identity.obj bodaqs_master_protocol.obj \
     bodaqs_master_service.obj bodaqs_can_network.obj \
     bodaqs_node_inventory.obj \
-    $(patsubst %.c,%.obj,$(notdir $(SYSCFG_C_FILES)))
+    master_sysconfig.obj $(patsubst %.c,%.obj,$(notdir $(filter-out %/ti_msp_dl_config.c ti_msp_dl_config.c,$(SYSCFG_C_FILES))))
 
 V := @
 ifeq ($(VERBOSE),1)
@@ -142,6 +151,7 @@ CFLAGS := -I../include \
     -DBODAQS_MASTER_SPI_TX_PRIME=$(SPI_TX_PRIME) \
     -DBODAQS_CAN_SPI_BENCH_MODE=$(SPI_BENCH_MODE) \
     -DBODAQS_SPI_BOUNDARY_TRACE=$(SPI_BOUNDARY_TRACE) \
+    -DBODAQS_MASTER_SPI_DISABLED_INIT=$(SPI_DISABLED_INIT) \
     -Werror \
     $(CFLAGS_EXTRA)
 
@@ -176,7 +186,9 @@ $(basename $(notdir $(1))).obj: $(1) $(SYSCFG_H_FILES)
 endef
 
 $(foreach source,$(SOURCES),$(eval $(call C_RULE,$(source))))
-$(foreach source,$(SYSCFG_C_FILES),$(eval $(call C_RULE,$(source))))
+$(foreach source,$(filter-out %/ti_msp_dl_config.c ti_msp_dl_config.c,$(SYSCFG_C_FILES)),$(eval $(call C_RULE,$(source))))
+
+master_sysconfig.obj: ti_msp_dl_config.c ../include/master_spi_initialization.h ../include/master_spi_priming.h
 
 main.obj: ../../common/transport/bodaqs_record_queue.h
 
@@ -205,5 +217,5 @@ master_identity.obj: can-link-profile ../../common/network/bodaqs_can_link.h ../
 
 .PHONY: measurement-profile
 measurement-profile:
-main.obj bodaqs_master_service.obj: measurement-profile
+main.obj bodaqs_master_service.obj master_sysconfig.obj: measurement-profile
 $(NAME).out: spi_buffers.cmd

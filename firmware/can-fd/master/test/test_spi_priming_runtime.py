@@ -26,6 +26,8 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cc",default="gcc")
     parser.add_argument("--boundary-trace",action="store_true")
+    parser.add_argument("--disabled-init",action="store_true")
+    parser.add_argument("--without-init-gate",action="store_true",help="Negative control against actual initialization wrapper")
     parser.add_argument("--negative",choices=("missing-preload","duplicate-prefix","early-enable","missing-mode","enabled-mode"))
     args=parser.parse_args()
     root=Path(__file__).resolve().parents[1]
@@ -56,7 +58,8 @@ def main():
 #define DMA 0
 #define DMA_SPI_RX_CHAN_ID 0
 #define DMA_SPI_TX_CHAN_ID 1
-static struct { uint8_t TXDATA,RXDATA; uint32_t STAT,CTL0,CTL1; } registers;
+typedef struct { uint8_t TXDATA,RXDATA; uint32_t STAT,CTL0,CTL1; } SPI_Regs;
+static SPI_Regs registers;
 #define SPI_A8_INST (&registers)
 static uint8_t gTransmitSlots[2][256],gReceiveSlots[2][256];
 static unsigned gTransmitIndex,gReceiveIndex;
@@ -141,6 +144,33 @@ int main(void) {
 '''
     with tempfile.TemporaryDirectory(prefix="bodaqs-spi-prime-") as directory:
         source=Path(directory)/"fixture.c";exe=Path(directory)/"fixture.exe"
+        if args.disabled_init:
+            # Generated configuration is a stand-in, not a silicon model. The
+            # production wrapper and actual arm body are compiled unchanged;
+            # target build separately audits the real generated configuration.
+            wrapper=(root/'src/master_sysconfig.c').read_text(encoding='utf-8')
+            if args.without_init_gate:
+                gate='    if (spi == SPI_A8_INST) return;'
+                assert wrapper.count(gate)==1
+                wrapper=wrapper.replace(gate,'    (void)spi; /* negative: allow early enable */')
+                assert gate not in wrapper
+            (Path(directory)/'master_sysconfig.c').write_text(wrapper)
+            (Path(directory)/'ti_msp_dl_config.h').write_text('#pragma once\n')
+            (Path(directory)/'ti_msp_dl_config.c').write_text('''
+void SYSCFG_DL_SPI_A8_init(void) {
+ assert(!spi_enabled);registers.CTL0=0x27;registers.CTL1=0x10;
+ DL_SPI_enable(SPI_A8_INST);
+}
+void SYSCFG_DL_init(void) {SYSCFG_DL_SPI_A8_init();DL_SPI_enable(&other_registers);}
+''')
+            fixture=fixture.replace('static SPI_Regs registers;','static SPI_Regs registers,other_registers;\nstatic unsigned other_enables;')
+            fixture=fixture.replace('static void DL_SPI_enable(void *p) {(void)p;',
+                'static void DL_SPI_enable(void *p) {if(p==&other_registers) {++other_enables;return;}')
+            fixture=fixture.replace('// ACTUAL_ARM','#include "master_sysconfig.c"\n// ACTUAL_ARM')
+            fixture=fixture.replace('phase=0;spi_enabled=true;','phase=0;spi_enabled=false;')
+            fixture=fixture.replace('reset_hardware();gTransmitIndex=gReceiveIndex=0;arm_spi_slot();',
+                'reset_hardware();SYSCFG_DL_init();assert(!spi_enabled && other_enables==1);gTransmitIndex=gReceiveIndex=0;arm_spi_slot();')
+            fixture=fixture.replace('  arm_spi_slot();','  SYSCFG_DL_SPI_A8_init();assert(!spi_enabled && registers.CTL0==0x27 && registers.CTL1==0x10);\n  arm_spi_slot();')
         if args.boundary_trace:
             # Extract all four production observer bodies; only hardware/time
             # are stand-ins. Exact SDK raw address/masked size representation.
@@ -169,10 +199,10 @@ static uint32_t DL_DMA_getTransferSize(int d,int c) {(void)d;return remaining[c]
   assert(gMasterSpiTrace.armed.stat==registers.STAT && gMasterSpiTrace.armed.epoch==7);
 ''')
         source.write_text(fixture.replace("// ACTUAL_ARM",arm),encoding="utf-8")
-        variants=((1,0),) if args.boundary_trace else ((1,1),) if args.negative in ("missing-mode","enabled-mode") else ((1,0),) if args.negative else ((0,0),(1,0),(1,1))
+        variants=((1,0),) if args.boundary_trace or args.disabled_init else ((1,1),) if args.negative in ("missing-mode","enabled-mode") else ((1,0),) if args.negative else ((0,0),(1,0),(1,1))
         for priming,mode in variants:
             subprocess.run([args.cc,"-std=c11","-Wall","-Wextra","-Werror","-Wno-unused-function","-O2",
-                "-DBODAQS_SPI_MEASUREMENT_V2=1",f"-DBODAQS_SPI_BOUNDARY_TRACE={int(args.boundary_trace)}",f"-DBODAQS_MASTER_SPI_TX_PRIME={priming}",f"-DBODAQS_CAN_SPI_BENCH_MODE={mode}",
+                "-DBODAQS_SPI_MEASUREMENT_V2=1",f"-DBODAQS_MASTER_SPI_DISABLED_INIT={int(args.disabled_init)}",f"-DBODAQS_SPI_BOUNDARY_TRACE={int(args.boundary_trace)}",f"-DBODAQS_MASTER_SPI_TX_PRIME={priming}",f"-DBODAQS_CAN_SPI_BENCH_MODE={mode}",
                 "-I",str(root/"include"),"-I",str(root.parent/'common/transport'),str(source),"-o",str(exe)],check=True)
             subprocess.run([str(exe)],check=True)
         if not args.negative:
