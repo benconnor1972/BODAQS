@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <stdint.h>
 #include "SensorTypes.h"
+#include "SpiTransferTiming.h"
 
 #ifndef BODAQS_TIMING_INSTRUMENTATION
 #define BODAQS_TIMING_INSTRUMENTATION 1
@@ -42,6 +43,15 @@ struct ExternalAdcChannelTimingStats {
 struct ExternalAdcTimingStats {
   static constexpr uint8_t kMaxAdcs = 4;
   static constexpr uint8_t kMaxChannels = 4;
+#if BODAQS_ADC_SPI_PHASE_TIMING
+  struct SpiPhases {
+    uint32_t completed = 0;
+    uint32_t failed = 0;
+    uint64_t totalUs[4] = {};
+    uint32_t maxUs[4] = {};
+    uint64_t failedWaitUs = 0;
+  };
+#endif
 
   struct AdcStats {
     bool present = false;
@@ -56,6 +66,10 @@ struct ExternalAdcTimingStats {
     TimingSummary readUs;
     uint32_t waitTimeouts = 0;
     uint32_t drdyAlreadyReady = 0;
+#if BODAQS_ADC_SPI_PHASE_TIMING
+    SpiPhases setupSpi;
+    SpiPhases readSpi;
+#endif
     ExternalAdcChannelTimingStats channel[kMaxChannels];
   };
 

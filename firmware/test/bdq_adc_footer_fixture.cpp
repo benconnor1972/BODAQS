@@ -27,6 +27,11 @@ int main() {
     auto& adc=stats.adc[a];adc.present=true;adc.activeChannels=1;adc.configuredSps=1000;
     adc.configUs.count=23+a;adc.configUs.totalUs=UINT64_C(9000000000)+a;
     adc.waitTimeouts=a;adc.startUs.count=0;
+#if BODAQS_ADC_SPI_PHASE_TIMING
+    adc.setupSpi.completed=2;adc.setupSpi.failed=1;adc.setupSpi.failedWaitUs=50000;
+    adc.setupSpi.totalUs[0]=UINT64_C(9000000000)+a;adc.setupSpi.maxUs[0]=123;
+    adc.setupSpi.totalUs[1]=22;adc.setupSpi.totalUs[2]=96;adc.setupSpi.totalUs[3]=14;
+#endif
     auto& ch=adc.channel[0];ch.acquireOk=20+a;ch.acquireFail=a;ch.rowUses=12+a;
     ch.rowFresh=10;ch.rowReused=1+a;ch.rowNoSample=1;
     ch.rowAgeUs.count=11+a;ch.rowAgeUs.totalUs=1234+a;ch.rowAgeUs.maxUs=456+a;
@@ -43,6 +48,16 @@ int main() {
   assert(adcs["adc1"]["config_us"]["total_us"].as<uint64_t>()==UINT64_C(9000000001));
   assert(adcs["adc1"]["wait_timeouts"].as<unsigned>()==1);
   assert(adcs["adc0"]["start_us"]["count"].as<unsigned>()==0);
+#if BODAQS_ADC_SPI_PHASE_TIMING
+  assert(adcs["adc0"]["shared_spi_phases"]["version"]==1);
+  auto setup=adcs["adc1"]["shared_spi_phases"]["setup_start"];
+  assert(setup["completed"]==2 && setup["failed"]==1 && setup["failed_wait_total_us"]==50000);
+  assert(setup["lock_wait_us"]["total_us"].as<uint64_t>()==UINT64_C(9000000001));
+  assert(setup["prepare_us"]["avg_us"].as<double>()==11.0);
+  assert(adcs["adc0"]["shared_spi_phases"]["read_data"]["transfer_us"]["avg_us"].as<double>()==0.0);
+#else
+  assert(adcs["adc0"]["shared_spi_phases"].isNull());
+#endif
   auto ch=adcs["adc1"]["channels"]["ch0"];
   assert(ch["acquire_ok"].as<unsigned>()==21 && ch["acquire_fail"].as<unsigned>()==1);
   assert(ch["row_fresh"].as<unsigned>()==10 && ch["row_reused"].as<unsigned>()==2);

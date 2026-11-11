@@ -87,12 +87,18 @@ bool transfer(
     uint32_t lockTimeoutMs,
     uint32_t minimumStartSpacingUs,
     uint32_t csSetupUs,
-    SpiTransactionContext* context) {
+    SpiTransactionContext* context,
+    SpiTransferTiming* timing) {
   if(context) *context={};
+  if(timing) *timing={};
   if (!s_ready || csPin < 0 || length == 0 || (!tx && !rx)) return false;
   const auto cs = static_cast<uint8_t>(csPin);
+  const uint32_t requestedUs=timing?micros():0;
   for (;;) {
-    if (!lock_(lockTimeoutMs)) return false;
+    if (!lock_(lockTimeoutMs)) {
+      if(timing) timing->lockWaitUs=micros()-requestedUs;
+      return false;
+    }
     if (minimumStartSpacingUs && s_haveTransactionStart[cs]) {
       const uint32_t elapsedUs = micros() - s_lastTransactionStartUs[cs];
       if (elapsedUs < minimumStartSpacingUs) {
@@ -105,6 +111,7 @@ bool transfer(
     }
     break;
   }
+  const uint32_t acquiredUs=timing?micros():0;
   s_spi->beginTransaction(settings);
   digitalWrite(static_cast<uint8_t>(csPin), LOW);
   // Timestamp after asserting CS: preemption between GPIO and timestamp can
@@ -130,6 +137,7 @@ bool transfer(
 #endif
 #endif
   if(csSetupUs) delayMicroseconds(csSetupUs);
+  const uint32_t preparedUs=timing?micros():0;
 #if defined(ESP32)
   s_spi->transferBytes(tx, rx, length);
 #else
@@ -138,6 +146,7 @@ bool transfer(
     if (rx) rx[index] = received;
   }
 #endif
+  const uint32_t transferredUs=timing?micros():0;
   digitalWrite(static_cast<uint8_t>(csPin), HIGH);
   s_spi->endTransaction();
 #if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
@@ -147,7 +156,15 @@ bool transfer(
 #endif
   ++s_diagnostics.transactions;
   s_diagnostics.bytesTransferred += length;
+  const uint32_t finishedUs=timing?micros():0;
   unlock_();
+  // Publish only to the synchronous caller, after releasing the shared bus.
+  if(timing) {
+    timing->lockWaitUs=acquiredUs-requestedUs;
+    timing->prepareUs=preparedUs-acquiredUs;
+    timing->transferUs=transferredUs-preparedUs;
+    timing->finishUs=finishedUs-transferredUs;
+  }
   return true;
 }
 

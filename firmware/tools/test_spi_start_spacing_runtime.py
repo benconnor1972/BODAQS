@@ -13,6 +13,7 @@ def main():
     parser.add_argument("--without-setup-delay",action="store_true",help="Negative proof: remove only the production setup wait")
     parser.add_argument("--capture-disabled",action="store_true")
     parser.add_argument("--boundary-trace",action="store_true")
+    parser.add_argument("--phase-timing",action="store_true")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix="bodaqs-spi-spacing-") as temp:
@@ -22,6 +23,7 @@ def main():
 #include <stdint.h>
 #include <stddef.h>
 extern uint32_t nowUs, lockWaitUs, setupUs, wireUs;
+extern uint32_t finishUs;
 extern bool lockOk;
 extern bool lockHeld, transactionActive;
 extern bool selected, requireSlaveSetup;
@@ -46,7 +48,7 @@ struct SPIClass {
    if(requireSlaveSetup && rx) rx[0]=uint32_t(nowUs-selectedAtUs)>=5?0x42:0;
    nowUs+=wireUs;
  }
- void endTransaction() {assert(transactionActive);transactionActive=false;}
+ void endTransaction() {assert(transactionActive);transactionActive=false;nowUs+=finishUs;}
 };
 extern SPIClass SPI;
 ''')
@@ -69,6 +71,7 @@ inline void xSemaphoreGive(SemaphoreHandle_t) {assert(lockHeld && !transactionAc
 #include <vector>
 #include <functional>
 uint32_t nowUs=100,lockWaitUs=0,setupUs=0,wireUs=128;
+uint32_t finishUs=0;
 bool lockOk=true;
 bool lockHeld=false,transactionActive=false;
 bool selected=false,requireSlaveSetup=false;
@@ -154,6 +157,24 @@ int main() {
  puts("production SPI spacing: unlocked ADC interleave, per-CS deadline, concurrent same-CS recheck, failure and wrap PASS");
 }
 ''')
+        if args.phase_timing:
+            cpp.write_text(cpp.read_text().replace('// CS_SETUP_CHECK','''
+ nowUs=40000;lockWaitUs=17;setupUs=11;wireUs=48;finishUs=7;
+ SpiTransferTiming phases;
+ assert(SharedSpiBus::transfer(5,settings,tx,rx,6,10,0,0,nullptr,&phases));
+ assert(phases.lockWaitUs==17 && phases.prepareUs==11 && phases.transferUs==48 && phases.finishUs==7);
+ nowUs=UINT32_MAX-30;
+ assert(SharedSpiBus::transfer(5,settings,tx,rx,6,10,0,0,nullptr,&phases));
+ assert(phases.lockWaitUs==17 && phases.prepareUs==11 && phases.transferUs==48 && phases.finishUs==7);
+ lockOk=false;
+ assert(!SharedSpiBus::transfer(5,settings,tx,rx,6,10,0,0,nullptr,&phases));
+ assert(phases.lockWaitUs==17 && !phases.prepareUs && !phases.transferUs && !phases.finishUs);
+ assert(!SharedSpiBus::transfer(5,settings,tx,rx,0,10,0,0,nullptr,&phases));
+ assert(!phases.lockWaitUs && !phases.prepareUs && !phases.transferUs && !phases.finishUs);
+ lockOk=true;lockWaitUs=setupUs=finishUs=0;wireUs=128;
+ puts("actual bus phase timing: independent wait/setup/transfer/finish, clock wrap and failed-call clearing PASS");
+ // CS_SETUP_CHECK
+'''))
         if args.cs_setup:
             cpp.write_text(cpp.read_text().replace('// CS_SETUP_CHECK','''
  requireSlaveSetup=true;nowUs=20000;wireUs=128;

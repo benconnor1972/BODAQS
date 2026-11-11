@@ -233,8 +233,29 @@ uint32_t targetDataRateSps_(uint16_t loggerHz, uint8_t activeChannels) {
 }
 
 bool adsTransfer_(AdsDevice& dev, const uint8_t* tx, uint8_t* rx, size_t len) {
+#if BODAQS_ADC_SPI_PHASE_TIMING
+  // Each ADC has one acquisition owner. Reset/final read use the existing
+  // stopped-worker lifecycle; publish aggregates after the bus is released.
+  SpiTransferTiming timing;
+  const bool ok=SharedSpiBus::transfer(dev.cfg.cs_pin,spiSettings_(dev),tx,rx,len,50,0,0,nullptr,&timing);
+  auto& adc=s_timingStats.adc[static_cast<size_t>(&dev-s_ads)];
+  auto* phases=(tx && len==6 && tx[0]==0x43 && tx[5]==ADS1220_CMD_START)?&adc.setupSpi:
+               (tx && len==4 && tx[0]==ADS1220_CMD_RDATA)?&adc.readSpi:nullptr;
+  if(phases) {
+    if(ok) {
+      const uint32_t values[]={timing.lockWaitUs,timing.prepareUs,timing.transferUs,timing.finishUs};
+      for(unsigned i=0;i<4;++i) {
+        phases->totalUs[i]+=values[i];
+        if(values[i]>phases->maxUs[i]) phases->maxUs[i]=values[i];
+      }
+      ++phases->completed;
+    } else {++phases->failed;phases->failedWaitUs+=timing.lockWaitUs;}
+  }
+  return ok;
+#else
   return SharedSpiBus::transfer(
       dev.cfg.cs_pin, spiSettings_(dev), tx, rx, len);
+#endif
 }
 
 bool adsCommand_(AdsDevice& dev, uint8_t cmd) {

@@ -77,8 +77,9 @@ std::function<void()> afterRead;
 namespace SharedSpiBus {
 bool begin(const board::SPIProfile&) { return true; }
 bool transfer(int8_t cs, const SPISettings&, const uint8_t* tx, uint8_t* rx,
-              size_t len, uint32_t, uint32_t, uint32_t csSetupUs,SpiTransactionContext* context) {
+              size_t len, uint32_t, uint32_t, uint32_t csSetupUs,SpiTransactionContext* context,SpiTransferTiming* timing) {
   if(context) *context={};
+  if(timing) {timing->lockWaitUs=17;timing->prepareUs=11;timing->transferUs=48;timing->finishUs=7;}
   assert(csSetupUs==0); // CAN experiment must not delay the ADC.
   assert(cs==10 || cs==11);
   auto& chip=chips[cs-10];
@@ -296,6 +297,21 @@ int main() {
   AnalogInputManager::endSample();
   assert(AnalogInputManager::timingStats().adc[0].configUs.count>0);
   assert(AnalogInputManager::timingStats().adc[0].startUs.count==0);
+#if BODAQS_ADC_SPI_PHASE_TIMING
+  for(unsigned a=0;a<2;++a) {
+    const auto& stats=AnalogInputManager::timingStats().adc[a];
+    for(const auto* phases:{&stats.setupSpi,&stats.readSpi}) {
+      assert(phases->completed>0);
+      assert(phases->totalUs[0]==uint64_t(phases->completed)*17);
+      assert(phases->totalUs[1]==uint64_t(phases->completed)*11);
+      assert(phases->totalUs[2]==uint64_t(phases->completed)*48);
+      assert(phases->totalUs[3]==uint64_t(phases->completed)*7);
+    }
+  }
+  AnalogInputManager::resetTimingStats();
+  assert(!AnalogInputManager::timingStats().adc[0].setupSpi.completed);
+  assert(!AnalogInputManager::timingStats().adc[1].readSpi.completed);
+#endif
 #if ADC_TEST_ASYNC
   failCreateAdc=1;
   AnalogInputManager::onLoggingStart();

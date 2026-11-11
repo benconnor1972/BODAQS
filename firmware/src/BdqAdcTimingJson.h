@@ -6,6 +6,17 @@
 // Finalization-only diagnostics. Call after ADC workers have stopped; these are
 // aggregate conversion/freshness counters, not per-reading acquisition times.
 namespace BdqAdcTimingJson {
+#if BODAQS_ADC_SPI_PHASE_TIMING
+inline void spiPhases(JsonObject out,const ExternalAdcTimingStats::SpiPhases& s) {
+  out["completed"]=s.completed;out["failed"]=s.failed;out["failed_wait_total_us"]=s.failedWaitUs;
+  constexpr const char* names[]={"lock_wait_us","prepare_us","transfer_us","finish_us"};
+  for(unsigned i=0;i<4;++i) {
+    JsonObject phase=out[names[i]].to<JsonObject>();
+    phase["total_us"]=s.totalUs[i];phase["max_us"]=s.maxUs[i];
+    phase["avg_us"]=s.completed?static_cast<double>(s.totalUs[i])/s.completed:0.0;
+  }
+}
+#endif
 inline void timing(JsonObject out, const TimingSummary& s) {
   out["count"]=s.count;out["min_us"]=s.minUs;out["max_us"]=s.maxUs;
   out["total_us"]=s.totalUs;
@@ -32,6 +43,13 @@ inline void append(JsonObject out, const ExternalAdcTimingStats& stats) {
     timing(value["start_us"].to<JsonObject>(),a.startUs);
     timing(value["wait_us"].to<JsonObject>(),a.waitUs);
     timing(value["read_us"].to<JsonObject>(),a.readUs);
+#if BODAQS_ADC_SPI_PHASE_TIMING
+    JsonObject phases=value["shared_spi_phases"].to<JsonObject>();
+    phases["version"]=1;
+    phases["scope"]="completed_adc_calls_wall_clock; wait_includes_pacing; transfer_includes_HAL; finish_excludes_unlock";
+    spiPhases(phases["setup_start"].to<JsonObject>(),a.setupSpi);
+    spiPhases(phases["read_data"].to<JsonObject>(),a.readSpi);
+#endif
     JsonObject channels=value["channels"].to<JsonObject>();
     for(unsigned ch=0;ch<4;++ch) {
       const auto& c=a.channel[ch];
