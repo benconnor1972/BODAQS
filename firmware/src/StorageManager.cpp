@@ -42,6 +42,10 @@
 #define ROW_LOGD(...)  LOGD_TAG("ROW", __VA_ARGS__)
 #define DRAIN_LOGD(...) LOGD_TAG("DRAIN", __VA_ARGS__)
 
+#ifndef BODAQS_STORAGE_TASK_PRIORITY
+#define BODAQS_STORAGE_TASK_PRIORITY 1
+#endif
+
 extern LoggerConfig g_cfg;   // declared in your .ino
 
 static const board::StorageProfile* s_storage = nullptr;
@@ -2455,8 +2459,10 @@ static void startLog() {
 
 bool StorageManager_startLog() {
 #if defined(ESP32)
+  static_assert(BODAQS_STORAGE_TASK_PRIORITY > 0 && BODAQS_STORAGE_TASK_PRIORITY < configMAX_PRIORITIES,
+                "Storage task priority must fit the FreeRTOS priority range");
   if (!s_storageTask && xTaskCreatePinnedToCore(storageTaskFn_, "StorageTask",
-      12288, nullptr, 1, &s_storageTask, 1) != pdPASS) {
+      12288, nullptr, BODAQS_STORAGE_TASK_PRIORITY, &s_storageTask, 1) != pdPASS) {
     setStatus_("storage task unavailable");
     return false;
   }

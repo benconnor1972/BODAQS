@@ -46,5 +46,15 @@ class AdcSpiCandidate(unittest.TestCase):
                 (root/"BUILD_MANIFEST.json").write_text(json.dumps(value))
                 with self.assertRaises(ValueError):runner.load_fixed_bundle(root,"adc-spi-timing")
 
+    def test_storage_priority_builds_only_logger(self):
+        with patch.object(sys,"argv",["candidate","--profile","mixed-diagnostic","--experiment","storage-worker-priority",
+                                     "--validation-scope","logger","--fixed-bundle","fixed"]):args=runner.arguments()
+        commands=runner.plan(args,Path("out"))
+        self.assertEqual({c["name"] for c in commands},
+                         {"a8-dependencies","restricted-a8-dependencies","firmware-host","candidate-runner-tests",
+                          "contract-storage_priority","logger-clean-storage_priority","logger-storage_priority"})
+        self.assertIn("bodaqs_s3_mini_n4r2_imu_adc_storage_priority",
+                      next(c["argv"] for c in commands if c["name"]=="logger-storage_priority"))
+
 
 if __name__=="__main__":unittest.main()
