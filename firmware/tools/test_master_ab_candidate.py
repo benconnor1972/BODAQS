@@ -49,6 +49,8 @@ class MasterAbCandidate(unittest.TestCase):
                         "boundary_trace_version":1,"boundary_trace_bytes":7328,"master":images["unchanged_master"],"logger":images["application"]}},
                     "artifacts":[images["application"],{**images["unchanged_node"],"role":"node"},images["unchanged_master"]],
                     "fixed_bundle":{"images":[{"role":"node","source_commit":None}]}}
+                if experiment=="spi-init-sustained":
+                    fixed_manifest["fixed_bundle"]["images"].append({"role":"logger","sha256":images["application"]["sha256"],"source_commit":"b"*40})
             (fixed/"BUILD_MANIFEST.json").write_text(json.dumps(fixed_manifest))
             review_text=temp/"review.txt";review_text.write_text("Fixture review evidence\n")
             review=temp/"review.json";review.write_text(json.dumps({"schema":"bodaqs.review.v1","base":head,"head":head,"outcome":"passed",
@@ -94,6 +96,7 @@ class MasterAbCandidate(unittest.TestCase):
                 self.assertFalse(manifest["variants"]["sustained"]["boundary_trace_enabled"])
                 self.assertEqual((output/"RUNBOOK.md").read_text(),"Sustained fixture runbook\n")
                 self.assertFalse((output/"export_spi_trace.js").exists())
+                self.assertEqual(next(i["source_commit"] for i in manifest["fixed_bundle"]["images"] if i["role"]=="logger"),"b"*40)
             if not fails and experiment=="spi-tx-prime-ab":
                 self.assertNotEqual(manifest["variants"]["A"]["sha256"],manifest["variants"]["B"]["sha256"])
                 self.assertEqual((output/"RUNBOOK.md").read_text(),"Matched master A/B fixture runbook\n")

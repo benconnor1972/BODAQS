@@ -207,8 +207,15 @@ def load_fixed_bundle(bundle:Path,experiment:str="spi-tx-prime-ab") -> dict:
             if bundle not in source.parents or sha256(source)!=image["sha256"]:raise ValueError("r7 fixed image path/hash mismatch")
             provenance=([a for a in value["fixed_bundle"]["images"] if a["role"]=="node"] if key is None else [])
             if key is None and len(provenance)!=1:raise ValueError("Missing r7 node provenance")
+            source_commit=provenance[0].get("source_commit") if key is None else value["source"]["commit"]
+            if sustained and role=="logger":
+                provenance=[a for a in value["fixed_bundle"]["images"]
+                            if a["role"]=="logger" and a["sha256"]==image["sha256"]]
+                if len(provenance)!=1 or not provenance[0].get("source_commit"):
+                    raise ValueError("Missing or duplicate r9 reused logger provenance")
+                source_commit=provenance[0]["source_commit"]
             images.append({"role":role,"path":image["path"],"sha256":image["sha256"],
-                           "source_commit":provenance[0].get("source_commit") if key is None else value["source"]["commit"]})
+                           "source_commit":source_commit})
         return {"manifest_sha256":sha256(path),"bundle":str(bundle),"images":images,
                 "firmware_name":"bodaqs_a8_imu_adc_trace_r8" if disabled_init or sustained else "bodaqs_a8_imu_adc_mode0_r7",
                 "configuration":"operator_preserves_same_mixed_configuration"}

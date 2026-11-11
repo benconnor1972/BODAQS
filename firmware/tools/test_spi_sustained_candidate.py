@@ -1,4 +1,5 @@
 """Duration candidate preserves r9 control and turns off boundary tracing only."""
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -42,6 +43,29 @@ class SustainedCandidate(unittest.TestCase):
                                                 "boundary_trace_version":1,"boundary_trace_bytes":7328}}}):
                 (root/"BUILD_MANIFEST.json").write_text(json.dumps(value))
                 with self.assertRaises(ValueError):runner.load_fixed_bundle(root,"spi-init-sustained")
+
+    def test_reused_logger_keeps_original_source_and_requires_unique_hash_join(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);images={}
+            for role in ("logger","master","node"):
+                p=root/(role+".bin");p.write_bytes(role.encode())
+                images[role]={"path":p.name,"sha256":hashlib.sha256(p.read_bytes()).hexdigest()}
+            original={"role":"logger","sha256":images["logger"]["sha256"],"source_commit":"b"*40}
+            m={"status":"passed","candidate_profile":"mixed-diagnostic","experiment":"spi-disabled-init",
+               "source":{"commit":"a"*40},"variants":{"trace":{"spi_mode":0,"spi_tx_prime":True,
+               "spi_disabled_init":True,"boundary_trace_version":1,"boundary_trace_bytes":7328,
+               "master":images["master"],"logger":images["logger"]}},
+               "artifacts":[images["logger"],images["master"],{**images["node"],"role":"node"}],
+               "fixed_bundle":{"images":[]}}
+            for logger_sources in ([original],[],[original,original],[{**original,"sha256":"0"*64}]):
+                m["fixed_bundle"]["images"]=[{"role":"node","source_commit":None},*logger_sources]
+                (root/"BUILD_MANIFEST.json").write_text(json.dumps(m))
+                if logger_sources==[original]:
+                    value=runner.load_fixed_bundle(root,"spi-init-sustained")
+                    self.assertEqual(next(i["source_commit"] for i in value["images"] if i["role"]=="logger"),"b"*40)
+                else:
+                    with self.assertRaisesRegex(ValueError,"logger provenance"):
+                        runner.load_fixed_bundle(root,"spi-init-sustained")
 
 
 if __name__=="__main__":unittest.main()
