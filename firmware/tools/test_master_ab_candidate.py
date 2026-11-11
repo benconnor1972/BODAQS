@@ -20,6 +20,7 @@ class MasterAbCandidate(unittest.TestCase):
             (docs/"CAN-FD_SPI_TX_Priming_Bench.md").write_text("Matched master A/B fixture runbook\n")
             (docs/"CAN-FD_SPI_Mode_Bench.md").write_text("Matched mode0/1 fixture runbook\n")
             (docs/"CAN-FD_SPI_Init_Sustained_Runbook.md").write_text("Sustained fixture runbook\n")
+            (docs/"ADC_SPI_Phase_Timing_Runbook.md").write_text("ADC phases fixture runbook\n")
             if experiment in ("spi-boundary-trace","spi-disabled-init"):
                 (docs/"CAN-FD_SPI_Boundary_Trace_Runbook.md").write_text("Trace fixture runbook\n")
                 (docs/"CAN-FD_SPI_Disabled_Init_Runbook.md").write_text("Disabled init fixture runbook\n")
@@ -43,9 +44,9 @@ class MasterAbCandidate(unittest.TestCase):
                     "artifacts":[{**images["application"],"role":"logger"},{**images["unchanged_node"],"role":"node"},images["unchanged_master"]],
                     "fixed_bundle":{"firmware_name":"bodaqs_a8_imu_adc_buffers_r5","images":[
                         {"role":"logger","source_commit":head},{"role":"node","source_commit":None}]}}
-            if experiment in ("spi-boundary-trace","spi-disabled-init","spi-init-sustained"):
-                fixed_manifest={"status":"passed","experiment":"spi-disabled-init" if experiment=="spi-init-sustained" else "spi-boundary-trace" if experiment=="spi-disabled-init" else "spi-mode-ab","candidate_profile":"mixed-diagnostic",
-                    "source":{"commit":head},"variants":{"trace" if experiment in ("spi-disabled-init","spi-init-sustained") else "mode0":{"spi_mode":0,"spi_tx_prime":True,"spi_disabled_init":True,
+            if experiment in ("spi-boundary-trace","spi-disabled-init","spi-init-sustained","adc-spi-timing"):
+                fixed_manifest={"status":"passed","experiment":"spi-init-sustained" if experiment=="adc-spi-timing" else "spi-disabled-init" if experiment=="spi-init-sustained" else "spi-boundary-trace" if experiment=="spi-disabled-init" else "spi-mode-ab","candidate_profile":"mixed-diagnostic",
+                    "source":{"commit":head},"variants":{"sustained" if experiment=="adc-spi-timing" else "trace" if experiment in ("spi-disabled-init","spi-init-sustained") else "mode0":{"spi_mode":0,"spi_tx_prime":True,"spi_disabled_init":True,"boundary_trace_enabled":False,
                         "boundary_trace_version":1,"boundary_trace_bytes":7328,"master":images["unchanged_master"],"logger":images["application"]}},
                     "artifacts":[images["application"],{**images["unchanged_node"],"role":"node"},images["unchanged_master"]],
                     "fixed_bundle":{"images":[{"role":"node","source_commit":None}]}}
@@ -56,13 +57,13 @@ class MasterAbCandidate(unittest.TestCase):
             review=temp/"review.json";review.write_text(json.dumps({"schema":"bodaqs.review.v1","base":head,"head":head,"outcome":"passed",
                 "findings":[],"evidence":[{"path":review_text.name,"sha256":hashlib.sha256(review_text.read_bytes()).hexdigest()}]}))
             output=temp/"bundle"
-            argv=["candidate","--profile","mixed-diagnostic","--experiment",experiment,"--validation-scope","master" if experiment in ("spi-tx-prime-ab","spi-disabled-init") else "full",
+            argv=["candidate","--profile","mixed-diagnostic","--experiment",experiment,"--validation-scope","logger" if experiment=="adc-spi-timing" else "master" if experiment in ("spi-tx-prime-ab","spi-disabled-init") else "full",
                 "--fixed-bundle",str(fixed),"--review-result",str(review),"--review-base",head,"--output-dir",str(output)]
             with patch.object(sys,"argv",argv):args=runner.arguments()
             sdk=temp/"sdk/.metadata";sdk.mkdir(parents=True);(sdk/"product.json").write_text('{"version":"fixture"}')
             args.sdk=sdk.parent
             build=root/".build";build.mkdir();commands=[]
-            variants=("sustained",) if experiment=="spi-init-sustained" else ("init-reference","init-disabled") if experiment=="spi-disabled-init" else ("trace",) if experiment=="spi-boundary-trace" else ("mode0","mode1") if experiment=="spi-mode-ab" else ("A","B")
+            variants=("spi_timing",) if experiment=="adc-spi-timing" else ("sustained",) if experiment=="spi-init-sustained" else ("init-reference","init-disabled") if experiment=="spi-disabled-init" else ("trace",) if experiment=="spi-boundary-trace" else ("mode0","mode1") if experiment=="spi-mode-ab" else ("A","B")
             for variant in variants:
                 image=build/(variant+".out");image.write_bytes(b"A" if identical else variant.encode())
                 commands.append({"name":"master-"+variant,"argv":[sys.executable,"-c","pass"],"cwd":str(root),
@@ -70,9 +71,9 @@ class MasterAbCandidate(unittest.TestCase):
                 if experiment=="spi-disabled-init":
                     generated=build/(variant+'.c');generated.write_bytes(b'changed' if broken=="changed-config" and variant=="init-disabled" else b'generated config')
                     commands[-1]["artifacts"].append((generated.relative_to(root).as_posix(),f"artifacts/master-{variant}/generated/ti_msp_dl_config.c"))
-                if experiment in ("spi-mode-ab","spi-boundary-trace","spi-init-sustained"):
-                    mode=0 if variant in ("trace","sustained") else int(variant[-1]);logger=build/(variant+".bin")
-                    logger.write_bytes(b"bodaqs_a8_imu_adc_mode0_r7 bodaqs_a8_imu_adc_mode1_r7" if broken=="identical-logger" else b"unknown" if broken=="wrong-name" else b"bodaqs_a8_imu_adc_sustained_r10" if variant=="sustained" else b"bodaqs_a8_imu_adc_trace_r8" if variant=="trace" else f"bodaqs_a8_imu_adc_{variant}_r7".encode())
+                if experiment in ("spi-mode-ab","spi-boundary-trace","spi-init-sustained","adc-spi-timing"):
+                    mode=0 if variant in ("trace","sustained","spi_timing") else int(variant[-1]);logger=build/(variant+".bin")
+                    logger.write_bytes(b"bodaqs_a8_imu_adc_mode0_r7 bodaqs_a8_imu_adc_mode1_r7" if broken=="identical-logger" else b"unknown" if broken=="wrong-name" else b"bodaqs_a8_imu_adc_spi_timing_r11" if variant=="spi_timing" else b"bodaqs_a8_imu_adc_sustained_r10" if variant=="sustained" else b"bodaqs_a8_imu_adc_trace_r8" if variant=="trace" else f"bodaqs_a8_imu_adc_{variant}_r7".encode())
                     recipe=build/(variant+".json");recipe.write_text(json.dumps({"id":variant}))
                     commands.append({"name":"contract-"+variant,"argv":[sys.executable,"-c",
                         "from pathlib import Path; import sys; Path(sys.argv[1]).write_text(sys.argv[2])",
@@ -97,6 +98,10 @@ class MasterAbCandidate(unittest.TestCase):
                 self.assertEqual((output/"RUNBOOK.md").read_text(),"Sustained fixture runbook\n")
                 self.assertFalse((output/"export_spi_trace.js").exists())
                 self.assertEqual(next(i["source_commit"] for i in manifest["fixed_bundle"]["images"] if i["role"]=="logger"),"b"*40)
+            if not fails and experiment=="adc-spi-timing":
+                self.assertTrue(manifest["variants"]["spi_timing"]["master_reused"])
+                self.assertTrue(manifest["variants"]["spi_timing"]["adc_spi_phase_timing"])
+                self.assertEqual((output/"RUNBOOK.md").read_text(),"ADC phases fixture runbook\n")
             if not fails and experiment=="spi-tx-prime-ab":
                 self.assertNotEqual(manifest["variants"]["A"]["sha256"],manifest["variants"]["B"]["sha256"])
                 self.assertEqual((output/"RUNBOOK.md").read_text(),"Matched master A/B fixture runbook\n")

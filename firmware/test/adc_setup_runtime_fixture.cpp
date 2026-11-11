@@ -306,11 +306,23 @@ int main() {
       assert(phases->totalUs[1]==uint64_t(phases->completed)*11);
       assert(phases->totalUs[2]==uint64_t(phases->completed)*48);
       assert(phases->totalUs[3]==uint64_t(phases->completed)*7);
+      assert(phases->maxUs[0]==17 && phases->maxUs[1]==11 && phases->maxUs[2]==48 && phases->maxUs[3]==7);
     }
   }
+  const auto setupBefore=s_timingStats.adc[0].setupSpi;
+  failCommand=0x43;assert(!configureAndStartAdsChannel_(s_ads[0],0));
+  assert(s_timingStats.adc[0].setupSpi.failed==setupBefore.failed+1);
+  assert(s_timingStats.adc[0].setupSpi.failedWaitUs==setupBefore.failedWaitUs+17);
+  assert(s_timingStats.adc[0].setupSpi.completed==setupBefore.completed);
+  const auto readBefore=s_timingStats.adc[1].readSpi;
+  int32_t failedRaw=0;failCommand=0x10;assert(!adsReadData_(s_ads[1],failedRaw));
+  assert(s_timingStats.adc[1].readSpi.failed==readBefore.failed+1);
+  assert(s_timingStats.adc[1].readSpi.failedWaitUs==readBefore.failedWaitUs+17);
+  assert(s_timingStats.adc[1].readSpi.completed==readBefore.completed);
   AnalogInputManager::resetTimingStats();
   assert(!AnalogInputManager::timingStats().adc[0].setupSpi.completed);
   assert(!AnalogInputManager::timingStats().adc[1].readSpi.completed);
+  assert(!s_timingStats.adc[0].setupSpi.failed && !s_timingStats.adc[0].setupSpi.failedWaitUs);
 #endif
 #if ADC_TEST_ASYNC
   failCreateAdc=1;
