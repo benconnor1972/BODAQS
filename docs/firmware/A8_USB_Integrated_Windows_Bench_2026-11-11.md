@@ -340,6 +340,14 @@ reclaim after this write check is pending. Recording after reclaim, larger-file
 write integrity, repeated-cycle reliability, other operating systems, and
 update/recovery requirements remain outside this passing controlled check.
 
+The user confirmed Ready after requesting exit once, with no Windows eject or
+USB unplug. Windows composite USB, CDC COM5, and MSC remained healthy. A further
+unbuffered identity-file read was rejected with Windows error 21 (device not
+ready), confirming that media was withdrawn in NORMAL mode. The candidate's
+Ready transition occurs only after successful local reclaim. This completes
+one controlled activation/read, cable reconnect/read, small write/read/delete,
+and logger-only exit/reclaim cycle. No new recording was made after reclaim.
+
 The pinned framework has other reported disconnect problems, including
 [Espressif issue #7228](https://github.com/espressif/arduino-esp32/issues/7228),
 but that report does not establish the cause of this A8 failure. Do not infer
