@@ -21,9 +21,16 @@ static inline uint32_t bodaqs_fragment_checksum(const BodaqsFragmentState *s,con
     bodaqs_measurement_put(prefix,s->context,8); bodaqs_measurement_put(prefix+8,s->object,4);
     prefix[12]=s->node; prefix[13]=s->cls; prefix[14]=s->direction;
     bodaqs_measurement_put(prefix+16,s->total,2);
+#if BODAQS_MASTER_BLOCK_CRC
+    /* Same canonical concatenation, without choosing prefix/data per byte. */
+    (void)i;
+    c=bodaqs_measurement_crc_update(c,prefix,sizeof prefix);
+    c=bodaqs_measurement_crc_update(c,data,s->total-4U);
+#else
     for(i=0;i<(unsigned)(20+s->total-4);++i) {
         c=bodaqs_measurement_crc_step(c,i<20?prefix[i]:data[i-20]);
     }
+#endif
     return ~c;
 }
 static inline bool bodaqs_fragment_seal(BodaqsFragmentState *s,uint8_t *data,size_t capacity,

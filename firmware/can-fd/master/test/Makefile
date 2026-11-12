@@ -15,6 +15,8 @@ test: $(BUILD_DIR)/test_timing.exe $(BUILD_DIR)/test_spi_trace.exe
 	$(PYTHON) test_adapter_runtime.py --v2 --phase-timing --cc "$(CC)"
 	$(PYTHON) test_adapter_runtime.py --v2 --phase-timing --queue-timing --cc "$(CC)"
 	$(PYTHON) test_adapter_runtime.py --v2 --phase-timing --queue-timing --rx-capacity 2 --cc "$(CC)"
+	$(PYTHON) test_adapter_runtime.py --v2 --phase-timing --queue-timing --rx-capacity 2 --block-crc --cc "$(CC)"
+	$(PYTHON) test_adapter_runtime.py --v2 --phase-timing --queue-timing --rx-capacity 2 --can-first --cc "$(CC)"
 	$(PYTHON) test_adapter_runtime.py --v2 --boundary-trace --rx-capacity 2 --cc "$(CC)"
 	$(PYTHON) test_inventory_runtime.py --cc "$(CC)"
 $(BUILD_DIR)/test_timing.exe: test_timing.c ../src/master_timing.c ../include/master_timing.h ti_msp_dl_config.h

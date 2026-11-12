@@ -14,6 +14,7 @@ def main():
     parser.add_argument("--protocol-dir", type=Path, default=Path(__file__).resolve().parents[1] / "can-fd/common/protocol")
     parser.add_argument("--cc", default="gcc")
     parser.add_argument("--compiler", default="g++")
+    parser.add_argument("--block-crc", action="store_true")
     args = parser.parse_args()
     if os.name == "nt":
         ctypes.windll.kernel32.SetErrorMode(2)
@@ -69,6 +70,7 @@ def main():
             source, exe = Path(temp) / ("crc" + suffix), Path(temp) / ("crc" + suffix + ".exe")
             source.write_text(fixture, encoding="utf-8")
             subprocess.run([compiler, "-std="+standard, "-Wall", "-Wextra", "-Werror", "-O2",
+                            *(['-DBODAQS_MASTER_BLOCK_CRC=1'] if args.block_crc else []),
                             "-I", str(args.protocol_dir.resolve()), str(source), "-o", str(exe)], check=True)
             subprocess.run([str(exe)], check=True)
 

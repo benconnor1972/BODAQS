@@ -19,6 +19,16 @@
 #define NODE_STALE_AFTER_MS (3000U)
 #define DISCOVERY_INTERVAL_MS (5000U)
 #define CAN_RECOVERY_DELAY_MS (1000U)
+#ifndef BODAQS_MASTER_CAN_FIRST
+#define BODAQS_MASTER_CAN_FIRST 0
+#endif
+#if BODAQS_MASTER_CAN_FIRST != 0 && BODAQS_MASTER_CAN_FIRST != 1
+#error "BODAQS_MASTER_CAN_FIRST must be 0 or 1"
+#endif
+/* Debugger-readable image settings; no protocol or drain-snapshot ABI change. */
+volatile const uint32_t gMasterOptimizationInfo[3] = {
+    1U, BODAQS_MASTER_BLOCK_CRC, BODAQS_MASTER_CAN_FIRST
+};
 #ifndef BODAQS_ENABLE_BUCK
 #define BODAQS_ENABLE_BUCK (1)
 #endif
@@ -1000,6 +1010,17 @@ static void service_sync(void) {
 static void service_spi_receive(void);
 static void retire_spi_boundary(void);
 static void service_spi_retirement(void);
+/* One bounded turn each. CAN-first does not spin on refills or skip SPI when
+ * CAN is busy. SPI publication/CS retirement and control deadlines are unchanged. */
+static void service_receive_queues(void) {
+#if BODAQS_MASTER_CAN_FIRST
+    service_can_receive();
+    service_spi_receive();
+#else
+    service_spi_receive();
+    service_can_receive();
+#endif
+}
 
 int main(void)
 {
@@ -1073,11 +1094,10 @@ int main(void)
         service_spi_retirement();
         retire_spi_boundary();
         service_spi_retirement();
-        service_spi_receive();
+        service_receive_queues();
         gMasterRuntimeInfo.spi_rx_capacity = gSpiReceiveQueue.capacity;
         gMasterRuntimeInfo.spi_rx_high_water = gSpiReceiveQueue.high_water;
         gMasterRuntimeInfo.spi_rx_dropped = gSpiReceiveQueue.dropped;
-        service_can_receive();
         /* A newly received conflicting UID must fence this very dispatch,
          * including retries admitted before the duplicate was observed. */
         if (gService.discovery_generation != gNodeInventory.generation) {

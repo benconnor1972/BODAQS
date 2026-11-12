@@ -142,10 +142,23 @@ static inline uint32_t bodaqs_measurement_crc_step(uint32_t c,uint8_t byte) {
     };
     return (c>>8)^table[(c^byte)&0xffU];
 }
+#ifndef BODAQS_MASTER_BLOCK_CRC
+#define BODAQS_MASTER_BLOCK_CRC 0
+#endif
+#if BODAQS_MASTER_BLOCK_CRC != 0 && BODAQS_MASTER_BLOCK_CRC != 1
+#error "BODAQS_MASTER_BLOCK_CRC must be 0 or 1"
+#endif
+#if BODAQS_MASTER_BLOCK_CRC
+#include "bodaqs_crc32_blocks.h"
+#endif
 static inline uint32_t bodaqs_measurement_crc(const uint8_t *p, size_t n) {
+#if BODAQS_MASTER_BLOCK_CRC
+    return ~bodaqs_measurement_crc_update(0xffffffffU,p,n);
+#else
     uint32_t c=0xffffffffU; size_t i;
     for(i=0;i<n;++i) c=bodaqs_measurement_crc_step(c,p[i]);
     return ~c;
+#endif
 }
 static inline bool bodaqs_measurement_encode(const BodaqsMeasurementSlot *s, uint8_t *p, size_t n) {
     if(!s || !p || n<BODAQS_MEASUREMENT_BYTES || s->kind>BODAQS_MEASUREMENT_MAX_KIND) return false;

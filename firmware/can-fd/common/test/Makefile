@@ -15,6 +15,7 @@ NODE_INVENTORY := ../network/bodaqs_node_inventory.c
 
 test: $(TEST_BINS)
 	$(PYTHON) ../../../tools/test_measurement_crc_runtime.py --cc "$(CC)" --compiler "$(CXX)"
+	$(PYTHON) ../../../tools/test_measurement_crc_runtime.py --block-crc --cc "$(CC)" --compiler "$(CXX)"
 	$(BUILD_DIR)/test_can_link.exe
 	$(BUILD_DIR)/test_timing.exe
 	$(BUILD_DIR)/test_master_retention.exe
@@ -63,6 +64,7 @@ $(BUILD_DIR)/test_measurement.exe: test_measurement.cpp $(LOGGER_PROTOCOL) $(MAS
 	$(CXX) $(CXXFLAGS) -I../protocol -I../../../src -o $@ $(filter %.cpp %.c,$^)
 
 $(filter-out $(BUILD_DIR)/test_can_network.exe,$(TEST_BINS)): ../protocol/bodaqs_measurement.h
+$(filter-out $(BUILD_DIR)/test_can_network.exe,$(TEST_BINS)): ../protocol/bodaqs_crc32_blocks.h
 
 $(BUILD_DIR)/test_frag_transport.exe: test_frag_transport.cpp $(MASTER_PROTOCOL) $(MASTER_SERVICE) ../protocol/bodaqs_fragment_transport.h
 	$(CXX) $(CXXFLAGS) -I../protocol -o $@ $(filter %.cpp %.c,$^)

@@ -51,6 +51,23 @@ endif
 endif
 
 NAME := bodaqs_can_master
+MASTER_BLOCK_CRC ?= 0
+MASTER_CAN_FIRST ?= 0
+ifneq ($(MASTER_BLOCK_CRC),0)
+ifneq ($(MASTER_BLOCK_CRC),1)
+$(error MASTER_BLOCK_CRC must be 0 or 1)
+endif
+endif
+ifneq ($(MASTER_CAN_FIRST),0)
+ifneq ($(MASTER_CAN_FIRST),1)
+$(error MASTER_CAN_FIRST must be 0 or 1)
+endif
+endif
+ifneq ($(MASTER_BLOCK_CRC)$(MASTER_CAN_FIRST),00)
+ifneq ($(SPI_MEASUREMENT_PROFILE),first-recording)
+$(error Master drain experiments require first-recording)
+endif
+endif
 SPI_DISABLED_INIT ?= 0
 ifneq ($(SPI_DISABLED_INIT),0)
 ifneq ($(SPI_DISABLED_INIT),1)
@@ -147,6 +164,8 @@ CFLAGS := -I../include \
     -DBODAQS_SPI_MEASUREMENT_V2=$(MEASUREMENT_DEFINE) \
     -DBODAQS_MASTER_PHASE_TIMING=$(SPI_PHASE_TIMING) \
     -DBODAQS_MASTER_QUEUE_TIMING=$(SPI_QUEUE_TIMING) \
+    -DBODAQS_MASTER_BLOCK_CRC=$(MASTER_BLOCK_CRC) \
+    -DBODAQS_MASTER_CAN_FIRST=$(MASTER_CAN_FIRST) \
     -DBODAQS_MASTER_SPI_RX_CAPACITY=$(SPI_RX_CAPACITY) \
     -DBODAQS_MASTER_SPI_TX_PRIME=$(SPI_TX_PRIME) \
     -DBODAQS_CAN_SPI_BENCH_MODE=$(SPI_BENCH_MODE) \
@@ -207,6 +226,7 @@ main.obj bodaqs_master_service.obj master_identity.obj: ../../common/protocol/bo
 
 main.obj bodaqs_master_service.obj: ../../common/protocol/bodaqs_master_service.h ../../common/protocol/bodaqs_fragment_transport.h
 main.obj bodaqs_master_service.obj: ../../common/protocol/bodaqs_master_profile.h
+main.obj bodaqs_master_service.obj master_identity.obj: ../../common/protocol/bodaqs_crc32_blocks.h
 
 # Profile is a make input, not a generated-code edit. Rebuild its two consumers
 # on every invocation so switching back to a previously built profile is safe.

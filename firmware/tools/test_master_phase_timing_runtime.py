@@ -29,8 +29,8 @@ extern "C" void bodaqs_master_profile_record(uint32_t decode,uint32_t dispatch,u
     with tempfile.TemporaryDirectory(prefix="bodaqs-master-phases-") as temp:
         temp = Path(temp)
         results = []
-        for enabled in (0, 1):
-            cpp, exe, wire = (temp / f"fixture{enabled}{suffix}" for suffix in (".cpp", ".exe", ".bin"))
+        for enabled, block_crc in ((0,0), (1,0), (0,1), (1,1)):
+            cpp, exe, wire = (temp / f"fixture{enabled}-{block_crc}{suffix}" for suffix in (".cpp", ".exe", ".bin"))
             wrapper = '\nint main(int argc,char**argv) {assert(argc==2);exercise(argc,argv);'
             # Existing fixture takes a path argument and writes one independent wire vector.
             if enabled:
@@ -39,12 +39,13 @@ extern "C" void bodaqs_master_profile_record(uint32_t decode,uint32_t dispatch,u
             cpp.write_text(original + (hooks if enabled else "") + wrapper)
             subprocess.run([args.compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror", "-O2",
                             "-DBODAQS_SPI_MEASUREMENT_V2=1", f"-DBODAQS_MASTER_PHASE_TIMING={enabled}",
+                            f"-DBODAQS_MASTER_BLOCK_CRC={block_crc}",
                             "-I", str(common), str(cpp), *[str(common / name) for name in
                             ("bodaqs_master_service.c", "bodaqs_master_protocol.c", "bodaqs_control.c", "bodaqs_control_exchange.c")],
                             "-o", str(exe)], check=True)
             subprocess.run([str(exe), str(wire)], check=True)
             results.append(wire.read_bytes())
-        assert results[0] == results[1]
+        assert all(result == results[0] for result in results)
         print("production phase boundaries/wrap and enabled/disabled wire equivalence: PASS")
 
 

@@ -16,6 +16,8 @@ parser.add_argument("--phase-timing", action="store_true")
 parser.add_argument("--queue-timing", action="store_true")
 parser.add_argument("--rx-capacity", type=int, choices=(2,4))
 parser.add_argument("--boundary-trace",action="store_true")
+parser.add_argument("--block-crc",action="store_true")
+parser.add_argument("--can-first",action="store_true")
 args = parser.parse_args()
 if args.rx_capacity:
     assert args.v2
@@ -34,6 +36,8 @@ def function(name, text=source):
     return text[start:end]
 functions = "\n".join(function(n) for n in (
     "drain_clock", "drain_cost", "drain_check", "drain_transfer", "can_standard_identifier", "capture_can_receive_fifo", "take_record", "service_can_receive", "retire_measurement_slot", "service_spi_retirement", "retire_spi_boundary", "service_spi_receive"))
+if args.v2:
+    functions += "\n" + function("service_receive_queues")
 if args.phase_timing:
     assert args.v2
     functions += "\n" + function("bodaqs_master_profile_clock")
@@ -77,6 +81,13 @@ if args.v2:
     fixture=fixture.replace("/* RX_RETRY_CASES */",Path(__file__).with_name("adapter_v2_retry_cases.c").read_text())
 if args.queue_timing:
     fixture=fixture.replace("/* QUEUE_TIMING_CASES */",Path(__file__).with_name("adapter_queue_cases.c").read_text())
+if args.v2:
+    # Observe the real receive-turn's ordering at SPI dispatch. CAN decoding is
+    # already a peripheral stand-in; bounded queue pops and SPI dispatch are real.
+    fixture=fixture.replace("static void update_service_status(void) {test_tick+=3;}",
+        "static unsigned can_seen_at_spi, processed_can;\nstatic void update_service_status(void) {can_seen_at_spi=processed_can;test_tick+=3;}")
+    pos=fixture.rfind("\n}")
+    fixture=fixture[:pos]+Path(__file__).with_name("adapter_receive_order_cases.c").read_text()+fixture[pos:]
 if args.boundary_trace:
     pos=fixture.rfind("\n}")
     assert pos>0
@@ -93,6 +104,8 @@ with tempfile.TemporaryDirectory() as temp:
     if args.rx_capacity:
         flags.append(f"-DBODAQS_MASTER_SPI_RX_CAPACITY={args.rx_capacity}")
     if args.boundary_trace:flags.append("-DBODAQS_SPI_BOUNDARY_TRACE=1")
+    flags.extend([f"-DBODAQS_MASTER_BLOCK_CRC={int(args.block_crc)}",
+                  f"-DBODAQS_MASTER_CAN_FIRST={int(args.can_first)}"])
     subprocess.run([args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-O2",*flags,
         "-I" + str(ROOT / "firmware/can-fd/common/protocol"),
         "-I" + str(ROOT / "firmware/can-fd/common/network"),

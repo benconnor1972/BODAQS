@@ -9,6 +9,7 @@ import zlib
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--compiler',default='g++')
+    parser.add_argument('--block-crc',action='store_true')
     args=parser.parse_args()
     root=Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix='bodaqs-decode-reasons-') as directory:
@@ -48,6 +49,7 @@ int main() {
         cpp.write_text(text)
         for version,size in ((1,64),(2,256)):
             subprocess.run([args.compiler,'-std=c++17','-Wall','-Wextra','-Werror',f'-DBODAQS_SPI_MEASUREMENT_V2={version-1}',
+                *(['-DBODAQS_MASTER_BLOCK_CRC=1'] if args.block_crc else []),
                 '-I',str(root/'can-fd/common/protocol'),str(cpp),'-o',str(exe)],check=True)
             valid=bytearray(size);valid[:4]=bytes((0x42,0x4d,version,0))
             def crc(raw):raw[-4:]=zlib.crc32(raw[:-4]).to_bytes(4,'little');return raw

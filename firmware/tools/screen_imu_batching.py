@@ -10,6 +10,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--compiler", default="g++")
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--block-crc", action="store_true")
     args = parser.parse_args()
     if args.output.exists():
         parser.error("output exists; preserve prior evidence")
@@ -30,6 +31,7 @@ def main():
             exe = candidate.with_suffix(".exe")
             subprocess.run([args.compiler, "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
                 "-DBODAQS_SPI_MEASUREMENT_V2=1", f"-DBODAQS_MASTER_PHASE_TIMING={profiling}",
+                f"-DBODAQS_MASTER_BLOCK_CRC={int(args.block_crc)}",
                 "-I", str(common), str(root/"test/imu_batch_screen.cpp"), str(candidate),
                 *[str(common/name) for name in ("bodaqs_master_protocol.c", "bodaqs_control.c", "bodaqs_control_exchange.c")],
                 "-o", str(exe)], check=True)
@@ -46,6 +48,7 @@ def main():
     report = {"schema": "bodaqs.imu_batch_screen.v1", "qualification": "host screening only",
         "model": "2 s; two staggered 5-reading packets/1500 us; direct master transfers every500 us; simple alternating reader; no DMA/RTOS/SD/arbitration or production logger scheduler",
         "profiling_timing": "host roundtrip includes client encode/decode; not MCU phase cost or measured device instrumentation tax",
+        "block_crc": args.block_crc,
         "temporary_mutations": "batch deadline 0/40 ms in temporary copies only; no deployable batch change",
         "results": results}
     args.output.write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
