@@ -59,6 +59,7 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --cs-setup --capture-disabled --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --cs-setup --pipeline-trace --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --cs-setup --pipeline-trace --capture-disabled --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_pipeline_serial_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_acquisition_control_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_imu_admission_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_imu_admission_runtime.py --channel-rate --compiler "$(CXX)"

@@ -10,6 +10,7 @@ def fixture_source(root,pipeline_trace=False):
     fixture = (root / "test/measurement_runtime_fixture.cpp").read_text()
     fixture = fixture[:fixture.index("int main() {")]
     if pipeline_trace:
+        fixture += '\nconstexpr int LOG_WARN=2;static void Log_taggedPrintln(int,const char*,const char*) {}\n'
         fixture=fixture.replace("namespace SharedSpiBus {","static uint32_t pipelineBusSequence=0;\nnamespace SharedSpiBus {",1)
         fixture=fixture.replace(" if(!spiAvailable) return false;",
             " if(!spiAvailable) return false;\n ++pipelineBusSequence; if(context) {context->deviceSequence=pipelineBusSequence;context->deviceSequenceValid=pipelineBusSequence!=UINT32_MAX;}",1)
