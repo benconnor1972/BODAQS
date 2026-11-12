@@ -322,6 +322,24 @@ and SD-warning correction are separated from that instrumentation for commit;
 the existing target builds validate the non-diagnostic code path, but it has
 not been separately reflashed in this controlled run.
 
+After that successful reconnect read, the agent performed one bounded write
+check on the same mounted card. The reader first reverified the logger identity,
+then exclusively created
+`BODAQS_USB_V1_BENCH_20261112_5a6914fd65.bin`, wrote 8,229 deterministic bytes,
+flushed/fsynced the file, and verified exact contents through unbuffered reads.
+Expected and actual SHA-256 matched:
+`510cd0ef0d470d90374ef2f5d80bbf6b8cc2e2f89634284e8d70b1bb38a29c31`.
+Only that newly created and verified test file was removed; absence was checked.
+No source recording was changed. The complete write/read/cleanup operation took
+about 0.145 seconds; this small check is not a throughput benchmark or a
+power-loss/cache-safety guarantee.
+
+The user was then asked to exit UPLOAD with the logger control alone, leaving
+USB connected and without computer-side ejection. Confirmation of Ready/local
+reclaim after this write check is pending. Recording after reclaim, larger-file
+write integrity, repeated-cycle reliability, other operating systems, and
+update/recovery requirements remain outside this passing controlled check.
+
 The pinned framework has other reported disconnect problems, including
 [Espressif issue #7228](https://github.com/espressif/arduino-esp32/issues/7228),
 but that report does not establish the cause of this A8 failure. Do not infer
