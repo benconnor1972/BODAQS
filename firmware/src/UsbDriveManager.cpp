@@ -36,6 +36,13 @@ bool rawReady = false;
 DMA_ATTR uint8_t sector[512];
 std::atomic<bool> busy{false}, hostEjected{false}, ioFailed{false};
 std::atomic<uint32_t> lastIoMs{0};
+std::atomic<bool> usbConfigured{false}, mediaPublished{false};
+std::atomic<uint32_t> usbConnectionEpoch{0}, publishedEpoch{0};
+
+void publishMedia(bool present) {
+  mediaPublished = present;
+  drive.mediaPresent(present);
+}
 
 bool writeIdentity() {
   uint8_t mac[6];
@@ -81,7 +88,14 @@ bool beginRaw() {
 }
 
 int32_t transfer(uint32_t lba, uint32_t offset, void* data, uint32_t size, bool write) {
-  if (!ioLock || xSemaphoreTake(ioLock, pdMS_TO_TICKS(1000)) != pdTRUE) return -1;
+  if (!ioLock || xSemaphoreTake(ioLock, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    return -1;
+  }
+  const uint32_t epoch = usbConnectionEpoch.load();
+  if (!usbConfigured || !mediaPublished || publishedEpoch.load() != epoch) {
+    xSemaphoreGive(ioLock);
+    return -1; // Old host session; not an SD I/O failure.
+  }
   busy = true;
   const uint64_t address = uint64_t(lba) * sizeof(sector) + offset;
   bool ok = rawReady && StorageManager_cardDetected() &&
@@ -106,7 +120,7 @@ int32_t transfer(uint32_t lba, uint32_t offset, void* data, uint32_t size, bool 
   lastIoMs = millis();
   busy = false;
   xSemaphoreGive(ioLock);
-  return ok ? int32_t(size) : -1;
+  return ok && usbConfigured && usbConnectionEpoch.load() == epoch ? int32_t(size) : -1;
 }
 
 class Backend : public UsbUploadSession::Backend {
@@ -119,14 +133,27 @@ public:
     return StorageFilesystem::ownership().state() == StorageOwnership::State::External;
   }
   void cancelStorage() override { StorageManager_cancelExternalAccess(); }
-  bool expose() override {
-    if (!ioLock || !storageGranted() || xSemaphoreTake(ioLock, 0) != pdTRUE) return false;
+  UsbUploadSession::ExposeResult expose() override {
+    using Result = UsbUploadSession::ExposeResult;
+    if (!ioLock || !storageGranted()) return Result::Failed;
+    if (!usbConfigured || xSemaphoreTake(ioLock, 0) != pdTRUE) return Result::LinkChanged;
+    const uint32_t epoch = usbConnectionEpoch.load();
     bool ok = StorageManager_cardDetected() && beginRaw();
     if (ok) ok = drive.begin(rawCard.csd.capacity, rawCard.csd.sector_size);
-    if (ok) { lastIoMs = millis(); drive.mediaPresent(true); }
-    else if (rawReady) { sdmmc_host_deinit(); rawReady = false; }
+    bool changed = !usbConfigured || usbConnectionEpoch.load() != epoch;
+    if (ok && !changed) {
+      publishedEpoch = epoch;
+      lastIoMs = millis();
+      publishMedia(true);
+      // Cover a USB event racing initialization/publication on the other task.
+      changed = !usbConfigured || usbConnectionEpoch.load() != epoch;
+    }
+    if (!ok || changed) {
+      publishMedia(false);
+      if (rawReady) { sdmmc_host_deinit(); rawReady = false; }
+    }
     xSemaphoreGive(ioLock);
-    return ok;
+    return changed ? Result::LinkChanged : (ok ? Result::Ready : Result::Failed);
   }
   bool withdraw(bool requireQuiet) override {
     if (!ioLock) return true; // No export is possible without the lock.
@@ -135,7 +162,7 @@ public:
       xSemaphoreGive(ioLock);
       return false;
     }
-    drive.mediaPresent(false);
+    publishMedia(false);
     if (rawReady) sdmmc_host_deinit();
     rawReady = false;
     xSemaphoreGive(ioLock);
@@ -155,6 +182,20 @@ bool enabled() { return true; }
 void begin() {
   if (ioLock) return;
   ioLock = xSemaphoreCreateMutex();
+  usbConfigured = bool(USB);
+  USB.onEvent([](void*, esp_event_base_t, int32_t event, void*) {
+    if (event == ARDUINO_USB_STARTED_EVENT || event == ARDUINO_USB_STOPPED_EVENT) {
+      // Stop admitting media immediately. Raw I/O already in progress finishes
+      // under ioLock; only the main loop deinitializes or remounts the card.
+      usbConfigured = false;
+      publishMedia(false);
+      if (event == ARDUINO_USB_STARTED_EVENT) {
+        hostEjected = false;
+        ++usbConnectionEpoch;
+        usbConfigured = true;
+      }
+    }
+  });
   drive.onRead([](uint32_t lba, uint32_t offset, void* data, uint32_t size) {
     return transfer(lba, offset, data, size, false);
   });
@@ -167,8 +208,9 @@ void begin() {
   });
 }
 void loop() {
-  UsbUploadSession::Inputs input{tud_mounted(), StorageManager_cardDetected(), busy.load(),
-                                hostEjected.exchange(false), ioFailed.exchange(false), lastIoMs.load()};
+  UsbUploadSession::Inputs input{usbConfigured.load(), StorageManager_cardDetected(), busy.load(),
+                                hostEjected.exchange(false), ioFailed.exchange(false), lastIoMs.load(),
+                                usbConnectionEpoch.load()};
   const auto previous = session.state();
   session.poll(input, millis());
   if (session.active() && input.connected && session.state() != UsbUploadSession::State::Ejected &&

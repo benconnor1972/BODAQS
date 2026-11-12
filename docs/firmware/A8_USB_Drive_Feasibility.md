@@ -32,8 +32,17 @@ Development branch: `feat/a8-usb-drive-access`, based on `origin/main` at
 Normal logger firmware continues to use its existing USB configuration. Build
 the integration explicitly with `pio run -d firmware -e bodaqs_a8_usb_drive_dev`.
 This environment pins Espressif32 6.12.0 and enables USB-OTG CDC/MSC. It is not
-enabled in normal release environments and has not been flashed. Compilation
-is not evidence that physical USB/SD operation works.
+enabled in normal release environments. The user has now flashed the supplied
+integrated image; the [2026-11-11 Windows investigation](A8_USB_Integrated_Windows_Bench_2026-11-11.md)
+verified mounting after a fresh boot and documented an unresolved USB port-reset
+failure and stale connection status. A subsequent test on a second Windows 11
+computer passed activation and cable reconnection with the verified OLED probe,
+with zero SD I/O errors. On 2026-11-12, the event-driven reconnect candidate
+passed a controlled test on the original PC: unbuffered identity-file reads
+before and after reconnect returned matching contents, with zero reported SD
+errors or lock timeouts. Earlier descriptor failures remain unexplained and
+broader physical acceptance is pending. Compilation alone is not evidence
+that physical USB/SD operation works.
 No ticket has been closed. The diagnostic has now been flashed for the
 [Windows bench](A8_USB_Windows_Bench_2026-11-10.md); its data-path checks passed,
 but the software bootloader transition failed. Restoration was deferred at the

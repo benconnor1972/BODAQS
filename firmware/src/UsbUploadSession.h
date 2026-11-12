@@ -6,6 +6,7 @@
 class UsbUploadSession {
 public:
   enum class State : uint8_t { Normal, Upload, Waiting, Shared, Disconnecting, Reclaiming, Ejected, Error };
+  enum class ExposeResult : uint8_t { Ready, LinkChanged, Failed };
   struct Inputs {
     bool connected = false;
     bool present = false;
@@ -13,6 +14,9 @@ public:
     bool ejected = false;
     bool ioFailed = false;
     uint32_t lastIoMs = 0;
+    // Changes whenever USB is configured for a new host session, including
+    // reconnects whose down/up edges both occurred between main-loop polls.
+    uint32_t connectionEpoch = 0;
   };
   struct Backend {
     virtual ~Backend() = default;
@@ -20,7 +24,8 @@ public:
     virtual bool requestStorage() = 0;
     virtual bool storageGranted() const = 0;
     virtual void cancelStorage() = 0;
-    virtual bool expose() = 0;
+    // A new host session during initialization is retried, not a storage fault.
+    virtual ExposeResult expose() = 0;
     // Atomically stop admission and finish in-flight raw I/O. For normal exit,
     // recheck the quiet interval under the transport lock; false means retry.
     virtual bool withdraw(bool requireQuiet) = 0;
@@ -43,6 +48,8 @@ private:
   State state_ = State::Normal;
   bool active_ = false, exit_ = false, suppressed_ = false, retry_ = false;
   bool wasConnected_ = false;
+  bool reconnectPending_ = false;
+  uint32_t connectionEpoch_ = 0;
   uint32_t exitRequestedMs_ = 0;
   const char* error_ = nullptr;
 };

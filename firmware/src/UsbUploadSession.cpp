@@ -18,6 +18,7 @@ bool UsbUploadSession::enter(bool logging) {
   if (active_) return true;
   active_ = true;
   exit_ = suppressed_ = retry_ = false;
+  reconnectPending_ = false;
   error_ = nullptr;
   state_ = State::Upload;
   return true;
@@ -37,10 +38,15 @@ bool UsbUploadSession::cancelExit() {
 }
 
 void UsbUploadSession::poll(const Inputs& input, uint32_t now) {
-  const bool reconnected = input.connected && !wasConnected_;
+  const bool newSession = input.connectionEpoch != connectionEpoch_;
+  connectionEpoch_ = input.connectionEpoch;
+  const bool reconnected = input.connected && (!wasConnected_ || newSession);
   wasConnected_ = input.connected;
   if (!active_) return;
-  if (reconnected) { suppressed_ = false; retry_ = true; }
+  if (newSession && (state_ == State::Shared || state_ == State::Disconnecting || state_ == State::Waiting)) {
+    reconnectPending_ = true;
+  }
+  if (reconnected) { suppressed_ = false; retry_ = true; error_ = nullptr; }
   if (input.ejected) suppressed_ = true;
   if (input.ioFailed) { suppressed_ = true; error_ = "USB storage error"; }
   if (!input.present) { suppressed_ = true; error_ = "SD removed"; }
@@ -57,9 +63,9 @@ void UsbUploadSession::poll(const Inputs& input, uint32_t now) {
   if (state_ == State::Error && !exit_) return;
 
   const bool exported = state_ == State::Shared || state_ == State::Disconnecting;
-  const bool shouldReclaim = exit_ || !input.connected || suppressed_ || state_ == State::Reclaiming;
+  const bool shouldReclaim = exit_ || !input.connected || suppressed_ || reconnectPending_ || state_ == State::Reclaiming;
   if (shouldReclaim) {
-    const bool quietExit = exported && exit_ && input.connected && input.present && !input.ejected && !error_;
+    const bool quietExit = exported && exit_ && !reconnectPending_ && input.connected && input.present && !input.ejected && !error_;
     if (quietExit && (uint32_t(now - exitRequestedMs_) < 3000 ||
                       input.busy || uint32_t(now - input.lastIoMs) < 1000)) {
       state_ = State::Disconnecting;
@@ -84,12 +90,15 @@ void UsbUploadSession::poll(const Inputs& input, uint32_t now) {
     } else {
       state_ = suppressed_ ? State::Ejected : State::Upload;
     }
+    reconnectPending_ = false;
     return;
   }
   if (exported) return;
   if (state_ == State::Waiting) {
     if (!backend_.storageGranted()) return;
-    if (backend_.expose()) state_ = State::Shared;
+    const auto result = backend_.expose();
+    if (result == ExposeResult::Ready) state_ = State::Shared;
+    else if (result == ExposeResult::LinkChanged) { reconnectPending_ = true; state_ = State::Reclaiming; }
     else { error_ = "USB export failed"; suppressed_ = true; state_ = State::Reclaiming; }
     return;
   }

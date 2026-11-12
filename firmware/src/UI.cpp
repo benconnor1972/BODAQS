@@ -87,7 +87,10 @@ static bool makeBoardWarning_(String& out) {
     out = "SD: missing";
     return true;
   }
-  if (!StorageManager_isMounted()) {
+  const auto storageOwner = StorageFilesystem::ownership().state();
+  const bool storageHandoff = storageOwner == StorageOwnership::State::External ||
+                              storageOwner == StorageOwnership::State::Reclaiming;
+  if (!StorageManager_isMounted() && !storageHandoff) {
     out = "SD: not ready";
     return true;
   }

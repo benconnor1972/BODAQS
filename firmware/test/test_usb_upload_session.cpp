@@ -5,13 +5,20 @@
 namespace {
 struct Device : UsbUploadSession::Backend {
   StorageOwnership ownership;
-  bool mounted = true, shared = false, failReclaim = false, failExport = false;
+  bool mounted = true, shared = false, failReclaim = false, failExport = false, ioInFlight = false;
+  unsigned exports = 0;
+  bool linkChangesDuringExport = false;
   bool localReady() const override { return mounted && ownership.localAvailable(); }
   bool requestStorage() override { return ownership.requestExternal(); }
   bool storageGranted() const override { return ownership.state() == StorageOwnership::State::External; }
   void cancelStorage() override { ownership.cancelExternal(); }
-  bool expose() override { shared = !failExport; return shared; }
-  bool withdraw(bool) override { shared = false; return true; }
+  UsbUploadSession::ExposeResult expose() override {
+    if (linkChangesDuringExport) return UsbUploadSession::ExposeResult::LinkChanged;
+    shared = !failExport;
+    if (shared) ++exports;
+    return shared ? UsbUploadSession::ExposeResult::Ready : UsbUploadSession::ExposeResult::Failed;
+  }
+  bool withdraw(bool) override { if (ioInFlight) return false; shared = false; return true; }
   bool reclaim() override {
     if (ownership.localAvailable()) return mounted;
     if (!ownership.beginReclaim()) return false;
@@ -162,6 +169,69 @@ int runUsbUploadSessionTests() {
     upload.poll(input, 302);
     // Explicit mode exit can finish once usable local storage is restored.
     CHECK_USB(!upload.active());
+  }
+  {
+    Device hardware;
+    UsbUploadSession upload(hardware);
+    auto link = input;
+    link.connectionEpoch = 1;
+    upload.enter(false);
+    upload.poll(link, 100);
+    hardware.finishTransfers();
+    upload.poll(link, 101);
+    CHECK_USB(hardware.shared && hardware.exports == 1);
+    // A complete USB reconfiguration may occur between application polls.
+    // Connected is still true, but the old host's exported card must be retired.
+    link.connectionEpoch = 2;
+    upload.poll(link, 200);
+    CHECK_USB(upload.active() && !hardware.shared && hardware.localReady());
+    CHECK_USB(hardware.exports == 1);
+    upload.poll(link, 201);
+    hardware.finishTransfers();
+    upload.poll(link, 202);
+    CHECK_USB(hardware.shared && hardware.exports == 2 && upload.active());
+  }
+  {
+    Device hardware;
+    UsbUploadSession upload(hardware);
+    auto link = input;
+    link.connectionEpoch = 1;
+    upload.enter(false);
+    upload.poll(link, 100);
+    hardware.finishTransfers();
+    upload.poll(link, 101);
+    hardware.ioInFlight = true;
+    link.connectionEpoch = 2;
+    upload.poll(link, 200);
+    CHECK_USB(upload.active() && !hardware.localReady());
+    CHECK_USB(hardware.ownership.state() == StorageOwnership::State::External);
+    CHECK_USB(hardware.exports == 1);
+    hardware.ioInFlight = false;
+    upload.poll(link, 201);
+    CHECK_USB(upload.active() && hardware.localReady() && !hardware.shared);
+    upload.poll(link, 202);
+    hardware.finishTransfers();
+    upload.poll(link, 203);
+    CHECK_USB(hardware.shared && hardware.exports == 2);
+  }
+  {
+    Device hardware;
+    UsbUploadSession upload(hardware);
+    auto link = input;
+    link.connectionEpoch = 1;
+    upload.enter(false);
+    upload.poll(link, 100);
+    hardware.finishTransfers();
+    hardware.linkChangesDuringExport = true;
+    upload.poll(link, 101);
+    upload.poll(link, 102);
+    CHECK_USB(upload.active() && upload.state() == UsbUploadSession::State::Upload && hardware.localReady());
+    hardware.linkChangesDuringExport = false;
+    ++link.connectionEpoch;
+    upload.poll(link, 103);
+    hardware.finishTransfers();
+    upload.poll(link, 104);
+    CHECK_USB(hardware.shared && hardware.exports == 1);
   }
   std::printf("USB upload session: %d failures\n", failures);
   return failures;
