@@ -68,6 +68,8 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_measurement_v2_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_measurement_v2_runtime.py --ack-sweep --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_ack_fetch_sweep_runtime.py --compiler "$(CXX)"
+	$(PYTHON) -m unittest discover -s ../tools -p test_imu_optimization_tools.py
+	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --ack-sweep --start-spacing-us 600 --reply-capture --cs-setup-us 5 --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_master_phase_timing_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --phase-timing --compiler "$(CXX)"
