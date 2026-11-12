@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -141,6 +142,9 @@ def main():
                 "SPI_BENCH_MODE=0", "CFLAGS_EXTRA=-fstack-usage",
                 "MASTER_BLOCK_CRC="+str(flags[0]), "MASTER_CAN_FIRST="+str(flags[1])])
             image = copy(folder / "bodaqs_can_master.out", "artifacts/master-"+label+"/bodaqs_can_master.out", source_commit=commit)
+            if not re.search(r"^[0-9a-fA-F]{8}\s+gMasterOptimizationInfo\s*$",
+                    (folder/"bodaqs_can_master.map").read_text(encoding="utf-8"), re.MULTILINE):
+                raise RuntimeError("Linked image lost its debugger optimization marker")
             for name in ("bodaqs_can_master.map", "ti_msp_dl_config.c", "ti_msp_dl_config.h", "device.opt", "device_linker.cmd"):
                 copy(folder/name, "artifacts/master-"+label+"/"+name)
             for path in sorted(folder.glob("*.su")):

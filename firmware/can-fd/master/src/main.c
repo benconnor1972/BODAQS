@@ -1028,6 +1028,8 @@ int main(void)
     uint32_t reset_cause = (uint32_t) DL_SYSCTL_getResetCause();
 
     normalize_retained_clocks();
+    /* Keep the debugger image marker live through linker garbage collection. */
+    (void)gMasterOptimizationInfo[0];
     SYSCFG_DL_init();
     gCanLinkReady = bodaqs_can_link_apply(MCAN0_INST, BODAQS_CAN_LINK_PROFILE);
 

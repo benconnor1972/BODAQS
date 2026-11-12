@@ -68,7 +68,7 @@ def main():
         if stop_ms is None or f["observed_ms"] < stop_ms]
     result = dict(schema="bodaqs.master_drain_assessment.v1", declared_variant=args.variant,
         master_image_verified=False, master_identity_note="BDQ recipe identifies logger, not installed master; review CCS optimization marker and operator image record",
-        expected_optimization_info=([1,0,0] if args.variant=="reference" else manifest["variants"][args.variant]["debugger_optimization_info"]),
+        expected_optimization_info=(None if args.variant=="reference" else manifest["variants"][args.variant]["debugger_optimization_info"]),
         recipe_matches=info.metadata.get("firmware_recipe_id")==manifest["logger_recipe"],
         configuration_byte_exact=sha(args.output/"loggercfg.txt")==manifest["configuration_sha256"],
         active_expected_sources=bool(capture_active(strict)), early_failures=early_failures,
