@@ -57,7 +57,7 @@ def main():
         master_boundary_reserve=2, master_optimization_info=[1, 0, 0], logger_env=LOGGER_ENV,
         commands=[], artifacts=[], qualification="unqualified; physical capture pending",
         flash_offsets={"bootloader.bin":"0x0", "partitions.bin":"0x8000", "boot_app0.bin":"0xe000", "firmware.bin":"0x10000"},
-        source_archive_scope=["firmware", "analysis/bodaqs_analysis", "docs", "AGENTS.md", "GLOSSARY.md", ".agents"],
+        source_archive_scope=["firmware", "analysis/bodaqs_analysis", "docs", "agents.md", "GLOSSARY.md", ".agents"],
         node_provenance="Exact previously tested image retained; original node source commit unknown")
 
     def save():
