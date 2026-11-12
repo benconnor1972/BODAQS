@@ -10,6 +10,18 @@
 #include "../can-fd/common/protocol/bodaqs_measurement.h"
 #include "ConfigManager.h"
 
+// Opt-in experiment: use the ordinary data-fragment request sweep for the
+// fetch half of ACK_FETCH too. This is never receipt or retirement evidence.
+#ifndef BODAQS_ACK_FETCH_FRAGMENT_SWEEP
+#define BODAQS_ACK_FETCH_FRAGMENT_SWEEP 0
+#endif
+#if BODAQS_ACK_FETCH_FRAGMENT_SWEEP != 0 && BODAQS_ACK_FETCH_FRAGMENT_SWEEP != 1
+#error "BODAQS_ACK_FETCH_FRAGMENT_SWEEP must be0or1"
+#endif
+#if BODAQS_ACK_FETCH_FRAGMENT_SWEEP && BODAQS_MEASUREMENT_VERSION != 2
+#error "ACK-fetch fragment sweep requires measurement v2"
+#endif
+
 namespace CanMasterManager {
 
 enum class State : uint8_t {

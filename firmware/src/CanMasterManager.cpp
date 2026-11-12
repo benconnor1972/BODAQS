@@ -813,6 +813,18 @@ static MeasurementInbox* transportInbox_(MeasurementTransport& transport,uint8_t
   if(cls<1 || cls>5 || (cls==5?node!=255:node>3)) return nullptr;
   return &transport.inboxes[cls-1][cls==5?0:node];
 }
+static uint8_t nextDataFragment_(MeasurementInbox& inbox) {
+  // All missing fragments remain missing until validated MISO supplies them.
+  // A full request sweep resets this hint and retries every still-missing bit.
+  const uint8_t count=(inbox.state.total+BODAQS_MEASUREMENT_BODY_BYTES-1)/BODAQS_MEASUREMENT_BODY_BYTES;
+  uint8_t first=0;bool haveFirst=false;
+  for(uint8_t i=0;i<count;++i) if(!(inbox.state.mask&(1UL<<i))) {
+    if(!haveFirst) {first=i;haveFirst=true;}
+    if(!(inbox.requestedFragments&(1UL<<i))) {inbox.requestedFragments|=1UL<<i;return i;}
+  }
+  inbox.requestedFragments=haveFirst?1UL<<first:0;
+  return first;
+}
 void releaseMeasurementObject(MeasurementInbox& inbox) {
   if (!measurementAccess_()) return;
   if(inbox.ackPending && inbox.pendingAck.object!=inbox.state.object) return;
@@ -961,6 +973,9 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
       bodaqs_measurement_put(request.body+8,next->state.object,4);
       for(uint8_t i=0;i<BODAQS_MEASUREMENT_FRAGMENT_COUNT;++i)
         if(!(next->state.mask&(1UL<<i))) {request.body[12]=i;break;}
+#if BODAQS_ACK_FETCH_FRAGMENT_SWEEP
+      if(cls<3) request.body[12]=nextDataFragment_(*next);
+#endif
     }
   }
 #endif
@@ -975,13 +990,7 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
       // immediately preceding poll. This hint never marks a fragment received;
       // a new sweep retries every still-missing fragment, including a lost tail.
       if(cls<3) {
-        bool unrequested=false;
-        for(uint8_t i=0;i<(partial->state.total+BODAQS_MEASUREMENT_BODY_BYTES-1)/BODAQS_MEASUREMENT_BODY_BYTES;++i)
-          if(!(partial->state.mask&(1UL<<i)) && !(partial->requestedFragments&(1UL<<i))) {
-            request.index=i;unrequested=true;break;
-          }
-        if(!unrequested) partial->requestedFragments=0;
-        partial->requestedFragments|=1UL<<request.index;
+        request.index=nextDataFragment_(*partial);
       }
       if(cls==4 && node<4 && (transport.terminalNodes&(1u<<node)) && !(partial->state.mask&1u)) {
         request.object=0;request.index=0;
