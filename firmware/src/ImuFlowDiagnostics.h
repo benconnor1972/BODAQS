@@ -4,6 +4,16 @@
 #include "MeasurementReplyCapture.h"
 #include "../can-fd/common/protocol/bodaqs_measurement.h"
 
+namespace ImuFlowDiagnostics {
+// RAM admission, not SD persistence. Written by the acquisition producer only;
+// exported from a matching finished snapshot after producer retirement.
+struct NodeStats {
+  uint64_t samplesAccepted=0;
+  uint32_t packetsAccepted=0,consumerWait=0;
+  uint32_t sampleQueuePeak=0,evidenceQueuePeak=0,sampleCapacity=0,evidenceCapacity=0;
+};
+}
+
 #if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
 #if !defined(BODAQS_IMU_FLOW_DIAGNOSTICS) || !BODAQS_IMU_FLOW_DIAGNOSTICS || !defined(BODAQS_SPI_MEASUREMENT_V2) || !BODAQS_SPI_MEASUREMENT_V2
 #error "Rejected reply capture requires FLOW diagnostics and measurement v2"
@@ -15,6 +25,7 @@
 // before ownership release. Read/print only after acquiring inactive ownership.
 namespace ImuFlowDiagnostics {
 struct Snapshot {
+  NodeStats nodes[4];
   uint64_t context=0;
   uint32_t beganMs=0,observedMs=0,services=0;
   uint32_t requests[4]={}; // polls, ACK_FETCH, outgoing fragments, other
@@ -98,6 +109,16 @@ inline void consumer(uint8_t cls,bool accepted,size_t sampleDepth,size_t evidenc
   if(sampleDepth>live.sampleQueuePeak) live.sampleQueuePeak=sampleDepth;
   if(evidenceDepth>live.evidenceQueuePeak) live.evidenceQueuePeak=evidenceDepth;
   live.sampleCapacity=sampleCapacity;live.evidenceCapacity=evidenceCapacity;
+}
+inline void nodeConsumer(uint8_t node,bool accepted,uint32_t packets,uint64_t samples,
+                         size_t sampleDepth,size_t evidenceDepth,size_t sampleCapacity,size_t evidenceCapacity) {
+  if(!active || node>=4) return;
+  auto& s=live.nodes[node];
+  s.packetsAccepted=packets;s.samplesAccepted=samples;
+  if(!accepted) ++s.consumerWait;
+  if(sampleDepth>s.sampleQueuePeak) s.sampleQueuePeak=sampleDepth;
+  if(evidenceDepth>s.evidenceQueuePeak) s.evidenceQueuePeak=evidenceDepth;
+  s.sampleCapacity=sampleCapacity;s.evidenceCapacity=evidenceCapacity;
 }
 inline Snapshot capture(uint32_t now,uint32_t nowUs) {
   Snapshot result=live;result.observedMs=now;

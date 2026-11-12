@@ -20,7 +20,11 @@ def assess_first_imu_recording(path: str | Path) -> tuple[dict, dict]:
     samples = [d for d in descriptors if d.get("acquisition", {}).get("payload_schema") == SCHEMA]
     if len(samples) != 1:
         raise ValueError("requires exactly one compact CAN IMU stream")
-    descriptor = samples[0]
+    return _assess_imu_stream(path, info, samples[0])
+
+
+def _assess_imu_stream(path, info, descriptor):
+    """Shared strict per-source assessment; caller supplies a validated catalog entry."""
     decoded = read_can_imu_packets(path, descriptor["stream_key"])
     source = decoded["source"]
     required = ("provider_uid", "node_boot", "master_boot", "recording_id", "control_session", "measurement_context")

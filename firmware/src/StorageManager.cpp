@@ -1813,6 +1813,18 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
   document["remote_reserved_bytes"]=admission.loggerBytes;
   document["remote_cleanup_complete"] = RemoteImuRecording::stopped();
   appendBdqV2MeasurementFailures_(document);
+  JsonArray nodeFlow=document["remote_node_flow"].to<JsonArray>();
+  for(uint8_t node=0;node<4;++node) {
+    ImuFlowDiagnostics::NodeStats stats;
+    if(!RemoteImuRecording::finalNodeDiagnostics(node,stats)) continue;
+    auto entry=nodeFlow.add<JsonObject>();
+    entry["node"]=node;entry["scope"]="RAM_accepted_through_producer_retirement";
+    entry["packets_accepted"]=stats.packetsAccepted;entry["samples_accepted"]=stats.samplesAccepted;
+    entry["raw_axis_bytes_accepted"]=stats.samplesAccepted*12;
+    entry["packet_queue_sampled_peak"]=stats.sampleQueuePeak;entry["packet_queue_capacity"]=stats.sampleCapacity;
+    entry["evidence_queue_sampled_peak"]=stats.evidenceQueuePeak;entry["evidence_queue_capacity"]=stats.evidenceCapacity;
+    entry["consumer_wait"]=stats.consumerWait;
+  }
   bool allStopConfirmed=true,allSourceFinal=true,sampleTailDiscarded=false;
   uint16_t completionCount=0,expectedCompletions=0;
   for(uint16_t i=0;i<s_bdqV2DescriptorCount;++i) {

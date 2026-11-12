@@ -89,5 +89,22 @@ int main() {
   d.adc[0].activeChannels=2;d.nodes=2;
   assert(ImuAdmission::evaluateSingleNodeAdcSmoke(d,false).reason==ImuAdmission::Reason::MixedSmokeScope);
  }
+ for(uint8_t nodes:{1,2,4}) {
+  d={};d.nodes=nodes;d.loggerRateHz=500;
+  auto multi=ImuAdmission::evaluateMultiNodeBench(d,false);
+  assert((multi.reason==ImuAdmission::Reason::None)==ImuAdmission::multiNodeBenchBuild());
+  assert(multi.benchOnly && !multi.qualified);
+  if(ImuAdmission::multiNodeBenchBuild()) {
+   assert(ImuAdmission::evaluateMultiNodeBench(d,true).reason==ImuAdmission::Reason::MultiNodeBenchScope);
+   d.loggerRateHz=200;assert(ImuAdmission::evaluateMultiNodeBench(d,false).reason==ImuAdmission::Reason::MultiNodeBenchScope);
+   for(uint16_t rate:{200,500}) {
+    d.loggerRateHz=rate;for(auto& adc:d.adc) adc={rate==200?600u:2000u,1000000,2};
+    assert(ImuAdmission::evaluateMultiNodeBench(d,false).reason==ImuAdmission::Reason::None);
+   }
+  }
+ }
+ d={};d.nodes=3;d.loggerRateHz=500;
+ assert(ImuAdmission::evaluateMultiNodeBench(d,false).reason==ImuAdmission::Reason::MultiNodeBenchScope);
+
 }
 

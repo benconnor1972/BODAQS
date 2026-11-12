@@ -198,6 +198,7 @@ size_t RemoteImuStream::allocatedBufferBytes(bool compactPackets) {
 void RemoteImuStream::release() {
   samples_.release();packets_.release();evidence_.release();sampleId_=evidenceId_=0;
   nextPacket_=sequenceFloor_=0;
+  compactSamplesAccepted_=0;
   segment_=nextSequence_=stagedEvidence_=modelCount_=epoch_=anchorCount_=0;nextEvidence_=1;
   persistedEvidence_.store(0);haveSequence_=haveBoundary_=failed_=holding_=false;
   terminalObserved_=false;terminalSequence_=0;terminalEpoch_=0;
@@ -406,7 +407,7 @@ RemoteImuStream::Acceptance RemoteImuStream::packet(const uint8_t* p,size_t n,ui
   BdqV2Format::putU16(out+36,static_cast<uint16_t>(n));out[38]=receptionFlags;
   std::memcpy(out+40,p+4,12u*count);
   if(!packets_.push(out,sizeof out)) return Blocked;
-  ++nextPacket_;return Accepted;
+  ++nextPacket_;compactSamplesAccepted_+=count;return Accepted;
 }
 RemoteImuStream::Acceptance RemoteImuStream::samples(const uint8_t* p,size_t n,uint32_t logger) {
   if(n<16 || !haveBoundary_ || p[2]!=epoch_) return Invalid;

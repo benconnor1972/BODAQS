@@ -26,7 +26,7 @@ def fixture_source(root):
     for header in ('#include <Arduino.h>', '#include <esp_timer.h>', '#include <esp_system.h>', '#include "SensorManager.h"', '#include "DebugLog.h"'):
         coordinator = coordinator.replace(header, '')
     fixture += '\nstatic uint8_t fixtureAdcChannels=0;static uint16_t fixtureAdcSps=100;static bool fixtureConcentrated=false;\nnamespace AnalogInputManager { uint8_t activeChannelCount(uint8_t a) {return fixtureConcentrated?(a?0:2):fixtureAdcChannels;} uint16_t configuredDataRateSps(uint8_t) {return fixtureConcentrated?2000:fixtureAdcSps;} }\n'
-    fixture = fixture.replace('static SensorSpec saved;', 'static SensorSpec saved; static unsigned fixtureSensorCount=1; static SensorSpec extra[4]; static ParamStore extraParams[4];')
+    fixture = fixture.replace('static SensorSpec saved;', 'static SensorSpec saved; static unsigned fixtureSensorCount=1; static SensorSpec extra[7]; static ParamStore extraParams[7];')
     fixture = fixture.replace('return 1; }\nbool LoggerConfig::getSensorSpec', 'return fixtureSensorCount; }\nbool LoggerConfig::getSensorSpec')
     fixture = fixture.replace('if(i) return false; spec=saved;', 'if(i>=fixtureSensorCount) return false; spec=i?extra[i-1]:saved;')
     fixture = fixture.replace('identity.capabilities=15;', 'identity.capabilities=15 | BODAQS_CAN_LINK_CAP_ACQUISITION;')
@@ -47,7 +47,9 @@ def main():
     parser.add_argument("--mixed", action="store_true", help="Exact 500 Hz two-ADC bench scope plus one compact IMU")
     parser.add_argument("--channel-rate",action="store_true")
     parser.add_argument("--scaling",action="store_true")
+    parser.add_argument("--multi-node",action="store_true")
     args = parser.parse_args()
+    if args.multi_node: args.scaling=True;args.flow_diagnostics=True
     if args.scaling: args.channel_rate=True
     if args.channel_rate: args.mixed=True
     if args.mixed: args.smoke=True;args.v2=True
@@ -77,6 +79,7 @@ static void captureFlowLog(const char* tag,const char*,...) {if(!std::strcmp(tag
         if args.mixed: flags.append("-DBODAQS_SINGLE_NODE_IMU_ADC_SMOKE=1")
         if args.channel_rate: flags.append("-DBODAQS_ADC_CHANNEL_RATE_BENCH=1")
         if args.scaling: flags.append("-DBODAQS_ADC_SCALING_BENCH=1")
+        if args.multi_node: flags.append("-DBODAQS_MULTI_NODE_BENCH=1")
         if args.v2:
             flags.append("-DBODAQS_SPI_MEASUREMENT_V2=1")
         if args.start_spacing_us:
@@ -87,6 +90,9 @@ static void captureFlowLog(const char* tag,const char*,...) {if(!std::strcmp(tag
         if args.cs_setup_us: flags.append(f"-DBODAQS_MEASUREMENT_CS_SETUP_US={args.cs_setup_us}")
         subprocess.run([args.compiler, "-std=c++17", *flags, "-DBODAQS_QUEUE_ALLOCATION_TEST", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-I", str(root/"test/stubs"), "-I", str(root/"src"), "-I", str(protocol), "-I", str(root/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
+        if args.multi_node:
+            for case in ("multi-1-none","multi-2-none","multi-4-none","multi-2-200","multi-4-200","multi-4-500","multi-4-fault"):
+                subprocess.run([str(exe),case],check=True)
         if args.channel_rate:
             for case in ("channel-rate-500","channel-rate-700","channel-rate-1000"):
                 subprocess.run([str(exe),case],check=True)
@@ -112,7 +118,7 @@ static void captureFlowLog(const char* tag,const char*,...) {if(!std::strcmp(tag
             subprocess.run([str(exe), "tail-pressure"], check=True)
             subprocess.run([str(exe), "tail-pressure-deferred-status"], check=True)
         if args.smoke:
-            for scenario in ("scope-two", "scope-other", "scope-adc"):
+            for scenario in (("scope-other", "scope-adc") if args.multi_node else ("scope-two", "scope-other", "scope-adc")):
                 subprocess.run([str(exe), scenario], check=True)
             if args.mixed:
                 for scenario in ("mixed-control","mixed-reject-ain","mixed-reject-rate",

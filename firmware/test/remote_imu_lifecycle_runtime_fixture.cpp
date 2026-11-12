@@ -37,6 +37,8 @@ int main(int argc,char** argv) {
   assert(savedParams.set("profile","imu6_3333_32g_2000dps_v1"));
   saved.params.bind(&savedParams);
   fixtureSensorCount=argc>1 && (!std::strcmp(argv[1],"four") || !std::strcmp(argv[1],"four-bus-off"))?4:1;
+  const bool multiCase=argc>1 && !std::strncmp(argv[1],"multi-",6);
+  if(multiCase) {assert(ImuAdmission::multiNodeBenchBuild());fixtureSensorCount=unsigned(argv[1][6]-'0');}
   const bool mixedRejected=argc>1 && !std::strncmp(argv[1],"mixed-reject-",13);
   const bool scopeRejected=mixedRejected || (argc>1 && (!std::strcmp(argv[1],"scope-two") || !std::strcmp(argv[1],"scope-other") || !std::strcmp(argv[1],"scope-adc")));
   if(scopeRejected && !mixedRejected && std::strcmp(argv[1],"scope-adc")) fixtureSensorCount=2;
@@ -75,7 +77,8 @@ int main(int argc,char** argv) {
   CanMasterManager::beginRecordingHandoff();advance(4000);
   assert(CanMasterManager::recordingHandoffReady());
   const unsigned remoteNodes=fixtureSensorCount;
-  if(ImuAdmission::singleNodeAdcSmokeBuild()) {
+  config.sampleRateHz=500;
+  if(ImuAdmission::singleNodeAdcSmokeBuild() && !(multiCase && (!std::strcmp(argv[1]+8,"none") || !std::strcmp(argv[1]+8,"fault")))) {
     config.sampleRateHz=500;
     profile.external_adc_count=2;profile.analog.count=8;
     for(unsigned a=0;a<2;++a) {
@@ -115,6 +118,17 @@ int main(int argc,char** argv) {
       if(!std::strcmp(argv[1],"mixed-reject-scaling-map")) profile.analog.inputs[5].external_channel=0;
       if(!std::strcmp(argv[1],"mixed-reject-scaling-raw")) assert(extraParams[3].set("include_raw","true"));
     }
+    if(multiCase) {
+      const char* ains[]={"0","1","4","5"};
+      fixtureSensorCount=remoteNodes+4;fixtureAdcChannels=2;
+      config.sampleRateHz=uint16_t(std::atoi(argv[1]+8));fixtureAdcSps=config.sampleRateHz==200?600:2000;
+      for(unsigned i=0;i<4;++i) {
+        const unsigned index=remoteNodes-1+i;extra[index]={};extra[index].type=SensorType::AnalogPot;
+        assert(extraParams[index].set("ain",ains[i]));extra[index].params.bind(&extraParams[index]);
+        const unsigned ain=unsigned(std::atoi(ains[i]));auto& input=profile.analog.inputs[ain];
+        input.source=board::AnalogSourceType::ExternalAdc;input.external_adc_index=ain/4;input.external_channel=ain%4;
+      }
+    }
     if(argc>1 && !std::strcmp(argv[1],"mixed-control")) {
       saved.mutedDefault=true;
       assert(RemoteImuRecording::configure(config));
@@ -140,7 +154,7 @@ int main(int argc,char** argv) {
     assert(RemoteImuRecording::configure(config));
     assert(!RemoteImuRecording::configured());
     assert(RemoteImuRecording::admission().reason==(ImuAdmission::singleNodeAdcSmokeBuild()
-        ?ImuAdmission::Reason::MixedSmokeScope:ImuAdmission::Reason::SmokeScope));
+        ? (ImuAdmission::multiNodeBenchBuild()?ImuAdmission::Reason::MultiNodeBenchScope:ImuAdmission::Reason::MixedSmokeScope):ImuAdmission::Reason::SmokeScope));
     assert(RemoteImuRecording::admission().benchOnly && !RemoteImuRecording::admission().qualified);
     assert(!AcquisitionControl::active() && DynamicSpscQueueDetail::liveAllocations==0);
     puts("restricted workload rejected before authorization: PASS");return 0;
@@ -170,6 +184,7 @@ int main(int argc,char** argv) {
     assert(!AcquisitionControl::active());
     RemoteImuRecording::stop();assert(RemoteImuRecording::stopped());
     uint32_t transfer=0,decode=0;
+    ImuFlowDiagnostics::NodeStats stats;assert(!RemoteImuRecording::finalNodeDiagnostics(0,stats));
     assert(!RemoteImuRecording::finalMeasurementFailures(transfer,decode)); // Stale completed context is not this allocation.
     assert(!RemoteImuRecording::finalRejectedMeasurementReplies());
     flowLogCalls=0;RemoteImuRecording::release();
@@ -419,6 +434,10 @@ int main(int argc,char** argv) {
       assert(BdqV2Format::getU16(row+40)==0x1234);
     }
     assert(count==2048);
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+    ImuFlowDiagnostics::NodeStats stats;assert(RemoteImuRecording::finalNodeDiagnostics(0,stats));
+    assert(stats.packetsAccepted==2048 && stats.samplesAccepted==10240 && stats.consumerWait>0);
+#endif
     AcquisitionControl::fenceDiagnostics(diagnostic);
     assert(diagnostic.verified && (diagnostic.modeFlags&2));
     assert(!diagnostic.data[0][0].object);
@@ -451,7 +470,7 @@ int main(int argc,char** argv) {
   for(unsigned n=0;n<remoteNodes;++n) assert(acquisitions[n].phase==3 && acquisitions[n].lease_valid);
 
   assert(acquisitions[0].phase==3 && acquisitions[0].lease_valid);
-  if(argc>1 && std::strcmp(argv[1],"four") && std::strncmp(argv[1],"channel-rate-",13) && std::strncmp(argv[1],"scaling-",8)) {
+  if(argc>1 && std::strcmp(argv[1],"four") && std::strncmp(argv[1],"channel-rate-",13) && std::strncmp(argv[1],"scaling-",8) && !multiCase) {
     recording=true;
     if(!std::strcmp(argv[1],"node-reboot")) {
       ++node.view.boot_id;node.view.active_session=0;node.view.flags=0;node.authority={};
@@ -490,6 +509,68 @@ int main(int argc,char** argv) {
     assert(!acquisitions[0].recording && acquisitions[0].fenced);
     puts("production remote fault exclusion and quiescent explicit cleanup passed");return 0;
   }
+#if defined(BODAQS_MULTI_NODE_BENCH) && BODAQS_MULTI_NODE_BENCH
+  if(multiCase) {
+    // Real per-node master ingress and packet consumer, distinct native values.
+    for(unsigned n=0;n<remoteNodes;++n) {
+      uint8_t boundary[64]={};boundary[0]=1;boundary[1]=0x25;boundary[2]=1;boundary[6]=56;
+      bodaqs_control_put_u32(boundary+8,peerFixture(n).view.boot_id);boundary[13]=1;boundary[14]=2;
+      bodaqs_control_put_u32(boundary+16,1);bodaqs_control_put_u32(boundary+20,1);
+      bodaqs_control_put_u32(boundary+24,1);boundary[54]=0x61;boundary[55]=1;
+      assert(bodaqs_master_service_receive_can(&master,n,2,uint16_t(0x90+n),boundary,64,0,clockMs*1000,clockMs));
+      recordingSteps(50);
+      uint8_t packet[64]={};packet[2]=1;packet[3]=5;packet[4]=uint8_t(10+n);
+      assert(bodaqs_master_service_receive_can(&master,n,1,uint16_t(0x100+8*n),packet,64,0,clockMs*1000,clockMs));
+    }
+    recordingSteps(1000);
+    for(unsigned n=0;n<remoteNodes;++n) {
+      auto& source=descriptors[2*n].source;uint8_t row[100];
+      assert(source.pendingRecords(source.context)==1);
+      assert(source.popRecord(source.context,row,sizeof row));
+      assert(BdqV2Format::getU16(row+40)==10+n);
+      assert(ImuFlowDiagnostics::live.nodes[n].packetsAccepted==1);
+      assert(ImuFlowDiagnostics::live.nodes[n].samplesAccepted==5);
+      ImuFlowDiagnostics::NodeStats unavailable;
+      assert(!RemoteImuRecording::finalNodeDiagnostics(n,unavailable));
+    }
+    if(remoteNodes>1) {
+      // Test interleaved fanout with one participant gate closed. The real
+      // shared queue sheds optional evidence on pressure; a closed gate blocks.
+      auto& gate=RemoteImuRecording::peers[remoteNodes-1].dataGate;gate.store(1);
+      uint8_t sync[28]={1,0,1};sync[4]=1;sync[8]=1;sync[12]=7;sync[20]=1;
+      uint8_t bridge[32]={};bridge[0]=17;bridge[12]=2;
+      assert(!RemoteImuRecording::consume(5,255,900001,sync,sizeof sync));
+      assert(!RemoteImuRecording::consume(6,255,900002,bridge,sizeof bridge));
+      const auto healthy=RemoteImuRecording::peers[0].stream.queueState().evidence;
+      for(unsigned retry=0;retry<3;++retry) {
+        assert(!RemoteImuRecording::consume(5,255,900001,sync,sizeof sync));
+        assert(!RemoteImuRecording::consume(6,255,900002,bridge,sizeof bridge));
+        assert(RemoteImuRecording::peers[0].stream.queueState().evidence==healthy);
+      }
+      gate.store(0);
+      assert(RemoteImuRecording::consume(5,255,900001,sync,sizeof sync));
+      assert(RemoteImuRecording::consume(6,255,900002,bridge,sizeof bridge));
+      assert(RemoteImuRecording::peers[0].stream.queueState().evidence==healthy);
+    }
+    if(!std::strcmp(argv[1]+8,"fault")) {
+      bodaqs_control_acquisition_exclude(&acquisitions[0],27);recordingSteps(1800);
+      assert(RemoteImuRecording::failed());
+    }
+    RemoteImuRecording::stop();
+    for(unsigned i=0;i<30000 && !RemoteImuRecording::stopped();++i) recordingSteps(1);
+    assert(RemoteImuRecording::stopped() && !AcquisitionControl::active());
+    for(unsigned n=0;n<remoteNodes;++n) {
+      ImuFlowDiagnostics::NodeStats stats;
+      assert(RemoteImuRecording::finalNodeDiagnostics(n,stats));
+      assert(stats.packetsAccepted==1 && stats.samplesAccepted==5 && stats.sampleCapacity==2048);
+      assert(!acquisitions[n].recording && !acquisitions[n].lease_valid);
+    }
+    simulatedStorage.clear();RemoteImuRecording::release();CanMasterManager::endRecordingHandoff();
+    ImuFlowDiagnostics::NodeStats unavailable;assert(!RemoteImuRecording::finalNodeDiagnostics(0,unavailable));
+    assert(DynamicSpscQueueDetail::liveAllocations==0);
+    puts("compact multi-node isolation, exact RAM admissions and retired cleanup: PASS");return 0;
+  }
+#endif
   // Actual management ERROR diagnostics cross the pipelined SPI manager and
   // control owner into a companion without fabricating a CAN reception.
   bodaqs_master_service_loss_counts(&master,0,5,1,0,6,7,0,false,1234,9);

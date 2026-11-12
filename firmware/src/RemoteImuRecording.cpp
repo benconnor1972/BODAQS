@@ -249,13 +249,16 @@ uint8_t selected=0;
 uint64_t allocatedSession=0,nextRecording=1,context=0;
 ImuAdmission::Profile profile;
 ImuAdmission::Report report;
-uint8_t sharedPending=0;
-uint32_t sharedObject=0;
-uint8_t sharedClass=0;
+struct SharedProgress {uint32_t object=0;uint8_t pending=0;};
+// Sync and bridge may both retry while one participant is blocked. Each class
+// must retain its own fanout progress to avoid re-copying into healthy peers.
+SharedProgress sharedProgress[2];
 #if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
 void observeConsumer(uint8_t cls,Participant& peer,bool accepted,const uint8_t* p,uint16_t total) {
  const auto queues=peer.stream.queueState();
  ImuFlowDiagnostics::consumer(cls,accepted,queues.samples,queues.evidence,queues.sampleCapacity,queues.evidenceCapacity);
+ ImuFlowDiagnostics::nodeConsumer(peer.node,accepted,queues.packetsAccepted,queues.samplesAccepted,
+   queues.samples,queues.evidence,queues.sampleCapacity,queues.evidenceCapacity);
  if(cls==7 && total==8 && p[0]==1 && p[1]==9)
    ImuFlowDiagnostics::loss(BdqV2Format::getU32(p+4),millis(),micros());
 }
@@ -283,6 +286,13 @@ void logFlowSnapshot(const char* stage,[[maybe_unused]] const ImuFlowDiagnostics
    (unsigned long)s.proofPending[i],(unsigned long)s.proofOldestUs[i]);
  }
  (void)stage;
+ for(unsigned n=0;n<4;++n) if(selected&(1u<<n)) {
+  [[maybe_unused]] const auto& d=s.nodes[n];
+  LOGW_TAG("FLOW","stage=%s node=%u packets_accepted=%lu samples_accepted=%llu packet_sampled_peak=%lu/%lu evidence_sampled_peak=%lu/%lu consumer_wait=%lu\n",
+   stage,n,(unsigned long)d.packetsAccepted,(unsigned long long)d.samplesAccepted,
+   (unsigned long)d.sampleQueuePeak,(unsigned long)d.sampleCapacity,
+   (unsigned long)d.evidenceQueuePeak,(unsigned long)d.evidenceCapacity,(unsigned long)d.consumerWait);
+ }
 }
 #endif
 bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint16_t total) {
@@ -294,14 +304,16 @@ bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint
 #endif
   return accepted;
  }
- if(sharedObject!=identity || sharedClass!=cls) {sharedObject=identity;sharedClass=cls;sharedPending=selected;}
- for(uint8_t n=0;n<4;++n) if(sharedPending&(1u<<n)) {
+ if(address!=255 || cls<5 || cls>6) return false;
+ auto& progress=sharedProgress[cls-5];
+ if(progress.object!=identity) {progress.object=identity;progress.pending=selected;}
+ for(uint8_t n=0;n<4;++n) if(progress.pending&(1u<<n)) {
   const bool accepted=peers[n].consume(cls,address,identity,p,total);
 #if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
   observeConsumer(cls,peers[n],accepted,p,total);
 #endif
   if(!accepted) return false;
-  sharedPending&=uint8_t(~(1u<<n));
+  progress.pending&=uint8_t(~(1u<<n));
  }
  return true;
 }
@@ -376,9 +388,11 @@ bool configure(const LoggerConfig& cfg) {
  for(uint8_t a=0;a<2;++a) if(board::gBoard && a<board::gBoard->external_adc_count && AnalogInputManager::activeChannelCount(a))
   demand.adc[a]={AnalogInputManager::configuredDataRateSps(a),board::gBoard->external_adcs[a].spi_hz,
                 AnalogInputManager::activeChannelCount(a)};
- const bool benchMaskAllowed=ImuAdmission::channelRateBenchBuild()?(benchAdcMask==0x03 || benchAdcMask==0x11 ||
+ const bool benchMaskAllowed=ImuAdmission::channelRateBenchBuild()?((ImuAdmission::multiNodeBenchBuild() && benchAdcMask==0) || benchAdcMask==0x03 || benchAdcMask==0x11 ||
       (ImuAdmission::scalingBenchBuild() && benchAdcMask==0x33)):benchAdcMask==3;
- report=ImuAdmission::singleNodeAdcSmokeBuild()
+ report=ImuAdmission::multiNodeBenchBuild()
+     ? ImuAdmission::evaluateMultiNodeBench(demand,otherActiveSensors || !benchMaskAllowed)
+     : ImuAdmission::singleNodeAdcSmokeBuild()
      ? ImuAdmission::evaluateSingleNodeAdcSmoke(demand,otherActiveSensors || !benchMaskAllowed)
      : ImuAdmission::singleNodeSmokeBuild()
      ? ImuAdmission::evaluateSingleNodeSmoke(demand,otherActiveSensors)
@@ -401,7 +415,7 @@ bool configure(const LoggerConfig& cfg) {
  }
  report.loggerBytes=sizeof(peers)+demand.nodes*RemoteImuStream::allocatedBufferBytes(ImuAdmission::singleNodeSmokeBuild())+
     AcquisitionControl::reservedBytes()+sizeof(CanMasterManager::Diagnostics);
- selected=mask;sharedPending=0;sharedObject=0;
+ selected=mask;for(auto& progress:sharedProgress) progress={};
  return true;
 }
 bool resourcesReady(size_t storageReservedBytes) {
@@ -440,6 +454,15 @@ bool finalMeasurementFailures(uint32_t& transfer,uint32_t& decode) {
 bool completion(uint8_t node,Completion& out) {
  if(node>3 || !(selected&(1u<<node)) || !peers[node].completionFrozen.load(std::memory_order_acquire)) return false;
  out=peers[node].frozenCompletion;return true;
+}
+bool finalNodeDiagnostics(uint8_t node,ImuFlowDiagnostics::NodeStats& out) {
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+ if(node>3 || !(selected&(1u<<node)) || !stopped() || !ImuFlowDiagnostics::haveFinished ||
+    ImuFlowDiagnostics::finished.context!=context) return false;
+ out=ImuFlowDiagnostics::finished.nodes[node];return true;
+#else
+ (void)node;(void)out;return false;
+#endif
 }
 const MeasurementReplyCapture* finalRejectedMeasurementReplies() {
 #if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
