@@ -100,6 +100,9 @@ class MasterAbCandidate(unittest.TestCase):
                 result=runner.main()
             fails=identical or broken is not None
             self.assertEqual(result,1 if fails else 0)
+            if broken=="missing-channel-scope":
+                self.assertFalse(output.exists())
+                return
             manifest=json.loads((output/"BUILD_MANIFEST.json").read_text())
             self.assertEqual(manifest["status"],"failed" if fails else "passed")
             self.assertEqual((output/"SOURCE.zip").exists(),not fails)
