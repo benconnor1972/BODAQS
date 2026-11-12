@@ -18,7 +18,7 @@ are unobserved gaps; they are not compressed away in slot distances. Trace data
 never controls scheduling, receipt, admission or ACK.
 No serial output occurs from these hooks during acquisition; export happens
 after producer retirement alongside FLOW. Trace storage is about 10 KiB fixed
-RAM, included in reserved resource accounting.
+RAM plus 512 bytes for per-CS numbering, included in reserved resource accounting.
 
 The master fix reserves two of the existing 128 per-node ingress entries for
 validated source-boundary CAN frames. Ordinary traffic can occupy 126 entries;

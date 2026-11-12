@@ -16,11 +16,11 @@ SharedSpiBus::Diagnostics s_diagnostics;
 // Every nonnegative int8_t CS value has a stable slot; no eviction can erase
 // another device's pacing origin. Access only under the shared bus mutex.
 bool s_haveTransactionStart[128] = {};
-#if defined(BODAQS_SPI_BOUNDARY_TRACE) && BODAQS_SPI_BOUNDARY_TRACE
+#if (defined(BODAQS_SPI_BOUNDARY_TRACE) && BODAQS_SPI_BOUNDARY_TRACE) || (defined(BODAQS_PIPELINE_TRACE) && BODAQS_PIPELINE_TRACE)
 uint32_t s_deviceSequence[128] = {};
 #endif
 uint32_t s_lastTransactionStartUs[128] = {};
-#if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
+#if (defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE) || (defined(BODAQS_PIPELINE_TRACE) && BODAQS_PIPELINE_TRACE)
 SpiTransactionContext s_previousTransaction;
 #endif
 
@@ -118,7 +118,7 @@ bool transfer(
   // lengthen the following interval, but cannot make the next start too early.
   s_lastTransactionStartUs[cs] = micros();
   s_haveTransactionStart[cs] = true;
-#if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
+#if (defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE) || (defined(BODAQS_PIPELINE_TRACE) && BODAQS_PIPELINE_TRACE)
   SpiTransactionContext observed;
   observed.valid=true;observed.sequence=s_previousTransaction.sequence+1;
   observed.cs=csPin;observed.selectedUs=s_lastTransactionStartUs[cs];
@@ -130,7 +130,7 @@ bool transfer(
   observed.previousBytes=s_previousTransaction.bytes;
   observed.previousCommand=s_previousTransaction.command;
   observed.previousCommandValid=s_previousTransaction.commandValid;
-#if defined(BODAQS_SPI_BOUNDARY_TRACE) && BODAQS_SPI_BOUNDARY_TRACE
+#if (defined(BODAQS_SPI_BOUNDARY_TRACE) && BODAQS_SPI_BOUNDARY_TRACE) || (defined(BODAQS_PIPELINE_TRACE) && BODAQS_PIPELINE_TRACE)
   if(s_deviceSequence[cs]!=UINT32_MAX)++s_deviceSequence[cs];
   observed.deviceSequence=s_deviceSequence[cs];
   observed.deviceSequenceValid=s_deviceSequence[cs]!=UINT32_MAX;
@@ -149,7 +149,7 @@ bool transfer(
   const uint32_t transferredUs=timing?micros():0;
   digitalWrite(static_cast<uint8_t>(csPin), HIGH);
   s_spi->endTransaction();
-#if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
+#if (defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE) || (defined(BODAQS_PIPELINE_TRACE) && BODAQS_PIPELINE_TRACE)
   observed.releasedUs=micros();
   s_previousTransaction=observed;
   if(context) *context=observed;

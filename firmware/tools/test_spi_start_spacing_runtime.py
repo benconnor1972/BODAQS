@@ -13,6 +13,7 @@ def main():
     parser.add_argument("--without-setup-delay",action="store_true",help="Negative proof: remove only the production setup wait")
     parser.add_argument("--capture-disabled",action="store_true")
     parser.add_argument("--boundary-trace",action="store_true")
+    parser.add_argument("--pipeline-trace",action="store_true")
     parser.add_argument("--phase-timing",action="store_true")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
@@ -99,7 +100,7 @@ int main() {
  auto transfer=[&](uint32_t pace) {return SharedSpiBus::transfer(4,settings,tx,rx,256,10,pace);};
  SpiTransactionContext first;
  assert(SharedSpiBus::transfer(4,settings,tx,rx,256,10,500,0,&first));assert(starts.back()==100);
-#if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
+#if (defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE) || (defined(BODAQS_PIPELINE_TRACE) && BODAQS_PIPELINE_TRACE)
  assert(first.valid && !first.previousValid && first.previousCs==-1 && first.sequence==1);
 #else
  assert(!first.valid);
@@ -140,7 +141,7 @@ int main() {
  tx[0]=0x42;
  assert(SharedSpiBus::transfer(4,settings,tx,rx,256,10,0,0,&observed));
  assert(lastWireLength==256 && lastWireCommand==0x42 && tx[0]==0x42);
-#if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
+#if (defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE) || (defined(BODAQS_PIPELINE_TRACE) && BODAQS_PIPELINE_TRACE)
  assert(observed.valid && observed.previousValid && observed.previousCs==5 && observed.cs==4);
  assert(observed.previousReleaseUs==30128 && observed.selectedUs==30128 && observed.releasedUs==30256);
  assert(observed.commandValid && observed.command==0x42 && observed.bytes==256);
@@ -197,10 +198,11 @@ int main() {
  assert(firstClockUs==selectedAtUs && rx[0]==0); // model alone is not a physical diagnosis
  assert(!selected && !lockHeld && !transactionActive);
  puts("production CS setup: slave first-byte readiness, locked/selected setup, ADC isolation, pacing and wrap PASS");
+ // CS_SETUP_CHECK
 '''))
         bus=args.bus_source or root / 'src/SharedSpiBus.cpp'
-        if args.boundary_trace:
-            assert not args.capture_disabled
+        if args.boundary_trace or args.pipeline_trace:
+            assert args.pipeline_trace or not args.capture_disabled
             cpp.write_text(cpp.read_text().replace(' // CS_SETUP_CHECK','''
  SpiTransactionContext before,after;
  assert(SharedSpiBus::transfer(4,settings,tx,rx,256,10,0,0,&before));
@@ -233,7 +235,7 @@ int main() {
             bus=temp/'without-setup.cpp';bus.write_text(changed)
         exe = temp / "fixture.exe"
         subprocess.run([args.compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
-                        "-DESP32", f"-DBODAQS_MEASUREMENT_REPLY_CAPTURE={int(not args.capture_disabled)}", f"-DBODAQS_SPI_BOUNDARY_TRACE={int(args.boundary_trace)}", "-I", str(temp), "-I", str(root / "src"),
+                        "-DESP32", f"-DBODAQS_MEASUREMENT_REPLY_CAPTURE={int(not args.capture_disabled)}", f"-DBODAQS_SPI_BOUNDARY_TRACE={int(args.boundary_trace)}", f"-DBODAQS_PIPELINE_TRACE={int(args.pipeline_trace)}", "-I", str(temp), "-I", str(root / "src"),
                         str(cpp), str(bus), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
 

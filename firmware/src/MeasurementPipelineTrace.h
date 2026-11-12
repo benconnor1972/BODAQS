@@ -51,7 +51,9 @@ inline void reset(uint64_t value,uint32_t) {
   participants=terminalMask=ordinaryPending=protectedPending=0;
   active=true;stopArmed=exhausted=false;
 }
-inline size_t reservedBytes() {return sizeof(firstLoss)+sizeof(stop)+64;}
+// Includes the shared bus's 128 per-CS sequence counters. Its existing reply
+// context is already retained by the selected reply-capture profile.
+inline size_t reservedBytes() {return sizeof(firstLoss)+sizeof(stop)+64+128*sizeof(uint32_t);}
 inline void setParticipants(uint8_t mask) {if(active) participants=mask;}
 inline void pending(uint8_t ordinary,uint8_t protectedMask) {
   if(active) {ordinaryPending=ordinary;protectedPending=protectedMask;}
