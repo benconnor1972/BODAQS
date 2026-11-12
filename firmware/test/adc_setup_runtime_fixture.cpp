@@ -234,6 +234,20 @@ int main() {
     assert(AnalogInputManager::configuredDataRateSps(0)==2000);
     assert(AnalogInputManager::requestedSampleRateHz()==requested);
   }
+  LoggerConfig scaling;ParamStore scalingParams[4];scaling.sensorN=4;
+  const char* scalingAins[]={"0","1","4","5"};
+  for(unsigned i=0;i<4;++i) {
+    assert(scalingParams[i].set("ain",scalingAins[i]));
+    scaling.sensors[i].type=SensorType::AnalogPot;scaling.sensors[i].params.bind(&scalingParams[i]);
+  }
+  for(uint16_t rate:{200,500}) {
+    assert(AnalogInputManager::configureFromConfig(scaling,rate)==rate);
+    for(unsigned adc=0;adc<2;++adc) {
+      assert(AnalogInputManager::activeChannelCount(adc)==2);
+      assert(AnalogInputManager::configuredDataRateSps(adc)==(rate==200?600:2000));
+    }
+    assert(AnalogInputManager::requestedSampleRateHz()==rate);
+  }
   assert(params[1].set("ain","4"));
   assert(AnalogInputManager::configureFromConfig(cfg,500)==500);
   wire.clear(); AnalogInputManager::onLoggingStart();

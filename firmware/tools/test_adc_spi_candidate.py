@@ -56,6 +56,16 @@ class AdcSpiCandidate(unittest.TestCase):
         self.assertIn("bodaqs_s3_mini_n4r2_imu_adc_storage_priority",
                       next(c["argv"] for c in commands if c["name"]=="logger-storage_priority"))
 
+    def test_scaling_builds_only_logger(self):
+        with patch.object(sys,"argv",["candidate","--profile","mixed-diagnostic","--experiment","adc-scaling",
+                                     "--validation-scope","logger","--fixed-bundle","fixed"]):args=runner.arguments()
+        commands=runner.plan(args,Path("out"))
+        self.assertEqual({c["name"] for c in commands},
+                         {"a8-dependencies","restricted-a8-dependencies","firmware-host","candidate-runner-tests",
+                          "contract-scaling","logger-clean-scaling","logger-scaling"})
+        self.assertIn("bodaqs_s3_mini_n4r2_imu_adc_scaling",
+                      next(c["argv"] for c in commands if c["name"]=="logger-scaling"))
+
     def test_channel_rate_builds_only_logger(self):
         with patch.object(sys,"argv",["candidate","--profile","mixed-diagnostic","--experiment","adc-channel-rate",
                                      "--validation-scope","logger","--fixed-bundle","fixed"]):args=runner.arguments()

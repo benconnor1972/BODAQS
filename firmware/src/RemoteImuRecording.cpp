@@ -376,7 +376,8 @@ bool configure(const LoggerConfig& cfg) {
  for(uint8_t a=0;a<2;++a) if(board::gBoard && a<board::gBoard->external_adc_count && AnalogInputManager::activeChannelCount(a))
   demand.adc[a]={AnalogInputManager::configuredDataRateSps(a),board::gBoard->external_adcs[a].spi_hz,
                 AnalogInputManager::activeChannelCount(a)};
- const bool benchMaskAllowed=ImuAdmission::channelRateBenchBuild()?(benchAdcMask==0x03 || benchAdcMask==0x11):benchAdcMask==3;
+ const bool benchMaskAllowed=ImuAdmission::channelRateBenchBuild()?(benchAdcMask==0x03 || benchAdcMask==0x11 ||
+      (ImuAdmission::scalingBenchBuild() && benchAdcMask==0x33)):benchAdcMask==3;
  report=ImuAdmission::singleNodeAdcSmokeBuild()
      ? ImuAdmission::evaluateSingleNodeAdcSmoke(demand,otherActiveSensors || !benchMaskAllowed)
      : ImuAdmission::singleNodeSmokeBuild()

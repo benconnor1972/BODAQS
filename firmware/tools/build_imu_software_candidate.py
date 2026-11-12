@@ -71,7 +71,7 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--validation-scope", choices=("full", "logger", "master"), default="full",
                         help="Logger scope requires declared unchanged peer images; no full-suite claim")
     parser.add_argument("--reuse-peers", type=Path, help="bodaqs.peer-images.v1 JSON with immutable image paths/hashes")
-    parser.add_argument("--experiment",choices=("spi-tx-prime-ab","spi-mode-ab","spi-boundary-trace","spi-disabled-init","spi-init-sustained","adc-spi-timing","adc-worker-priority","storage-worker-priority","adc-channel-rate"))
+    parser.add_argument("--experiment",choices=("spi-tx-prime-ab","spi-mode-ab","spi-boundary-trace","spi-disabled-init","spi-init-sustained","adc-spi-timing","adc-worker-priority","storage-worker-priority","adc-channel-rate","adc-scaling"))
     parser.add_argument("--fixed-bundle",type=Path,help="Sealed r5/r6 bundle: preserve exact reference logger/node/master")
     parser.add_argument("--review-result", type=Path, help="bodaqs.review.v1 source-bound result")
     parser.add_argument("--review-base", help="Exact commit reviewed against HEAD")
@@ -97,7 +97,8 @@ def plan(args: argparse.Namespace, output: Path) -> list[dict]:
     make = [args.make, "-B"]
     recipe = PROFILES[args.profile]
     logger_env = recipe["logger_env"]
-    if args.experiment=="adc-channel-rate":logger_env="bodaqs_s3_mini_n4r2_imu_adc_channel_rate"
+    if args.experiment=="adc-scaling":logger_env="bodaqs_s3_mini_n4r2_imu_adc_scaling"
+    elif args.experiment=="adc-channel-rate":logger_env="bodaqs_s3_mini_n4r2_imu_adc_channel_rate"
     elif args.experiment=="storage-worker-priority":logger_env="bodaqs_s3_mini_n4r2_imu_adc_storage_priority"
     elif args.experiment=="adc-worker-priority":logger_env="bodaqs_s3_mini_n4r2_imu_adc_priority"
     elif args.experiment=="adc-spi-timing":logger_env="bodaqs_s3_mini_n4r2_imu_adc_spi_timing"
@@ -147,13 +148,13 @@ def plan(args: argparse.Namespace, output: Path) -> list[dict]:
                 f"artifacts/master-{label}/generated/ti_msp_dl_config.{ext}") for ext in ("c","h")]
             commands.append(command)
         return commands
-    if args.experiment in ("spi-mode-ab","spi-boundary-trace","spi-init-sustained","adc-spi-timing","adc-worker-priority","storage-worker-priority","adc-channel-rate"):
+    if args.experiment in ("spi-mode-ab","spi-boundary-trace","spi-init-sustained","adc-spi-timing","adc-worker-priority","storage-worker-priority","adc-channel-rate","adc-scaling"):
         trace=args.experiment=="spi-boundary-trace"
         sustained=args.experiment=="spi-init-sustained"
-        adc_priority=args.experiment in ("adc-worker-priority","storage-worker-priority","adc-channel-rate")
-        adc_timing=args.experiment in ("adc-spi-timing","adc-worker-priority","storage-worker-priority","adc-channel-rate")
+        adc_priority=args.experiment in ("adc-worker-priority","storage-worker-priority","adc-channel-rate","adc-scaling")
+        adc_timing=args.experiment in ("adc-spi-timing","adc-worker-priority","storage-worker-priority","adc-channel-rate","adc-scaling")
         for mode in ((0,) if trace or sustained or adc_timing else (0,1)):
-            label="channel_rate" if args.experiment=="adc-channel-rate" else "storage_priority" if args.experiment=="storage-worker-priority" else "priority" if adc_priority else "spi_timing" if adc_timing else "sustained" if sustained else "trace" if trace else f"mode{mode}"
+            label="scaling" if args.experiment=="adc-scaling" else "channel_rate" if args.experiment=="adc-channel-rate" else "storage_priority" if args.experiment=="storage-worker-priority" else "priority" if adc_priority else "spi_timing" if adc_timing else "sustained" if sustained else "trace" if trace else f"mode{mode}"
             if not adc_timing:
                 commands.append(ti_step("master","acquisition","master-"+label,["SPI_TX_PRIME=1",f"SPI_BENCH_MODE={mode}",
                     *(["SPI_BOUNDARY_TRACE=0","SPI_DISABLED_INIT=1"] if sustained else ["SPI_BOUNDARY_TRACE=1"] if trace else [])]))
@@ -191,18 +192,19 @@ def load_fixed_bundle(bundle:Path,experiment:str="spi-tx-prime-ab") -> dict:
     """
     bundle=bundle.resolve();path=bundle/"BUILD_MANIFEST.json"
     value=json.loads(path.read_text(encoding="utf-8"))
-    if experiment in ("spi-boundary-trace","spi-disabled-init","spi-init-sustained","adc-spi-timing","adc-worker-priority","storage-worker-priority","adc-channel-rate"):
+    if experiment in ("spi-boundary-trace","spi-disabled-init","spi-init-sustained","adc-spi-timing","adc-worker-priority","storage-worker-priority","adc-channel-rate","adc-scaling"):
         disabled_init=experiment=="spi-disabled-init"
         sustained=experiment=="spi-init-sustained"
-        channel_rate=experiment=="adc-channel-rate"
-        storage_priority=experiment in ("storage-worker-priority","adc-channel-rate")
-        adc_priority=experiment in ("adc-worker-priority","storage-worker-priority","adc-channel-rate")
-        adc_timing=experiment in ("adc-spi-timing","adc-worker-priority","storage-worker-priority","adc-channel-rate")
-        expected="storage-worker-priority" if channel_rate else "adc-worker-priority" if storage_priority else "adc-spi-timing" if adc_priority else "spi-init-sustained" if adc_timing else "spi-disabled-init" if sustained else "spi-boundary-trace" if disabled_init else "spi-mode-ab"
-        parent="r13" if channel_rate else "r12" if storage_priority else "r11" if adc_priority else "r10" if adc_timing else "r9" if sustained else "r8 trace" if disabled_init else "r7 mode"
+        scaling=experiment=="adc-scaling"
+        channel_rate=experiment in ("adc-channel-rate","adc-scaling")
+        storage_priority=experiment in ("storage-worker-priority","adc-channel-rate","adc-scaling")
+        adc_priority=experiment in ("adc-worker-priority","storage-worker-priority","adc-channel-rate","adc-scaling")
+        adc_timing=experiment in ("adc-spi-timing","adc-worker-priority","storage-worker-priority","adc-channel-rate","adc-scaling")
+        expected="adc-channel-rate" if scaling else "storage-worker-priority" if channel_rate else "adc-worker-priority" if storage_priority else "adc-spi-timing" if adc_priority else "spi-init-sustained" if adc_timing else "spi-disabled-init" if sustained else "spi-boundary-trace" if disabled_init else "spi-mode-ab"
+        parent="r14" if scaling else "r13" if channel_rate else "r12" if storage_priority else "r11" if adc_priority else "r10" if adc_timing else "r9" if sustained else "r8 trace" if disabled_init else "r7 mode"
         if value.get("status")!="passed" or value.get("candidate_profile")!="mixed-diagnostic" or value.get("experiment")!=expected:
             raise ValueError(f"Experiment requires the passed {parent} bundle")
-        selected=value.get("variants",{}).get("storage_priority" if channel_rate else "priority" if storage_priority else "spi_timing" if adc_priority else "sustained" if adc_timing else "trace" if disabled_init or sustained else "mode0",{})
+        selected=value.get("variants",{}).get("channel_rate" if scaling else "storage_priority" if channel_rate else "priority" if storage_priority else "spi_timing" if adc_priority else "sustained" if adc_timing else "trace" if disabled_init or sustained else "mode0",{})
         if selected.get("spi_mode")!=0 or selected.get("spi_tx_prime") is not True:
             raise ValueError(f"Rollback requires {parent} primed mode0")
         if (disabled_init or sustained) and (selected.get("boundary_trace_version"),selected.get("boundary_trace_bytes"))!=(1,7328):
@@ -217,6 +219,8 @@ def load_fixed_bundle(bundle:Path,experiment:str="spi-tx-prime-ab") -> dict:
             raise ValueError("Storage priority trial requires the r12 priority-3 ADC logger")
         if channel_rate and selected.get("storage_task_priority")!=2:
             raise ValueError("Channel/rate bench requires r13 storage priority2")
+        if scaling and selected.get("adc_channel_rate_bench") is not True:
+            raise ValueError("Scaling bench requires r14 channel/rate scope")
         images=[]
         for role,key in (("logger","logger"),("rollback-master","master"),("node",None)):
             matches=([a for a in value["artifacts"] if a.get("role")=="node"] if key is None else
@@ -242,7 +246,7 @@ def load_fixed_bundle(bundle:Path,experiment:str="spi-tx-prime-ab") -> dict:
             images.append({"role":role,"path":image["path"],"sha256":image["sha256"],
                            "source_commit":source_commit})
         return {"manifest_sha256":sha256(path),"bundle":str(bundle),"images":images,
-                "firmware_name":"bodaqs_a8_imu_adc_storage_priority_r13" if channel_rate else "bodaqs_a8_imu_adc_priority_r12" if storage_priority else "bodaqs_a8_imu_adc_spi_timing_r11" if adc_priority else "bodaqs_a8_imu_adc_sustained_r10" if adc_timing else "bodaqs_a8_imu_adc_trace_r8" if disabled_init or sustained else "bodaqs_a8_imu_adc_mode0_r7",
+                "firmware_name":"bodaqs_a8_imu_adc_channel_rate_r14" if scaling else "bodaqs_a8_imu_adc_storage_priority_r13" if channel_rate else "bodaqs_a8_imu_adc_priority_r12" if storage_priority else "bodaqs_a8_imu_adc_spi_timing_r11" if adc_priority else "bodaqs_a8_imu_adc_sustained_r10" if adc_timing else "bodaqs_a8_imu_adc_trace_r8" if disabled_init or sustained else "bodaqs_a8_imu_adc_mode0_r7",
                 "configuration":"operator_preserves_same_mixed_configuration"}
     if experiment=="spi-mode-ab" and value.get("experiment")!="spi-tx-prime-ab":
         raise ValueError("Mode comparison requires the sealed r6 primed-master bundle, not r5")
@@ -390,14 +394,14 @@ def main() -> int:
     args = arguments()
     if args.jobs < 1:
         raise SystemExit("--jobs must be positive")
-    if args.validation_scope=="logger" and not args.reuse_peers and args.experiment not in ("adc-spi-timing","adc-worker-priority","storage-worker-priority","adc-channel-rate"):
+    if args.validation_scope=="logger" and not args.reuse_peers and args.experiment not in ("adc-spi-timing","adc-worker-priority","storage-worker-priority","adc-channel-rate","adc-scaling"):
         raise SystemExit("Logger-only validation requires --reuse-peers")
     if args.experiment:
         if args.mode!="candidate" or args.profile!="mixed-diagnostic" or not args.fixed_bundle or args.reuse_peers:
             raise SystemExit("SPI comparison requires candidate/mixed-diagnostic, --fixed-bundle and no --reuse-peers")
         if args.experiment in ("spi-mode-ab","spi-boundary-trace","spi-init-sustained") and args.validation_scope!="full":
             raise SystemExit("Mode comparison changes both endpoints and requires full validation scope")
-        if args.experiment in ("adc-spi-timing","adc-worker-priority","storage-worker-priority","adc-channel-rate") and args.validation_scope!="logger":
+        if args.experiment in ("adc-spi-timing","adc-worker-priority","storage-worker-priority","adc-channel-rate","adc-scaling") and args.validation_scope!="logger":
             raise SystemExit("ADC phase timing uses logger-only scope and unchanged r10 peers")
     elif args.fixed_bundle or args.validation_scope=="master":
         raise SystemExit("Fixed bundle/master-only scope requires an explicit experiment")
@@ -554,14 +558,14 @@ def main() -> int:
                 "boundary_trace_version":1,"boundary_trace_bytes":7328,"master":selected,"logger":logger}}
             manifest["compatibility_reference"]={"spi_disabled_init":False,"master":reference}
             manifest["targets"]["logger"]="unchanged sealed r8 trace image"
-        if args.experiment in ("spi-mode-ab","spi-boundary-trace","spi-init-sustained","adc-spi-timing","adc-worker-priority","storage-worker-priority","adc-channel-rate"):
+        if args.experiment in ("spi-mode-ab","spi-boundary-trace","spi-init-sustained","adc-spi-timing","adc-worker-priority","storage-worker-priority","adc-channel-rate","adc-scaling"):
             variants={}
             trace=args.experiment=="spi-boundary-trace"
             sustained=args.experiment=="spi-init-sustained"
-            adc_priority=args.experiment in ("adc-worker-priority","storage-worker-priority","adc-channel-rate")
-            adc_timing=args.experiment in ("adc-spi-timing","adc-worker-priority","storage-worker-priority","adc-channel-rate")
+            adc_priority=args.experiment in ("adc-worker-priority","storage-worker-priority","adc-channel-rate","adc-scaling")
+            adc_timing=args.experiment in ("adc-spi-timing","adc-worker-priority","storage-worker-priority","adc-channel-rate","adc-scaling")
             for mode in ((0,) if trace or sustained or adc_timing else (0,1)):
-                label="channel_rate" if args.experiment=="adc-channel-rate" else "storage_priority" if args.experiment=="storage-worker-priority" else "priority" if adc_priority else "spi_timing" if adc_timing else "sustained" if sustained else "trace" if trace else f"mode{mode}"
+                label="scaling" if args.experiment=="adc-scaling" else "channel_rate" if args.experiment=="adc-channel-rate" else "storage_priority" if args.experiment=="storage-worker-priority" else "priority" if adc_priority else "spi_timing" if adc_timing else "sustained" if sustained else "trace" if trace else f"mode{mode}"
                 def artifact(path):
                     selected=next((a for a in manifest["artifacts"] if a["path"]==path),None)
                     if selected is None:raise RuntimeError("Missing paired mode artifact: "+path)
@@ -569,7 +573,7 @@ def main() -> int:
                 variants[label]={"spi_mode":mode,"spi_tx_prime":True,
                     "master":artifact(next(a["path"] for a in manifest["artifacts"] if a.get("role")=="rollback-master") if adc_timing else f"artifacts/master-{label}/bodaqs_can_master.out"),
                     "logger":artifact(f"artifacts/logger-{label}/firmware.bin")}
-                expected_name="bodaqs_a8_imu_adc_channel_rate_r14" if args.experiment=="adc-channel-rate" else "bodaqs_a8_imu_adc_storage_priority_r13" if args.experiment=="storage-worker-priority" else "bodaqs_a8_imu_adc_priority_r12" if adc_priority else "bodaqs_a8_imu_adc_spi_timing_r11" if adc_timing else "bodaqs_a8_imu_adc_sustained_r10" if sustained else "bodaqs_a8_imu_adc_trace_r8" if trace else f"bodaqs_a8_imu_adc_{label}_r7"
+                expected_name="bodaqs_a8_imu_adc_scaling_r15" if args.experiment=="adc-scaling" else "bodaqs_a8_imu_adc_channel_rate_r14" if args.experiment=="adc-channel-rate" else "bodaqs_a8_imu_adc_storage_priority_r13" if args.experiment=="storage-worker-priority" else "bodaqs_a8_imu_adc_priority_r12" if adc_priority else "bodaqs_a8_imu_adc_spi_timing_r11" if adc_timing else "bodaqs_a8_imu_adc_sustained_r10" if sustained else "bodaqs_a8_imu_adc_trace_r8" if trace else f"bodaqs_a8_imu_adc_{label}_r7"
                 if expected_name.encode() not in (output/variants[label]["logger"]["path"]).read_bytes():
                     raise RuntimeError("Logger binary is missing its selected mode identity")
                 recipe=json.loads((output/f"artifacts/logger-{label}/identity/build-recipe.json").read_text(encoding="utf-8"))
@@ -580,8 +584,9 @@ def main() -> int:
                 if sustained or adc_timing:
                     variants[label].update(spi_disabled_init=True,boundary_trace_enabled=False)
                 if adc_timing:variants[label].update(adc_spi_phase_timing=True,master_reused=True,adc_task_priority=3 if adc_priority else 2)
-                if args.experiment in ("storage-worker-priority","adc-channel-rate"):variants[label].update(storage_task_priority=2)
-                if args.experiment=="adc-channel-rate":variants[label].update(adc_channel_rate_bench=True)
+                if args.experiment in ("storage-worker-priority","adc-channel-rate","adc-scaling"):variants[label].update(storage_task_priority=2)
+                if args.experiment in ("adc-channel-rate","adc-scaling"):variants[label].update(adc_channel_rate_bench=True)
+                if args.experiment=="adc-scaling":variants[label].update(adc_scaling_bench=True)
                 source=boot_app0_path()
                 target=output/f"artifacts/logger-{label}/boot_app0.bin";shutil.copyfile(source,target)
                 manifest["artifacts"].append({"path":target.relative_to(output).as_posix(),"sha256":sha256(target),"bytes":target.stat().st_size})
@@ -604,7 +609,7 @@ def main() -> int:
         if (output/"SPI_SOURCE_CONTRACT.json").exists():
             manifest["bus_contract"]=json.loads((output/"SPI_SOURCE_CONTRACT.json").read_text(encoding="utf-8"))
         if args.mode=="candidate" and args.experiment:
-            runbook={"spi-mode-ab":"CAN-FD_SPI_Mode_Bench.md","spi-boundary-trace":"CAN-FD_SPI_Boundary_Trace_Runbook.md","spi-disabled-init":"CAN-FD_SPI_Disabled_Init_Runbook.md","spi-init-sustained":"CAN-FD_SPI_Init_Sustained_Runbook.md","adc-spi-timing":"ADC_SPI_Phase_Timing_Runbook.md","adc-worker-priority":"ADC_Worker_Priority_Runbook.md","storage-worker-priority":"Storage_Worker_Priority_Runbook.md","adc-channel-rate":"ADC_Channel_Rate_Runbook.md"}.get(args.experiment,"CAN-FD_SPI_TX_Priming_Bench.md")
+            runbook={"spi-mode-ab":"CAN-FD_SPI_Mode_Bench.md","spi-boundary-trace":"CAN-FD_SPI_Boundary_Trace_Runbook.md","spi-disabled-init":"CAN-FD_SPI_Disabled_Init_Runbook.md","spi-init-sustained":"CAN-FD_SPI_Init_Sustained_Runbook.md","adc-spi-timing":"ADC_SPI_Phase_Timing_Runbook.md","adc-worker-priority":"ADC_Worker_Priority_Runbook.md","storage-worker-priority":"Storage_Worker_Priority_Runbook.md","adc-channel-rate":"ADC_Channel_Rate_Runbook.md","adc-scaling":"ADC_Four_Channel_Scaling_Runbook.md"}.get(args.experiment,"CAN-FD_SPI_TX_Priming_Bench.md")
             shutil.copyfile(ROOT/"docs/firmware"/runbook,output/"RUNBOOK.md")
             if args.experiment=="adc-channel-rate":
                 shutil.copyfile(ROOT/"firmware/tools/prepare_adc_channel_cases.py",output/"prepare_adc_channel_cases.py")
@@ -647,7 +652,8 @@ def main() -> int:
              "Host validation only; no target images or source archive were produced.\n") +
             "No devices were accessed.\n"
             "Inspect BUILD_MANIFEST.json status and logs before using artifacts.\n" +
-            ("r14 channel/rate bench: install ONLY selected logger; retain r10 master/node/settings. See RUNBOOK.md.\n" if args.experiment=="adc-channel-rate" else
+            ("r15 four-channel scaling: install ONLY selected logger; retain r10 master/node/settings. See RUNBOOK.md.\n" if args.experiment=="adc-scaling" else
+             "r14 channel/rate bench: install ONLY selected logger; retain r10 master/node/settings. See RUNBOOK.md.\n" if args.experiment=="adc-channel-rate" else
              "r13 storage priority trial: install ONLY selected logger; retain r10 master/node/settings. See RUNBOOK.md.\n" if args.experiment=="storage-worker-priority" else
              "r12 ADC priority trial: install ONLY selected logger; retain r10 master/node/settings. See RUNBOOK.md.\n" if args.experiment=="adc-worker-priority" else
              "r11 ADC SPI timing: install ONLY selected logger; retain r10 master/node/settings. See RUNBOOK.md.\n" if args.experiment=="adc-spi-timing" else

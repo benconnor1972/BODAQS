@@ -26,7 +26,7 @@ def fixture_source(root):
     for header in ('#include <Arduino.h>', '#include <esp_timer.h>', '#include <esp_system.h>', '#include "SensorManager.h"', '#include "DebugLog.h"'):
         coordinator = coordinator.replace(header, '')
     fixture += '\nstatic uint8_t fixtureAdcChannels=0;static uint16_t fixtureAdcSps=100;static bool fixtureConcentrated=false;\nnamespace AnalogInputManager { uint8_t activeChannelCount(uint8_t a) {return fixtureConcentrated?(a?0:2):fixtureAdcChannels;} uint16_t configuredDataRateSps(uint8_t) {return fixtureConcentrated?2000:fixtureAdcSps;} }\n'
-    fixture = fixture.replace('static SensorSpec saved;', 'static SensorSpec saved; static unsigned fixtureSensorCount=1; static SensorSpec extra[3]; static ParamStore extraParams[3];')
+    fixture = fixture.replace('static SensorSpec saved;', 'static SensorSpec saved; static unsigned fixtureSensorCount=1; static SensorSpec extra[4]; static ParamStore extraParams[4];')
     fixture = fixture.replace('return 1; }\nbool LoggerConfig::getSensorSpec', 'return fixtureSensorCount; }\nbool LoggerConfig::getSensorSpec')
     fixture = fixture.replace('if(i) return false; spec=saved;', 'if(i>=fixtureSensorCount) return false; spec=i?extra[i-1]:saved;')
     fixture = fixture.replace('identity.capabilities=15;', 'identity.capabilities=15 | BODAQS_CAN_LINK_CAP_ACQUISITION;')
@@ -46,7 +46,9 @@ def main():
     parser.add_argument("--smoke", action="store_true", help="Exercise opt-in unqualified single-node build without installing synthetic costs")
     parser.add_argument("--mixed", action="store_true", help="Exact 500 Hz two-ADC bench scope plus one compact IMU")
     parser.add_argument("--channel-rate",action="store_true")
+    parser.add_argument("--scaling",action="store_true")
     args = parser.parse_args()
+    if args.scaling: args.channel_rate=True
     if args.channel_rate: args.mixed=True
     if args.mixed: args.smoke=True;args.v2=True
     if args.reply_capture:
@@ -74,6 +76,7 @@ static void captureFlowLog(const char* tag,const char*,...) {if(!std::strcmp(tag
         flags=["-DBODAQS_SINGLE_NODE_IMU_SMOKE=1"] if args.smoke else []
         if args.mixed: flags.append("-DBODAQS_SINGLE_NODE_IMU_ADC_SMOKE=1")
         if args.channel_rate: flags.append("-DBODAQS_ADC_CHANNEL_RATE_BENCH=1")
+        if args.scaling: flags.append("-DBODAQS_ADC_SCALING_BENCH=1")
         if args.v2:
             flags.append("-DBODAQS_SPI_MEASUREMENT_V2=1")
         if args.start_spacing_us:
@@ -86,6 +89,9 @@ static void captureFlowLog(const char* tag,const char*,...) {if(!std::strcmp(tag
         subprocess.run([str(exe)], check=True)
         if args.channel_rate:
             for case in ("channel-rate-500","channel-rate-700","channel-rate-1000"):
+                subprocess.run([str(exe),case],check=True)
+        if args.scaling:
+            for case in ("scaling-200","scaling-500","mixed-reject-scaling-rate","mixed-reject-scaling-duplicate","mixed-reject-scaling-map","mixed-reject-scaling-raw"):
                 subprocess.run([str(exe),case],check=True)
         if args.flow_diagnostics:
             subprocess.run([str(exe), "flow-cancel-scope"], check=True)

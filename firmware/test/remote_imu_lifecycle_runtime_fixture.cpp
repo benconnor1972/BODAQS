@@ -97,6 +97,24 @@ int main(int argc,char** argv) {
       assert(extraParams[1].set("ain","1"));
       config.sampleRateHz=uint16_t(std::atoi(argv[1]+13));
     }
+    if(argc>1 && (!std::strncmp(argv[1],"scaling-",8) || !std::strncmp(argv[1],"mixed-reject-scaling-",21))) {
+      assert(ImuAdmission::scalingBenchBuild());
+      const char* ains[]={"0","1","4","5"};
+      fixtureSensorCount=5;fixtureAdcChannels=2;
+      config.sampleRateHz=!std::strcmp(argv[1],"scaling-500")?500:200;
+      fixtureAdcSps=config.sampleRateHz==200?600:2000;
+      for(unsigned i=0;i<4;++i) {
+        extra[i]={};extra[i].type=SensorType::AnalogPot;
+        assert(extraParams[i].set("ain",ains[i]));extra[i].params.bind(&extraParams[i]);
+        const unsigned ain=unsigned(std::atoi(ains[i]));
+        auto& input=profile.analog.inputs[ain];input.source=board::AnalogSourceType::ExternalAdc;
+        input.external_adc_index=ain/4;input.external_channel=ain%4;
+      }
+      if(!std::strcmp(argv[1],"mixed-reject-scaling-rate")) config.sampleRateHz=700;
+      if(!std::strcmp(argv[1],"mixed-reject-scaling-duplicate")) assert(extraParams[3].set("ain","4"));
+      if(!std::strcmp(argv[1],"mixed-reject-scaling-map")) profile.analog.inputs[5].external_channel=0;
+      if(!std::strcmp(argv[1],"mixed-reject-scaling-raw")) assert(extraParams[3].set("include_raw","true"));
+    }
     if(argc>1 && !std::strcmp(argv[1],"mixed-control")) {
       saved.mutedDefault=true;
       assert(RemoteImuRecording::configure(config));
@@ -433,7 +451,7 @@ int main(int argc,char** argv) {
   for(unsigned n=0;n<remoteNodes;++n) assert(acquisitions[n].phase==3 && acquisitions[n].lease_valid);
 
   assert(acquisitions[0].phase==3 && acquisitions[0].lease_valid);
-  if(argc>1 && std::strcmp(argv[1],"four") && std::strncmp(argv[1],"channel-rate-",13)) {
+  if(argc>1 && std::strcmp(argv[1],"four") && std::strncmp(argv[1],"channel-rate-",13) && std::strncmp(argv[1],"scaling-",8)) {
     recording=true;
     if(!std::strcmp(argv[1],"node-reboot")) {
       ++node.view.boot_id;node.view.active_session=0;node.view.flags=0;node.authority={};

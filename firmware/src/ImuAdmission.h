@@ -16,6 +16,17 @@ constexpr bool channelRateBenchBuild() {
 #endif
 }
 enum class Reason : uint8_t { None, Unqualified, Link, CanCapacity, SpiCapacity, DrainCapacity, Coverage, Allocation, Eligibility, SmokeScope, MixedSmokeScope };
+#if defined(BODAQS_ADC_SCALING_BENCH) && BODAQS_ADC_SCALING_BENCH != 0 && BODAQS_ADC_SCALING_BENCH != 1
+#error BODAQS_ADC_SCALING_BENCH must be 0 or 1
+#endif
+constexpr bool scalingBenchBuild() {
+#if defined(BODAQS_ADC_SCALING_BENCH) && BODAQS_ADC_SCALING_BENCH == 1
+ static_assert(channelRateBenchBuild(), "Scaling bench requires channel/rate bench scope");
+ return true;
+#else
+ return false;
+#endif
+}
 constexpr bool singleNodeSmokeBuild() {
 #if defined(BODAQS_SINGLE_NODE_IMU_SMOKE) && BODAQS_SINGLE_NODE_IMU_SMOKE == 1
  return true;
@@ -26,7 +37,7 @@ constexpr bool singleNodeSmokeBuild() {
 constexpr const char* buildMode() {
  #if defined(BODAQS_SINGLE_NODE_IMU_ADC_SMOKE) && BODAQS_SINGLE_NODE_IMU_ADC_SMOKE == 1
  static_assert(singleNodeSmokeBuild(), "ADC smoke requires the compact single-node smoke build");
- return channelRateBenchBuild()?"single_node_adc_channel_rate_unqualified":"single_node_adc_smoke_unqualified";
+ return scalingBenchBuild()?"single_node_adc_scaling_unqualified":channelRateBenchBuild()?"single_node_adc_channel_rate_unqualified":"single_node_adc_smoke_unqualified";
  #else
  return singleNodeSmokeBuild()?"single_node_smoke_unqualified":"production";
  #endif
@@ -72,7 +83,7 @@ Report evaluateSingleNodeAdcSmoke(const Demand&,bool otherActiveSensors);
 const char* reasonText(Reason);
 inline const char* reportText(const Report& r) {
  return r.benchOnly && r.reason==Reason::None
-     ? (singleNodeAdcSmokeBuild()?"single-node plus two ADC channels (unqualified)":"single-node smoke test (unqualified)")
+     ? (scalingBenchBuild()?"single-node ADC scaling bench (unqualified)":singleNodeAdcSmokeBuild()?"single-node plus two ADC channels (unqualified)":"single-node smoke test (unqualified)")
      : reasonText(r.reason);
 }
 }

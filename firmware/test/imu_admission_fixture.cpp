@@ -59,6 +59,29 @@ int main() {
   d.loggerRateHz=rate;
   assert((ImuAdmission::evaluateSingleNodeAdcSmoke(d,false).reason==ImuAdmission::Reason::None)==ImuAdmission::channelRateBenchBuild());
  }
+ for(uint16_t rate:{200,500}) {
+  d={};d.nodes=1;d.loggerRateHz=rate;
+  const uint32_t sps=rate==200?600:2000;
+  d.adc[0]={sps,1000000,2};d.adc[1]={sps,1000000,2};
+  r=ImuAdmission::evaluateSingleNodeAdcSmoke(d,false);
+  assert((r.reason==ImuAdmission::Reason::None)==ImuAdmission::scalingBenchBuild());
+  if(ImuAdmission::scalingBenchBuild()) {
+   assert(r.benchOnly && !r.qualified && r.attempted);
+   assert(ImuAdmission::evaluate(d,ImuAdmission::Profile{}).reason==ImuAdmission::Reason::Unqualified);
+   assert(ImuAdmission::evaluateSingleNodeAdcSmoke(d,true).reason==ImuAdmission::Reason::MixedSmokeScope);
+   d.nodes=2;assert(ImuAdmission::evaluateSingleNodeAdcSmoke(d,false).reason==ImuAdmission::Reason::MixedSmokeScope);d.nodes=1;
+   for(unsigned a=0;a<2;++a) {
+    d.adc[a].activeChannels=3;assert(ImuAdmission::evaluateSingleNodeAdcSmoke(d,false).reason==ImuAdmission::Reason::MixedSmokeScope);d.adc[a].activeChannels=2;
+    d.adc[a].spiHz=8000000;assert(ImuAdmission::evaluateSingleNodeAdcSmoke(d,false).reason==ImuAdmission::Reason::MixedSmokeScope);d.adc[a].spiHz=1000000;
+    d.adc[a].conversionsPerSecond=sps==600?1000:1200;
+    assert(ImuAdmission::evaluateSingleNodeAdcSmoke(d,false).reason==ImuAdmission::Reason::MixedSmokeScope);d.adc[a].conversionsPerSecond=sps;
+   }
+   for(uint16_t rejected:{100,700,1000}) {
+    d.loggerRateHz=rejected;assert(ImuAdmission::evaluateSingleNodeAdcSmoke(d,false).reason==ImuAdmission::Reason::MixedSmokeScope);
+   }
+  }
+ }
+ d={};d.nodes=1;d.adc[0]={2000,1000000,2};
  if(ImuAdmission::channelRateBenchBuild()) {
   d.loggerRateHz=200;assert(ImuAdmission::evaluateSingleNodeAdcSmoke(d,false).reason==ImuAdmission::Reason::MixedSmokeScope);
   d.loggerRateHz=700;d.adc[0].activeChannels=3;
