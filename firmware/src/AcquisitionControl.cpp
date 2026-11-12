@@ -381,6 +381,7 @@ bool begin(uint64_t recording,uint64_t context) {
   if(!CanMasterManager::claimMeasurementControl(isOwner)) return false;
 #if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
   ImuFlowDiagnostics::reset(context,millis());
+  MeasurementPipelineTrace::setParticipants(dataMask);
 #endif
   const auto& d=CanMasterManager::diagnostics();session=d.authority.session;masterBoot=d.control.master_boot_id;
   nextRead=d.authority.next_read;nextTransfer=d.apply.next_transfer;
@@ -594,6 +595,14 @@ void service() {
   } else if(!urgent) cursor=(cursor+1)%16;
   transport.timingEnabled=!physicalFenceVerified && dataConsumer && dataMask;
   if(!urgent && transport.timingEnabled && (serviceCursor%20)==0) {cls=5;n=255;}
+#if BODAQS_PIPELINE_TRACE
+  uint8_t ordinaryMask=0,protectedMask=0;
+  for(uint8_t peer=0;peer<4;++peer) {
+    if(peers[peer].ordinary.pending) ordinaryMask|=1u<<peer;
+    if(peers[peer].protectedLane.pending) protectedMask|=1u<<peer;
+  }
+  MeasurementPipelineTrace::pending(ordinaryMask,protectedMask);
+#endif
   const int result=CanMasterManager::serviceMeasurementTransport(transport,cls,n,inbox);
   if(result==-14) for(uint8_t peer=0;peer<4;++peer)
     if(peers[peer].recording && !peers[peer].excluded) exclude(peer,26);

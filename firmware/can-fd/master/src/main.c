@@ -29,6 +29,7 @@
 volatile const uint32_t gMasterOptimizationInfo[3] = {
     1U, BODAQS_MASTER_BLOCK_CRC, BODAQS_MASTER_CAN_FIRST
 };
+volatile const uint32_t gMasterBoundaryReserve=BODAQS_MASTER_BOUNDARY_RESERVE;
 #ifndef BODAQS_ENABLE_BUCK
 #define BODAQS_ENABLE_BUCK (1)
 #endif
@@ -1030,6 +1031,7 @@ int main(void)
     normalize_retained_clocks();
     /* Keep the debugger image marker live through linker garbage collection. */
     (void)gMasterOptimizationInfo[0];
+    (void)gMasterBoundaryReserve;
     SYSCFG_DL_init();
     gCanLinkReady = bodaqs_can_link_apply(MCAN0_INST, BODAQS_CAN_LINK_PROFILE);
 

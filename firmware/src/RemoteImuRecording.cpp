@@ -495,6 +495,7 @@ void release() {
   if(ImuFlowDiagnostics::haveFirstLoss && ImuFlowDiagnostics::firstLoss.context==context)
     logFlowSnapshot("first_loss",ImuFlowDiagnostics::firstLoss);
   logFlowSnapshot("finished",ImuFlowDiagnostics::finished);
+  MeasurementPipelineTrace::dump([]([[maybe_unused]] const char* line) {LOGW_TAG("PIPE","%s",line);});
  }
 #endif
  for(auto& p:peers) p.release();

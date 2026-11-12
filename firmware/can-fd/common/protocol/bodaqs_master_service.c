@@ -346,7 +346,20 @@ bool bodaqs_master_service_receive_can_ordered(BodaqsMasterService *s,uint8_t no
     advance_receptions(s,node,now);
     q=&s->ingress[node];
     if(s->loss[node].failed || s->isr_loss[node].failed) {++s->backpressure_frames;return false;}
-    if(q->count==BODAQS_MASTER_RETENTION_CAPACITY) {
+    unsigned limit=BODAQS_MASTER_RETENTION_CAPACITY;
+#if BODAQS_MASTER_BOUNDARY_RESERVE
+    /* Normal traffic cannot consume the final two FIFO entries. Preserve
+     * canonical source boundaries without replacing/reordering an old head.
+     * A full reserve still fails honestly through the existing loss path. */
+    const bool boundary=cls==2 && identifier==0x090U+node && length==64 &&
+        payload[0]==1 && payload[1]==0x25 && payload[2]==1 && !payload[3] &&
+        payload[6]==56 && !payload[7] && !payload[12] && payload[13] &&
+        payload[14]>=1 && payload[14]<=8 &&
+        bodaqs_measurement_get(payload+8,4)==s->discovery[node].boot_id &&
+        !(bodaqs_measurement_get(payload+54,2)&~2047ULL);
+    if(!boundary) limit-=BODAQS_MASTER_BOUNDARY_RESERVE;
+#endif
+    if(q->count>=limit) {
         ++q->dropped; ++s->backpressure_frames;
         bodaqs_master_service_loss(s,node,6,cls,payload,length,tick,ordinal); return false;
     }

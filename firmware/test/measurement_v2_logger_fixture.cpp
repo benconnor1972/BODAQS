@@ -84,6 +84,9 @@ int main() {
   assert(CanMasterManager::enterMeasurementMode(123,456));
   master.acquisition_record[0]=123;master.acquisition_boot[0]=node.view.boot_id;
   master.acquisition_fenced &= ~1u;
+#if BODAQS_PIPELINE_TRACE
+  ImuFlowDiagnostics::reset(456,clockMs);MeasurementPipelineTrace::setParticipants(1);
+#endif
   uint8_t anchor[32]={1,0x22,1,0,0,0,20,0,0,1,1};anchor[20]=0x2c;anchor[21]=1;anchor[24]=1;
   assert(bodaqs_master_service_receive_can(&master,0,2,0x90,anchor,32,0,10,clockMs));
   static CanMasterManager::MeasurementTransport transport;
@@ -163,5 +166,10 @@ int main() {
   const uint32_t slots=master.slots_received;
   for(unsigned i=0;i<1000;++i) {++clockMs;CanMasterManager::serviceMeasurementTransport(transport,1,0,completed);}
   assert(master.slots_received-slots<=55); // idle head probing remains bounded
+#if BODAQS_PIPELINE_TRACE
+  assert(MeasurementPipelineTrace::slots>0 && MeasurementPipelineTrace::firstLoss.count>0);
+  ImuFlowDiagnostics::finish(clockMs,micros());
+  assert(!MeasurementPipelineTrace::active);
+#endif
   puts("real logger RAM acceptance waits for explicit matching retirement after lost reply: PASS");
 }

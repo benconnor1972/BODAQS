@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "MeasurementReplyCapture.h"
+#include "MeasurementPipelineTrace.h"
 #include "../can-fd/common/protocol/bodaqs_measurement.h"
 
 namespace ImuFlowDiagnostics {
@@ -68,9 +69,10 @@ inline size_t reservedBytes() {
 #if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
   bytes+=sizeof(liveReplies)+sizeof(finishedReplies);
 #endif
-  return bytes;
+  return bytes+MeasurementPipelineTrace::reservedBytes();
 }
 inline void reset(uint64_t context,uint32_t now) {
+  MeasurementPipelineTrace::reset(context,now);
   live={};firstLoss={};finished={};
 #if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
   liveReplies={};finishedReplies={};
@@ -131,6 +133,7 @@ inline Snapshot capture(uint32_t now,uint32_t nowUs) {
 }
 inline void loss(uint32_t counter,uint32_t now,uint32_t nowUs) {
   if(!active || haveFirstLoss || !counter) return;
+  MeasurementPipelineTrace::loss();
   live.lossCounter=counter;firstLoss=capture(now,nowUs);haveFirstLoss=true;
 }
 inline void finish(uint32_t now,uint32_t nowUs,uint32_t transferFailures=0,uint32_t decodeFailures=0,bool measurementAvailable=true,
@@ -145,6 +148,7 @@ inline void finish(uint32_t now,uint32_t nowUs,uint32_t transferFailures=0,uint3
   else finishedReplies={};
 #endif
   finished=capture(now,nowUs);haveFinished=true;active=false;
+  MeasurementPipelineTrace::finish();
 }
 } // namespace ImuFlowDiagnostics
 #endif

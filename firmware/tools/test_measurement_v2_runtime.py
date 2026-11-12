@@ -13,6 +13,7 @@ def main():
     parser.add_argument("--compiler",default="g++")
     parser.add_argument("--ack-sweep",action="store_true")
     parser.add_argument("--block-crc",action="store_true")
+    parser.add_argument("--pipeline-trace",action="store_true")
     args=parser.parse_args()
     root=Path(__file__).resolve().parents[1]
     common=root / "can-fd/common/protocol"
@@ -44,7 +45,7 @@ def main():
             ("bodaqs_master_service.c","bodaqs_master_protocol.c","bodaqs_imu_disabled.c")]]
         sources += [root/"src"/name for name in
             ("CanMasterProtocol.cpp","SensorAssignment.cpp","SensorParams.cpp","Lsm6dso32xConfig.cpp","RemoteImuStream.cpp","BdqV2Catalog.cpp","ImuAdmission.cpp")]
-        subprocess.run([args.compiler,"-std=c++17","-DBODAQS_SPI_MEASUREMENT_V2=1",*(["-DBODAQS_MASTER_BLOCK_CRC=1"] if args.block_crc else []),*(["-DBODAQS_ACK_FETCH_FRAGMENT_SWEEP=1"] if args.ack_sweep else []),"-ffunction-sections","-Wl,--gc-sections",
+        subprocess.run([args.compiler,"-std=c++17","-DBODAQS_SPI_MEASUREMENT_V2=1",*(["-DBODAQS_PIPELINE_TRACE=1","-DBODAQS_IMU_FLOW_DIAGNOSTICS=1"] if args.pipeline_trace else []),*(["-DBODAQS_MASTER_BLOCK_CRC=1"] if args.block_crc else []),*(["-DBODAQS_ACK_FETCH_FRAGMENT_SWEEP=1"] if args.ack_sweep else []),"-ffunction-sections","-Wl,--gc-sections",
             "-Wall","-Wextra","-Werror","-Wno-class-memaccess","-Wno-unused-function",
             "-I",str(root/"test/stubs"),"-I",str(root/"src"),"-I",str(common),"-I",str(root/"can-fd/common/test"),
             str(cpp),*map(str,sources),"-o",str(exe)],check=True)

@@ -1,4 +1,5 @@
 #include "RemoteImuStream.h"
+#include "MeasurementPipelineTrace.h"
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
@@ -388,6 +389,8 @@ RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t
   put(out+20,segment_);put(out+16,valid);
   if(!evidence_.push(out,224)) {failed_=true;return Invalid;}
   ++nextEvidence_;
+  if(!local && type==0x25 && b[6]==8 && (u16(b+46)&1))
+    MeasurementPipelineTrace::terminal(binding_.node);
   if(local && u16(b+44)==31) failed_=true;
   return Accepted;
 }

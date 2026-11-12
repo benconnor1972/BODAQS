@@ -21,6 +21,15 @@ typedef struct {
 /* Independent of the immutable selected head. Admission must charge this exact
  * representation and its finite burst/service envelope, not just CAN axes. */
 #define BODAQS_MASTER_RETENTION_CAPACITY 128U
+#ifndef BODAQS_MASTER_BOUNDARY_RESERVE
+#define BODAQS_MASTER_BOUNDARY_RESERVE 0
+#endif
+#if BODAQS_MASTER_BOUNDARY_RESERVE != 0 && BODAQS_MASTER_BOUNDARY_RESERVE != 2
+#error "Boundary reserve must be 0 or 2"
+#endif
+#if BODAQS_MASTER_BOUNDARY_RESERVE && BODAQS_MEASUREMENT_VERSION != 2
+#error "Boundary reserve requires measurement v2"
+#endif
 typedef struct {
     uint8_t bytes[76];
     uint32_t boot, ordinal_high, received_ms;

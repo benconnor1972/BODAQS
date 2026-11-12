@@ -1022,7 +1022,33 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
 #if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
   ImuFlowDiagnostics::request(request.kind,request.body[0],request.node,request.object,micros(),request.body[2]);
 #endif
-  if(!exchangeMeasurementSlot(request,response)) {
+#if BODAQS_PIPELINE_TRACE
+  const uint8_t traceClass=request.kind==14?request.body[2]:request.kind==1?request.body[0]:0;
+  const uint8_t traceNode=request.kind==14?request.body[3]:request.node;
+  const uint32_t traceObject=request.kind==14?static_cast<uint32_t>(bodaqs_measurement_get(request.body+8,4)):request.object;
+  auto* traceTarget=transportInbox_(transport,traceClass,traceNode);
+  const uint8_t traceMask=traceTarget && traceTarget->state.object==traceObject?static_cast<uint8_t>(traceTarget->state.mask):0;
+  const uint8_t traceRequested=traceTarget?static_cast<uint8_t>(traceTarget->requestedFragments):0;
+  uint8_t traceFlags=traceTarget && traceTarget->ackPending?MeasurementPipelineTrace::TargetAckPending:0;
+  const uint32_t traceStarted=micros();
+#endif
+  const bool exchanged=exchangeMeasurementSlot(request,response);
+#if BODAQS_PIPELINE_TRACE
+  uint8_t responseMask=0;
+  if(exchanged) {
+    if(response.context!=transport.context) traceFlags|=MeasurementPipelineTrace::ContextMismatch;
+    else if(auto* previous=transportInbox_(transport,bodaqs_fragment_class(response.kind),response.node)) {
+      responseMask=static_cast<uint8_t>(previous->state.mask);
+      if(response.object==previous->state.object && response.index<32 && (previous->state.mask&(1UL<<response.index)))
+        traceFlags|=MeasurementPipelineTrace::KnownFragment;
+      if(response.object<previous->state.object) traceFlags|=MeasurementPipelineTrace::OlderFragment;
+      if(previous->state.complete && !previous->admitted) traceFlags|=MeasurementPipelineTrace::DownstreamBlocked;
+    }
+  }
+  MeasurementPipelineTrace::record(request,exchanged?&response:nullptr,traceStarted,micros()-traceStarted,
+      traceMask,traceRequested,responseMask,traceFlags);
+#endif
+  if(!exchanged) {
 #if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
     if(ImuFlowDiagnostics::active) ++ImuFlowDiagnostics::live.wireFailures;
 #endif

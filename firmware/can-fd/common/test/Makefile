@@ -16,6 +16,7 @@ NODE_INVENTORY := ../network/bodaqs_node_inventory.c
 test: $(TEST_BINS)
 	$(PYTHON) ../../../tools/test_measurement_crc_runtime.py --cc "$(CC)" --compiler "$(CXX)"
 	$(PYTHON) ../../../tools/test_measurement_crc_runtime.py --block-crc --cc "$(CC)" --compiler "$(CXX)"
+	$(PYTHON) ../../../tools/test_master_terminal_reserve.py --compiler "$(CXX)"
 	$(BUILD_DIR)/test_can_link.exe
 	$(BUILD_DIR)/test_timing.exe
 	$(BUILD_DIR)/test_master_retention.exe
