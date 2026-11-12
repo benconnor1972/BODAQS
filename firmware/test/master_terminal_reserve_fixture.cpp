@@ -33,8 +33,9 @@ int main(int argc,char** argv) {
         (void)bodaqs_master_service_receive_can(&master,0,1,0x100,packet,64,0,2+i,2);
     }
     uint8_t stop[64];boundary(stop,8,639);
-    if(argc>1 && !strcmp(argv[1],"malformed")) {
-        stop[2]=2; // Unsupported interpretation envelope cannot spend reserve.
+    if(argc>1 && (!strcmp(argv[1],"malformed") || !strcmp(argv[1],"transaction-low") || !strcmp(argv[1],"transaction-high"))) {
+        if(!strcmp(argv[1],"malformed")) stop[2]=2;
+        else stop[!strcmp(argv[1],"transaction-low")?4:5]=1;
         assert(!bodaqs_master_service_receive_can(&master,0,2,0x90,stop,64,0,200,3));
         assert(master.ingress[0].count==126);
         puts("Malformed terminal envelope cannot consume the boundary reserve: PASS");

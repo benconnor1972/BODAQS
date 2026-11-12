@@ -20,7 +20,7 @@ def main():
             "-o",str(exe)],check=True)
         subprocess.run([str(exe)],check=True)
         if not args.baseline:
-            for case in ("malformed","exhaustion"):
+            for case in ("malformed","transaction-low","transaction-high","exhaustion"):
                 subprocess.run([str(exe),case],check=True)
 
 if __name__=="__main__":

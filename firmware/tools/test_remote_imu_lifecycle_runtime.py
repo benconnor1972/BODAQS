@@ -5,10 +5,14 @@ import subprocess
 import tempfile
 
 
-def fixture_source(root):
+def fixture_source(root,pipeline_trace=False):
     """Real control/master/coordinator composition shared with acceptance."""
     fixture = (root / "test/measurement_runtime_fixture.cpp").read_text()
     fixture = fixture[:fixture.index("int main() {")]
+    if pipeline_trace:
+        fixture=fixture.replace("namespace SharedSpiBus {","static uint32_t pipelineBusSequence=0;\nnamespace SharedSpiBus {",1)
+        fixture=fixture.replace(" if(!spiAvailable) return false;",
+            " if(!spiAvailable) return false;\n ++pipelineBusSequence; if(context) {context->deviceSequence=pipelineBusSequence;context->deviceSequenceValid=pipelineBusSequence!=UINT32_MAX;}",1)
     fixture = fixture.replace("namespace SharedSpiBus {", "static bool dispatchControl(uint8_t,const BodaqsControlRecord&,BodaqsControlRecord&);\nstatic bool holdControl(uint8_t,const BodaqsControlRecord&);\nnamespace SharedSpiBus {")
     fixture = fixture.replace("assert(bodaqs_control_node_process(&node.view,&request,&reply));", "if(holdControl(address,request)) return true;\n  assert(dispatchControl(address,request,reply));")
     acquisition = (root / "test/acquisition_control_runtime_fixture.cpp").read_text()
@@ -60,7 +64,7 @@ def main():
         assert args.v2 or args.mixed
         args.flow_diagnostics=True
     root = Path(__file__).resolve().parents[1]
-    fixture = fixture_source(root)
+    fixture = fixture_source(root,pipeline_trace=args.pipeline_trace)
     if args.mixed:
         fixture=fixture.replace('bool getMuted(uint8_t,bool& value) { value=muted; return true; }',
             'bool getMuted(uint8_t i,bool& value) {SensorSpec s;if(!config.getSensorSpec(i,s)) return false;value=muted || s.mutedDefault;return true;}')

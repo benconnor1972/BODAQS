@@ -7,7 +7,7 @@ from pathlib import Path
 CLASSES={2:1,3:2,4:3,12:4,13:5}
 COLUMNS=["slot","start_us","duration_us","target_object","response_object","ack_object","available",
     "target_mask","requested_after_selection","request_kind","target_class","target_node","target_index",
-    "response_kind","response_node","response_index","flags","ack_class","ack_node","response_mask_before"]
+    "response_kind","response_node","response_index","flags","ack_class","ack_node","response_mask_before","physical_sequence_valid"]
 
 def analyze(text):
     records=[]
@@ -48,8 +48,10 @@ def analyze(text):
                 errors.append("invalid_frame_geometry")
                 continue
             rows.append(dict(zip(header["columns"],item["v"])))
-        if any(b["slot"]!=a["slot"]+1 for a,b in zip(rows,rows[1:])):
-            errors.append("noncontiguous_window_slots")
+        physical=[r for r in rows if r["physical_sequence_valid"]]
+        if any(b["slot"]<=a["slot"] for a,b in zip(physical,physical[1:])):
+            errors.append("nonmonotonic_physical_slots")
+        omitted=sum(b["slot"]-a["slot"]-1 for a,b in zip(physical,physical[1:]) if b["slot"]>a["slot"])
         counts=Counter()
         candidates=[]
         for i,row in enumerate(rows):
@@ -73,7 +75,7 @@ def analyze(text):
                 continue
             # MISO was preloaded: this slot's MOSI is never its causal request.
             # Repeated identical earlier requests remain multiple candidates.
-            prior=[q for q in rows[:i] if q["target_class"]==cls and
+            prior=[q for q in rows[:i] if row["physical_sequence_valid"] and q["physical_sequence_valid"] and q["target_class"]==cls and
                 q["target_node"]==row["response_node"] and
                 q["target_index"]==row["response_index"] and
                 (q["target_object"]==row["response_object"] or
@@ -85,10 +87,11 @@ def analyze(text):
             else:
                 counts["data_without_prior_matching_request_in_window"]+=1
         windows.append(dict(window=header["window"],freeze_reason=header["reason"],
-            overwritten=header["overwritten"],counts=dict(counts),
+            overwritten=header["overwritten"],unobserved_physical_slots_between_valid_rows=omitted,
+            physical_identity_unknown_rows=len(rows)-len(physical),counts=dict(counts),
             request_targets=dict(Counter(str((r["target_class"],r["target_node"])) for r in rows)),
             reply_correlation_candidates=candidates,
-            limits="Tuple matches bound candidate request age only; overwritten prefix is unknown. Empty replies have no causal class identity. Hints are stale. No recoverable-capacity percentage is inferred."))
+            limits="Distances use actual master-CS physical sequence. Matches identify only recorded earlier candidates, not a causal assignment or complete age bound; recovery/inspection gaps and overwritten prefix remain unknown. Empty replies have no causal class identity. Hints are stale. No recoverable-capacity percentage is inferred."))
     return dict(schema="bodaqs.spi_pipeline_analysis.v1",complete=not errors,errors=errors,
         summary=summary,windows=windows,qualification="diagnostic; not a physical throughput qualification")
 

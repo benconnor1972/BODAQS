@@ -36,7 +36,7 @@ def main():
         prefix=struct.pack("<QIBBBBHH",context,object_id,data[16],1,1,0,total,0)
         payload=data[20:20+total]
         assert zlib.crc32(prefix+payload[:-4]) & 0xffffffff == struct.unpack_from("<I",payload,total-4)[0]
-        fixture=fixture_source(root)
+        fixture=fixture_source(root,pipeline_trace=args.pipeline_trace)
         fixture=fixture.replace("static ParamStore extraParams[7];", "[[maybe_unused]] static ParamStore extraParams[7];")
         # No acquisition owner is required for this transport/RAM test.
         fixture += (root / "test/measurement_v2_logger_fixture.cpp").read_text()

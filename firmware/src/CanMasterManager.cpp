@@ -744,8 +744,15 @@ static void freezeBoundary_(uint64_t context) {
 }
 #endif
 static uint32_t measurementTimingStartUs,measurementTimingEndUs;
+#if BODAQS_PIPELINE_TRACE
+static uint32_t measurementPhysicalSequence;
+static bool measurementPhysicalSequenceValid;
+#endif
 bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
                              BodaqsMeasurementSlot& response) {
+#if BODAQS_PIPELINE_TRACE
+  measurementPhysicalSequence=0;measurementPhysicalSequenceValid=false;
+#endif
   if (!measurementAccess_()) return false;
   if (!s_started || !s_profile.supported || s_profile.cs_pin < 0 ||
       s_profile.spi_bus_index != 0 || s_diagnostics.mode == CanMasterMode::Off) return false;
@@ -759,7 +766,7 @@ bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
     const uint32_t idle=started-measurementTimingEndUs;
     if(idle>timing.maxIdleUs) timing.maxIdleUs=idle;
   }
-#if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
+#if (defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE) || BODAQS_PIPELINE_TRACE
   SpiTransactionContext bus;
   auto* busContext=&bus;
 #else
@@ -767,6 +774,10 @@ bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
 #endif
   const bool transferred=transferSlot_(settings,tx,rx,BODAQS_MEASUREMENT_BYTES,25,
       BODAQS_MEASUREMENT_START_SPACING_US,BODAQS_MEASUREMENT_CS_SETUP_US,busContext);
+#if BODAQS_PIPELINE_TRACE
+  measurementPhysicalSequence=bus.deviceSequence;
+  measurementPhysicalSequenceValid=bus.valid && bus.deviceSequenceValid;
+#endif
   const auto decodeResult=transferred?bodaqs_measurement_decode_result(rx,BODAQS_MEASUREMENT_BYTES,&response):BODAQS_MEASUREMENT_DECODE_OK;
   const bool valid=transferred && decodeResult==BODAQS_MEASUREMENT_DECODE_OK;
   if(!transferred) ++timing.transferFailedSlots;
@@ -1046,7 +1057,7 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
     }
   }
   MeasurementPipelineTrace::record(request,exchanged?&response:nullptr,traceStarted,micros()-traceStarted,
-      traceMask,traceRequested,responseMask,traceFlags);
+      traceMask,traceRequested,responseMask,traceFlags,measurementPhysicalSequence,measurementPhysicalSequenceValid);
 #endif
   if(!exchanged) {
 #if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS

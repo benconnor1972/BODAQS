@@ -24,7 +24,7 @@ struct Entry {
   uint8_t targetMask,requestedAfter;
   uint8_t requestKind,targetClass,targetNode,targetIndex;
   uint8_t responseKind,responseNode,responseIndex,flags;
-  uint8_t ackClass,ackNode,responseMaskBefore,reserved;
+  uint8_t ackClass,ackNode,responseMaskBefore,physicalSequenceValid;
 };
 static_assert(sizeof(Entry)==40,"Trace layout changed");
 enum : uint8_t { Valid=1,KnownFragment=2,OlderFragment=4,DownstreamBlocked=8,
@@ -70,10 +70,12 @@ inline void finish() {
 }
 inline void record(const BodaqsMeasurementSlot& request,const BodaqsMeasurementSlot* reply,
                    uint32_t began,uint32_t duration,uint8_t targetMask,uint8_t requested,
-                   uint8_t responseMask,uint8_t flags) {
+                   uint8_t responseMask,uint8_t flags,uint32_t physicalSlot,bool physicalValid) {
   if(!active || exhausted) return;
   if(slots==UINT32_MAX) {exhausted=true;return;}
-  Entry row={};row.slot=++slots;row.startedUs=began;row.durationUs=duration;
+  ++slots;
+  Entry row={};row.slot=physicalValid?physicalSlot:0;row.physicalSequenceValid=physicalValid;
+  row.startedUs=began;row.durationUs=duration;
   row.requestKind=request.kind;row.targetNode=255;row.ackNode=255;
   if(request.kind==1) {
     row.targetClass=request.body[0];row.targetNode=request.node;
@@ -90,6 +92,7 @@ inline void record(const BodaqsMeasurementSlot& request,const BodaqsMeasurementS
   if(request.kind==12 && request.index==0 && request.body[12]==0x25) stopArmed=true;
   row.targetMask=targetMask;row.requestedAfter=requested;row.responseMaskBefore=responseMask;row.flags=flags;
   if(reply) {
+    if(reply->context!=context) row.flags|=ContextMismatch;
     row.flags|=Valid;row.responseKind=reply->kind;row.responseNode=reply->node;
     row.responseObject=reply->object;row.responseIndex=reply->index;row.available=reply->available;
     if(reply->retired) row.flags|=Retirement;
@@ -97,7 +100,10 @@ inline void record(const BodaqsMeasurementSlot& request,const BodaqsMeasurementS
   } else {row.responseNode=255;++invalid;}
   firstLoss.append(row);
   if(stopArmed) stop.append(row);
-  if(stopArmed && reply && reply->kind==7 && reply->body[1]==14 && !stop.reason) stop.reason=4;
+  if(stopArmed && reply && reply->context==context && reply->kind==7 &&
+     reply->node<4 && (reply->body[0]==1 || reply->body[0]==2) && reply->body[1]==14 &&
+     (bodaqs_measurement_get(reply->body+2,2)==5 || bodaqs_measurement_get(reply->body+2,2)==6) &&
+     bodaqs_measurement_zero(reply->body+8,32) && !stop.reason) stop.reason=4;
 }
 template<class Writer> bool dump(Writer write) {
   if(active) return false; // Caller also needs the existing inactive-owner acquire.
@@ -110,17 +116,17 @@ template<class Writer> bool dump(Writer write) {
   for(unsigned window=0;window<2;++window) {
     const auto& capture=window?stop:firstLoss;
     std::snprintf(line,sizeof line,
-      "{\"schema\":\"bodaqs.spi-pipeline.v1\",\"type\":\"window\",\"window\":%u,\"count\":%u,\"overwritten\":%lu,\"reason\":%u,\"columns\":[\"slot\",\"start_us\",\"duration_us\",\"target_object\",\"response_object\",\"ack_object\",\"available\",\"target_mask\",\"requested_after_selection\",\"request_kind\",\"target_class\",\"target_node\",\"target_index\",\"response_kind\",\"response_node\",\"response_index\",\"flags\",\"ack_class\",\"ack_node\",\"response_mask_before\"]}\n",
+      "{\"schema\":\"bodaqs.spi-pipeline.v1\",\"type\":\"window\",\"window\":%u,\"count\":%u,\"overwritten\":%lu,\"reason\":%u,\"columns\":[\"slot\",\"start_us\",\"duration_us\",\"target_object\",\"response_object\",\"ack_object\",\"available\",\"target_mask\",\"requested_after_selection\",\"request_kind\",\"target_class\",\"target_node\",\"target_index\",\"response_kind\",\"response_node\",\"response_index\",\"flags\",\"ack_class\",\"ack_node\",\"response_mask_before\",\"physical_sequence_valid\"]}\n",
       window,capture.count,(unsigned long)capture.overwritten,capture.reason);
     write(line);
     for(unsigned i=0;i<capture.count;++i) {
       const auto& e=capture.rows[(capture.head+128-capture.count+i)%128];
       std::snprintf(line,sizeof line,
-        "{\"type\":\"frame\",\"window\":%u,\"v\":[%lu,%lu,%lu,%lu,%lu,%lu,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u]}\n",
+        "{\"type\":\"frame\",\"window\":%u,\"v\":[%lu,%lu,%lu,%lu,%lu,%lu,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u]}\n",
         window,(unsigned long)e.slot,(unsigned long)e.startedUs,(unsigned long)e.durationUs,
         (unsigned long)e.targetObject,(unsigned long)e.responseObject,(unsigned long)e.ackObject,
         e.available,e.targetMask,e.requestedAfter,e.requestKind,e.targetClass,e.targetNode,e.targetIndex,
-        e.responseKind,e.responseNode,e.responseIndex,e.flags,e.ackClass,e.ackNode,e.responseMaskBefore);
+        e.responseKind,e.responseNode,e.responseIndex,e.flags,e.ackClass,e.ackNode,e.responseMaskBefore,e.physicalSequenceValid);
       write(line);
     }
   }

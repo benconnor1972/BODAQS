@@ -168,6 +168,26 @@ int main() {
   assert(master.slots_received-slots<=55); // idle head probing remains bounded
 #if BODAQS_PIPELINE_TRACE
   assert(MeasurementPipelineTrace::slots>0 && MeasurementPipelineTrace::firstLoss.count>0);
+  const uint32_t tracedBefore=MeasurementPipelineTrace::slots;
+  const uint32_t physicalBefore=pipelineBusSequence;
+  preloaded[0]^=0x80; // One actual bad MISO, then normal production recovery.
+  CanMasterManager::serviceMeasurementTransport(transport,5,255,completed);
+  assert(transport.recovering && MeasurementPipelineTrace::slots==tracedBefore+1);
+  for(unsigned i=0;i<20 && transport.recovering;++i)
+    CanMasterManager::serviceMeasurementTransport(transport,5,255,completed);
+  assert(!transport.recovering && MeasurementPipelineTrace::slots==tracedBefore+1);
+  assert(pipelineBusSequence>physicalBefore+1);
+  CanMasterManager::serviceMeasurementTransport(transport,5,255,completed);
+  const auto& captured=MeasurementPipelineTrace::firstLoss;
+  const auto& last=captured.rows[(captured.head+127)%128];
+  assert(last.physicalSequenceValid && last.slot==pipelineBusSequence && last.slot>physicalBefore+2);
+  const uint32_t beforeInspect=MeasurementPipelineTrace::slots;
+  const uint32_t beforeInspectPhysical=pipelineBusSequence;
+  (void)CanMasterManager::inspectMeasurementMode();
+  assert(MeasurementPipelineTrace::slots==beforeInspect);
+  assert(pipelineBusSequence>beforeInspectPhysical);
+  CanMasterManager::serviceMeasurementTransport(transport,5,255,completed);
+  assert(captured.rows[(captured.head+127)%128].slot==pipelineBusSequence);
   ImuFlowDiagnostics::finish(clockMs,micros());
   assert(!MeasurementPipelineTrace::active);
 #endif

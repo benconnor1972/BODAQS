@@ -12,7 +12,10 @@ reported loss and during STOP, ending when all selected terminal boundaries have
 been accepted, a fatal-loss reply appears, or acquisition ownership finishes.
 Each frame records actual MOSI target and simultaneous validated MISO identity,
 prior receive masks, stale availability hint and wall duration. Aggregate counts
-cover the run. Trace data never controls scheduling, receipt, admission or ACK.
+cover traced normal-service exchanges, not every physical call. Actual per-CS
+physical sequence and its validity are retained. Recovery/inspection exchanges
+are unobserved gaps; they are not compressed away in slot distances. Trace data
+never controls scheduling, receipt, admission or ACK.
 No serial output occurs from these hooks during acquisition; export happens
 after producer retirement alongside FLOW. Trace storage is about 10 KiB fixed
 RAM, included in reserved resource accounting.
@@ -72,6 +75,17 @@ both sources and the equal 100-second payload window, and parses the PIPE traile
 CCS is optional, with absence explicit. A correct logger recipe does not identify
 the installed master image. No missing final boundary or sample identity is
 repaired by the tool.
+
+From the bundle directory in PowerShell (use the established analysis Python):
+
+```powershell
+& 'C:/Users/benco/dev/BODAQS-worktrees/drain-capacity-evidence/spi-prototype/tool-venv/Scripts/python.exe' -B assessor-source/firmware/tools/assess_pipeline_round.py --case Results/01-pipeline/attempt1 --output ../imu-pipeline-r20-attempt1-report
+```
+
+Use a fresh report directory. The assessor verifies bundle checksums, preserves
+raw inputs, requires the complete trace trailer and binds its exact context to
+both actual BDQ sources. Missing CCS remains explicit; it never authenticates
+the installed master automatically.
 
 Check whether both actual source-final records reached the file. A successful
 control STOP alone is not that proof. Check source loss reports and accepted RAM
