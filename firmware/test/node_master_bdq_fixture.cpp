@@ -8,6 +8,9 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#if defined(BODAQS_SPI_MEASUREMENT_V3) && BODAQS_SPI_MEASUREMENT_V3
+static_assert(BODAQS_MEASUREMENT_VERSION==3,"sample-unit fixture requires negotiated v3");
+#endif
 static BodaqsMasterService master;
 static RemoteImuStream stream;
 static bool duplicatePacket=false;
@@ -18,13 +21,51 @@ static uint64_t replayOrder=0;
 static BodaqsMeasurementSlot exchange(const BodaqsMeasurementSlot& request,unsigned now) {
   uint8_t wire[BODAQS_MEASUREMENT_BYTES],response[BODAQS_MASTER_TRANSFER_BYTES];BodaqsMeasurementSlot reply={};
   assert(bodaqs_measurement_encode(&request,wire,BODAQS_MEASUREMENT_BYTES));
-  assert(bodaqs_master_service_process_transfer(&master,wire,BODAQS_MEASUREMENT_BYTES,now,response)==0);
+#if BODAQS_MEASUREMENT_VERSION == 3
+  static bool checkedInvalid=false;
+  if(!checkedInvalid && request.kind==0) {
+    checkedInvalid=true;uint8_t invalid[256];std::memcpy(invalid,wire,256);
+    invalid[20]^=1;
+    assert(bodaqs_master_service_process_transfer(&master,invalid,256,now,response)==BODAQS_MASTER_SLOT_MALFORMED);
+    std::memcpy(invalid,wire,256);invalid[2]=2;
+    bodaqs_measurement_put(invalid+252,bodaqs_measurement_crc(invalid,252),4);
+    assert(bodaqs_master_service_process_transfer(&master,invalid,256,now,response)==BODAQS_MASTER_SLOT_MALFORMED);
+    assert(bodaqs_master_service_process_transfer(&master,wire,255,now,response)==BODAQS_MASTER_SLOT_MALFORMED);
+  }
+#endif
+  const auto result=bodaqs_master_service_process_transfer(&master,wire,BODAQS_MEASUREMENT_BYTES,now,response);
+  if(result) std::fprintf(stderr,"rejected fixture request kind=%u cls=%u node=%u total=%u time=%u\n",request.kind,request.body[0],request.node,request.total,now);
+  assert(result==0);
   assert(bodaqs_measurement_decode(response,BODAQS_MEASUREMENT_BYTES,&reply));return reply;
 }
 static bool drain(unsigned cls,unsigned now) {
   BodaqsMeasurementSlot poll={};poll.kind=1;poll.context=9;poll.node=0;poll.body[0]=cls;
+#if BODAQS_MEASUREMENT_VERSION == 3
+  if(cls==1) {poll={};poll.context=9;poll.node=255;}
+#endif
   auto first=exchange(poll,now);if(first.kind==0) return false;
   assert(first.kind==(cls==1?2:3));
+#if BODAQS_MEASUREMENT_VERSION == 3
+  if(cls==1) {
+    assert(first.index==0 && first.total<=BODAQS_MEASUREMENT_BODY_BYTES);
+    uint8_t unit[216]={};BodaqsFragmentState state={};BodaqsMeasurementSlot ack={};
+    assert(bodaqs_fragment_accept(&state,unit,sizeof unit,&first,1,&ack)==1);
+    assert(stream.acceptSampleUnit(first.context,first.object,unit,first.total,5000+now)==RemoteImuStream::Accepted);
+    static bool checkedStale=false;
+    if(!checkedStale) {
+      checkedStale=true;auto wrong=ack;wrong.object++;
+      assert(exchange(wrong,now).kind==7);
+      auto foreign=poll;foreign.context++;
+      assert(exchange(foreign,now).kind==7);
+      assert(exchange(poll,now).object==first.object);
+    }
+    // Lose the first sample ACK: a replay must not create a duplicate stored unit.
+    static bool loseAck=true;
+    if(loseAck) {loseAck=false;return true;}
+    ack.kind=14;ack.body[2]=1;ack.body[3]=255;
+    (void)exchange(ack,now);return true;
+  }
+#endif
   uint8_t bytes[1024]={};BodaqsFragmentState assembly={};BodaqsMeasurementSlot ack={};
   for(unsigned i=0;i<(first.total+BODAQS_MEASUREMENT_BODY_BYTES-1u)/BODAQS_MEASUREMENT_BODY_BYTES;++i) {
     poll.object=first.object;poll.index=i;
@@ -72,6 +113,9 @@ int main(int argc,char** argv) {
   master.acquisition_record[0]=77;master.acquisition_boot[0]=17;
   RemoteImuBinding binding;binding.boot=17;binding.masterBoot=99;binding.session=1;binding.recording=77;binding.context=9;
   binding.compactPackets=argc>=4;
+#if BODAQS_MEASUREMENT_VERSION == 3
+  binding.sampleUnits=true;
+#endif
   assert(stream.configure(binding,2,3));
   std::ifstream input(argv[1]);assert(input);
   unsigned id,length,now=0;std::string hex;

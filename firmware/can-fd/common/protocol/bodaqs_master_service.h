@@ -27,7 +27,7 @@ typedef struct {
 #if BODAQS_MASTER_BOUNDARY_RESERVE != 0 && BODAQS_MASTER_BOUNDARY_RESERVE != 2
 #error "Boundary reserve must be 0 or 2"
 #endif
-#if BODAQS_MASTER_BOUNDARY_RESERVE && BODAQS_MEASUREMENT_VERSION != 2
+#if BODAQS_MASTER_BOUNDARY_RESERVE && BODAQS_MEASUREMENT_VERSION < 2
 #error "Boundary reserve requires measurement v2"
 #endif
 typedef struct {

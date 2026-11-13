@@ -76,6 +76,14 @@ bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint
     return stream.acceptSharedSync(BdqV2Format::getU32(p+12),BdqV2Format::getU32(p+16),
       BdqV2Format::getU32(p+20),static_cast<uint32_t>(esp_timer_get_time()))!=RemoteImuStream::Blocked;
   }
+#if BODAQS_MEASUREMENT_VERSION == 3
+  if(cls==1 && address==node) {
+    const auto result=stream.acceptSampleUnit(recordContext,identity,p,total,
+        static_cast<uint32_t>(esp_timer_get_time()));
+    if(result==RemoteImuStream::Invalid) fault=true;
+    return result!=RemoteImuStream::Blocked;
+  }
+#endif
   if(address!=node || cls<1 || cls>2 || total<20 || p[0]!=1 || p[1] || p[2]!=cls || p[3]!=node ||
      BdqV2Format::getU32(p+4)!=CanMasterManager::diagnostics().authority.nodes[node].boot ||
      BdqV2Format::getU16(p+14)) {fault=true;return true;}
@@ -109,6 +117,9 @@ bool configure(const SensorSpec& chosen,uint64_t sharedRecord,uint64_t sharedCon
   const auto& d=CanMasterManager::diagnostics();const auto& endpoint=d.control.nodes[node].endpoints[0];
   RemoteImuBinding b;b.node=node;b.boot=endpoint.effective_boot;b.uid=endpoint.effective_uid;b.masterBoot=d.control.master_boot_id;b.masterUid=d.hardwareUid;
   b.compactPackets=ImuAdmission::singleNodeSmokeBuild();
+#if BODAQS_MEASUREMENT_VERSION == 3
+  b.compactPackets=true;b.sampleUnits=true;
+#endif
   b.session=d.authority.session;
   record=sharedRecord;recordContext=sharedContext;
   b.recording=record;b.context=sharedContext;std::memcpy(b.effective,endpoint.effective,192);

@@ -11,6 +11,7 @@ struct RemoteImuBinding {
   char domain[24]={}, end[16]={};
   bool orientationValid=false;
   bool compactPackets=false; // additive observation schema; legacy remains default
+  bool sampleUnits=false; // v3 immutable units, retaining master-origin integrity
   double mountingQuaternion[4]={1,0,0,0};
 };
 
@@ -22,6 +23,7 @@ public:
   ~RemoteImuStream() {release();}
   enum Acceptance { Invalid=-1, Blocked=0, Accepted=1 };
   bool configure(const RemoteImuBinding&,uint16_t sampleId,uint16_t evidenceId);
+  Acceptance acceptSampleUnit(uint64_t context,uint32_t object,const uint8_t*,uint16_t total,uint32_t loggerTick);
   static size_t allocatedBufferBytes(bool compactPackets=false);
   void release(); // only after both producer and storage owner stop
   Acceptance accept(uint16_t identifier,const uint8_t*,size_t length,
@@ -89,6 +91,7 @@ private:
   unsigned nextLossLane_=0;
   uint32_t lossDependency_=0;
   uint32_t nextPacket_=0,sequenceFloor_=0;
+  uint32_t lastUnit_=0,lastUnitChecksum_=0;
   uint64_t compactSamplesAccepted_=0;
   bool producerGap_=false,alignmentDegraded_=false;
   uint32_t managementLoss_[2][2]={};

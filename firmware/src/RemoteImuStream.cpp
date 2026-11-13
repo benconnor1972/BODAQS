@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <new>
+#include "../can-fd/common/protocol/bodaqs_fragment_transport.h"
 namespace {
 uint32_t u32(const uint8_t* p) { return BdqV2Format::getU32(p); }
 uint16_t u16(const uint8_t* p) { return BdqV2Format::getU16(p); }
@@ -21,6 +22,74 @@ const BdqV2CatalogChannel sampleChannels[]={
  {"gx","angular_velocity","count","int16",22,"signal","x","sensor","gyro"},
  {"gy","angular_velocity","count","int16",24,"signal","y","sensor","gyro"},
  {"gz","angular_velocity","count","int16",26,"signal","z","sensor","gyro"}
+};
+const BdqV2CatalogChannel unitChannels[]={
+ {"sequence","sample_unit","count","uint32",0,"diagnostic"},
+ {"native_tick","sample_unit","count","uint32",4,"diagnostic"},
+ {"status_flags","sample_unit","count","uint16",8,"diagnostic"},
+ {"source_segment_id","sample_unit","count","uint32",12,"diagnostic"},
+ {"sequence_floor","sample_unit","count","uint32",16,"diagnostic"},
+ {"context_low","sample_unit","count","uint32",24,"diagnostic"},
+ {"context_high","sample_unit","count","uint32",28,"diagnostic"},
+ {"object_id","sample_unit","count","uint32",32,"diagnostic"},
+ {"node","sample_unit","count","uint8",36,"diagnostic"},
+ {"object_class","sample_unit","count","uint8",37,"diagnostic"},
+ {"direction","sample_unit","count","uint8",38,"diagnostic"},
+ {"total","sample_unit","count","uint16",40,"diagnostic"},
+ {"unit_word0","sample_unit","count","uint32",44,"diagnostic"},
+ {"unit_word1","sample_unit","count","uint32",48,"diagnostic"},
+ {"unit_word2","sample_unit","count","uint32",52,"diagnostic"},
+ {"unit_word3","sample_unit","count","uint32",56,"diagnostic"},
+ {"unit_word4","sample_unit","count","uint32",60,"diagnostic"},
+ {"unit_word5","sample_unit","count","uint32",64,"diagnostic"},
+ {"unit_word6","sample_unit","count","uint32",68,"diagnostic"},
+ {"unit_word7","sample_unit","count","uint32",72,"diagnostic"},
+ {"unit_word8","sample_unit","count","uint32",76,"diagnostic"},
+ {"unit_word9","sample_unit","count","uint32",80,"diagnostic"},
+ {"unit_word10","sample_unit","count","uint32",84,"diagnostic"},
+ {"unit_word11","sample_unit","count","uint32",88,"diagnostic"},
+ {"unit_word12","sample_unit","count","uint32",92,"diagnostic"},
+ {"unit_word13","sample_unit","count","uint32",96,"diagnostic"},
+ {"unit_word14","sample_unit","count","uint32",100,"diagnostic"},
+ {"unit_word15","sample_unit","count","uint32",104,"diagnostic"},
+ {"unit_word16","sample_unit","count","uint32",108,"diagnostic"},
+ {"unit_word17","sample_unit","count","uint32",112,"diagnostic"},
+ {"unit_word18","sample_unit","count","uint32",116,"diagnostic"},
+ {"unit_word19","sample_unit","count","uint32",120,"diagnostic"},
+ {"unit_word20","sample_unit","count","uint32",124,"diagnostic"},
+ {"unit_word21","sample_unit","count","uint32",128,"diagnostic"},
+ {"unit_word22","sample_unit","count","uint32",132,"diagnostic"},
+ {"unit_word23","sample_unit","count","uint32",136,"diagnostic"},
+ {"unit_word24","sample_unit","count","uint32",140,"diagnostic"},
+ {"unit_word25","sample_unit","count","uint32",144,"diagnostic"},
+ {"unit_word26","sample_unit","count","uint32",148,"diagnostic"},
+ {"unit_word27","sample_unit","count","uint32",152,"diagnostic"},
+ {"unit_word28","sample_unit","count","uint32",156,"diagnostic"},
+ {"unit_word29","sample_unit","count","uint32",160,"diagnostic"},
+ {"unit_word30","sample_unit","count","uint32",164,"diagnostic"},
+ {"unit_word31","sample_unit","count","uint32",168,"diagnostic"},
+ {"unit_word32","sample_unit","count","uint32",172,"diagnostic"},
+ {"unit_word33","sample_unit","count","uint32",176,"diagnostic"},
+ {"unit_word34","sample_unit","count","uint32",180,"diagnostic"},
+ {"unit_word35","sample_unit","count","uint32",184,"diagnostic"},
+ {"unit_word36","sample_unit","count","uint32",188,"diagnostic"},
+ {"unit_word37","sample_unit","count","uint32",192,"diagnostic"},
+ {"unit_word38","sample_unit","count","uint32",196,"diagnostic"},
+ {"unit_word39","sample_unit","count","uint32",200,"diagnostic"},
+ {"unit_word40","sample_unit","count","uint32",204,"diagnostic"},
+ {"unit_word41","sample_unit","count","uint32",208,"diagnostic"},
+ {"unit_word42","sample_unit","count","uint32",212,"diagnostic"},
+ {"unit_word43","sample_unit","count","uint32",216,"diagnostic"},
+ {"unit_word44","sample_unit","count","uint32",220,"diagnostic"},
+ {"unit_word45","sample_unit","count","uint32",224,"diagnostic"},
+ {"unit_word46","sample_unit","count","uint32",228,"diagnostic"},
+ {"unit_word47","sample_unit","count","uint32",232,"diagnostic"},
+ {"unit_word48","sample_unit","count","uint32",236,"diagnostic"},
+ {"unit_word49","sample_unit","count","uint32",240,"diagnostic"},
+ {"unit_word50","sample_unit","count","uint32",244,"diagnostic"},
+ {"unit_word51","sample_unit","count","uint32",248,"diagnostic"},
+ {"unit_word52","sample_unit","count","uint32",252,"diagnostic"},
+ {"unit_word53","sample_unit","count","uint32",256,"diagnostic"},
 };
 const BdqV2CatalogChannel packetChannels[]={
  {"sequence","packet_observation","count","uint32",0,"diagnostic"},
@@ -137,7 +206,8 @@ const BdqV2CatalogChannel evidenceChannels[]={
 }
 bool RemoteImuStream::configure(const RemoteImuBinding& b,uint16_t sample,uint16_t companion) {
   release(); if(!b.boot || b.node>3 || !sample || !companion || sample==companion) return false;
-  if(!(b.compactPackets?packets_.allocate(100,2048):samples_.allocate(8192)) ||
+  if(b.sampleUnits && !b.compactPackets) return false;
+  if(!(b.compactPackets?packets_.allocate(b.sampleUnits?260:100,b.sampleUnits?256:2048):samples_.allocate(8192)) ||
      !evidence_.allocate(224,512)) {release();return false;}
   provenance_=static_cast<char*>(DynamicSpscQueueDetail::allocateBytes(3072));
   models_=static_cast<Model*>(DynamicSpscQueueDetail::allocateBytes(32*sizeof(Model)));
@@ -199,6 +269,7 @@ size_t RemoteImuStream::allocatedBufferBytes(bool compactPackets) {
 void RemoteImuStream::release() {
   samples_.release();packets_.release();evidence_.release();sampleId_=evidenceId_=0;
   nextPacket_=sequenceFloor_=0;
+  lastUnit_=lastUnitChecksum_=0;
   compactSamplesAccepted_=0;
   segment_=nextSequence_=stagedEvidence_=modelCount_=epoch_=anchorCount_=0;nextEvidence_=1;
   persistedEvidence_.store(0);haveSequence_=haveBoundary_=failed_=holding_=false;
@@ -216,6 +287,7 @@ void RemoteImuStream::release() {
 BdqV2StreamSource RemoteImuStream::sampleSource() {
   BdqV2StreamSource s;s.streamId=sampleId_;s.recordSizeBytes=28;s.nativeTickModulus=uint64_t{1}<<32;
   if(binding_.compactPackets) s.recordSizeBytes=100;
+  if(binding_.sampleUnits) s.recordSizeBytes=260;
   s.context=this;s.pendingRecords=pendingSamples;s.pendingObservations=noObservations;s.popRecord=popSample;s.popObservation=noObservation;return s;
 }
 BdqV2StreamSource RemoteImuStream::evidenceSource() {
@@ -263,6 +335,10 @@ BdqV2StreamDescriptor RemoteImuStream::descriptor(bool ev) {
   d.nominalSampleRateNumeratorHz=ev?50:3333;d.effectiveAccelRateHz=d.effectiveGyroRateHz=3333;
   d.channels=ev?evidenceChannels:sampleChannels;d.channelCount=ev?sizeof evidenceChannels/sizeof *evidenceChannels:sizeof sampleChannels/sizeof *sampleChannels;
   if(!ev && binding_.compactPackets) {d.channels=packetChannels;d.channelCount=sizeof packetChannels/sizeof *packetChannels;}
+  if(!ev && binding_.sampleUnits) {
+    std::snprintf(d.payloadSchema,sizeof d.payloadSchema,"bodaqs.can_imu_units.v1");
+    d.channels=unitChannels;d.channelCount=sizeof unitChannels/sizeof *unitChannels;
+  }
   d.statusFlags=flags;d.statusFlagCount=sizeof flags/sizeof *flags;d.acquisitionDetailsJson=provenance_;return d;
 }
 RemoteImuStream::Acceptance RemoteImuStream::accept(uint16_t id,const uint8_t* p,size_t n,uint32_t tick,uint64_t order,uint32_t logger,uint8_t receptionFlags) {
@@ -392,6 +468,33 @@ RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t
   if(!local && type==0x25 && b[6]==8 && (u16(b+46)&1))
     MeasurementPipelineTrace::terminal(binding_.node);
   if(local && u16(b+44)==31) failed_=true;
+  return Accepted;
+}
+RemoteImuStream::Acceptance RemoteImuStream::acceptSampleUnit(uint64_t context,uint32_t object,
+    const uint8_t* p,uint16_t total,uint32_t logger) {
+  if(!binding_.sampleUnits || failed_ || !p || context!=binding_.context || !object ||
+     !haveBoundary_ || total<84 || total>212 || (total-20)%64 || u16(p)!=2 ||
+     p[2]!=1 || p[3]!=binding_.node || u32(p+4)!=binding_.boot ||
+     u16(p+12)!=(total-20)/64 || u16(p+14)) return Invalid;
+  const uint32_t checksum=u32(p+total-4);
+  if(object<lastUnit_ || (object==lastUnit_ && checksum!=lastUnitChecksum_)) return Invalid;
+  if(object==lastUnit_) return Accepted;
+  unsigned readings=0;
+  for(unsigned i=0;i<(total-20u)/64;++i) {
+    const auto* packet=p+16+64*i;const unsigned count=packet[3]&7;
+    if(!count || count>5 || packet[2]!=epoch_ || (packet[3]&128) ||
+       !bodaqs_measurement_zero(packet+4+12*count,60-12*count)) return Invalid;
+    readings+=count;
+  }
+  if(nextPacket_==UINT32_MAX) return Invalid;
+  uint8_t record[260]={};put(record,nextPacket_);put(record+4,logger);
+  BdqV2Format::putU16(record+8,BdqV2Format::TimingDegraded);
+  put(record+12,segment_);put(record+16,sequenceFloor_);
+  bodaqs_measurement_put(record+24,context,8);put(record+32,object);
+  record[36]=binding_.node;record[37]=1;record[38]=1;
+  BdqV2Format::putU16(record+40,total);std::memcpy(record+44,p,total);
+  if(!packets_.push(record,sizeof record)) return Blocked;
+  lastUnit_=object;lastUnitChecksum_=checksum;++nextPacket_;compactSamplesAccepted_+=readings;
   return Accepted;
 }
 RemoteImuStream::Acceptance RemoteImuStream::packet(const uint8_t* p,size_t n,uint32_t tick,uint64_t order,uint32_t logger,uint8_t receptionFlags) {

@@ -976,7 +976,7 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
       request=inbox.pendingAck;acked=&inbox;
     }
   }
-#if BODAQS_MEASUREMENT_VERSION == 2
+#if BODAQS_MEASUREMENT_VERSION >= 2
   if(acked) {
     request.kind=14;request.body[2]=cls;request.body[3]=node;
     auto* next=transportInbox_(transport,cls,node);
@@ -1007,7 +1007,7 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
         request.object=0;request.index=0;
       }
     }
-    if(cls<3 && !request.object) {
+    if(cls<3 && !request.object && !(BODAQS_MEASUREMENT_VERSION==3 && cls==1)) {
       uint8_t budgetNode=node==255?4:node;
       if(static_cast<int32_t>(millis()-transport.nextHeadPollMs[cls-1][budgetNode])<0) {
 #if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
@@ -1042,6 +1042,11 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
   const uint8_t traceRequested=traceTarget?static_cast<uint8_t>(traceTarget->requestedFragments):0;
   uint8_t traceFlags=traceTarget && traceTarget->ackPending?MeasurementPipelineTrace::TargetAckPending:0;
   const uint32_t traceStarted=micros();
+#endif
+#if BODAQS_MEASUREMENT_VERSION == 3
+  if(request.kind==1 && request.body[0]==1) {
+    request={};request.context=transport.context;request.node=255;
+  }
 #endif
   const bool exchanged=exchangeMeasurementSlot(request,response);
 #if BODAQS_PIPELINE_TRACE
@@ -1090,7 +1095,7 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
     transport.bridgeUpper=receivedUs;transport.bridgeExpired=transport.bridgeEpoch==0;transport.bridgeReady=true;
     transport.bridgePending=false;transport.bridgeNext=transport.bridgeStarted+100;
   }
-#if BODAQS_MEASUREMENT_VERSION == 2
+#if BODAQS_MEASUREMENT_VERSION >= 2
   if(response.retired) {
     auto* retired=transportInbox_(transport,response.retiredClass,response.retiredNode);
     if(retired && retired->ackPending) {
@@ -1199,7 +1204,7 @@ bool acknowledgeMeasurementObject(MeasurementInbox& inbox) {
   if(!measurementReady() || !inbox.state.complete) return false;
   BodaqsMeasurementSlot ack={}, response={};
   bodaqs_fragment_ack(&inbox.state,1,&ack);
-#if BODAQS_MEASUREMENT_VERSION == 2
+#if BODAQS_MEASUREMENT_VERSION >= 2
   ack.kind=14;ack.body[2]=inbox.state.cls;ack.body[3]=inbox.state.node;
   const uint32_t started=millis();
   do {

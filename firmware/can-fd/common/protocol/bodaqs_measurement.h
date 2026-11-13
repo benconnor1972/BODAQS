@@ -6,7 +6,13 @@
 #include <stddef.h>
 #include <string.h>
 #define BODAQS_MEASUREMENT_CAPABILITY (1UL << 3)
-#if defined(BODAQS_SPI_MEASUREMENT_V2) && BODAQS_SPI_MEASUREMENT_V2
+#if defined(BODAQS_SPI_MEASUREMENT_V3) && BODAQS_SPI_MEASUREMENT_V3
+#define BODAQS_MEASUREMENT_VERSION 3U
+#define BODAQS_MEASUREMENT_BYTES 256U
+#define BODAQS_MEASUREMENT_BODY_BYTES 216U
+#define BODAQS_MEASUREMENT_HZ 16000000UL
+#define BODAQS_MEASUREMENT_MAX_KIND 14U
+#elif defined(BODAQS_SPI_MEASUREMENT_V2) && BODAQS_SPI_MEASUREMENT_V2
 #define BODAQS_MEASUREMENT_VERSION 2U
 #define BODAQS_MEASUREMENT_BYTES 256U
 #define BODAQS_MEASUREMENT_BODY_BYTES 216U
@@ -40,7 +46,7 @@ typedef struct {
     uint32_t object;
     uint16_t total;
     uint8_t body[BODAQS_MEASUREMENT_BODY_BYTES];
-#if BODAQS_MEASUREMENT_VERSION == 2
+#if BODAQS_MEASUREMENT_VERSION >= 2
     uint32_t retiredObject,retiredChecksum;
     uint16_t retiredTotal,available;
     uint8_t retiredClass,retiredNode;
@@ -166,7 +172,7 @@ static inline bool bodaqs_measurement_encode(const BodaqsMeasurementSlot *s, uin
     bodaqs_measurement_put(p+4,s->context,8); bodaqs_measurement_put(p+12,s->object,4);
     p[16]=s->node; p[17]=s->index; bodaqs_measurement_put(p+18,s->total,2);
     memcpy(p+20,s->body,BODAQS_MEASUREMENT_BODY_BYTES);
-#if BODAQS_MEASUREMENT_VERSION == 2
+#if BODAQS_MEASUREMENT_VERSION >= 2
     p[236]=s->retiredClass;p[237]=s->retiredNode;p[238]=s->retired?1:0;
     bodaqs_measurement_put(p+240,s->retiredObject,4);bodaqs_measurement_put(p+244,s->retiredTotal,2);
     bodaqs_measurement_put(p+246,s->available,2);bodaqs_measurement_put(p+248,s->retiredChecksum,4);
@@ -200,7 +206,7 @@ static inline BodaqsMeasurementDecodeResult bodaqs_measurement_decode_result(con
     memset(s,0,sizeof(*s)); s->kind=p[3]; s->context=bodaqs_measurement_get(p+4,8);
     s->object=(uint32_t)bodaqs_measurement_get(p+12,4); s->node=p[16]; s->index=p[17];
     s->total=(uint16_t)bodaqs_measurement_get(p+18,2); memcpy(s->body,p+20,BODAQS_MEASUREMENT_BODY_BYTES);
-#if BODAQS_MEASUREMENT_VERSION == 2
+#if BODAQS_MEASUREMENT_VERSION >= 2
     if(p[239]) return BODAQS_MEASUREMENT_DECODE_RESERVED;
     if(p[238]>1) return BODAQS_MEASUREMENT_DECODE_RETIRED_FLAG;
     if(bodaqs_measurement_get(p+246,2)&~255ULL) return BODAQS_MEASUREMENT_DECODE_AVAILABILITY;

@@ -155,7 +155,7 @@ typedef struct {
     uint32_t spi_queue_depth, spi_queue_peak, spi_queue_head_age_us, spi_queue_head_valid;
     uint64_t spi_queue_wait_total_us;
 #endif
-#if BODAQS_MEASUREMENT_VERSION == 2
+#if BODAQS_MEASUREMENT_VERSION >= 2
     /* Version5: processed ACK_FETCH requests by predecessor ACK class and
      * successor fetch class. acks[] remains separate-ACK-only. Retirement
      * counters credit a new object once, never a cached proof replay. */
@@ -207,7 +207,7 @@ static BodaqsMasterService gService;
 static BodaqsMasterDiscoveryRecord
     gDiscoveryRecords[BODAQS_MASTER_DISCOVERY_NODE_COUNT];
 /* SPI adapter ownership storage. */
-#if BODAQS_MEASUREMENT_VERSION == 2
+#if BODAQS_MEASUREMENT_VERSION >= 2
 #ifndef BODAQS_MASTER_SPI_RX_CAPACITY
 #define BODAQS_MASTER_SPI_RX_CAPACITY 4U
 #endif
@@ -408,7 +408,7 @@ static void drain_check(void)
 #if defined(BODAQS_MASTER_QUEUE_TIMING) && BODAQS_MASTER_QUEUE_TIMING
         gMasterDrainInfo.version=4;
 #endif
-#if BODAQS_MEASUREMENT_VERSION == 2
+#if BODAQS_MEASUREMENT_VERSION >= 2
         gMasterDrainInfo.version=5;
     gMasterDrainInfo.size_bytes=sizeof(gMasterDrainInfo);
 #if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
@@ -627,7 +627,7 @@ static void capture_can_receive_fifo(void)
                 uint8_t *p=record.message.data;
                 size_t length=bodaqs_can_dlc_to_length((uint8_t)record.message.dlc);
                 uint8_t epoch=sample&&length>=4?p[2]:!sample&&length>=14?p[13]:0;
-#if BODAQS_MEASUREMENT_VERSION == 2
+#if BODAQS_MEASUREMENT_VERSION >= 2
                 if(!sample) epoch=length>=14 && (p[1]==0x23 || p[1]==0x24 || p[1]==0x25)?p[13]:
                     length>=14 && p[1]==0x22?p[10]:0;
                 if(epoch && r->epoch && (r->source || r->evidence) && r->epoch!=epoch) r->essential=true;
@@ -647,7 +647,7 @@ static void capture_can_receive_fifo(void)
                     }
                 } else {
                     if(r->evidence==UINT32_MAX) r->essential=true; else ++r->evidence;
-#if BODAQS_MEASUREMENT_VERSION == 2
+#if BODAQS_MEASUREMENT_VERSION >= 2
                     const bool optional=(p[1]==0x21 && length==24) || (p[1]==0x22 && length==32) ||
                         ((p[1]==0x23 || p[1]==0x24) && length==64);
                     if(!optional) r->essential=true;
@@ -1402,7 +1402,7 @@ static void service_spi_receive(void)
                 ++gMasterDrainInfo.polls[received[20]-1];
             if(received[3]==5 && received[20]>=1 && received[20]<=5)
                 ++gMasterDrainInfo.acks[received[20]-1];
-#if BODAQS_MEASUREMENT_VERSION == 2
+#if BODAQS_MEASUREMENT_VERSION >= 2
             if(received[3]==14) {
                 if(received[20]>=1 && received[20]<=5)
                     ++gMasterDrainInfo.ack_fetches[received[20]-1];
