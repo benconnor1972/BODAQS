@@ -280,7 +280,7 @@ void RemoteImuStream::release() {
   DynamicSpscQueueDetail::releaseBytes(anchors_);anchors_=nullptr;
   for(auto& l:losses_) l=Loss{};
   producerGap_=alignmentDegraded_=false;lossDependency_=0;
-  std::memset(managementLoss_,0,sizeof managementLoss_);
+  std::memset(managementLoss_,0,sizeof managementLoss_);failureSite_.store(0,std::memory_order_relaxed);
   lastLossReport_=nextLossLane_=0;
 
 }
@@ -351,7 +351,7 @@ RemoteImuStream::Acceptance RemoteImuStream::accept(uint16_t id,const uint8_t* p
     for(uint8_t i=0;i<modelCount_;++i) {auto& m=models_[i];
       if(m.epoch==p[10] && m.anchor==u32(p+12)) {
         if(m.tick==u32(p+16) && m.numerator==u32(p+20) && m.denominator==u16(p+24)) {m.anchored=true;return Accepted;}
-        failed_=true;return Invalid;
+        markFailed(__LINE__);return Invalid;
       }
     }
     // Holding this immutable head would prevent a later matching model from
@@ -360,10 +360,10 @@ RemoteImuStream::Acceptance RemoteImuStream::accept(uint16_t id,const uint8_t* p
       const auto& a=anchors_[i];
       if(a.epoch==p[10] && a.sequence==u32(p+12)) {
         if(a.tick==u32(p+16) && a.numerator==u32(p+20) && a.denominator==u16(p+24)) return Accepted;
-        failed_=true;return Invalid;
+        markFailed(__LINE__);return Invalid;
       }
     }
-    if(!u32(p+20) || !u16(p+24) || anchorCount_==32) {failed_=true;return Invalid;}
+    if(!u32(p+20) || !u16(p+24) || anchorCount_==32) {markFailed(__LINE__);return Invalid;}
     auto& a=anchors_[anchorCount_++];a.epoch=p[10];a.sequence=u32(p+12);a.tick=u32(p+16);
     a.numerator=u32(p+20);a.denominator=u16(p+24);
     return Accepted;
@@ -388,7 +388,7 @@ RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t
     return drop(1,1,0,logger)?Accepted:Invalid;
   }
   if(!flushLoss(logger)) return Invalid;
-  if(evidence_.size()==evidence_.capacity() || nextEvidence_==UINT32_MAX) {failed_=true;return Invalid;}
+  if(evidence_.size()==evidence_.capacity() || nextEvidence_==UINT32_MAX) {markFailed(__LINE__);return Invalid;}
   uint8_t out[224]={};put(out,nextEvidence_);put(out+4,logger);out[12]=type==0x23?1:type==0x24?2:b[6]==3?7:6;
   out[13]=b[4];out[14]=b[5];put(out+28,binding_.boot);put(out+76,(receptionFlags&1)?0:tick);put(out+180,receptionFlags);put(out+80,(uint32_t)order);put(out+188,(uint32_t)(order>>32));
   if(!local) {out[184]=type;out[185]=1;out[186]=64;}
@@ -397,7 +397,7 @@ RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t
     if(!local) put(out+48,u32(b+8));
     const uint16_t v=u16(b+46);if(v&~2047u || b[6]<1 || b[6]>8) return Invalid;
     if(b[6]==2) {
-      if(segment_==UINT32_MAX) {failed_=true;return Invalid;}
+      if(segment_==UINT32_MAX) {markFailed(__LINE__);return Invalid;}
       ++segment_;epoch_=b[5];haveBoundary_=true;haveSequence_=false;modelCount_=0;
       terminalObserved_=false;
       sequenceFloor_=u32(b+20);
@@ -420,12 +420,12 @@ RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t
       const auto& old=models_[i];
       if(old.id==u32(b+8) || old.anchor==u32(b+20)) {
         if(std::memcmp(old.canonical,b,56)==0) return Accepted;
-        failed_=true;return Invalid;
+        markFailed(__LINE__);return Invalid;
       }
     }
     if(modelCount_==32) { // retire only decoded definitions; queued native records retain evidence serials
       if(!binding_.compactPackets && (!haveSequence_ || uint32_t(nextSequence_-models_[0].anchor)<models_[0].span)) {
-        failed_=true;return Invalid;
+        markFailed(__LINE__);return Invalid;
       }
       for(uint8_t i=1;i<modelCount_;++i) models_[i-1]=models_[i];
       --modelCount_;
@@ -435,7 +435,7 @@ RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t
     for(uint8_t i=0;i<anchorCount_;++i) {
       const auto& a=anchors_[i];
       if(a.epoch==m.epoch && a.sequence==m.anchor) {
-        if(a.tick!=m.tick || a.numerator!=m.numerator || a.denominator!=m.denominator) {failed_=true;return Invalid;}
+        if(a.tick!=m.tick || a.numerator!=m.numerator || a.denominator!=m.denominator) {markFailed(__LINE__);return Invalid;}
         m.anchored=true;
         for(uint8_t j=i+1;j<anchorCount_;++j) anchors_[j-1]=anchors_[j];
         --anchorCount_;break;
@@ -449,7 +449,7 @@ RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t
     if(!haveBoundary_ || b[5]!=epoch_ || u16(b+6)&~511u) return Invalid;
     const uint8_t presence=b[51];const uint16_t association=u16(b+6);
     if(binding_.compactPackets && (presence&128)) {
-      if(u32(b+12)<sequenceFloor_) {failed_=true;return Invalid;}
+      if(u32(b+12)<sequenceFloor_) {markFailed(__LINE__);return Invalid;}
       sequenceFloor_=u32(b+12);
     }
     put(out+48,u32(b+8));put(out+32,u32(b+16));put(out+36,u32(b+20));valid|=6;
@@ -463,11 +463,11 @@ RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t
     out[87]=(uint8_t)association;out[201]=presence;BdqV2Format::putU16(out+204,association);
   }
   put(out+20,segment_);put(out+16,valid);
-  if(!evidence_.push(out,224)) {failed_=true;return Invalid;}
+  if(!evidence_.push(out,224)) {markFailed(__LINE__);return Invalid;}
   ++nextEvidence_;
   if(!local && type==0x25 && b[6]==8 && (u16(b+46)&1))
     MeasurementPipelineTrace::terminal(binding_.node);
-  if(local && u16(b+44)==31) failed_=true;
+  if(local && u16(b+44)==31) markFailed(__LINE__);
   return Accepted;
 }
 RemoteImuStream::Acceptance RemoteImuStream::acceptSampleUnit(uint64_t context,uint32_t object,
@@ -502,7 +502,7 @@ RemoteImuStream::Acceptance RemoteImuStream::packet(const uint8_t* p,size_t n,ui
   const uint8_t count=p[3]&7;
   if(!count || count>5 || n<4+12u*count || (p[3]&128)) return Invalid;
   for(size_t i=4+12u*count;i<n;++i) if(p[i]) return Invalid;
-  if(nextPacket_==UINT32_MAX) {failed_=true;return Invalid;}
+  if(nextPacket_==UINT32_MAX) {markFailed(__LINE__);return Invalid;}
   // Backpressure keeps the real retained master head pinned until copied.
   if(packets_.size()==packets_.capacity()) return Blocked;
   uint8_t out[100]={};put(out,nextPacket_);put(out+4,logger);
@@ -531,7 +531,7 @@ RemoteImuStream::Acceptance RemoteImuStream::samples(const uint8_t* p,size_t n,u
   // The master preserves one ordered selected data/evidence head. A missing
   // definition cannot be fetched behind this pinned dependent head: fail the
   // source explicitly instead of waiting forever or inventing a native tick.
-  if(!selected) {failed_=true;return Invalid;}
+  if(!selected) {markFailed(__LINE__);return Invalid;}
   if(!flushLoss(logger)) return Invalid;
   if(samples_.capacity()-samples_.size()<count || losses_[0].source) {
     nextSequence_=seq+count;haveSequence_=true;
@@ -563,7 +563,7 @@ RemoteImuStream::Acceptance RemoteImuStream::pushShared(uint8_t out[224]) {
 }
 bool RemoteImuStream::drop(unsigned lane,uint32_t count,uint32_t first,uint32_t logger) {
   auto& l=losses_[lane];uint32_t& total=lane?l.evidence:l.source;
-  if(UINT32_MAX-total<count) {failed_=true;return false;}
+  if(UINT32_MAX-total<count) {markFailed(__LINE__);return false;}
   if(!lane && !total) l.first=first;
   total+=count;if(!lane) {l.last=first+count-1;producerGap_=true;} else alignmentDegraded_=true;
   return flushLoss(logger);
@@ -574,14 +574,14 @@ bool RemoteImuStream::flushLoss(uint32_t logger) {
     const unsigned lane=(nextLossLane_+turn)%2;
     auto& l=losses_[lane];
     if(!l.source && !l.evidence) continue;
-    if(evidence_.size()==evidence_.capacity() || nextEvidence_==UINT32_MAX) {failed_=true;return false;}
+    if(evidence_.size()==evidence_.capacity() || nextEvidence_==UINT32_MAX) {markFailed(__LINE__);return false;}
     uint8_t out[224]={};put(out,nextEvidence_);put(out+4,logger);out[12]=7;out[14]=epoch_;
     put(out+28,binding_.boot);put(out+20,segment_);out[168]=lane?9:8;out[200]=3;
     const uint32_t valid=(1u<<0)|(1u<<22)|(lane?(1u<<17):((1u<<16)|(1u<<19)));
     put(out+16,valid);put(out+148,l.source);put(out+152,l.evidence);
     if(!lane) {put(out+160,l.first);put(out+164,l.last);}
     BdqV2Format::putU16(out+170,lane?8:6);BdqV2Format::putU16(out+208,lane?8:6);
-    if(!evidence_.push(out,224)) {failed_=true;return false;}
+    if(!evidence_.push(out,224)) {markFailed(__LINE__);return false;}
     lossDependency_=nextEvidence_++;l.source=l.evidence=0;lastLossReport_=logger;
     nextLossLane_=(lane+1)%2;return true;
   }
@@ -616,8 +616,8 @@ RemoteImuStream::Acceptance RemoteImuStream::acceptManagementLoss(uint8_t cls,ui
   if(cls<1 || cls>2 || (stage!=5 && stage!=6) || (reason!=9 && reason!=14)) return Invalid;
   uint32_t& previous=managementLoss_[stage-5][cls-1];
   if(reason==9 && counter==previous) return Accepted;
-  if(reason==9 && counter<previous) {failed_=true;return Invalid;}
-  if(evidence_.size()==evidence_.capacity() || nextEvidence_==UINT32_MAX) {failed_=true;return Invalid;}
+  if(reason==9 && counter<previous) {markFailed(__LINE__);return Invalid;}
+  if(evidence_.size()==evidence_.capacity() || nextEvidence_==UINT32_MAX) {markFailed(__LINE__);return Invalid;}
   uint8_t out[224]={};put(out,nextEvidence_);put(out+4,logger);out[12]=7;
   // ERROR counters are context/node/class scoped. Their wire representation
   // does not identify a source epoch, acquisition tick or CAN reception.
@@ -628,9 +628,9 @@ RemoteImuStream::Acceptance RemoteImuStream::acceptManagementLoss(uint8_t cls,ui
     BdqV2Format::putU16(out+170,cls==1?4:8);BdqV2Format::putU16(out+208,cls==1?4:8);
   } else BdqV2Format::putU16(out+142,31);
   put(out+16,valid);
-  if(!evidence_.push(out,224)) {failed_=true;return Invalid;}
+  if(!evidence_.push(out,224)) {markFailed(__LINE__);return Invalid;}
   previous=counter;++nextEvidence_;
-  if(reason==14) failed_=true;
+  if(reason==14) markFailed(__LINE__);
   return Accepted;
 }
 

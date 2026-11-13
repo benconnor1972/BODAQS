@@ -181,6 +181,7 @@ void service() {
     firstFailure.measurementUnavailable=d.measurementUnavailable;
     firstFailure.objectsReceived=d.measurementObjectsReceived;firstFailure.transferErrors=d.measurementTransferErrors;
     firstFailure.transferErrorMask=d.measurementTransferErrorMask;
+    firstFailure.streamFailureSite=stream.failureSite();
     firstFailure.timingAvailable=d.measurementTimingContext==recordContext;
     if(firstFailure.timingAvailable) firstFailure.timing=d.measurementTiming;
     LOGW_TAG("REMOTEIMU","first failure node=%u phase=%u cause=%u action=%u result=%u reason=%u mode=%u modeReason=%u unavailable=%u objects=%lu errors=%lu\n",

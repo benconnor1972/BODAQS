@@ -1859,6 +1859,7 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
     entry["measurement_unavailable"]=failure.measurementUnavailable;
     entry["objects_received"]=failure.objectsReceived;entry["transfer_errors"]=failure.transferErrors;
     entry["transfer_error_mask"]=failure.transferErrorMask;
+    entry["stream_failure_site"]=failure.streamFailureSite;
       auto timing=entry["transport_timing"].to<JsonObject>();
       timing["available"]=failure.timingAvailable;
       const auto& t=failure.timing;

@@ -32,6 +32,7 @@ def main():
     parser.add_argument("--first-recording", action="store_true")
     parser.add_argument("--sample-units", action="store_true")
     parser.add_argument("--two-node", action="store_true")
+    parser.add_argument("--idle-control-fetch", action="store_true")
     parser.add_argument("--flow-diagnostics", action="store_true")
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
@@ -85,8 +86,12 @@ def main():
         cpp.write_text(source + support, encoding="utf-8")
         exe = temporary / "integrated.exe"
         sources = [*common.glob("bodaqs_control*.c"), common / "bodaqs_imu_disabled.c", common / "bodaqs_master_service.c", common / "bodaqs_master_protocol.c"]
+        if args.idle_control_fetch:
+            source_flags=['-DBODAQS_RECLAIM_IDLE_CONTROL_FETCH=1']
+        else:
+            source_flags=[]
         sources += [firmware / "src" / name for name in ("CanMasterProtocol.cpp", "SensorAssignment.cpp", "SensorParams.cpp", "Lsm6dso32xConfig.cpp", "RemoteImuStream.cpp", "BdqV2Catalog.cpp", "BdqV2Writer.cpp", "ImuAdmission.cpp")]
-        subprocess.run([args.compiler, "-std=c++17", *(["-DBODAQS_SPI_MEASUREMENT_V3=1"] if args.sample_units else []), *(["-DBODAQS_SINGLE_NODE_IMU_SMOKE=1", "-DBODAQS_SPI_MEASUREMENT_V2=1"] if args.first_recording else []), *(["-DBODAQS_V3_TWO_NODE_BENCH=1"] if args.two_node else []), *(["-DBODAQS_IMU_FLOW_DIAGNOSTICS=1"] if args.flow_diagnostics else []), "-pthread", "-DBODAQS_QUEUE_ALLOCATION_TEST", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-Wno-unused-variable", "-I", str(firmware/"test/stubs"), "-I", str(firmware/"src"), "-I", str(common), "-I", str(firmware/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
+        subprocess.run([args.compiler, "-std=c++17", *source_flags, *(["-DBODAQS_SPI_MEASUREMENT_V3=1"] if args.sample_units else []), *(["-DBODAQS_SINGLE_NODE_IMU_SMOKE=1", "-DBODAQS_SPI_MEASUREMENT_V2=1"] if args.first_recording else []), *(["-DBODAQS_V3_TWO_NODE_BENCH=1"] if args.two_node else []), *(["-DBODAQS_IMU_FLOW_DIAGNOSTICS=1"] if args.flow_diagnostics else []), "-pthread", "-DBODAQS_QUEUE_ALLOCATION_TEST", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-Wno-unused-variable", "-I", str(firmware/"test/stubs"), "-I", str(firmware/"src"), "-I", str(common), "-I", str(firmware/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
         saturated = output / "saturation-can.txt"
         saturation_wire(wire, saturated)
         for scenario in (("good", "short", "cancel-open", "cancel-prepare") if args.first_recording else ("good", "stall", "short", "cancel-open", "cancel-prepare")):

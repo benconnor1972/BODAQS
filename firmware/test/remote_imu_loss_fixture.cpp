@@ -90,5 +90,13 @@ int main() {
   b[14]=3;unsigned retained=1;
   while(s.accept(0x90,b,64,0,0,3300000)==RemoteImuStream::Accepted) ++retained;
   assert(s.failed() && retained==512);
+  assert(s.failureSite()!=0);
+  const auto firstSite=s.failureSite();
+  assert(s.acceptManagementLoss(1,14,6,0,3400000)==RemoteImuStream::Invalid);
+  assert(s.failureSite()==firstSite);
   assert(ev.pendingRecords(ev.context)==512); // essential exhaustion preserves every old record
+  s.release();assert(s.configure(binding,2,3));
+  assert(!s.failed() && s.failureSite()==0);
+  assert(s.acceptManagementLoss(1,14,6,0,3500000)==RemoteImuStream::Accepted);
+  assert(s.failed() && s.failureSite()!=0 && s.failureSite()!=firstSite);
 }

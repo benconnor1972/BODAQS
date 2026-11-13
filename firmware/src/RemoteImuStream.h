@@ -40,6 +40,8 @@ public:
   BdqV2StreamSource evidenceSource();
   BdqV2StreamDescriptor descriptor(bool evidence);
   bool failed() const { return failed_.load(std::memory_order_acquire); }
+  // Source line in this build's RemoteImuStream.cpp; diagnostic, not a wire reason.
+  uint16_t failureSite() const { return failureSite_.load(std::memory_order_acquire); }
   bool empty() const { return !holding_ && samples_.empty() && packets_.empty() && evidence_.empty(); }
 #if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
   struct QueueState {size_t samples,evidence,sampleCapacity,evidenceCapacity;uint32_t packetsAccepted;uint64_t samplesAccepted;};
@@ -51,6 +53,12 @@ public:
   }
 #endif
 private:
+  std::atomic<uint16_t> failureSite_{0};
+  void markFailed(uint16_t site) {
+    uint16_t empty=0;
+    failureSite_.compare_exchange_strong(empty,site,std::memory_order_relaxed);
+    failed_.store(true,std::memory_order_release);
+  }
   struct Sample { uint8_t bytes[28]; uint32_t dependency; };
   struct Model {
     uint32_t id=0, anchor=0,tick=0,numerator=0,span=0,duration=0;

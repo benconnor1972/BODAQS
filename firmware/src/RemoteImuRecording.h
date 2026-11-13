@@ -18,6 +18,7 @@ struct Failure {
   bool measurementUnavailable=false;
   uint32_t objectsReceived=0,transferErrors=0;
   uint32_t transferErrorMask=0;
+  uint16_t streamFailureSite=0; // Source line in pinned RemoteImuStream.cpp; zero if not a stream failure.
   bool timingAvailable=false; // Matching scope only; the live first-failure copy is not atomic.
     CanMasterManager::MeasurementTiming timing;
 };

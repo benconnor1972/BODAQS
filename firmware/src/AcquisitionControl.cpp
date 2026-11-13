@@ -13,8 +13,8 @@
 #if BODAQS_RECLAIM_IDLE_CONTROL_FETCH != 0 && BODAQS_RECLAIM_IDLE_CONTROL_FETCH != 1
 #error "Idle control fetch reclamation must be 0 or 1"
 #endif
-#if BODAQS_RECLAIM_IDLE_CONTROL_FETCH && BODAQS_MEASUREMENT_VERSION != 2
-#error "Idle control fetch reclamation requires measurement v2"
+#if BODAQS_RECLAIM_IDLE_CONTROL_FETCH && BODAQS_MEASUREMENT_VERSION < 2
+#error "Idle control fetch reclamation requires measurement v2 or v3"
 #endif
 
 #if defined(ARDUINO_ARCH_ESP32)
