@@ -18,6 +18,14 @@ int main(int argc,char** argv) {
   using namespace AcquisitionControl;
   transport.bridgeNext=clockMs+10000;nextHealthObservation=clockMs+10000;
   serviceCursor=3;cursor=0;dataCursor=0;
+  if(!std::strcmp(scenario,"partial-data")) {
+    auto& s=transport.inboxes[1][1].state;s.context=456;s.object=81;s.cls=2;s.node=1;s.total=244;s.mask=1;
+  }
+  if(!std::strcmp(scenario,"head-budget")) for(unsigned c=0;c<2;++c) transport.nextHeadPollMs[c][0]=clockMs+100;
+  if(!std::strcmp(scenario,"timer-wrap")) {
+    clockMs=3;nextHealthObservation=10003;transport.bridgeNext=10003;
+    for(unsigned c=0;c<2;++c) {transport.nextHeadPollMs[c][0]=UINT32_MAX-4;transport.nextHeadPollMs[c][1]=10;}
+  }
   if(!std::strcmp(scenario,"ack")) seedAccepted(transport.inboxes[0][1],1,1);
   if(!std::strcmp(scenario,"ordinary") || !std::strcmp(scenario,"fair")) {
     peers[2].ordinary.pending=true;peers[2].ordinary.started=clockMs;
@@ -40,7 +48,7 @@ int main(int argc,char** argv) {
   auto targetClass=[](const BodaqsMeasurementSlot& r) {return r.kind==14?r.body[2]:r.body[0];};
   auto targetNode=[](const BodaqsMeasurementSlot& r) {return r.kind==14?r.body[3]:r.node;};
   const unsigned cls=targetClass(request),n=targetNode(request);
-  if(!std::strcmp(scenario,"idle") || !std::strcmp(scenario,"retired-cache")) {
+  if(!std::strcmp(scenario,"idle") || !std::strcmp(scenario,"retired-cache") || !std::strcmp(scenario,"timer-wrap")) {
     assert(request.kind==1 && cls==1 && n==0 && "idle control selection must become a data fetch");
   } else if(!std::strcmp(scenario,"ack")) {
     const auto& expected=transport.inboxes[0][1].pendingAck;
@@ -59,6 +67,17 @@ int main(int argc,char** argv) {
     assert(transport.inboxes[2][3].ackPending);
   } else if(!std::strcmp(scenario,"blocked") || !std::strcmp(scenario,"no-data")) {
     assert(request.kind==1 && cls==4 && n==0); // Preserve drain opportunity when nothing eligible.
+  } else if(!std::strcmp(scenario,"partial-data")) {
+    assert(request.kind==1 && cls==2 && n==1 && request.object==81 && request.index==1);
+  } else if(!std::strcmp(scenario,"head-budget")) {
+    assert(request.kind==1 && cls==1 && n==1);
+  } else if(!std::strcmp(scenario,"data-fair")) {
+    unsigned counts[4]={};++counts[n];
+    for(unsigned i=1;i<16;++i) {
+      for(unsigned c=0;c<2;++c) for(unsigned peer=0;peer<2;++peer) transport.nextHeadPollMs[c][peer]=0;
+      serviceCursor=3;AcquisitionControl::service();assert(targetClass(capturedSchedule.back())==1);++counts[targetNode(capturedSchedule.back())];
+    }
+    assert(counts[0]==8 && counts[1]==8 && !counts[2] && !counts[3]);
   } else if(!std::strcmp(scenario,"fair")) {
     unsigned counts[4]={};++counts[n];
     for(unsigned i=1;i<16;++i) {serviceCursor=3;AcquisitionControl::service();assert(targetClass(capturedSchedule.back())==3);++counts[targetNode(capturedSchedule.back())];}

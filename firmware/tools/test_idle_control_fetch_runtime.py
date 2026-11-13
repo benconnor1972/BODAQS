@@ -24,7 +24,7 @@ def main():
         subprocess.run([args.compiler,'-std=c++17','-DBODAQS_SPI_MEASUREMENT_V2=1',f'-DBODAQS_RECLAIM_IDLE_CONTROL_FETCH={int(not args.baseline)}',
             '-ffunction-sections','-Wl,--gc-sections','-Wall','-Wextra','-Werror','-Wno-class-memaccess','-Wno-unused-function',
             '-I',str(root/'test/stubs'),'-I',str(root/'src'),'-I',str(protocol),'-I',str(root/'can-fd/common/test'),str(cpp),*map(str,sources),'-o',str(exe)],check=True)
-        for scenario in ('idle','ack','ordinary','urgent','partial','control-ack','retired-cache','blocked','no-data','fair'):
+        for scenario in ('idle','ack','ordinary','urgent','partial','control-ack','retired-cache','blocked','no-data','fair','partial-data','head-budget','data-fair','timer-wrap'):
             subprocess.run([str(exe),scenario],check=True)
 
 if __name__=='__main__':main()
