@@ -401,7 +401,9 @@ bool configure(const LoggerConfig& cfg) {
                 AnalogInputManager::activeChannelCount(a)};
  const bool benchMaskAllowed=ImuAdmission::channelRateBenchBuild()?((ImuAdmission::multiNodeBenchBuild() && benchAdcMask==0) || benchAdcMask==0x03 || benchAdcMask==0x11 ||
       (ImuAdmission::scalingBenchBuild() && benchAdcMask==0x33)):benchAdcMask==3;
- report=ImuAdmission::multiNodeBenchBuild()
+ report=ImuAdmission::sampleUnitBenchBuild()
+     ? ImuAdmission::evaluateSampleUnitBench(demand,otherActiveSensors)
+     : ImuAdmission::multiNodeBenchBuild()
      ? ImuAdmission::evaluateMultiNodeBench(demand,otherActiveSensors || !benchMaskAllowed)
      : ImuAdmission::singleNodeAdcSmokeBuild()
      ? ImuAdmission::evaluateSingleNodeAdcSmoke(demand,otherActiveSensors || !benchMaskAllowed)

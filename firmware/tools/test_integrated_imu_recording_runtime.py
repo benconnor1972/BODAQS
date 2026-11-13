@@ -31,9 +31,12 @@ def main():
     parser.add_argument("--cc", default="gcc")
     parser.add_argument("--first-recording", action="store_true")
     parser.add_argument("--sample-units", action="store_true")
+    parser.add_argument("--two-node", action="store_true")
     parser.add_argument("--flow-diagnostics", action="store_true")
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
+    if args.two_node and not (args.first_recording and args.sample_units):
+        parser.error('--two-node requires --first-recording --sample-units')
     firmware = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix="bodaqs-integrated-") as temporary:
         temporary = Path(temporary)
@@ -48,7 +51,9 @@ def main():
             *[str(node / "src" / name) for name in ("imu_spi.c", "imu_capture.c", "imu_acquisition.c")],
             str(common / "bodaqs_imu_disabled.c"), str(common / "bodaqs_control.c"), "-o", str(producer)], check=True)
         wire = output / "node-recovery-can.txt"
-        subprocess.run([str(producer), *([] if args.first_recording else ["6"])], env=dict(os.environ, BODAQS_NODE_FIXTURE_OUT=str(wire)), check=True)
+        producer_env=dict(os.environ, BODAQS_NODE_FIXTURE_OUT=str(wire))
+        if args.two_node: producer_env['BODAQS_NODE_FIXTURE_PARTIAL_STOP']='1'
+        subprocess.run([str(producer), *([] if args.first_recording else ["6"])], env=producer_env, check=True)
         source = fixture_source(firmware)
         source = source.replace('namespace LoggingManager { bool isRunning() { return recording; } bool configurationLocked() { return recording || starting; } }', '#include "LoggingManager.h"')
         # Lose one *accepted-object* RAM ACK at the SPI boundary. The master
@@ -81,7 +86,7 @@ def main():
         exe = temporary / "integrated.exe"
         sources = [*common.glob("bodaqs_control*.c"), common / "bodaqs_imu_disabled.c", common / "bodaqs_master_service.c", common / "bodaqs_master_protocol.c"]
         sources += [firmware / "src" / name for name in ("CanMasterProtocol.cpp", "SensorAssignment.cpp", "SensorParams.cpp", "Lsm6dso32xConfig.cpp", "RemoteImuStream.cpp", "BdqV2Catalog.cpp", "BdqV2Writer.cpp", "ImuAdmission.cpp")]
-        subprocess.run([args.compiler, "-std=c++17", *(["-DBODAQS_SPI_MEASUREMENT_V3=1"] if args.sample_units else []), *(["-DBODAQS_SINGLE_NODE_IMU_SMOKE=1", "-DBODAQS_SPI_MEASUREMENT_V2=1"] if args.first_recording else []), *(["-DBODAQS_IMU_FLOW_DIAGNOSTICS=1"] if args.flow_diagnostics else []), "-pthread", "-DBODAQS_QUEUE_ALLOCATION_TEST", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-Wno-unused-variable", "-I", str(firmware/"test/stubs"), "-I", str(firmware/"src"), "-I", str(common), "-I", str(firmware/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
+        subprocess.run([args.compiler, "-std=c++17", *(["-DBODAQS_SPI_MEASUREMENT_V3=1"] if args.sample_units else []), *(["-DBODAQS_SINGLE_NODE_IMU_SMOKE=1", "-DBODAQS_SPI_MEASUREMENT_V2=1"] if args.first_recording else []), *(["-DBODAQS_V3_TWO_NODE_BENCH=1"] if args.two_node else []), *(["-DBODAQS_IMU_FLOW_DIAGNOSTICS=1"] if args.flow_diagnostics else []), "-pthread", "-DBODAQS_QUEUE_ALLOCATION_TEST", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-Wno-unused-variable", "-I", str(firmware/"test/stubs"), "-I", str(firmware/"src"), "-I", str(common), "-I", str(firmware/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
         saturated = output / "saturation-can.txt"
         saturation_wire(wire, saturated)
         for scenario in (("good", "short", "cancel-open", "cancel-prepare") if args.first_recording else ("good", "stall", "short", "cancel-open", "cancel-prepare")):
@@ -91,6 +96,24 @@ def main():
             sys.path.insert(0,str(firmware.parent / "analysis"))
             from bodaqs_analysis.can_imu_packets import read_can_imu_packets
             from bodaqs_analysis.first_imu_recording import assess_first_imu_recording
+            if args.two_node:
+                from bodaqs_analysis.multi_imu_recording import assess_multi_imu_recording
+                for node, ax in [(0, -32768), (1, 4660)]:
+                    decoded=read_can_imu_packets(output / 'good.bdq', f'can{node}_imu6')
+                    assert [r['sequence'] for r in decoded['readings']]==list(range(64))
+                    assert all([r[k] for k in ('ax','ay','az','gx','gy','gz')]==[ax,32767,-1,-32768,32767,-1] for r in decoded['readings'])
+                    assert not decoded['gaps'] and not decoded['ambiguous_packets']
+                    assert any(r['boundary_event_kind']==8 and r['boundary_validity_flags']&1 and r['related_sequence']==63
+                               for r in decoded['raw_timing_observations'])
+                report=assess_multi_imu_recording(output / 'good.bdq',[0,1])
+                assert 'expected_node_membership_mismatch' not in report['issues']
+                assert len(report['nodes'])==2
+                assert report['file_outcome']=='incomplete_or_unresolved'  # Minimal host footer is not physical completion proof.
+                for membership in ([0], [0,1,2,3]):
+                    wrong=assess_multi_imu_recording(output / 'good.bdq', membership)
+                    assert 'expected_node_membership_mismatch' in wrong['issues']
+                print('Integrated v3 two-source custody, partial STOP, independent axes and membership: PASS')
+                return
             decoded=read_can_imu_packets(output / "good.bdq", "can0_imu6")
             assert [r["sequence"] for r in decoded["readings"]]==list(range(65))
             assert all([r[k] for k in ("ax","ay","az","gx","gy","gz")]==[-32768,32767,-1,-32768,32767,-1] for r in decoded["readings"])

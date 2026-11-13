@@ -178,13 +178,14 @@ static void setup() {
  saved.type=SensorType::LSM6DSO32XImu;std::strcpy(saved.name,"remote_imu");
  assert(savedParams.set("provider","can:0"));assert(savedParams.set("endpoint","imu"));
  assert(savedParams.set("profile","imu6_3333_32g_2000dps_v1"));saved.params.bind(&savedParams);
- fixtureSensorCount=ImuAdmission::singleNodeSmokeBuild()?1:4;
+ fixtureSensorCount=ImuAdmission::sampleUnitBenchBuild()?2:ImuAdmission::singleNodeSmokeBuild()?1:4;
  for(unsigned n=1;n<fixtureSensorCount;++n) {
    extra[n-1]=saved;extraParams[n-1]=savedParams;
    char provider[8];std::snprintf(provider,sizeof provider,"can:%u",n);
    assert(extraParams[n-1].set("provider",provider));extra[n-1].params.bind(&extraParams[n-1]);
  }
  reset();lifecycleEnabled=true;fastMeasurementClock=true;config.logFormat=LogFormat::BodaqsMultiStreamBinary;
+ if(ImuAdmission::sampleUnitBenchBuild()) config.sampleRateHz=500;
  BodaqsMasterDiscoveryRecord records[4]={};
  for(uint8_t n=0;n<fixtureSensorCount;++n) {
    auto& f=peerFixture(n);f.view.active_session=0;f.authority={};f.view.flags=0;f.view.boot_id=17;
@@ -214,7 +215,11 @@ static void feedWire(const char* path,unsigned pacing=40) {
    for(unsigned i=0;i<length;++i) payload[i]=std::stoul(hex.substr(i*2,2),nullptr,16);
    if(pacing<40 && id!=0x100) step(80); // preserve essential definitions under deliberate overload
    for(uint8_t n=0;n<fixtureSensorCount;++n) {
-     const bool accepted=bodaqs_master_service_receive_can(&master,n,id==0x100?1:2,id+(id==0x100?8*n:n),payload,length,0,clockMs*1000,clockMs);
+     uint8_t nodePayload[64];std::memcpy(nodePayload,payload,sizeof payload);
+     // Distinct source axes make accidental source substitution observable.
+     if(ImuAdmission::sampleUnitBenchBuild() && n==1 && id==0x100)
+       for(unsigned i=0;i<(payload[3]&7);++i) BdqV2Format::putU16(nodePayload+4+12*i,4660);
+     const bool accepted=bodaqs_master_service_receive_can(&master,n,id==0x100?1:2,id+(id==0x100?8*n:n),nodePayload,length,0,clockMs*1000,clockMs);
      if(id==0x100) {
        std::fprintf(inputLedger,"%u\t%u\t%u\t%u\t%u\n",n,unsigned(payload[2]),unsigned(BdqV2Format::getU16(payload)),unsigned(payload[3]&7),unsigned(accepted));
        if(!accepted) rejectedSamples[n]+=payload[3]&7;

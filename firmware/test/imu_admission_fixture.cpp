@@ -3,6 +3,29 @@
 #include <cmath>
 #include <initializer_list>
 int main() {
+#if defined(BODAQS_V3_TWO_NODE_BENCH) && BODAQS_V3_TWO_NODE_BENCH
+ for(uint8_t nodes:{1,2}) {
+  ImuAdmission::Demand bench;bench.nodes=nodes;bench.loggerRateHz=500;
+  auto accepted=ImuAdmission::evaluateSampleUnitBench(bench,false);
+  assert(accepted.reason==ImuAdmission::Reason::None && accepted.benchOnly && !accepted.qualified);
+  assert(ImuAdmission::evaluate(bench,ImuAdmission::Profile{}).reason==ImuAdmission::Reason::Unqualified);
+  assert(ImuAdmission::evaluateSampleUnitBench(bench,true).reason==ImuAdmission::Reason::SampleUnitBenchScope);
+  for(auto& adc:bench.adc) {
+   adc.activeChannels=1;assert(ImuAdmission::evaluateSampleUnitBench(bench,false).reason==ImuAdmission::Reason::SampleUnitBenchScope);adc={};
+   adc.conversionsPerSecond=1;assert(ImuAdmission::evaluateSampleUnitBench(bench,false).reason==ImuAdmission::Reason::SampleUnitBenchScope);adc={};
+  }
+  for(uint16_t rate:{0,200,1000}) {
+   bench.loggerRateHz=rate;assert(ImuAdmission::evaluateSampleUnitBench(bench,false).reason==ImuAdmission::Reason::SampleUnitBenchScope);
+  }
+ }
+ for(uint8_t nodes:{0,3,4}) {
+  ImuAdmission::Demand bench;bench.nodes=nodes;bench.loggerRateHz=500;
+  assert(ImuAdmission::evaluateSampleUnitBench(bench,false).reason==ImuAdmission::Reason::SampleUnitBenchScope);
+ }
+#else
+ ImuAdmission::Demand unitBench;unitBench.nodes=2;unitBench.loggerRateHz=500;
+ assert(ImuAdmission::evaluateSampleUnitBench(unitBench,false).reason==ImuAdmission::Reason::SampleUnitBenchScope);
+#endif
  ImuAdmission::Demand d;d.nodes=4;
  ImuAdmission::Profile p;p.maximumSourceSamplesPerSecond=3333;p.qualified=true;p.adcAttemptsPerConversion=1;p.canBurstFrames=20;p.spiBurstSlots=32;p.sampleSlotUs=64;p.auxiliarySlotUs=64;p.sampleDrainSlotsPerSecond=14000;
  auto r=ImuAdmission::evaluate(d,p);

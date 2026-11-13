@@ -826,7 +826,9 @@ static void emitSensorEditor_(ChunkedHtmlResponse& html,
         html+=F("; health flags "); html+=String(bodaqs_control_get_u32(d+20)); }
       html+=CanMasterManager::configurationReconciled(address) ? F("; desired agreement verified") : F("; desired agreement unverified");
       html+=F(". Acquisition readiness: false. Timing, settling and measured performance: unknown.</p>");
-      if(ImuAdmission::singleNodeSmokeBuild())
+      if(ImuAdmission::sampleUnitBenchBuild())
+        html+=F("<p><strong>UNQUALIFIED ONE/TWO-NODE V3 BENCH BUILD.</strong> Enable one or two CAN IMUs at 500 Hz primary rate. Mute ADCs and all other sensors.</p>");
+      else if(ImuAdmission::singleNodeSmokeBuild())
         html+=F("<p><strong>UNQUALIFIED SINGLE-NODE IMU SMOKE BUILD.</strong> Mute every other sensor. Multiple IMUs and ADC acquisition are not enabled by this test build.</p>");
     }
   }
