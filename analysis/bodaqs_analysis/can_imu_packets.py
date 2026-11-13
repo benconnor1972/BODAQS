@@ -31,12 +31,24 @@ def read_can_imu_packets(path: str | Path, stream_key: str) -> dict:
     if acquisition.get("payload_schema") != SCHEMA and not unit_schema:
         raise ValueError("not a compact CAN packet observation stream")
     packets = list(iter_bdq_stream_records(path, stream_key))
-    if unit_schema:
-        packets = _unit_packets(packets, acquisition)
     companion = next((d for d in descriptors.values()
         if d.get("acquisition", {}).get("payload_schema") == "bodaqs.can_timing_evidence.v1"
         and d["acquisition"].get("related_sample_stream_id") == descriptor["stream_id"]), None)
     evidence = list(iter_bdq_stream_records(path, companion["stream_key"])) if companion else []
+    if unit_schema:
+        identity_fields = ('node_address', 'node_boot', 'provider_uid', 'master_uid',
+                           'master_boot', 'recording_id', 'control_session', 'measurement_context')
+        if not companion or any(companion['acquisition'].get(key) != acquisition.get(key)
+                                for key in identity_fields):
+            raise ValueError('sample-unit source companion identity mismatch; readings unverified')
+        epochs = {}
+        for row in evidence:
+            if row['boundary_event_kind'] == 2:
+                segment, epoch = row['source_segment_id'], row['stream_epoch']
+                if segment in epochs and epochs[segment] != epoch:
+                    raise ValueError('conflicting sample-unit source epoch')
+                epochs[segment] = epoch
+        packets = _unit_packets(packets, acquisition, epochs)
     terminal = {}
     for row in evidence:
         if row["boundary_event_kind"] == 8 and row["boundary_validity_flags"] & 1:
@@ -128,7 +140,7 @@ def read_can_imu_packets(path: str | Path, stream_key: str) -> dict:
             "file_errors": list(info.detected_errors)}
 
 
-def _unit_packets(units: list[dict], acquisition: dict) -> list[dict]:
+def _unit_packets(units: list[dict], acquisition: dict, epochs: dict[int, int]) -> list[dict]:
     """Verify retained master bytes before exposing readings; never trust a file CRC alone."""
     packets = []
     previous = 0
@@ -153,6 +165,8 @@ def _unit_packets(units: list[dict], acquisition: dict) -> list[dict]:
         for slot in range(count):
             payload = data[16+64*slot:80+64*slot]
             low, epoch, flags = struct.unpack_from('<HBB', payload)
+            if epoch != epochs.get(unit['source_segment_id']):
+                raise ValueError('sample-unit source epoch mismatch or missing definition; readings unverified')
             readings = flags & 7
             if not 1 <= readings <= 5 or flags & 128 or any(payload[4+12*readings:]):
                 raise ValueError('invalid sample-unit CAN payload')

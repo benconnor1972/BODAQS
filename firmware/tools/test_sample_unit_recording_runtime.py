@@ -68,6 +68,23 @@ def main():
             assert 'upstream checksum' in str(error)
         else:
             raise AssertionError('buffer damage passed upstream verification')
+        # A valid origin CRC must not authorize attaching readings to another
+        # source epoch's sequence bounds. Simulate a semantic source mismatch.
+        damaged = bytearray(saved)
+        record = payload + STREAM_DATA_HEADER_STRUCT.size
+        damaged[record+44+16+2] = 255
+        total = struct.unpack_from('<H', damaged, record+40)[0]
+        canonical = damaged[record+24:record+44] + damaged[record+44:record+44+total-4]
+        struct.pack_into('<I', damaged, record+44+total-4, zlib.crc32(canonical))
+        struct.pack_into('<I', damaged, cursor+16, zlib.crc32(damaged[payload:payload+length]))
+        bdq.write_bytes(damaged)
+        assert not read_bdq(bdq).detected_errors
+        try:
+            read_can_imu_packets(bdq, 'can0_imu6')
+        except ValueError as error:
+            assert 'source epoch' in str(error)
+        else:
+            raise AssertionError('foreign epoch was assigned to source sequence bounds')
         print('Sample unit: real node fixture -> production master/RAM -> BDQ -> independent decode PASS')
 
 

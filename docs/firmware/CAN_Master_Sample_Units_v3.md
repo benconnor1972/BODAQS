@@ -82,6 +82,10 @@ boot and context must agree with it. Recorded logger annotations are not claimed
 to be master-origin observations. Offline decoding validates exact catalog layout,
 unit scope/geometry and the retained upstream CRC before exposing readings, then
 uses existing forward/backward sequence bounds and source terminal evidence.
+The timing companion's complete source/acquisition identity must match, and each
+packet epoch must match its source segment's recorded START boundary. Without
+that essential definition raw unit words remain stored but verified readings
+are unavailable; a valid CRC cannot substitute for source association.
 An unsupported interval remains ambiguous; no nominal-rate time is manufactured.
 
 Decoder packet ordering for these records is a unit-ID/slot ordering token,
