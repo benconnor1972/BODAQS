@@ -53,6 +53,7 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_measurement_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_measurement_runtime.py --reply-capture --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_measurement_runtime.py --reply-capture --boundary-trace --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_window_ack_fairness_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_measurement_reply_replay.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_measurement_decode_runtime.py --compiler "$(CXX)"
 	$(PYTHON) -m unittest discover -s ../tools -p test_bench_tools.py

@@ -161,6 +161,10 @@ struct MeasurementTransport {
   MeasurementInbox sampleExtra[4][3];
   uint32_t sampleNext[4] = {1,1,1,1};
   uint8_t sampleNodes = 0;
+  // Scheduling only, never custody: rotate pending sample ACK attempts across
+  // all nodes/slots. Reset with this transport at a new recording context.
+  uint8_t nextSampleAck = 0;
+  uint8_t nextEvidenceAck = 0, sampleAckBurst = 0, evidenceAckRepeat = 0;
 #endif
   MeasurementOutbox controls[2][4];
   uint64_t context = 0;

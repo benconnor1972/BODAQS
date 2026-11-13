@@ -74,8 +74,24 @@ while the evidence lane advances. Because evidence may overtake older sample
 units, their recorded lower sequence bound comes from the observed START rather
 than a later snapshot. No nominal-rate acquisition timestamp is manufactured.
 
-Existing separate STOP/renewal/control lanes, ACK priority, three-of-four data
-selection and idle-control reclamation remain. The five-second authority horizon,
+The r7 logger corrects ACK scheduling within this same v4 profile. Sample ACKs
+rotate across all sixteen source/window positions, including retries awaiting
+exact retirement proof. Previously regular head slots had fixed priority and
+the extra slots fell behind evidence ACKs; delayed replies could pin one source
+while another repeatedly consumed ACK turns.
+
+After four sample ACK attempts, pending evidence ACKs get up to two data-ACK
+turns. Evidence selection rotates across sources and repeats a pending selection
+on its second turn, avoiding a single periodically erased request consuming its
+only opportunity. Empty evidence work never blocks samples. Protected control,
+ordinary control and shared timing ACKs retain their higher priorities. These
+are scheduling attempts, not custody/retirement proofs. Only the existing exact
+proof clears an ACK. All three cursors/burst fields are transport-owned, reset
+with recording state, and retained through link inspection/recovery. No static
+cross-recording cursor, wire/config/schema change or new allocation is involved.
+
+Existing separate STOP/renewal/control lanes, three-of-four data selection and
+idle-control reclamation remain. The five-second authority horizon,
 once-per-second renewal and fresh challenges are unchanged. Sample credits never
 gate those lanes. The CAN hardware/ISR queue and physical CS/DMA retirement rules
 are unchanged; this does not claim a new bound on upstream hardware loss or a
@@ -125,6 +141,12 @@ Automated checks:
 
 - `test_remote_imu_loss_runtime.py`: original fatal/cumulative replay defect;
   58934 then replay then five new losses must record58939, with failure sticky.
+- `test_window_ack_fairness_runtime.py`: equal live3333.3-reading/s sources under
+  one injected service turn/ms, one- through four-turn response pipelines, and
+  periodic request loss. The original code reproduced33330 versus10650 admitted
+  readings in10s. The fixed selector keeps both above33000 in the moderate-loss
+  cases and all400 offered full-sequence anchors/source progress. At50% request
+  loss, substantial equal progress is required rather than lossless delivery.
 - `test_master_window_runtime.py`: four sources/four outstanding units, zero
   credits, immutable content, bad/stale ACKs and slot reuse, optional shedding,
   essential START/STOP under full sample ingress, bounded repair failure and
@@ -144,6 +166,10 @@ Automated checks:
   gaps are292 readings/source. The legacy hardware stub's UID0 and minimal footer
   deliberately keep its overall qualification unknown; the separate four-source
   fixture provides complete identity bounds.
+  The r7 regression also runs the actual coordinator/control/writer lifecycle
+  with a three-turn delayed reply pipeline, independently decodes both complete
+  64-reading streams and checks their final source boundaries. Existing
+  cancellation, short-write and stale-authorization restart cases remain.
 
 The full host candidate includes these regressions alongside historical suites.
 Target builds and fresh boundary/Standards/Spec review precede the bench package.

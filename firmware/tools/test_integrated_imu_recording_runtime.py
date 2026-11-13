@@ -123,6 +123,9 @@ namespace SharedSpiBus {''',1)
                      "void LoggingManager::stop(", "void LoggingManager::finishStorageStop(")
         support = support.replace("// PRODUCTION_LOGGING", "\n".join(definition(logging, f) for f in functions))
         if args.window:
+            support=support.replace('assert(argc==4);storage.path=argv[2];setup();const std::string scenario=argv[3];',
+                'assert(argc==4);storage.path=argv[2];setup();const std::string scenario=argv[3];\n'
+                ' if(scenario=="lag") {delayStatusResponses=true;delayedResponseDepth=2;}')
             support=support.replace('feedWire(argv[1],0);','feedWire(argv[1],1);')
             support=support.replace('step(4200);assert(renewalSequence[0]>=before+3',
                 'step(200);assert(windowBackpressureAds>0);assert(renewalSequence[0]>=before+1')
@@ -155,7 +158,10 @@ namespace SharedSpiBus {''',1)
         subprocess.run([args.compiler, "-std=c++17", *source_flags, *(["-DBODAQS_SPI_MEASUREMENT_V3=1"] if args.sample_units else []), *(["-DBODAQS_SINGLE_NODE_IMU_SMOKE=1", "-DBODAQS_SPI_MEASUREMENT_V2=1"] if args.first_recording else []), *(["-DBODAQS_V3_TWO_NODE_BENCH=1"] if args.two_node else []), *(["-DBODAQS_IMU_FLOW_DIAGNOSTICS=1"] if args.flow_diagnostics else []), "-pthread", "-DBODAQS_QUEUE_ALLOCATION_TEST", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-Wno-unused-variable", "-I", str(firmware/"test/stubs"), "-I", str(firmware/"src"), "-I", str(common), "-I", str(firmware/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
         saturated = output / "saturation-can.txt"
         saturation_wire(wire, saturated,1200 if args.window else 500)
-        for scenario in (("good", "short", "cancel-open", "cancel-prepare") if args.first_recording and not args.window else ("good", "stall", "short", "cancel-open", "cancel-prepare")):
+        scenarios=("good", "short", "cancel-open", "cancel-prepare") if args.first_recording and not args.window else ("good", "stall", "short", "cancel-open", "cancel-prepare")
+        if args.window:
+            scenarios+=("lag",)
+        for scenario in scenarios:
             subprocess.run([str(exe), str(saturated if scenario == "stall" else wire), str(output / f"{scenario}.bdq"), scenario], check=True, timeout=120)
         if args.first_recording:
             import sys,json
@@ -174,13 +180,14 @@ namespace SharedSpiBus {''',1)
                         assert delivery['unresolved_readings']==0
                         assert node['gaps']==[dict(source_segment_id=1,first=908,last=1199,count=292,extent='known')]
                     print('Full logger sample buffers: renewal/STOP complete; offline losses remain explicit: PASS')
-                for node, ax in [(0, -32768), (1, 4660)]:
-                    decoded=read_can_imu_packets(output / 'good.bdq', f'can{node}_imu6')
-                    assert [r['sequence'] for r in decoded['readings']]==list(range(64))
-                    assert all([r[k] for k in ('ax','ay','az','gx','gy','gz')]==[ax,32767,-1,-32768,32767,-1] for r in decoded['readings'])
-                    assert not decoded['gaps'] and not decoded['ambiguous_packets']
-                    assert any(r['boundary_event_kind']==8 and r['boundary_validity_flags']&1 and r['related_sequence']==63
-                               for r in decoded['raw_timing_observations'])
+                for case in (('good','lag') if args.window else ('good',)):
+                    for node, ax in [(0, -32768), (1, 4660)]:
+                        decoded=read_can_imu_packets(output / f'{case}.bdq', f'can{node}_imu6')
+                        assert [r['sequence'] for r in decoded['readings']]==list(range(64))
+                        assert all([r[k] for k in ('ax','ay','az','gx','gy','gz')]==[ax,32767,-1,-32768,32767,-1] for r in decoded['readings'])
+                        assert not decoded['gaps'] and not decoded['ambiguous_packets']
+                        assert any(r['boundary_event_kind']==8 and r['boundary_validity_flags']&1 and r['related_sequence']==63
+                                   for r in decoded['raw_timing_observations'])
                 report=assess_multi_imu_recording(output / 'good.bdq',[0,1])
                 assert 'expected_node_membership_mismatch' not in report['issues']
                 assert len(report['nodes'])==2

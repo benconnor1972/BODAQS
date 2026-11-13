@@ -986,19 +986,57 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
       transport.nextControlNode[lane]=(n+1)%4;
     }
   }
+#if BODAQS_MEASUREMENT_VERSION >= 4
+  // Four sample ACK attempts buy the next two data-ACK turns for evidence.
+  // Otherwise a continuously full sample window can pin essential anchors.
+  const uint8_t firstData=transport.sampleAckBurst>=4?2:1;
+  const uint8_t priority[5]={4,3,5,firstData,static_cast<uint8_t>(3-firstData)};
+#else
   const uint8_t priority[5]={4,3,5,1,2};
-  for(uint8_t p:priority) for(uint8_t n=0;n<(p==5?1:4);++n) {
-    auto& inbox=transport.inboxes[p-1][n];
-    if(!outgoing && !acked && inbox.ackPending) {
-      request=inbox.pendingAck;acked=&inbox;
+#endif
+  for(uint8_t p:priority) {
+#if BODAQS_MEASUREMENT_VERSION >= 4
+    if(p==1) {
+      // Retrying an ACK awaits exact retirement proof. With pipelined replies,
+      // a fixed first-node/head-slot preference can indefinitely pin another
+      // source. All sample slots share their class priority and bounded turns.
+      for(uint8_t i=0;i<16 && !outgoing && !acked;++i) {
+        const uint8_t index=(transport.nextSampleAck+i)%16;
+        auto& inbox=sampleWindowInbox(transport,index%4,index/4);
+        if(inbox.ackPending) {
+          request=inbox.pendingAck;acked=&inbox;
+          transport.nextSampleAck=(index+1)%16;
+          if(transport.sampleAckBurst<4) ++transport.sampleAckBurst;
+        }
+      }
+      continue;
+    }
+    if(p==2) {
+      for(uint8_t i=0;i<4 && !outgoing && !acked;++i) {
+        const uint8_t node=(transport.nextEvidenceAck+i)%4;
+        auto& inbox=transport.inboxes[1][node];
+        if(inbox.ackPending) {
+          request=inbox.pendingAck;acked=&inbox;
+          if(transport.evidenceAckRepeat) {
+            transport.nextEvidenceAck=(node+1)%4;transport.sampleAckBurst=0;
+            transport.evidenceAckRepeat=0;
+          } else {
+            // Repeat a pending evidence ACK on consecutive opportunities so a
+            // periodic rejected SPI request cannot always erase its one turn.
+            transport.nextEvidenceAck=node;transport.evidenceAckRepeat=1;
+          }
+        }
+      }
+      continue;
+    }
+#endif
+    for(uint8_t n=0;n<(p==5?1:4);++n) {
+      auto& inbox=transport.inboxes[p-1][n];
+      if(!outgoing && !acked && inbox.ackPending) {
+        request=inbox.pendingAck;acked=&inbox;
+      }
     }
   }
-#if BODAQS_MEASUREMENT_VERSION >= 4
-  if(!outgoing && !acked) for(uint8_t n=0;n<4 && !acked;++n) for(uint8_t i=1;i<4;++i) {
-    auto& inbox=sampleWindowInbox(transport,n,i);
-    if(inbox.ackPending) {request=inbox.pendingAck;acked=&inbox;break;}
-  }
-#endif
 #if BODAQS_MEASUREMENT_VERSION >= 2
   if(acked) {
     request.kind=14;request.body[2]=cls;request.body[3]=node;
