@@ -1,6 +1,7 @@
 #include "bodaqs_timing.h"
 #include "bodaqs_master_service.h"
 #include "bodaqs_master_profile.h"
+#include "bodaqs_batch_diagnostics.h"
 
 #include <string.h>
 
@@ -165,6 +166,10 @@ void bodaqs_master_service_measurement_fence(BodaqsMasterService *service,
     service->measurement.fenced = all && stopped_authorization_invalid && data_retired;
     if(service->measurement.fenced) {
         for(node=0;node<4;++node) {
+#if BODAQS_MASTER_BATCH_DIAGNOSTICS
+            if(service->receptions[node].object.complete)
+                ++gMasterBatchInfo.node[node].discarded[service->receptions[node].cls-1];
+#endif
             service->retired_tail_frames += service->receptions[node].count + service->ingress[node].count;
             service->ingress[node].head=service->ingress[node].count=0;
             service->receptions[node].count=0;
@@ -196,6 +201,9 @@ static void transfer_context(BodaqsMasterService *s) {
     s->transfer_session=s->measurement.mode.session;
     s->transfer_recording=s->measurement.mode.recording;
     s->transfer_boot=s->control.master_boot_id;
+#if BODAQS_MASTER_BATCH_DIAGNOSTICS
+    bodaqs_batch_diag_reset(s->transfer_context,s->transfer_session,s->transfer_recording,s->transfer_boot);
+#endif
     s->bridge_context=0;s->bridge_token=0;s->bridge_tick=0;s->bridge_epoch=0;
     bodaqs_control_exchange_init(&s->authorization,s->control.master_boot_id);
     s->authorization.excluded_addresses=s->control.excluded_addresses;
@@ -208,13 +216,19 @@ static bool next_object(uint32_t *id) {
     if(*id==UINT32_MAX) return false;
     ++*id; return true;
 }
-static bool seal_receptions(BodaqsMasterService *s,uint8_t node) {
+static bool seal_receptions(BodaqsMasterService *s,uint8_t node,uint8_t reason,uint32_t now) {
     BodaqsReceptionBatch *b=&s->receptions[node];
     if(b->object.complete) return true;
     if(!b->count || !next_object(&b->next_id[b->cls-1])) return false;
     bodaqs_measurement_put(b->bytes+12,b->count,2);
-    return bodaqs_fragment_seal(&b->object,b->bytes,sizeof(b->bytes),s->transfer_context,
+    const bool sealed=bodaqs_fragment_seal(&b->object,b->bytes,sizeof(b->bytes),s->transfer_context,
         b->next_id[b->cls-1],node,b->cls,1,(uint16_t)(16+b->count*76));
+#if BODAQS_MASTER_BATCH_DIAGNOSTICS
+    if(sealed) bodaqs_batch_diag_seal(node,b->cls,b->count,reason,now,b->started_ms,s->ingress[node].count);
+#else
+    (void)reason;(void)now;
+#endif
+    return sealed;
 }
 /* Only the main-loop owner moves ingress into the selected head. Queued records
  * retain their original reception order, boot and oldest-arrival deadline. */
@@ -222,14 +236,17 @@ static void advance_receptions(BodaqsMasterService *s,uint8_t node,uint32_t now)
     BodaqsReceptionBatch *b=&s->receptions[node];
     BodaqsReceptionIngress *q=&s->ingress[node];
     if(b->object.complete) return;
-    if(b->count>=13) { (void)seal_receptions(s,node); return; }
+    if(b->count>=13) { (void)seal_receptions(s,node,0,now); return; }
     while(q->count) {
         const BodaqsRetainedReception *r=&q->records[q->head];
         if(b->count && (b->cls!=r->cls ||
            bodaqs_measurement_get(b->bytes+4,4)!=r->boot ||
            bodaqs_measurement_get(b->bytes+8,4)!=r->ordinal_high ||
            (uint32_t)(r->received_ms-b->started_ms)>=20)) {
-            (void)seal_receptions(s,node); return;
+            const uint8_t reason=b->cls!=r->cls?1:
+                (bodaqs_measurement_get(b->bytes+4,4)!=r->boot ||
+                 bodaqs_measurement_get(b->bytes+8,4)!=r->ordinal_high)?2:3;
+            (void)seal_receptions(s,node,reason,now); return;
         }
         if(!b->count) {
             memset(b->bytes,0,16); b->cls=r->cls; b->started_ms=r->received_ms;
@@ -238,11 +255,14 @@ static void advance_receptions(BodaqsMasterService *s,uint8_t node,uint32_t now)
             bodaqs_measurement_put(b->bytes+8,r->ordinal_high,4);
         }
         memcpy(b->bytes+16+b->count*76,r->bytes,76); ++b->count;
+#if BODAQS_MASTER_BATCH_DIAGNOSTICS
+        gMasterBatchInfo.node[node].last_arrival_ms=r->received_ms;
+#endif
         q->head=(uint16_t)((q->head+1U)%BODAQS_MASTER_RETENTION_CAPACITY); --q->count;
         /* Evidence/boundaries never wait for normal sample-batch filling. */
-        if(b->cls==2 || b->count==13) { (void)seal_receptions(s,node); return; }
+        if(b->cls==2 || b->count==13) { (void)seal_receptions(s,node,b->cls==2?5:0,now); return; }
     }
-    if(b->count && (uint32_t)(now-b->started_ms)>=20) (void)seal_receptions(s,node);
+    if(b->count && (uint32_t)(now-b->started_ms)>=20) (void)seal_receptions(s,node,4,now);
 }
 bool bodaqs_master_service_receive_can(BodaqsMasterService *s,uint8_t node,
     uint8_t cls,uint16_t identifier,const uint8_t *payload,uint8_t length,
@@ -453,6 +473,9 @@ static void acquisition_result(BodaqsMasterService *s,uint8_t node,
     if(fence && reply->opcode!=127 && reply->data_length==24 && reply->data[0]==3) {
         BodaqsReceptionBatch *batch=&s->receptions[node];
         /* Retire old data but preserve object allocators/ACK identity in context. */
+#if BODAQS_MASTER_BATCH_DIAGNOSTICS
+        if(batch->object.complete) ++gMasterBatchInfo.node[node].discarded[batch->cls-1];
+#endif
         s->retired_tail_frames+=batch->count+s->ingress[node].count;
         s->ingress[node].head=s->ingress[node].count=0;
         batch->count=0;memset(&batch->object,0,sizeof(batch->object));
@@ -519,6 +542,9 @@ static unsigned measurement_retire(BodaqsMasterService *s,const BodaqsMeasuremen
     if(cls==1 || cls==2) {
         BodaqsReceptionBatch *b=&s->receptions[r->node];
         if(!measurement_ack_matches(&b->object,r,combined)) goto proof_error;
+#if BODAQS_MASTER_BATCH_DIAGNOSTICS
+        bodaqs_batch_diag_retire(r->node,cls,now);
+#endif
         s->acknowledged[cls-1][r->node]=b->object;
         b->count=0;memset(&b->object,0,sizeof(b->object));
         advance_receptions(s,r->node,now);
@@ -690,7 +716,11 @@ static bool measurement_transfer_core(BodaqsMasterService *s,const BodaqsMeasure
 #endif
             }
             if(b->cls==cls && (!r->object || r->object==b->object.object) &&
-               bodaqs_fragment_emit(&b->object,b->bytes,r->index,out)) { s->fair_node[cls]=(node+1)%4; return true; }
+               bodaqs_fragment_emit(&b->object,b->bytes,r->index,out)) {
+#if BODAQS_MASTER_BATCH_DIAGNOSTICS
+                bodaqs_batch_diag_emit(node,cls,r->index,b->object.total,now);
+#endif
+                s->fair_node[cls]=(node+1)%4; return true; }
         } else {
             BodaqsMeasurementControlLane *lane=&s->lanes[cls-3][node];
             BodaqsControlExchange *exchange=cls==3?&s->control:&s->authorization;

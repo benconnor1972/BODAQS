@@ -7,6 +7,12 @@
 #include "bodaqs_record_queue.h"
 #include "bodaqs_master_service.h"
 #include "bodaqs_master_profile.h"
+#include "bodaqs_batch_diagnostics.h"
+#if BODAQS_MASTER_BATCH_DIAGNOSTICS
+/* Main-loop writer; read only after STOP/cleanup with the target suspended.
+ * Use BANK1 to avoid reducing the service/stack headroom in BANK0. */
+BodaqsBatchDiagnostics gMasterBatchInfo __attribute__((section(".bodaqs_spi_buffers")));
+#endif
 #include "bodaqs_node_inventory.h"
 #include "master_identity.h"
 #include "master_spi_priming.h"
