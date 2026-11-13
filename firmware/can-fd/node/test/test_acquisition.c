@@ -370,7 +370,10 @@ int main(int argc, char **argv) {
     if(sync_scope_checks) sync_scope_start=start;
     memset(&e, 0, sizeof(e));
     bodaqs_node_acquisition_backend(0, BODAQS_ACQ_START, 2, 1, sim_tick / 1000, &e);
-    for (uint32_t us = sim_tick + 100; us < start + 20000; us += 100) {
+    /* The sample-unit integration regression needs a nonempty STOP tail, not
+     * just the default 65 readings that exactly fill five-reading packets. */
+    const uint32_t initial_window = getenv("BODAQS_NODE_FIXTURE_PARTIAL_STOP") ? 19700 : 20000;
+    for (uint32_t us = sim_tick + 100; us < start + initial_window; us += 100) {
         advance(us);
         if(us==start+5000) {raw=8;cc[3]=count;bodaqs_node_capture_irq();}
         bodaqs_node_imu_spi_irq();

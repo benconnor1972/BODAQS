@@ -206,10 +206,12 @@ static bool model(uint32_t seq, uint32_t tick, uint32_t now) {
     put16(b + 16, a.denominator);
     return emit(0x22, p, 32);
 }
-static bool flush(bool final) {
+static bool flush(void) {
     if (!a.count)
         return true;
-    a.packet[3] = (uint8_t)(a.count | 0x40 | (a.sequence == a.count ? 8 : 0) | (a.gap ? 16 : 0) | (final ? 0x80 : 0));
+    /* Bit 7 is reserved, including on a partial STOP packet. The separate
+     * source boundary carries the terminal sequence; samples need no STOP flag. */
+    a.packet[3] = (uint8_t)(a.count | 0x40 | (a.sequence == a.count ? 8 : 0) | (a.gap ? 16 : 0));
     size_t n = 4 + 12 * a.count;
     if (n <= 16)
         n = 16;
@@ -290,7 +292,7 @@ static void recover(uint8_t stage,uint32_t now) {
     if(a.phase!=RECOVER) {
         a.recovery_ms=now; a.recovery_tick=clock_tick(); a.recovery_stage=stage;
         a.recovery_capture=bodaqs_node_capture_loss_take();
-        if(!flush(false) || !recovery_boundary(1,now) || !recovery_boundary(4,now)) {fail(31);return;}
+        if(!flush() || !recovery_boundary(1,now) || !recovery_boundary(4,now)) {fail(31);return;}
     }
     a.phase=RECOVER; a.recovery_step=0; a.step=0;
     a.mask=a.count=a.drain_phase=0; a.pending_count=0;
@@ -393,7 +395,7 @@ static bool word(const uint8_t *w, uint32_t now) {
             return false;
         }
         if ((uint32_t)(tick - a.model_tick) >= 100000 || a.sequence - a.model_seq >= 500) {
-            if (!flush(false) || !loss_report(now,true) || !model(a.sequence, tick, now) || !snapshot(a.sequence, tick, ts))
+            if (!flush() || !loss_report(now,true) || !model(a.sequence, tick, now) || !snapshot(a.sequence, tick, ts))
                 return false;
         }
         if (!a.count) {
@@ -413,7 +415,7 @@ static bool word(const uint8_t *w, uint32_t now) {
         ++a.count;
         ++a.sequence;
         a.recorded = true;
-        if (a.count == 5 && !flush(false))
+        if (a.count == 5 && !flush())
             return false;
     }
     return true;
@@ -701,7 +703,7 @@ void bodaqs_node_acquisition_backend(void *context, uint8_t command, uint32_t ge
         a.phase = STARTING;
     } else if (command == BODAQS_ACQ_STOP) {
         bodaqs_node_imu_cancel(0);
-        if (!flush(true) || (a.recorded &&
+        if (!flush() || (a.recorded &&
             (!snapshot_observation(a.final_sample.sequence,a.final_sample.tick,a.final_sample.sensor,&a.final_sample) ||
              !boundary(8, 0, clock_tick()))))
             a.reason = 31;

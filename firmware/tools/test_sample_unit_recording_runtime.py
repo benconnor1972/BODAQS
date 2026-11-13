@@ -85,7 +85,19 @@ def main():
             assert 'source epoch' in str(error)
         else:
             raise AssertionError('foreign epoch was assigned to source sequence bounds')
-        print('Sample unit: real node fixture -> production master/RAM -> BDQ -> independent decode PASS')
+        # Exercise actual node STOP with a nonempty partial packet. The default
+        # 65-reading trace fills every packet and cannot detect tail flag drift.
+        subprocess.run([str(producer)], env=dict(os.environ,
+            BODAQS_NODE_FIXTURE_OUT=str(wire), BODAQS_NODE_FIXTURE_PARTIAL_STOP='1'), check=True)
+        subprocess.run([str(consumer), str(wire), str(bdq), 'units'], check=True)
+        tail = read_can_imu_packets(bdq, 'can0_imu6')
+        assert [row['sequence'] for row in tail['readings']] == list(range(64))
+        assert tail['ambiguous_packets'] == 0 and not tail['gaps']
+        assert any(row['boundary_event_kind'] == 8 and
+                   row['boundary_validity_flags'] & 1 and
+                   row['source_segment_id'] == 1 and row['related_sequence'] == 63
+                   for row in tail['raw_timing_observations'])
+        print('Sample unit: real node fixture -> production master/RAM -> BDQ -> independent decode, including partial STOP PASS')
 
 
 if __name__ == '__main__':
