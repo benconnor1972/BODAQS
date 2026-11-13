@@ -99,4 +99,17 @@ int main() {
   assert(!s.failed() && s.failureSite()==0);
   assert(s.acceptManagementLoss(1,14,6,0,3500000)==RemoteImuStream::Accepted);
   assert(s.failed() && s.failureSite()!=0 && s.failureSite()!=firstSite);
+  // A fatal notification carries no cumulative counter. Replaying it between
+  // unchanged loss reports must not count the same missing readings twice.
+  s.release();assert(s.configure(binding,2,3));
+  assert(s.acceptManagementLoss(1,9,6,58934,3600000)==RemoteImuStream::Accepted);
+  assert(s.acceptManagementLoss(1,14,6,0,3600001)==RemoteImuStream::Accepted);
+  assert(s.acceptManagementLoss(1,9,6,58934,3600002)==RemoteImuStream::Accepted);
+  assert(s.acceptManagementLoss(1,9,6,58939,3600003)==RemoteImuStream::Accepted);
+  losses=s.evidenceSource();managementTotal=0;
+  while(losses.pendingRecords(losses.context)) {
+    uint8_t row[224];assert(losses.popRecord(losses.context,row,sizeof row));
+    managementTotal+=BdqV2Format::getU32(row+148);
+  }
+  assert(managementTotal==58939 && s.failed());
 }

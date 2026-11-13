@@ -35,6 +35,24 @@ typedef struct {
     uint32_t boot, ordinal_high, received_ms;
     uint8_t cls;
 } BodaqsRetainedReception;
+#if BODAQS_MEASUREMENT_VERSION >= 4
+#define BODAQS_SAMPLE_WINDOW 4U
+#define BODAQS_ESSENTIAL_QUEUE 16U
+#define BODAQS_ESSENTIAL_RESERVE 4U
+typedef struct {
+    BodaqsFragmentState object, acknowledged;
+    uint8_t bytes[216];
+    uint32_t started_ms, first_emit_ms;
+    uint16_t count;
+    uint8_t attempts;
+} BodaqsSampleWindowUnit;
+typedef struct {
+    BodaqsSampleWindowUnit units[4][BODAQS_SAMPLE_WINDOW];
+    BodaqsRetainedReception evidence[4][BODAQS_ESSENTIAL_QUEUE];
+    uint8_t evidence_head[4], evidence_count[4], cursor[4];
+    uint32_t repair_failures[4];
+} BodaqsMasterWindowStorage;
+#endif
 typedef struct {
     BodaqsRetainedReception records[BODAQS_MASTER_RETENTION_CAPACITY];
     uint16_t head, count, high_water;
@@ -56,6 +74,11 @@ typedef struct {
 } BodaqsMeasurementControlLane;
 typedef struct {
     uint32_t (*native_clock)(void *, uint32_t *epoch);
+#if BODAQS_MEASUREMENT_VERSION >= 4
+    /* Caller-owned, main-loop only. Target places this entire bank in BANK1;
+     * logical retention is separate from DMA/CS-retired physical buffers. */
+    BodaqsMasterWindowStorage *window;
+#endif
     void *clock_context;
     uint64_t bridge_context;
     uint32_t bridge_token, bridge_tick, bridge_epoch;
@@ -144,6 +167,10 @@ void bodaqs_master_service_loss_counts(BodaqsMasterService *,uint8_t node,uint8_
     bool essential,uint32_t tick,uint64_t ordinal);
 void bodaqs_master_service_init(BodaqsMasterService *service,
     const BodaqsMasterIdentity *identity);
+#if BODAQS_MEASUREMENT_VERSION >= 4
+/* Bind once after init, before entry. Storage outlives the service. */
+bool bodaqs_master_service_bind_window(BodaqsMasterService *, BodaqsMasterWindowStorage *);
+#endif
 
 void bodaqs_master_service_set_status(BodaqsMasterService *service,
     const BodaqsMasterStatus *status);

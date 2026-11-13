@@ -100,6 +100,7 @@ private:
   uint32_t lossDependency_=0;
   uint32_t nextPacket_=0,sequenceFloor_=0;
   uint32_t lastUnit_=0,lastUnitChecksum_=0;
+  uint32_t unitSequenceFloor_=0;
   uint64_t compactSamplesAccepted_=0;
   bool producerGap_=false,alignmentDegraded_=false;
   uint32_t managementLoss_[2][2]={};

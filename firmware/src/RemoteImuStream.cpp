@@ -401,6 +401,7 @@ RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t
       ++segment_;epoch_=b[5];haveBoundary_=true;haveSequence_=false;modelCount_=0;
       terminalObserved_=false;
       sequenceFloor_=u32(b+20);
+      unitSequenceFloor_=sequenceFloor_;
     }
     if(!local && (!haveBoundary_ || b[5]!=epoch_)) return Invalid;
     if(!local && b[6]==8 && (v&1)) {terminalObserved_=true;terminalSequence_=u32(b+20);terminalEpoch_=b[5];}
@@ -472,6 +473,9 @@ RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t
 }
 RemoteImuStream::Acceptance RemoteImuStream::acceptSampleUnit(uint64_t context,uint32_t object,
     const uint8_t* p,uint16_t total,uint32_t logger) {
+#if BODAQS_MEASUREMENT_VERSION >= 4
+  if(!failed_ && !haveBoundary_) return Blocked; // essential START progresses independently
+#endif
   if(!binding_.sampleUnits || failed_ || !p || context!=binding_.context || !object ||
      !haveBoundary_ || total<84 || total>212 || (total-20)%64 || u16(p)!=2 ||
      p[2]!=1 || p[3]!=binding_.node || u32(p+4)!=binding_.boot ||
@@ -490,6 +494,11 @@ RemoteImuStream::Acceptance RemoteImuStream::acceptSampleUnit(uint64_t context,u
   uint8_t record[260]={};put(record,nextPacket_);put(record+4,logger);
   BdqV2Format::putU16(record+8,BdqV2Format::TimingDegraded);
   put(record+12,segment_);put(record+16,sequenceFloor_);
+#if BODAQS_MEASUREMENT_VERSION >= 4
+  // Evidence can overtake queued units. A later snapshot is not a lower bound
+  // on an earlier unit; only its observed START bounds every unit in scope.
+  put(record+16,unitSequenceFloor_);
+#endif
   bodaqs_measurement_put(record+24,context,8);put(record+32,object);
   record[36]=binding_.node;record[37]=1;record[38]=1;
   BdqV2Format::putU16(record+40,total);std::memcpy(record+44,p,total);
@@ -629,7 +638,10 @@ RemoteImuStream::Acceptance RemoteImuStream::acceptManagementLoss(uint8_t cls,ui
   } else BdqV2Format::putU16(out+142,31);
   put(out+16,valid);
   if(!evidence_.push(out,224)) {markFailed(__LINE__);return Invalid;}
-  previous=counter;++nextEvidence_;
+  // Fatal reports have no counter. Preserve the last cumulative observation so
+  // their replay cannot turn a later duplicate into another full loss delta.
+  if(reason==9) previous=counter;
+  ++nextEvidence_;
   if(reason==14) markFailed(__LINE__);
   return Accepted;
 }

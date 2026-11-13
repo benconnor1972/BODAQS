@@ -204,6 +204,10 @@ volatile MasterRuntimeInfo gMasterRuntimeInfo;
 BodaqsNodeInventory gNodeInventory;
 
 static BodaqsMasterService gService;
+#if BODAQS_MEASUREMENT_VERSION >= 4
+static BodaqsMasterWindowStorage gWindow __attribute__((section(".bodaqs_spi_buffers")));
+static uint32_t gDrainSampleSeen[4][4] __attribute__((section(".bodaqs_spi_buffers")));
+#endif
 static BodaqsMasterDiscoveryRecord
     gDiscoveryRecords[BODAQS_MASTER_DISCOVERY_NODE_COUNT];
 /* SPI adapter ownership storage. */
@@ -401,6 +405,9 @@ static void drain_check(void)
         if(!gService.acquisition_started || (gMasterDrainInfo.state==2 &&
            gMasterDrainInfo.context==context && gMasterDrainInfo.recording==recording)) return;
         memset((void *)&gMasterDrainInfo,0,sizeof gMasterDrainInfo);
+#if BODAQS_MEASUREMENT_VERSION >= 4
+        memset(gDrainSampleSeen,0,sizeof gDrainSampleSeen);
+#endif
         gMasterDrainInfo.version=2;
 #if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
         gMasterDrainInfo.version=3;
@@ -929,6 +936,10 @@ static void update_service_status(void)
     status.spi_tx_queue_depth=gService.master_evidence.complete?1U:0U;
     for(node=0;node<4;++node) {
         if(gService.receptions[node].count) ++status.spi_tx_queue_depth;
+#if BODAQS_MEASUREMENT_VERSION >= 4
+        for(unsigned i=0;i<BODAQS_SAMPLE_WINDOW;++i)
+            if(gWindow.units[node][i].count) ++status.spi_tx_queue_depth;
+#endif
         if(gService.lanes[0][node].tx.complete) ++status.spi_tx_queue_depth;
         if(gService.lanes[1][node].tx.complete) ++status.spi_tx_queue_depth;
     }
@@ -1049,6 +1060,9 @@ int main(void)
 
     identity = master_identity_read();
     bodaqs_master_service_init(&gService, &identity);
+#if BODAQS_MEASUREMENT_VERSION >= 4
+    (void)bodaqs_master_service_bind_window(&gService,&gWindow);
+#endif
     bodaqs_master_timing_init();
     gService.native_clock=bodaqs_master_timing_clock;
     bodaqs_control_exchange_init(&gService.control, master_control_boot_id_read());
@@ -1198,6 +1212,19 @@ static void drain_transfer(const uint8_t *request,size_t length,const uint8_t *r
     if(cls<1 || cls>2 || node>3 || index>=26) return;
     --cls;
     object=(uint32_t)bodaqs_measurement_get(reply+12,4);
+#if BODAQS_MEASUREMENT_VERSION >= 4
+    if(cls==0) {
+        uint32_t *seen=&gDrainSampleSeen[node][(object-1)%BODAQS_SAMPLE_WINDOW];
+        if(object<=*seen) {++gMasterDrainInfo.data_repeat_fragments[0];return;}
+        *seen=object;
+        const uint16_t records=(uint16_t)bodaqs_measurement_get(reply+32,2);
+        ++gMasterDrainInfo.data_objects[0];gMasterDrainInfo.data_records[0]+=records;
+        if(records>=1 && records<=13) ++gMasterDrainInfo.data_batch_records[0][records];
+        ++gMasterDrainInfo.data_unique_fragments[0];
+        if(object>gMasterDrainInfo.data_last_object[0][node]) gMasterDrainInfo.data_last_object[0][node]=object;
+        return;
+    }
+#endif
     if(gMasterDrainInfo.data_last_object[cls][node]!=object) {
         const uint16_t records=gService.receptions[node].count;
         gMasterDrainInfo.data_last_object[cls][node]=object;
@@ -1375,8 +1402,16 @@ static void service_spi_receive(void)
     started=gMasterDrainInfo.state==1?drain_clock():0;
     acked_before=gService.objects_acked;
     if(length==BODAQS_MEASUREMENT_BYTES && (received[3]==5 || received[3]==14) && received[16]<4 &&
-       (received[20]==1 || received[20]==2))
+       (received[20]==1 || received[20]==2)) {
         ack_records=gService.receptions[received[16]].count;
+#if BODAQS_MEASUREMENT_VERSION >= 4
+        if(received[20]==1) {
+            const uint32_t id=(uint32_t)bodaqs_measurement_get(received+12,4);
+            const BodaqsSampleWindowUnit *unit=&gWindow.units[received[16]][(id-1)%BODAQS_SAMPLE_WINDOW];
+            ack_records=id && unit->object.object==id?unit->count:0;
+        }
+#endif
+    }
     result=bodaqs_master_service_process_transfer(&gService,received,length,
         gUptimeMs,gTransmitSlots[next_index]);
     if (result==BODAQS_MASTER_SLOT_PROCESSED) {

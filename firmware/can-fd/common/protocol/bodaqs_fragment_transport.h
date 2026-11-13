@@ -72,7 +72,7 @@ static inline int bodaqs_fragment_accept(BodaqsFragmentState *s,uint8_t *data,si
        (a->node>3 && !(a->node==255 && cls==5))) return -13;
     if(a->total<4 || a->total>1024 || a->total>capacity || offset>=a->total ||
        ((cls==3 || cls==4) && a->total!=68) ||
-       ((cls==1 && BODAQS_MEASUREMENT_VERSION==3)?
+       ((cls==1 && BODAQS_MEASUREMENT_VERSION>=3)?
            (a->index || a->total<84 || a->total>212 || (a->total-20)%64):
            ((cls==1 || cls==2) && (a->total<96 || (a->total-20)%76))) ||
        (cls==5 && (a->total<28 || (a->total-12)%16))) return -2;
@@ -106,7 +106,7 @@ static inline int bodaqs_fragment_accept(BodaqsFragmentState *s,uint8_t *data,si
     if(s->mask!=all) return 0;
     s->checksum=(uint32_t)bodaqs_measurement_get(data+s->total-4,4);
     if(s->checksum!=bodaqs_fragment_checksum(s,data)) { s->mask=0; return -3; }
-    if(cls==1 && BODAQS_MEASUREMENT_VERSION==3) {
+    if(cls==1 && BODAQS_MEASUREMENT_VERSION>=3) {
         unsigned records=(s->total-20)/64;
         if(bodaqs_measurement_get(data,2)!=2 || data[2]!=1 || data[3]!=s->node ||
            !bodaqs_measurement_get(data+4,4) || bodaqs_measurement_get(data+12,2)!=records ||

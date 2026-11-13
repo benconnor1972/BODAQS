@@ -39,6 +39,9 @@ static SensorSpec saved;
 static ParamStore savedParams;
 static Fixture node;
 static BodaqsMasterService master;
+#if BODAQS_MEASUREMENT_VERSION >= 4
+static BodaqsMasterWindowStorage fixtureWindow;
+#endif
 static BodaqsControlSnapshot snapshot;
 uint8_t LoggerConfig::sensorCount() const { return 1; }
 bool LoggerConfig::getSensorSpec(uint8_t i,SensorSpec& spec) const { if(i) return false; spec=saved; return true; }
@@ -237,6 +240,9 @@ static void reset() {
  BodaqsMasterIdentity identity={};identity.capabilities=15;identity.hardware_uid=20;
  identity.minimum_protocol_version=identity.maximum_protocol_version=1;
  bodaqs_master_service_init(&master,&identity);bodaqs_control_exchange_init(&master.control,99);
+#if BODAQS_MEASUREMENT_VERSION >= 4
+ assert(bodaqs_master_service_bind_window(&master,&fixtureWindow));
+#endif
  snapshot={};snapshot.capture=bodaqs_control_apply_capture;snapshot.capture_context=&node.apply;
  inventory();profile={};profile.can_fd_master.supported=true;
  profile.can_fd_master.cs_pin=5;profile.can_fd_master.spi_bus_index=0;

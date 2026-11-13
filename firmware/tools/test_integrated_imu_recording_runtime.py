@@ -32,10 +32,13 @@ def main():
     parser.add_argument("--first-recording", action="store_true")
     parser.add_argument("--sample-units", action="store_true")
     parser.add_argument("--two-node", action="store_true")
+    parser.add_argument("--window", action="store_true")
     parser.add_argument("--idle-control-fetch", action="store_true")
     parser.add_argument("--flow-diagnostics", action="store_true")
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
+    if args.window:
+        args.first_recording=args.sample_units=args.two_node=True
     if args.two_node and not (args.first_recording and args.sample_units):
         parser.error('--two-node requires --first-recording --sample-units')
     firmware = Path(__file__).resolve().parents[1]
@@ -75,6 +78,34 @@ def main():
    assert(bodaqs_measurement_encode(&outgoing,replacement,BODAQS_MEASUREMENT_BYTES));delivered=replacement;
  }
  const auto slotResult=bodaqs_master_service_process_transfer(&master,delivered,length,clockMs,next);''')
+        if args.window:
+            # Lose data and the exact retirement response independently. Suppress
+            # only one source's first unit until another unit has reached MISO;
+            # the final BDQ must still contain each known reading exactly once.
+            source=source.replace('namespace SharedSpiBus {', '''
+static bool holdWindowUnit=true,windowSuccessorSeen=false,dropWindowProof=true;
+static unsigned windowDataSuppressed=0,windowProofSuppressed=0,windowCorrupted=0;
+namespace SharedSpiBus {''',1)
+            source=source.replace('memcpy(rx,preloaded,length);', '''
+ memcpy(rx,preloaded,length);
+ if(length==BODAQS_MEASUREMENT_BYTES) {
+   BodaqsMeasurementSlot observed={};
+   if(bodaqs_measurement_decode(rx,length,&observed)) {
+     if(observed.kind==2 && observed.node==1 && observed.object==2 && !windowCorrupted) {
+       ++windowCorrupted;observed.body[20]^=1;
+       assert(bodaqs_measurement_encode(&observed,rx,length)); // valid physical CRC, bad origin CRC
+     }
+     if(observed.kind==2 && observed.node==0 && observed.object>1) windowSuccessorSeen=true;
+     const bool data=holdWindowUnit && observed.kind==2 && observed.node==0 && observed.object==1;
+     const bool proof=dropWindowProof && observed.retired && observed.retiredClass==1;
+     if(data || proof) {
+       if(data) ++windowDataSuppressed;
+       if(proof) {dropWindowProof=false;++windowProofSuppressed;}
+       observed={};observed.node=255;observed.context=master.measurement.mode.context;
+       assert(bodaqs_measurement_encode(&observed,rx,length));
+     }
+   }
+ }''',1)
         support = (firmware / "test/integrated_imu_recording_fixture.cpp").read_text(encoding="utf-8")
         logging = (firmware / "src/LoggingManager.cpp").read_text(encoding="utf-8")
         functions = ("bool LoggingManager::isStarting(", "void LoggingManager::cancelStart(",
@@ -82,6 +113,22 @@ def main():
                      "void LoggingManager::loop(", "bool LoggingManager::start(", "void LoggingManager::completeStorageStart(",
                      "void LoggingManager::stop(", "void LoggingManager::finishStorageStop(")
         support = support.replace("// PRODUCTION_LOGGING", "\n".join(definition(logging, f) for f in functions))
+        if args.window:
+            support=support.replace('step(pacing);\n   assert(!RemoteImuRecording::failed());', '''
+   if(id==0x100 && frameNumber<=6) {
+     // Six arrivals before service create at least two immutable units.
+     if(frameNumber==6) {
+       step(8);assert(windowSuccessorSeen && windowDataSuppressed);
+       holdWindowUnit=false;
+     }
+   } else step(pacing);
+   assert(!RemoteImuRecording::failed());''')
+            # frameNumber includes early evidence, so use a separate sample count.
+            support=support.replace('unsigned id,length,frameNumber=0;', 'unsigned id,length,frameNumber=0,windowSamples=0;')
+            support=support.replace('id==0x100 && frameNumber<=6', 'id==0x100 && ++windowSamples<=6')
+            support=support.replace('if(frameNumber==6)', 'if(windowSamples==6)')
+            support=support.replace('assert(droppedDataAcks==1);',
+                'assert(droppedDataAcks==1 && windowProofSuppressed==1 && windowCorrupted==1 && windowSuccessorSeen);')
         cpp = temporary / "integrated.cpp"
         cpp.write_text(source + support, encoding="utf-8")
         exe = temporary / "integrated.exe"
@@ -90,6 +137,8 @@ def main():
             source_flags=['-DBODAQS_RECLAIM_IDLE_CONTROL_FETCH=1']
         else:
             source_flags=[]
+        if args.window:
+            source_flags += ['-DBODAQS_SPI_MEASUREMENT_V4=1']
         sources += [firmware / "src" / name for name in ("CanMasterProtocol.cpp", "SensorAssignment.cpp", "SensorParams.cpp", "Lsm6dso32xConfig.cpp", "RemoteImuStream.cpp", "BdqV2Catalog.cpp", "BdqV2Writer.cpp", "ImuAdmission.cpp")]
         subprocess.run([args.compiler, "-std=c++17", *source_flags, *(["-DBODAQS_SPI_MEASUREMENT_V3=1"] if args.sample_units else []), *(["-DBODAQS_SINGLE_NODE_IMU_SMOKE=1", "-DBODAQS_SPI_MEASUREMENT_V2=1"] if args.first_recording else []), *(["-DBODAQS_V3_TWO_NODE_BENCH=1"] if args.two_node else []), *(["-DBODAQS_IMU_FLOW_DIAGNOSTICS=1"] if args.flow_diagnostics else []), "-pthread", "-DBODAQS_QUEUE_ALLOCATION_TEST", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-Wno-unused-variable", "-I", str(firmware/"test/stubs"), "-I", str(firmware/"src"), "-I", str(common), "-I", str(firmware/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
         saturated = output / "saturation-can.txt"
@@ -117,7 +166,8 @@ def main():
                 for membership in ([0], [0,1,2,3]):
                     wrong=assess_multi_imu_recording(output / 'good.bdq', membership)
                     assert 'expected_node_membership_mismatch' in wrong['issues']
-                print('Integrated v3 two-source custody, partial STOP, independent axes and membership: PASS')
+                print('Integrated window selective data/ACK/proof loss, origin-CRC repair and partial STOP: PASS'
+                      if args.window else 'Integrated v3 two-source custody, partial STOP, independent axes and membership: PASS')
                 return
             decoded=read_can_imu_packets(output / "good.bdq", "can0_imu6")
             assert [r["sequence"] for r in decoded["readings"]]==list(range(65))

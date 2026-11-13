@@ -824,6 +824,23 @@ static MeasurementInbox* transportInbox_(MeasurementTransport& transport,uint8_t
   if(cls<1 || cls>5 || (cls==5?node!=255:node>3)) return nullptr;
   return &transport.inboxes[cls-1][cls==5?0:node];
 }
+#if BODAQS_MEASUREMENT_VERSION >= 4
+static void sampleCredits_(MeasurementTransport& t,uint8_t* out) {
+  for(uint8_t n=0;n<4;++n) {
+    if(!(t.sampleNodes&(1u<<n))) continue;
+    const uint32_t base=t.sampleNext[n];
+    if(base>UINT32_MAX-4) continue; // exhausted IDs cannot wrap into a fresh scope
+    bodaqs_measurement_put(out+8*n,base,4);
+    for(uint8_t i=0;i<4;++i) {
+      const uint32_t id=base+i;
+      const auto& held=sampleWindowInbox(t,n,(id-1)%4);
+      if((held.state.object==id && held.state.complete) ||
+         (held.state.object!=id && held.state.object && (!held.admitted || held.ackPending)))
+        out[8*n+4]|=1u<<i;
+    }
+  }
+}
+#endif
 static uint8_t nextDataFragment_(MeasurementInbox& inbox) {
   // All missing fragments remain missing until validated MISO supplies them.
   // A full request sweep resets this hint and retries every still-missing bit.
@@ -925,7 +942,7 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
   }
   // The master retains one ordered sample/evidence head per node. Continue
   // its partial object instead of spending data turns on the other class.
-  if(cls<3 && node<4) {
+  if(cls<3 && node<4 && BODAQS_MEASUREMENT_VERSION<4) {
     const auto& chosen=transport.inboxes[cls-1][node].state;
     const auto& other=transport.inboxes[2-cls][node].state;
     if((!chosen.object || chosen.complete) && other.object && !other.complete) cls=3-cls;
@@ -976,9 +993,18 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
       request=inbox.pendingAck;acked=&inbox;
     }
   }
+#if BODAQS_MEASUREMENT_VERSION >= 4
+  if(!outgoing && !acked) for(uint8_t n=0;n<4 && !acked;++n) for(uint8_t i=1;i<4;++i) {
+    auto& inbox=sampleWindowInbox(transport,n,i);
+    if(inbox.ackPending) {request=inbox.pendingAck;acked=&inbox;break;}
+  }
+#endif
 #if BODAQS_MEASUREMENT_VERSION >= 2
   if(acked) {
     request.kind=14;request.body[2]=cls;request.body[3]=node;
+#if BODAQS_MEASUREMENT_VERSION >= 4
+    if(cls==1) sampleCredits_(transport,request.body+16);
+#endif
     auto* next=transportInbox_(transport,cls,node);
     if(next && next->state.object && !next->state.complete) {
       bodaqs_measurement_put(request.body+8,next->state.object,4);
@@ -1007,7 +1033,7 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
         request.object=0;request.index=0;
       }
     }
-    if(cls<3 && !request.object && !(BODAQS_MEASUREMENT_VERSION==3 && cls==1)) {
+    if(cls<3 && !request.object && !(BODAQS_MEASUREMENT_VERSION>=3 && cls==1)) {
       uint8_t budgetNode=node==255?4:node;
       if(static_cast<int32_t>(millis()-transport.nextHeadPollMs[cls-1][budgetNode])<0) {
 #if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
@@ -1043,7 +1069,12 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
   uint8_t traceFlags=traceTarget && traceTarget->ackPending?MeasurementPipelineTrace::TargetAckPending:0;
   const uint32_t traceStarted=micros();
 #endif
-#if BODAQS_MEASUREMENT_VERSION == 3
+#if BODAQS_MEASUREMENT_VERSION >= 4
+  if(request.kind==1 && request.body[0]==1) {
+    request={};request.kind=15;request.context=transport.context;request.node=255;
+    sampleCredits_(transport,request.body);
+  }
+#elif BODAQS_MEASUREMENT_VERSION == 3
   if(request.kind==1 && request.body[0]==1) {
     request={};request.context=transport.context;request.node=255;
   }
@@ -1098,6 +1129,10 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
 #if BODAQS_MEASUREMENT_VERSION >= 2
   if(response.retired) {
     auto* retired=transportInbox_(transport,response.retiredClass,response.retiredNode);
+#if BODAQS_MEASUREMENT_VERSION >= 4
+    if(response.retiredClass==1 && response.retiredNode<4)
+      retired=&sampleWindowInbox(transport,response.retiredNode,(response.retiredObject-1)%4);
+#endif
     if(retired && retired->ackPending) {
       const auto& pending=retired->pendingAck;
       if(pending.context==response.context && pending.object==response.retiredObject &&
@@ -1156,6 +1191,17 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
     transport.nextHeadPollMs[responseClass-1][response.node]=millis();
   auto* inbox=transportInbox_(transport,responseClass,response.node);
   if(!inbox) return 0;
+#if BODAQS_MEASUREMENT_VERSION >= 4
+  if(responseClass==1) {
+    if(!response.object || !(transport.sampleNodes&(1u<<response.node))) return 0;
+    inbox=&sampleWindowInbox(transport,response.node,(response.object-1)%4);
+    if(response.object<inbox->state.object) return 0; // stale already-retired physical reply
+    if(response.object!=inbox->state.object && inbox->state.object &&
+       (!inbox->admitted || inbox->ackPending)) return 0; // never overwrite unretired custody
+    const uint32_t base=transport.sampleNext[response.node];
+    if(response.object>=base && response.object-base>=4) return 0;
+  }
+#endif
   if(responseClass==4 && (transport.terminalNodes&(1u<<response.node)) &&
      inbox->state.object && !inbox->state.complete && response.object>inbox->state.object) {
     // Terminal STOP supersedes the master's old renewal result, including a
@@ -1192,6 +1238,11 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
     else if(measurementObjectReady(*inbox)) {result=1;completed=inbox;}
   } else if(result<0) {
     measurementError_(static_cast<uint8_t>(-result),responseClass,response.node,response.object,"fragment_decode");
+#if BODAQS_MEASUREMENT_VERSION >= 4
+    // A damaged origin-checked unit has no RAM custody and therefore no ACK.
+    // Its credit stays open for bounded selective replay; other sources run.
+    if(responseClass==1 && result==-3) return 0;
+#endif
     if(result!=-6) return unavailableTransport_(transport);
   }
   s_diagnostics.measurementAssemblyBytes=inbox->state.complete?0:inbox->state.total;

@@ -6,7 +6,13 @@
 #include <stddef.h>
 #include <string.h>
 #define BODAQS_MEASUREMENT_CAPABILITY (1UL << 3)
-#if defined(BODAQS_SPI_MEASUREMENT_V3) && BODAQS_SPI_MEASUREMENT_V3
+#if defined(BODAQS_SPI_MEASUREMENT_V4) && BODAQS_SPI_MEASUREMENT_V4
+#define BODAQS_MEASUREMENT_VERSION 4U
+#define BODAQS_MEASUREMENT_BYTES 256U
+#define BODAQS_MEASUREMENT_BODY_BYTES 216U
+#define BODAQS_MEASUREMENT_HZ 16000000UL
+#define BODAQS_MEASUREMENT_MAX_KIND 15U
+#elif defined(BODAQS_SPI_MEASUREMENT_V3) && BODAQS_SPI_MEASUREMENT_V3
 #define BODAQS_MEASUREMENT_VERSION 3U
 #define BODAQS_MEASUREMENT_BYTES 256U
 #define BODAQS_MEASUREMENT_BODY_BYTES 216U
@@ -217,8 +223,9 @@ static inline BodaqsMeasurementDecodeResult bodaqs_measurement_decode_result(con
     s->retired=p[238]!=0;s->retiredClass=p[236];s->retiredNode=p[237];
     s->retiredObject=(uint32_t)bodaqs_measurement_get(p+240,4);s->retiredTotal=(uint16_t)bodaqs_measurement_get(p+244,2);
     s->available=(uint16_t)bodaqs_measurement_get(p+246,2);s->retiredChecksum=(uint32_t)bodaqs_measurement_get(p+248,4);
+    const unsigned padding=(BODAQS_MEASUREMENT_VERSION>=4 && s->kind==14)?48:40;
     if(s->kind!=2 && s->kind!=3 && s->kind!=4 && s->kind!=12 && s->kind!=13 &&
-       !bodaqs_measurement_zero(s->body+40,BODAQS_MEASUREMENT_BODY_BYTES-40)) return BODAQS_MEASUREMENT_DECODE_PADDING;
+       !bodaqs_measurement_zero(s->body+padding,BODAQS_MEASUREMENT_BODY_BYTES-padding)) return BODAQS_MEASUREMENT_DECODE_PADDING;
 #endif
     return BODAQS_MEASUREMENT_DECODE_OK;
 }

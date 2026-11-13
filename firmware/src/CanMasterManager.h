@@ -157,6 +157,11 @@ struct MeasurementOutbox {
 };
 struct MeasurementTransport {
   MeasurementInbox inboxes[5][4];
+#if BODAQS_MEASUREMENT_VERSION >= 4
+  MeasurementInbox sampleExtra[4][3];
+  uint32_t sampleNext[4] = {1,1,1,1};
+  uint8_t sampleNodes = 0;
+#endif
   MeasurementOutbox controls[2][4];
   uint64_t context = 0;
   uint64_t bridgeLower = 0, bridgeUpper = 0;
@@ -177,6 +182,14 @@ struct MeasurementTransport {
     BodaqsMeasurementSlot lossDiagnostic = {};
     bool lossReady=false;
 };
+#if BODAQS_MEASUREMENT_VERSION >= 4
+inline MeasurementInbox& sampleWindowInbox(MeasurementTransport& transport,uint8_t node,uint8_t slot) {
+  return slot?transport.sampleExtra[node][slot-1]:transport.inboxes[0][node];
+}
+inline MeasurementInbox& nextSampleInbox(MeasurementTransport& transport,uint8_t node) {
+  return sampleWindowInbox(transport,node,(transport.sampleNext[node]-1)%4);
+}
+#endif
 // Queue immutable control; repeated identical queueing is idempotent. STOP can
 // replace a queued renewal. Service routes all concurrent MISO into the bank.
 bool queueMeasurementControl(MeasurementTransport&, const BodaqsControlWrapped&,

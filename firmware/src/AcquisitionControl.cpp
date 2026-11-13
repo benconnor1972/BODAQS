@@ -423,6 +423,9 @@ bool begin(uint64_t recording,uint64_t context) {
   nextRead=d.authority.next_read;nextTransfer=d.apply.next_transfer;
   for(uint8_t n=0;n<4;++n) {peers[n]=Peer{};peers[n].mutation=d.authority.nodes[n].next_mutation;mailboxes[n]=Mailbox{};outcomes[n]=Outcome{};}
   memset(&transport,0,sizeof transport);recordingId=recording;contextId=context;cursor=0;
+#if BODAQS_MEASUREMENT_VERSION >= 4
+  for(auto& next:transport.sampleNext) next=1;
+#endif
   nextHealthObservation=millis()+2000;healthCursor=0;physicalFenceVerified=false;nextFenceInspection=0;
   fenceInspections=fenceObservations=0;nextFenceSnapshot=millis();
   {Lock lock;fenceSnapshot={};}
@@ -605,12 +608,25 @@ void service() {
           if(cls==1) out.sampleTailDiscarded=true;
         }
         data={};
+#if BODAQS_MEASUREMENT_VERSION >= 4
+        if(cls==1) for(uint8_t i=1;i<4;++i) {
+          auto& extra=CanMasterManager::sampleWindowInbox(transport,node,i);
+          if(extra.state.object && !extra.admitted) {
+            Lock lock;outcomes[node].tailDiscarded=true;outcomes[node].sampleTailDiscarded=true;
+            if(outcomes[node].tailObjectsDiscarded!=UINT32_MAX) ++outcomes[node].tailObjectsDiscarded;
+          }
+          extra={};
+        }
+#endif
       }
       transport.bridgePending=transport.bridgeReady=transport.bridgeExpired=false;
       transport.lossReady=false;
     }
   }
   MeasurementInbox* inbox=nullptr;
+#if BODAQS_MEASUREMENT_VERSION >= 4
+  transport.sampleNodes=physicalFenceVerified?0:dataMask;
+#endif
   // Repeat each idle control selection before rotating, so alternating lost
   // SPI requests cannot permanently skip a node's only response poll.
   uint8_t n=(cursor/2)%4,cls=(cursor/8)%2?3:4;
@@ -663,15 +679,24 @@ void service() {
     CanMasterManager::releaseMeasurementObject(*inbox);
   }
   if(dataConsumer) for(uint8_t node=0;node<4;++node) for(uint8_t dataClass:{2,1}) {
+#if BODAQS_MEASUREMENT_VERSION >= 4
+    auto& data=dataClass==1?CanMasterManager::nextSampleInbox(transport,node):transport.inboxes[1][node];
+    if(dataClass==1 && data.state.object!=transport.sampleNext[node]) continue;
+#else
     auto& data=transport.inboxes[dataClass-1][node];
+#endif
     if(peers[node].excluded && data.state.complete && !data.admitted) {
       // Exclusion is not admission; retain until administrative retirement.
       Lock lock;outcomes[node].tailDiscarded=true;outcomes[node].sampleTailDiscarded|=dataClass==1;
       continue;
     }
     if(CanMasterManager::measurementObjectReady(data) &&
-       dataConsumer(dataClass,node,data.state.object,data.bytes,data.state.total))
+       dataConsumer(dataClass,node,data.state.object,data.bytes,data.state.total)) {
       CanMasterManager::releaseMeasurementObject(data);
+#if BODAQS_MEASUREMENT_VERSION >= 4
+      if(dataClass==1) ++transport.sampleNext[node];
+#endif
+    }
   }
   if(dataConsumer) {
     if(transport.lossReady && dataConsumer(7,transport.lossDiagnostic.node,
@@ -694,6 +719,12 @@ void service() {
     for(uint8_t cls:{1,2,5}) {
       const auto& retained=transport.inboxes[cls-1][cls==5?0:node];
       retired &= !retained.state.object || (retained.admitted && !retained.ackPending);
+#if BODAQS_MEASUREMENT_VERSION >= 4
+      if(cls==1) for(uint8_t i=1;i<4;++i) {
+        const auto& extra=CanMasterManager::sampleWindowInbox(transport,node,i);
+        retired &= !extra.state.object || (extra.admitted && !extra.ackPending);
+      }
+#endif
     }
     Lock lock;outcomes[node].localFenceComplete=retired;
   }

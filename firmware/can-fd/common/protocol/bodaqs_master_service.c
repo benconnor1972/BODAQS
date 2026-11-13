@@ -4,6 +4,9 @@
 #include "bodaqs_batch_diagnostics.h"
 
 #include <string.h>
+#if BODAQS_MEASUREMENT_VERSION >= 4
+#include "bodaqs_master_window.h"
+#endif
 
 void bodaqs_master_service_init(BodaqsMasterService *service,
     const BodaqsMasterIdentity *identity)
@@ -166,6 +169,9 @@ void bodaqs_master_service_measurement_fence(BodaqsMasterService *service,
     service->measurement.fenced = all && stopped_authorization_invalid && data_retired;
     if(service->measurement.fenced) {
         for(node=0;node<4;++node) {
+#if BODAQS_MEASUREMENT_VERSION >= 4
+            window_clear_node(service,node);
+#endif
 #if BODAQS_MASTER_BATCH_DIAGNOSTICS
             if(service->receptions[node].object.complete)
                 ++gMasterBatchInfo.node[node].discarded[service->receptions[node].cls-1];
@@ -188,6 +194,9 @@ static void transfer_context(BodaqsMasterService *s) {
        s->transfer_recording==s->measurement.mode.recording &&
        s->transfer_boot==s->control.master_boot_id) return;
     memset(s->receptions,0,sizeof(s->receptions));
+#if BODAQS_MEASUREMENT_VERSION >= 4
+    if(s->window) memset(s->window,0,sizeof(*s->window));
+#endif
     memset(s->ingress,0,sizeof(s->ingress));
     memset(s->loss,0,sizeof(s->loss));
     memset(s->isr_loss,0,sizeof(s->isr_loss));
@@ -218,6 +227,7 @@ static bool next_object(uint32_t *id) {
     if(*id==UINT32_MAX) return false;
     ++*id; return true;
 }
+#if BODAQS_MEASUREMENT_VERSION < 4
 static bool seal_receptions(BodaqsMasterService *s,uint8_t node,uint8_t reason,uint32_t now) {
     BodaqsReceptionBatch *b=&s->receptions[node];
     if(b->object.complete) return true;
@@ -225,7 +235,7 @@ static bool seal_receptions(BodaqsMasterService *s,uint8_t node,uint8_t reason,u
     bodaqs_measurement_put(b->bytes+12,b->count,2);
     const bool sealed=bodaqs_fragment_seal(&b->object,b->bytes,sizeof(b->bytes),s->transfer_context,
         b->next_id[b->cls-1],node,b->cls,1,(uint16_t)(16+b->count*
-            (BODAQS_MEASUREMENT_VERSION==3 && b->cls==1?64:76)));
+            (BODAQS_MEASUREMENT_VERSION>=3 && b->cls==1?64:76)));
 #if BODAQS_MASTER_BATCH_DIAGNOSTICS
     if(sealed) bodaqs_batch_diag_seal(node,b->cls,b->count,reason,now,b->started_ms,s->ingress[node].count);
 #else
@@ -233,12 +243,16 @@ static bool seal_receptions(BodaqsMasterService *s,uint8_t node,uint8_t reason,u
 #endif
     return sealed;
 }
+#endif
 /* Only the main-loop owner moves ingress into the selected head. Queued records
  * retain their original reception order, boot and oldest-arrival deadline. */
 static void advance_receptions(BodaqsMasterService *s,uint8_t node,uint32_t now) {
+#if BODAQS_MEASUREMENT_VERSION >= 4
+    window_advance(s,node,now);
+#else
     BodaqsReceptionBatch *b=&s->receptions[node];
     BodaqsReceptionIngress *q=&s->ingress[node];
-    const unsigned maximum=BODAQS_MEASUREMENT_VERSION==3?3:13;
+    const unsigned maximum=BODAQS_MEASUREMENT_VERSION>=3?3:13;
     if(b->object.complete) return;
     if(b->count>=maximum) { (void)seal_receptions(s,node,0,now); return; }
     while(q->count) {
@@ -254,11 +268,11 @@ static void advance_receptions(BodaqsMasterService *s,uint8_t node,uint32_t now)
         }
         if(!b->count) {
             memset(b->bytes,0,16); b->cls=r->cls; b->started_ms=r->received_ms;
-            bodaqs_measurement_put(b->bytes,BODAQS_MEASUREMENT_VERSION==3 && r->cls==1?2:1,2); b->bytes[2]=r->cls; b->bytes[3]=node;
+            bodaqs_measurement_put(b->bytes,BODAQS_MEASUREMENT_VERSION>=3 && r->cls==1?2:1,2); b->bytes[2]=r->cls; b->bytes[3]=node;
             bodaqs_measurement_put(b->bytes+4,r->boot,4);
             bodaqs_measurement_put(b->bytes+8,r->ordinal_high,4);
         }
-        if(BODAQS_MEASUREMENT_VERSION==3 && b->cls==1)
+        if(BODAQS_MEASUREMENT_VERSION>=3 && b->cls==1)
             memcpy(b->bytes+16+b->count*64,r->bytes+12,64);
         else memcpy(b->bytes+16+b->count*76,r->bytes,76);
         ++b->count;
@@ -270,6 +284,7 @@ static void advance_receptions(BodaqsMasterService *s,uint8_t node,uint32_t now)
         if(b->cls==2 || b->count==maximum) { (void)seal_receptions(s,node,b->cls==2?5:0,now); return; }
     }
     if(b->count && (uint32_t)(now-b->started_ms)>=20) (void)seal_receptions(s,node,4,now);
+#endif
 }
 bool bodaqs_master_service_receive_can(BodaqsMasterService *s,uint8_t node,
     uint8_t cls,uint16_t identifier,const uint8_t *payload,uint8_t length,
@@ -387,17 +402,37 @@ bool bodaqs_master_service_receive_can_ordered(BodaqsMasterService *s,uint8_t no
         !(bodaqs_measurement_get(payload+54,2)&~2047ULL);
     if(!boundary) limit-=BODAQS_MASTER_BOUNDARY_RESERVE;
 #endif
-    if(q->count>=limit) {
+#if BODAQS_MEASUREMENT_VERSION >= 4
+    if(!s->window) return false;
+    const bool essential=cls==2 && length>=8 && (payload[1]==0x22 || payload[1]==0x25);
+    const unsigned evidence_limit=BODAQS_ESSENTIAL_QUEUE-(essential?0:BODAQS_ESSENTIAL_RESERVE);
+    const bool full=cls==2?s->window->evidence_count[node]>=evidence_limit:q->count>=limit;
+#else
+    const bool full=q->count>=limit;
+#endif
+    if(full) {
         ++q->dropped; ++s->backpressure_frames;
         bodaqs_master_service_loss(s,node,6,cls,payload,length,tick,ordinal); return false;
     }
+#if BODAQS_MEASUREMENT_VERSION >= 4
+    entry=cls==2?&s->window->evidence[node][(s->window->evidence_head[node]+
+        s->window->evidence_count[node])%BODAQS_ESSENTIAL_QUEUE]:
+        &q->records[(q->head+q->count)%BODAQS_MASTER_RETENTION_CAPACITY];
+#else
     entry=&q->records[(q->head+q->count)%BODAQS_MASTER_RETENTION_CAPACITY];
+#endif
     entry->boot=s->discovery[node].boot_id; entry->ordinal_high=(uint32_t)(ordinal>>32);
     entry->received_ms=now; entry->cls=cls;
     r=entry->bytes; memset(r,0,76);
     bodaqs_measurement_put(r,identifier,2); r[2]=length; r[3]=flags;
     bodaqs_measurement_put(r+4,tick,4); bodaqs_measurement_put(r+8,ordinal,4);
-    memcpy(r+12,payload,length); ++q->count; ++s->retained_frames;
+    memcpy(r+12,payload,length);
+#if BODAQS_MEASUREMENT_VERSION >= 4
+    if(cls==2) ++s->window->evidence_count[node];else ++q->count;
+#else
+    ++q->count;
+#endif
+    ++s->retained_frames;
     if(q->count>q->high_water) q->high_water=q->count;
     if(anchor) {s->anchor_boot[node]=s->discovery[node].boot_id;s->anchor_epoch[node]=stream_epoch;}
 #if BODAQS_MEASUREMENT_VERSION >= 2
@@ -479,6 +514,9 @@ static void acquisition_result(BodaqsMasterService *s,uint8_t node,
     }
     if(fence && reply->opcode!=127 && reply->data_length==24 && reply->data[0]==3) {
         BodaqsReceptionBatch *batch=&s->receptions[node];
+#if BODAQS_MEASUREMENT_VERSION >= 4
+        window_clear_node(s,node);
+#endif
         /* Retire old data but preserve object allocators/ACK identity in context. */
 #if BODAQS_MASTER_BATCH_DIAGNOSTICS
         if(batch->object.complete) ++gMasterBatchInfo.node[node].discarded[batch->cls-1];
@@ -546,6 +584,19 @@ static unsigned measurement_retire(BodaqsMasterService *s,const BodaqsMeasuremen
     const uint8_t cls=r->body[0];
     if(cls<1 || cls>5 || (cls==5?r->node!=255:r->node>3)) return 0;
     if(measurement_ack_matches(&s->acknowledged[cls-1][cls==5?0:r->node],r,combined)) return 1;
+#if BODAQS_MEASUREMENT_VERSION >= 4
+    if(cls==1) {
+        if(!s->window) goto proof_error;
+        for(unsigned i=0;i<BODAQS_SAMPLE_WINDOW;++i) {
+            BodaqsSampleWindowUnit *u=&s->window->units[r->node][i];
+            if(measurement_ack_matches(&u->acknowledged,r,combined)) return 1;
+            if(!measurement_ack_matches(&u->object,r,combined)) continue;
+            u->acknowledged=u->object;u->count=0;memset(&u->object,0,sizeof(u->object));
+            ++s->objects_acked;advance_receptions(s,r->node,now);return 1;
+        }
+        goto proof_error;
+    }
+#endif
     if(cls==1 || cls==2) {
         BodaqsReceptionBatch *b=&s->receptions[r->node];
         if(!measurement_ack_matches(&b->object,r,combined)) goto proof_error;
@@ -575,6 +626,19 @@ static bool measurement_transfer_core(BodaqsMasterService *s,const BodaqsMeasure
     uint8_t cls=bodaqs_fragment_class(r->kind); unsigned i;
     transfer_context(s); memset(out,0,sizeof(*out)); out->context=s->transfer_context; out->node=255;
     if(r->context!=s->transfer_context) { transfer_error(r,out,4); return true; }
+#if BODAQS_MEASUREMENT_VERSION >= 4
+    if(r->kind==15) {
+        if(r->node!=255 || r->object || r->index || r->total || !window_request_valid(r->body) ||
+           !bodaqs_measurement_zero(r->body+32,sizeof(r->body)-32)) return false;
+        /* Loss notifications remain independently serviceable even when every
+         * source advertises zero sample credit. */
+        BodaqsMeasurementSlot poll;memset(&poll,0,sizeof(poll));
+        poll.kind=1;poll.context=r->context;poll.node=255;poll.body[0]=1;
+        if(!measurement_transfer_core(s,&poll,now,out)) return false;
+        if(!out->kind) (void)window_emit(s,r->body,now,out);
+        return true;
+    }
+#endif
     if(r->kind==10) {
         if(!bodaqs_bridge_valid(r,0)) return false;
         if(s->bridge_context!=r->context) {
@@ -759,10 +823,16 @@ static bool measurement_transfer(BodaqsMasterService *s,const BodaqsMeasurementS
     if(r->kind==14) {
         if(r->index || r->body[2]<1 || r->body[2]>5 ||
            (r->body[2]==5?r->body[3]!=255:
-            (r->body[3]>3 && !(BODAQS_MEASUREMENT_VERSION==3 && r->body[2]==1 && r->body[3]==255))) ||
+            (r->body[3]>3 && !(BODAQS_MEASUREMENT_VERSION>=3 && r->body[2]==1 && r->body[3]==255))) ||
            r->body[12]>=BODAQS_MEASUREMENT_FRAGMENT_COUNT ||
            (!bodaqs_measurement_get(r->body+8,4) && r->body[12]) ||
+#if BODAQS_MEASUREMENT_VERSION >= 4
+           !bodaqs_measurement_zero(r->body+13,3) ||
+           (r->body[2]==1?!window_request_valid(r->body+16):!bodaqs_measurement_zero(r->body+16,32)) ||
+           !bodaqs_measurement_zero(r->body+48,BODAQS_MEASUREMENT_BODY_BYTES-48)) return false;
+#else
            !bodaqs_measurement_zero(r->body+13,BODAQS_MEASUREMENT_BODY_BYTES-13)) return false;
+#endif
         transfer_context(s);
         if(r->context!=s->transfer_context) {
             transfer_error(r,out,4);out->body[0]=r->body[0];return true;
@@ -775,7 +845,12 @@ static bool measurement_transfer(BodaqsMasterService *s,const BodaqsMeasurementS
         command.kind=1;command.context=r->context;command.node=r->body[3];
         command.object=(uint32_t)bodaqs_measurement_get(r->body+8,4);command.index=r->body[12];
         command.body[0]=r->body[2];
-#if BODAQS_MEASUREMENT_VERSION == 3
+#if BODAQS_MEASUREMENT_VERSION >= 4
+        if(command.body[0]==1) {
+            command.kind=15;command.node=255;command.object=0;command.index=0;
+            memset(command.body,0,sizeof command.body);memcpy(command.body,r->body+16,32);
+        }
+#elif BODAQS_MEASUREMENT_VERSION == 3
         if(command.body[0]==1) {command.node=255;command.object=0;command.index=0;}
 #endif
         if(!measurement_transfer_core(s,&command,now,out)) return false;
@@ -830,6 +905,13 @@ BodaqsMasterSlotResult bodaqs_master_service_process_transfer(
             if(batch->object.complete && batch->cls>=1 && batch->cls<=2)
                 reply.available |= (uint16_t)(1U<<(n+4U*(batch->cls-1U)));
             const BodaqsReceptionIngress *queue=&service->ingress[n];
+#if BODAQS_MEASUREMENT_VERSION >= 4
+            if(service->window) {
+                if(service->window->evidence_count[n]) reply.available|=(uint16_t)(1U<<(n+4));
+                for(unsigned u=0;u<BODAQS_SAMPLE_WINDOW;++u)
+                    if(service->window->units[n][u].count) reply.available|=(uint16_t)(1U<<n);
+            }
+#endif
             if(queue->count) {
                 const uint8_t cls=queue->records[queue->head].cls;
                 if(cls>=1 && cls<=2) reply.available |= (uint16_t)(1U<<(n+4U*(cls-1U)));
