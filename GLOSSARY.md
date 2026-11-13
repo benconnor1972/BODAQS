@@ -24,6 +24,18 @@ sample timing or cross-sensor alignment.
 An interval of missing readings within a sensor stream. Its extent may be known
 exactly or explicitly uncertain.
 
+**Sample identity**:
+The association of a reading with its source, acquisition instance and position
+in that source's sequence.
+
+**Unverified sample block**:
+A retained group of readings whose required integrity or interpretation checks
+have not yet completed. It must not be presented as verified readings.
+
+**Verified reading**:
+A reading whose required identity, integrity and sample-association checks have
+passed. Verification alone establishes neither timing quality nor durable storage.
+
 **Fresh analog reading**:
 An analog reading from a conversion not previously used for that channel's logged
 rows. Equal numeric values can come from different conversions.

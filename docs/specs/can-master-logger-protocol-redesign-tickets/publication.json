@@ -1,0 +1,190 @@
+{
+  "parent": 200,
+  "tickets": {
+    "T01": {
+      "number": 201,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/201",
+      "database_id": 6368986953,
+      "title": "Record one known sample unit through the new protocol",
+      "blockers": [],
+      "linked_blockers": [],
+      "parent_linked": true
+    },
+    "T02": {
+      "number": 202,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/202",
+      "database_id": 6368988052,
+      "title": "Capture and finalize one real IMU with new-protocol polling",
+      "blockers": [
+        "T01"
+      ],
+      "linked_blockers": [
+        "T01"
+      ],
+      "parent_linked": true
+    },
+    "T03": {
+      "number": 203,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/203",
+      "database_id": 6368989324,
+      "title": "Pipeline immutable units with selective retirement",
+      "blockers": [
+        "T01"
+      ],
+      "linked_blockers": [
+        "T01"
+      ],
+      "parent_linked": true
+    },
+    "T04": {
+      "number": 204,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/204",
+      "database_id": 6368991095,
+      "title": "Preserve essential control and timing under sample backpressure",
+      "blockers": [
+        "T01"
+      ],
+      "linked_blockers": [
+        "T01"
+      ],
+      "parent_linked": true
+    },
+    "T05": {
+      "number": 205,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/205",
+      "database_id": 6368992353,
+      "title": "Preserve per-channel ADC freshness in mixed recordings",
+      "blockers": [
+        "T01"
+      ],
+      "linked_blockers": [
+        "T01"
+      ],
+      "parent_linked": true
+    },
+    "T06": {
+      "number": 206,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/206",
+      "database_id": 6368993593,
+      "title": "Assess verified delivery and native timing for every source",
+      "blockers": [
+        "T01"
+      ],
+      "linked_blockers": [
+        "T01"
+      ],
+      "parent_linked": true
+    },
+    "T07": {
+      "number": 207,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/207",
+      "database_id": 6368994891,
+      "title": "Finalize and restart safely after gaps, expiry and resets",
+      "blockers": [
+        "T03",
+        "T04"
+      ],
+      "linked_blockers": [
+        "T03",
+        "T04"
+      ],
+      "parent_linked": true
+    },
+    "T08": {
+      "number": 208,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/208",
+      "database_id": 6368996502,
+      "title": "Carry 512-byte sample units through real polling recordings",
+      "blockers": [
+        "T02",
+        "T05",
+        "T06",
+        "T07"
+      ],
+      "linked_blockers": [
+        "T02",
+        "T05",
+        "T06",
+        "T07"
+      ],
+      "parent_linked": true
+    },
+    "T09": {
+      "number": 209,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/209",
+      "database_id": 6368999062,
+      "title": "Qualify the two-IMU mixed polling profile",
+      "blockers": [
+        "T02",
+        "T05",
+        "T06",
+        "T07"
+      ],
+      "linked_blockers": [
+        "T02",
+        "T05",
+        "T06",
+        "T07"
+      ],
+      "parent_linked": true
+    },
+    "T10": {
+      "number": 210,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/210",
+      "database_id": 6369001792,
+      "title": "Measure four-IMU mixed polling and its remaining bottleneck",
+      "blockers": [
+        "T09"
+      ],
+      "linked_blockers": [
+        "T09"
+      ],
+      "parent_linked": true
+    },
+    "T11": {
+      "number": 211,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/211",
+      "database_id": 6369003017,
+      "title": "Use optional ready IRQ with bounded polling fallback",
+      "blockers": [
+        "T02",
+        "T07"
+      ],
+      "linked_blockers": [
+        "T02",
+        "T07"
+      ],
+      "parent_linked": true
+    },
+    "T12": {
+      "number": 212,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/212",
+      "database_id": 6369004512,
+      "title": "Qualify four-IMU mixed acquisition with ready IRQ",
+      "blockers": [
+        "T10",
+        "T11"
+      ],
+      "linked_blockers": [
+        "T10",
+        "T11"
+      ],
+      "parent_linked": true
+    },
+    "T13": {
+      "number": 213,
+      "url": "https://github.com/benconnor1972/BODAQS/issues/213",
+      "database_id": 6369006038,
+      "title": "Package qualified profiles and repeatable acceptance runs",
+      "blockers": [
+        "T08",
+        "T12"
+      ],
+      "linked_blockers": [
+        "T08",
+        "T12"
+      ],
+      "parent_linked": true
+    }
+  }
+}
