@@ -86,7 +86,7 @@ on its second turn, avoiding a single periodically erased request consuming its
 only opportunity. Empty evidence work never blocks samples. Protected control,
 ordinary control and shared timing ACKs retain their higher priorities. These
 are scheduling attempts, not custody/retirement proofs. Only the existing exact
-proof clears an ACK. All three cursors/burst fields are transport-owned, reset
+proof clears an ACK. All scheduling fields are transport-owned, reset
 with recording state, and retained through link inspection/recovery. No static
 cross-recording cursor, wire/config/schema change or new allocation is involved.
 
