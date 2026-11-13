@@ -13,15 +13,19 @@ from test_remote_imu_lifecycle_runtime import fixture_source
 from verify_integrated_imu_recording import verify
 
 
-def saturation_wire(original, output):
+def saturation_wire(original, output,count=500):
     """Known 500-row source; release one-sample packets as a deliberate burst."""
     frames = [(int(i), bytes.fromhex(h)) for i, _, h in (line.split() for line in original.read_text().splitlines())]
     boundary = frames[0][1]
     model = next(p for i, p in frames if i == 144 and p[1] == 0x24)
     anchor = next(p for i, p in frames if i == 144 and p[1] == 0x22)
     generated = [(144, boundary), (144, model), (144, anchor)]
-    for seq in range(500):
+    for seq in range(count):
         generated.append((256, struct.pack("<HBB", seq, 1, 0x41) + bytes.fromhex("0080ff7fffff0080ff7fffff")))
+    if count>500:
+        stop=bytearray(next(p for i,p in frames if i==144 and p[1]==0x25 and p[14]==8))
+        struct.pack_into('<I',stop,28,count-1)
+        generated.append((144,bytes(stop)))
     output.write_text("".join(f"{i} {len(p)} {p.hex()}\n" for i, p in generated), encoding="utf-8")
 
 
@@ -84,12 +88,17 @@ def main():
             # the final BDQ must still contain each known reading exactly once.
             source=source.replace('namespace SharedSpiBus {', '''
 static bool holdWindowUnit=true,windowSuccessorSeen=false,dropWindowProof=true;
-static unsigned windowDataSuppressed=0,windowProofSuppressed=0,windowCorrupted=0;
+static unsigned windowDataSuppressed=0,windowProofSuppressed=0,windowCorrupted=0,windowBackpressureAds=0;
 namespace SharedSpiBus {''',1)
             source=source.replace('memcpy(rx,preloaded,length);', '''
  memcpy(rx,preloaded,length);
  if(length==BODAQS_MEASUREMENT_BYTES) {
    BodaqsMeasurementSlot observed={};
+   if(bodaqs_measurement_decode(tx,length,&observed)) {
+     const uint8_t* credit=observed.kind==15?observed.body:
+       observed.kind==14 && observed.body[2]==1?observed.body+16:nullptr;
+     if(credit && credit[4]==15 && credit[12]==15) ++windowBackpressureAds;
+   }
    if(bodaqs_measurement_decode(rx,length,&observed)) {
      if(observed.kind==2 && observed.node==1 && observed.object==2 && !windowCorrupted) {
        ++windowCorrupted;observed.body[20]^=1;
@@ -114,6 +123,9 @@ namespace SharedSpiBus {''',1)
                      "void LoggingManager::stop(", "void LoggingManager::finishStorageStop(")
         support = support.replace("// PRODUCTION_LOGGING", "\n".join(definition(logging, f) for f in functions))
         if args.window:
+            support=support.replace('feedWire(argv[1],0);','feedWire(argv[1],1);')
+            support=support.replace('step(4200);assert(renewalSequence[0]>=before+3',
+                'step(200);assert(windowBackpressureAds>0);assert(renewalSequence[0]>=before+1')
             support=support.replace('step(pacing);\n   assert(!RemoteImuRecording::failed());', '''
    if(id==0x100 && frameNumber<=6) {
      // Six arrivals before service create at least two immutable units.
@@ -142,8 +154,8 @@ namespace SharedSpiBus {''',1)
         sources += [firmware / "src" / name for name in ("CanMasterProtocol.cpp", "SensorAssignment.cpp", "SensorParams.cpp", "Lsm6dso32xConfig.cpp", "RemoteImuStream.cpp", "BdqV2Catalog.cpp", "BdqV2Writer.cpp", "ImuAdmission.cpp")]
         subprocess.run([args.compiler, "-std=c++17", *source_flags, *(["-DBODAQS_SPI_MEASUREMENT_V3=1"] if args.sample_units else []), *(["-DBODAQS_SINGLE_NODE_IMU_SMOKE=1", "-DBODAQS_SPI_MEASUREMENT_V2=1"] if args.first_recording else []), *(["-DBODAQS_V3_TWO_NODE_BENCH=1"] if args.two_node else []), *(["-DBODAQS_IMU_FLOW_DIAGNOSTICS=1"] if args.flow_diagnostics else []), "-pthread", "-DBODAQS_QUEUE_ALLOCATION_TEST", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-Wno-unused-variable", "-I", str(firmware/"test/stubs"), "-I", str(firmware/"src"), "-I", str(common), "-I", str(firmware/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
         saturated = output / "saturation-can.txt"
-        saturation_wire(wire, saturated)
-        for scenario in (("good", "short", "cancel-open", "cancel-prepare") if args.first_recording else ("good", "stall", "short", "cancel-open", "cancel-prepare")):
+        saturation_wire(wire, saturated,1200 if args.window else 500)
+        for scenario in (("good", "short", "cancel-open", "cancel-prepare") if args.first_recording and not args.window else ("good", "stall", "short", "cancel-open", "cancel-prepare")):
             subprocess.run([str(exe), str(saturated if scenario == "stall" else wire), str(output / f"{scenario}.bdq"), scenario], check=True, timeout=120)
         if args.first_recording:
             import sys,json
@@ -152,6 +164,16 @@ namespace SharedSpiBus {''',1)
             from bodaqs_analysis.first_imu_recording import assess_first_imu_recording
             if args.two_node:
                 from bodaqs_analysis.multi_imu_recording import assess_multi_imu_recording
+                if args.window:
+                    pressure=assess_multi_imu_recording(output/'stall.bdq',[0,1])
+                    for node in pressure['nodes']:
+                        delivery=node['metrics']['sample_delivery']
+                        # This legacy hardware stub has UID0, so its overall
+                        # identity/qualification metric correctly stays unknown.
+                        assert delivery['denominator'] is None
+                        assert delivery['unresolved_readings']==0
+                        assert node['gaps']==[dict(source_segment_id=1,first=908,last=1199,count=292,extent='known')]
+                    print('Full logger sample buffers: renewal/STOP complete; offline losses remain explicit: PASS')
                 for node, ax in [(0, -32768), (1, 4660)]:
                     decoded=read_can_imu_packets(output / 'good.bdq', f'can{node}_imu6')
                     assert [r['sequence'] for r in decoded['readings']]==list(range(64))

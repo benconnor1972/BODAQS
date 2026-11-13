@@ -92,7 +92,22 @@ count. Repeated cumulative/fatal notifications cannot recount an old loss delta.
 on the target. It contains 16 unit buffers/states, 64 evidence reception entries,
 bounded cursors and repair counters. The original service remains in BANK0;
 physical RX/TX buffers remain separately owned. The linker map is authoritative
-for actual target sizes and bank/stack allocation. The stack reservation remains
+for actual target sizes and bank/stack allocation. The current target build gives:
+
+| Allocation | Bytes |
+|---|---:|
+|BANK0 used / unallocated|64,409 /1,127|
+|BANK1 used / unallocated|12,768 /52,768|
+|Original service in BANK0, including the window pointer|57,368|
+|Window storage in BANK1|10,912|
+|16 unit slots, including immutable and replay ACK states|4,992 (312 each)|
+|64 retained evidence entries|5,888 (92 each)|
+|Window cursors/counters/padding|32|
+|Window wire-observation diagnostic cache|64|
+|Logger transport: old / window profile|27,968 /43,928|
+
+The window adds15,960 bytes to logger static custody. These allocations do not
+consume task stack or add hot-path heap allocations. The stack reservation remains
 4096 bytes, not a measured runtime watermark. BANK1 is not promised across deep
 sleep; the existing awake SPI service constraint remains.
 
@@ -114,7 +129,9 @@ Automated checks:
   credits, immutable content, bad/stale ACKs and slot reuse, optional shedding,
   essential START/STOP under full sample ingress, bounded repair failure and
   healthy-source progress; real streams/BDQ writer/independent Python decoder
-  check60 exact readings/source with distinct axes.
+  check60 exact readings/source with distinct axes. Its repair-exhaustion
+  recording demonstrates45 missing readings on one source while the other three
+  each retain all60, with independent full bounds.
 - `test_integrated_imu_recording_runtime.py --window --idle-control-fetch`:
   actual two-source manager/coordinator/control/stream/storage lifecycle; delayed
   first unit while its successor reaches MISO, independently lost ACK and proof,
@@ -122,6 +139,11 @@ Automated checks:
   and stale authorization on restart. The final good BDQ has64 exact readings
   per source and both source terminal boundaries. Existing renewal/STOP bounds
   are asserted under an injected host schedule, not inferred physical timing.
+  A separate host-only pressure case fills both sample queues and advertises all
+  four positions unavailable while renewal and STOP continue. The decoded tail
+  gaps are292 readings/source. The legacy hardware stub's UID0 and minimal footer
+  deliberately keep its overall qualification unknown; the separate four-source
+  fixture provides complete identity bounds.
 
 The full host candidate includes these regressions alongside historical suites.
 Target builds and fresh boundary/Standards/Spec review precede the bench package.

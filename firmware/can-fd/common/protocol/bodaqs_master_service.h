@@ -10,6 +10,15 @@
 extern "C" {
 #endif
 
+/* Same classification at normalized ingress and the hardware ISR loss adapter.
+ * v4 anchors define full-sequence interpretation; optional snapshots do not. */
+static inline bool bodaqs_master_optional_evidence(const uint8_t *p,size_t length) {
+    if(!p || length<2) return false;
+    return (length==24 && p[1]==0x21) ||
+        (BODAQS_MEASUREMENT_VERSION<4 && length==32 && p[1]==0x22) ||
+        (length==64 && (p[1]==0x23 || p[1]==0x24));
+}
+
 typedef struct {
     BodaqsFragmentState object;
     uint8_t bytes[1024];

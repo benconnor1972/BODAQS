@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
+#include <string>
 static BodaqsMasterService master;
 static BodaqsMasterWindowStorage storage;
 static BodaqsMeasurementSlot ramAck(const BodaqsMeasurementSlot& unit);
@@ -38,7 +39,7 @@ static void reset() {
         assert(bodaqs_master_service_receive_can(&master,n,2,0x90+n,anchor,32,0,1,1));
     }
 }
-static void recordFour(const char* path,BodaqsMeasurementSlot units[4][4]) {
+static void recordFour(const char* path,BodaqsMeasurementSlot units[4][4],bool abandon=false) {
     RemoteImuStream streams[4];
     auto evidence=[&](unsigned n) {
         for(unsigned i=0;i<4;++i) {
@@ -55,11 +56,24 @@ static void recordFour(const char* path,BodaqsMeasurementSlot units[4][4]) {
         b.session=1;b.recording=77;b.context=9;b.compactPackets=b.sampleUnits=true;
         assert(streams[n].configure(b,(uint16_t)(2*n+1),(uint16_t)(2*n+2)));
         evidence(n);
-        for(unsigned i=0;i<4;++i)
+        for(unsigned i=0;i<(abandon && n==0?1U:4U);++i)
             assert(streams[n].acceptSampleUnit(9,units[n][i].object,units[n][i].body,units[n][i].total,1100+i)==RemoteImuStream::Accepted);
         uint8_t stop[64]={1,0x25,1,0,0,0,56};stop[13]=1;stop[14]=8;
         bodaqs_measurement_put(stop+8,5+n,4);bodaqs_measurement_put(stop+28,59,4);bodaqs_measurement_put(stop+54,0x261,2);
         assert(bodaqs_master_service_receive_can(&master,n,2,0x90+n,stop,64,0,100,30));evidence(n);
+        if(abandon && n==0) {
+            // This source's later units never achieve logger custody. Observe
+            // its genuine terminal bound before exhausting selective repair.
+            auto retry=ready(1);bodaqs_measurement_put(retry.body,2,4);
+            for(unsigned i=0;i<32;++i) assert(exchange(retry,30).kind==2);
+            exchange(retry,131);
+            BodaqsMeasurementSlot poll={};poll.kind=1;poll.context=9;poll.node=0;poll.body[0]=1;
+            const auto failure=exchange(poll,232);assert(failure.kind==7 && failure.body[1]==14);
+            assert(streams[n].acceptManagementLoss(1,14,6,0,1200)==RemoteImuStream::Accepted);
+            assert(streams[n].failed());
+            auto healthy=ready(2);bodaqs_measurement_put(healthy.body,0,4);
+            assert(exchange(healthy,233).node==1);
+        }
     }
     BdqV2StreamDescriptor descriptors[8];
     for(unsigned n=0;n<4;++n) {descriptors[2*n]=streams[n].descriptor(false);descriptors[2*n+1]=streams[n].descriptor(true);}
@@ -125,6 +139,11 @@ static void pressureEvidence() {
         const auto& live=storage.units[0][unit.object-1];
         assert(!memcmp(live.bytes,unit.body,unit.total));
     }
+    uint8_t anchor[32]={1,0x22,1,0,0,0,20,0,0,1,1};anchor[24]=1;
+    for(unsigned i=0;i<17;++i)
+        assert(bodaqs_master_service_receive_can(&master,0,2,0x90,anchor,32,0,700+i,2));
+    assert(!bodaqs_master_service_receive_can(&master,0,2,0x90,anchor,32,0,800,2));
+    assert(master.loss[0].failed); // exhausted essential reserve fails honestly
     puts("Full sample backlog sheds optional evidence and retains essential START/STOP independently: PASS");
 }
 int main(int argc,char** argv) {
@@ -153,6 +172,15 @@ int main(int argc,char** argv) {
     const auto fifth=exchange(next);assert(fifth.kind==2 && fifth.object==5);
     const auto old=ramAck(units[0][0]);exchange(ramAck(fifth));
     assert(exchange(old).kind==7 && master.objects_acked==before+17);
+    if(argc==2) {
+        reset();for(unsigned n=0;n<4;++n) samples(n,0);
+        auto credits=ready();
+        for(unsigned i=0;i<16;++i) {
+            const auto out=exchange(credits);assert(out.kind==2);
+            units[out.node][out.object-1]=out;credits.body[8*out.node+4]|=1u<<(out.object-1);
+        }
+        recordFour((std::string(argv[1])+".abandoned").c_str(),units,true);
+    }
     pressureEvidence();
     reset();samples(0,0);samples(1,0);
     auto repairs=ready(1);

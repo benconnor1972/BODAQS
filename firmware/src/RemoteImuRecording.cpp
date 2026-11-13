@@ -80,7 +80,12 @@ bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint
   if(cls==1 && address==node) {
     const auto result=stream.acceptSampleUnit(recordContext,identity,p,total,
         static_cast<uint32_t>(esp_timer_get_time()));
-    if(result==RemoteImuStream::Invalid) fault=true;
+    if(result==RemoteImuStream::Invalid) {
+      fault=true;
+#if BODAQS_MEASUREMENT_VERSION >= 4
+      return false; // invalid/faulted source has no RAM custody; fence its tail
+#endif
+    }
     return result!=RemoteImuStream::Blocked;
   }
 #endif

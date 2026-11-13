@@ -314,7 +314,9 @@ void bodaqs_master_service_loss(BodaqsMasterService *s,uint8_t node,uint8_t stag
         l->epoch=length>=14?p[13]:s->anchor_epoch[node];
         /* Ordinary snapshots may be lost with degraded alignment. All other
          * interpretation metadata is essential; preserve old heads and exclude. */
-#if BODAQS_MEASUREMENT_VERSION >= 2
+#if BODAQS_MEASUREMENT_VERSION >= 4
+        if(!bodaqs_master_optional_evidence(p,length)) l->failed=true;
+#elif BODAQS_MEASUREMENT_VERSION >= 2
         if(length<8 || p[1]<0x21 || p[1]>0x24) l->failed=true;
 #else
         if(length<8 || p[1]!=0x23) l->failed=true;

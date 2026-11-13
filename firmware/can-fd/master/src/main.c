@@ -654,7 +654,9 @@ static void capture_can_receive_fifo(void)
                     }
                 } else {
                     if(r->evidence==UINT32_MAX) r->essential=true; else ++r->evidence;
-#if BODAQS_MEASUREMENT_VERSION >= 2
+#if BODAQS_MEASUREMENT_VERSION >= 4
+                    if(!bodaqs_master_optional_evidence(p,length)) r->essential=true;
+#elif BODAQS_MEASUREMENT_VERSION >= 2
                     const bool optional=(p[1]==0x21 && length==24) || (p[1]==0x22 && length==32) ||
                         ((p[1]==0x23 || p[1]==0x24) && length==64);
                     if(!optional) r->essential=true;
