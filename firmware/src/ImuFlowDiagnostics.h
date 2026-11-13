@@ -3,15 +3,19 @@
 #include <stddef.h>
 #include "MeasurementReplyCapture.h"
 #include "MeasurementPipelineTrace.h"
+#include "RecordingPressureDiagnostics.h"
 #include "../can-fd/common/protocol/bodaqs_measurement.h"
 
 namespace ImuFlowDiagnostics {
+struct Snapshot;
 // RAM admission, not SD persistence. Written by the acquisition producer only;
 // exported from a matching finished snapshot after producer retirement.
 struct NodeStats {
   uint64_t samplesAccepted=0;
   uint32_t packetsAccepted=0,consumerWait=0;
   uint32_t sampleQueuePeak=0,evidenceQueuePeak=0,sampleCapacity=0,evidenceCapacity=0;
+  uint32_t sampleQueueDepth=0,evidenceQueueDepth=0,observedUs=0;
+  uint32_t firstConsumerWaitUs=0,lastConsumerWaitUs=0;
 };
 }
 
@@ -69,7 +73,11 @@ inline size_t reservedBytes() {
 #if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
   bytes+=sizeof(liveReplies)+sizeof(finishedReplies);
 #endif
-  return bytes+MeasurementPipelineTrace::reservedBytes();
+  return bytes+MeasurementPipelineTrace::reservedBytes()
+#if defined(BODAQS_RECORDING_PRESSURE_DIAGNOSTICS) && BODAQS_RECORDING_PRESSURE_DIAGNOSTICS
+      +RecordingPressureDiagnostics::reservedBytes()
+#endif
+      ;
 }
 inline void reset(uint64_t context,uint32_t now) {
   MeasurementPipelineTrace::reset(context,now);
@@ -113,11 +121,15 @@ inline void consumer(uint8_t cls,bool accepted,size_t sampleDepth,size_t evidenc
   live.sampleCapacity=sampleCapacity;live.evidenceCapacity=evidenceCapacity;
 }
 inline void nodeConsumer(uint8_t node,bool accepted,uint32_t packets,uint64_t samples,
-                         size_t sampleDepth,size_t evidenceDepth,size_t sampleCapacity,size_t evidenceCapacity) {
+                         size_t sampleDepth,size_t evidenceDepth,size_t sampleCapacity,size_t evidenceCapacity,uint32_t nowUs=0) {
   if(!active || node>=4) return;
   auto& s=live.nodes[node];
   s.packetsAccepted=packets;s.samplesAccepted=samples;
-  if(!accepted) ++s.consumerWait;
+  if(!accepted) {
+    if(!s.consumerWait) s.firstConsumerWaitUs=nowUs;
+    ++s.consumerWait;s.lastConsumerWaitUs=nowUs;
+  }
+  s.sampleQueueDepth=sampleDepth;s.evidenceQueueDepth=evidenceDepth;s.observedUs=nowUs;
   if(sampleDepth>s.sampleQueuePeak) s.sampleQueuePeak=sampleDepth;
   if(evidenceDepth>s.evidenceQueuePeak) s.evidenceQueuePeak=evidenceDepth;
   s.sampleCapacity=sampleCapacity;s.evidenceCapacity=evidenceCapacity;

@@ -419,6 +419,9 @@ bool begin(uint64_t recording,uint64_t context) {
   ImuFlowDiagnostics::reset(context,millis());
   MeasurementPipelineTrace::setParticipants(dataMask);
 #endif
+#if defined(BODAQS_RECORDING_PRESSURE_DIAGNOSTICS) && BODAQS_RECORDING_PRESSURE_DIAGNOSTICS
+  RecordingPressureDiagnostics::resetAcquisition(context,micros());
+#endif
   const auto& d=CanMasterManager::diagnostics();session=d.authority.session;masterBoot=d.control.master_boot_id;
   nextRead=d.authority.next_read;nextTransfer=d.apply.next_transfer;
   for(uint8_t n=0;n<4;++n) {peers[n]=Peer{};peers[n].mutation=d.authority.nodes[n].next_mutation;mailboxes[n]=Mailbox{};outcomes[n]=Outcome{};}
@@ -465,6 +468,9 @@ void service() {
   {Lock lock;if(!owned) return;enter=enterPending;enterPending=false;exit=exitPending;}
 #if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
   ImuFlowDiagnostics::service();
+#endif
+#if defined(BODAQS_RECORDING_PRESSURE_DIAGNOSTICS) && BODAQS_RECORDING_PRESSURE_DIAGNOSTICS
+  RecordingPressureDiagnostics::service(micros());
 #endif
   servicing=true;
   if(transport.failed) for(uint8_t n=0;n<4;++n) {

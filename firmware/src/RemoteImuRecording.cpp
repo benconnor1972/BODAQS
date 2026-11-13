@@ -272,12 +272,24 @@ struct SharedProgress {uint32_t object=0;uint8_t pending=0;};
 SharedProgress sharedProgress[2];
 #if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
 void observeConsumer(uint8_t cls,Participant& peer,bool accepted,const uint8_t* p,uint16_t total) {
+ const uint32_t nowUs=micros();
  const auto queues=peer.stream.queueState();
  ImuFlowDiagnostics::consumer(cls,accepted,queues.samples,queues.evidence,queues.sampleCapacity,queues.evidenceCapacity);
  ImuFlowDiagnostics::nodeConsumer(peer.node,accepted,queues.packetsAccepted,queues.samplesAccepted,
-   queues.samples,queues.evidence,queues.sampleCapacity,queues.evidenceCapacity);
- if(cls==7 && total==8 && p[0]==1 && p[1]==9)
-   ImuFlowDiagnostics::loss(BdqV2Format::getU32(p+4),millis(),micros());
+   queues.samples,queues.evidence,queues.sampleCapacity,queues.evidenceCapacity,nowUs);
+ if(cls==7 && total==8 && (p[0]==1 || p[0]==2) && (p[1]==9 || p[1]==14)) {
+   // Refresh every participant at this observation, rather than leaving the
+   // other source's depth at its last successful admission callback.
+   for(uint8_t n=0;n<4;++n) if(selected&(1u<<n)) {
+     const auto q=peers[n].stream.queueState();
+     ImuFlowDiagnostics::nodeConsumer(n,true,q.packetsAccepted,q.samplesAccepted,
+       q.samples,q.evidence,q.sampleCapacity,q.evidenceCapacity,nowUs);
+   }
+#if defined(BODAQS_RECORDING_PRESSURE_DIAGNOSTICS) && BODAQS_RECORDING_PRESSURE_DIAGNOSTICS
+   RecordingPressureDiagnostics::loss(peer.node,p[0],p[1],BdqV2Format::getU16(p+2),BdqV2Format::getU32(p+4),nowUs);
+#endif
+   ImuFlowDiagnostics::loss(BdqV2Format::getU32(p+4),millis(),nowUs);
+ }
 }
 void logFlowSnapshot(const char* stage,[[maybe_unused]] const ImuFlowDiagnostics::Snapshot& s) {
  LOGW_TAG("FLOW","stage=%s context=%llu began_ms=%lu observed_ms=%lu services=%lu loss_counter=%lu\n",
@@ -481,6 +493,15 @@ bool finalNodeDiagnostics(uint8_t node,ImuFlowDiagnostics::NodeStats& out) {
  out=ImuFlowDiagnostics::finished.nodes[node];return true;
 #else
  (void)node;(void)out;return false;
+#endif
+}
+const ImuFlowDiagnostics::Snapshot* finalFlowSnapshot(bool firstLoss) {
+#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+ if(!selected || !stopped() || !ImuFlowDiagnostics::haveFinished ||
+    ImuFlowDiagnostics::finished.context!=context) return nullptr;
+ return firstLoss?(ImuFlowDiagnostics::haveFirstLoss?&ImuFlowDiagnostics::firstLoss:nullptr):&ImuFlowDiagnostics::finished;
+#else
+ (void)firstLoss;return nullptr;
 #endif
 }
 const MeasurementReplyCapture* finalRejectedMeasurementReplies() {

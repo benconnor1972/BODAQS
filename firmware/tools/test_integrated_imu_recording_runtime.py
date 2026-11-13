@@ -39,10 +39,15 @@ def main():
     parser.add_argument("--window", action="store_true")
     parser.add_argument("--idle-control-fetch", action="store_true")
     parser.add_argument("--flow-diagnostics", action="store_true")
+    parser.add_argument("--pressure-diagnostics", action="store_true")
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
     if args.window:
         args.first_recording=args.sample_units=args.two_node=True
+    if args.pressure_diagnostics:
+        if not args.window:
+            parser.error('--pressure-diagnostics requires --window')
+        args.flow_diagnostics=True
     if args.two_node and not (args.first_recording and args.sample_units):
         parser.error('--two-node requires --first-recording --sample-units')
     firmware = Path(__file__).resolve().parents[1]
@@ -116,6 +121,22 @@ namespace SharedSpiBus {''',1)
    }
  }''',1)
         support = (firmware / "test/integrated_imu_recording_fixture.cpp").read_text(encoding="utf-8")
+        if args.pressure_diagnostics:
+            # Real coordinator/retirement barrier and production footer adapter.
+            # Only filesystem I/O is simulated; the separate sink test checks
+            # the target adapter's physical operation timestamps.
+            storage_source=(firmware / 'src/StorageManager.cpp').read_text(encoding='utf-8')
+            adapter=definition(storage_source,'static void appendRecordingPressure_(')
+            support=support.replace('struct FileStorage final:', '#include <ArduinoJson.h>\n'+adapter+'\nstruct FileStorage final:')
+            support=support.replace('gate(1);file=std::fopen', 'RecordingPressureDiagnostics::resetStorage();gate(1);file=std::fopen')
+            support=support.replace('return std::fwrite(p,1,n,file)==n;', '''
+   const bool written=std::fwrite(p,1,n,file)==n;
+   RecordingPressureDiagnostics::storageOperation(3,clockMs*1000,0,n,0);
+   return written;''')
+            support=support.replace('const char summary[]=R"({"software_candidate":true,"physical_timing_bounds":"unknown","inter_node_alignment":"unknown"})";',
+                'JsonDocument summaryDocument;appendRecordingPressure_(summaryDocument);\n'
+                '   std::string summary;serializeJson(summaryDocument,summary);')
+            support=support.replace('writer.end(summary,sizeof summary-1)', 'writer.end(summary.c_str(),summary.size())')
         logging = (firmware / "src/LoggingManager.cpp").read_text(encoding="utf-8")
         functions = ("bool LoggingManager::isStarting(", "void LoggingManager::cancelStart(",
                      "bool LoggingManager::configurationLocked(", "LoggingManager::StartResult LoggingManager::requestStart(",
@@ -154,6 +175,8 @@ namespace SharedSpiBus {''',1)
             source_flags=[]
         if args.window:
             source_flags += ['-DBODAQS_SPI_MEASUREMENT_V4=1']
+        if args.pressure_diagnostics:
+            source_flags += ['-DBODAQS_RECORDING_PRESSURE_DIAGNOSTICS=1', '-I', str(firmware/'.pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src')]
         sources += [firmware / "src" / name for name in ("CanMasterProtocol.cpp", "SensorAssignment.cpp", "SensorParams.cpp", "Lsm6dso32xConfig.cpp", "RemoteImuStream.cpp", "BdqV2Catalog.cpp", "BdqV2Writer.cpp", "ImuAdmission.cpp")]
         subprocess.run([args.compiler, "-std=c++17", *source_flags, *(["-DBODAQS_SPI_MEASUREMENT_V3=1"] if args.sample_units else []), *(["-DBODAQS_SINGLE_NODE_IMU_SMOKE=1", "-DBODAQS_SPI_MEASUREMENT_V2=1"] if args.first_recording else []), *(["-DBODAQS_V3_TWO_NODE_BENCH=1"] if args.two_node else []), *(["-DBODAQS_IMU_FLOW_DIAGNOSTICS=1"] if args.flow_diagnostics else []), "-pthread", "-DBODAQS_QUEUE_ALLOCATION_TEST", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-Wno-unused-variable", "-I", str(firmware/"test/stubs"), "-I", str(firmware/"src"), "-I", str(common), "-I", str(firmware/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
         saturated = output / "saturation-can.txt"
@@ -163,6 +186,17 @@ namespace SharedSpiBus {''',1)
             scenarios+=("lag",)
         for scenario in scenarios:
             subprocess.run([str(exe), str(saturated if scenario == "stall" else wire), str(output / f"{scenario}.bdq"), scenario], check=True, timeout=120)
+        if args.pressure_diagnostics:
+            from verify_integrated_imu_recording import read_bdq
+            quiet=read_bdq(output/'good.bdq').final_summary['recording_pressure']
+            blocked=read_bdq(output/'stall.bdq').final_summary['recording_pressure']
+            assert quiet['available'] and not quiet['first_loss_observed']
+            assert blocked['available'] and blocked['first_loss_observed']
+            assert blocked['first_loss']['stage']==6 and blocked['first_loss']['counter']>0
+            assert len(blocked['first_loss']['nodes'])==2
+            assert any(node['consumer_wait']>0 for node in blocked['first_loss']['nodes'])
+            assert blocked['storage_frozen'] and len(blocked['storage_operations'])<=96
+            print('Integrated v4 pressure footer: real loss callback, both queues, retired/no-loss snapshots and clean BDQ CRC: PASS')
         if args.first_recording:
             import sys,json
             sys.path.insert(0,str(firmware.parent / "analysis"))

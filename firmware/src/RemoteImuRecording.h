@@ -53,6 +53,8 @@ bool stopped();
 // or when this build has no FLOW snapshot. Never reads live transport totals.
 bool finalMeasurementFailures(uint32_t& transfer,uint32_t& decode);
 bool finalNodeDiagnostics(uint8_t node,ImuFlowDiagnostics::NodeStats& out);
+// Same retirement/context barrier; firstLoss=true returns null in a loss-free run.
+const ImuFlowDiagnostics::Snapshot* finalFlowSnapshot(bool firstLoss);
 const uint32_t* finalMeasurementDecodeReasons(); // Same retired/matching-context lifetime.
 // Same retirement/scope barrier as final counters. Borrowed immutable storage;
 // consume before release or configure starts another recording. Null if unavailable.

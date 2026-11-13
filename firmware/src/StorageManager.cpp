@@ -1128,10 +1128,17 @@ static void recordStorageWriteStall_(
 static void observeBdqV2FileOperation_(
     void*,
     BdqV2FileSinkOperation operation,
+    uint32_t startedUs,
     uint32_t durationUs,
     size_t bytes) {
   const uint8_t operationCode =
       operation == BdqV2FileSinkOperation::FileFlush ? 4u : 3u;
+#if defined(BODAQS_RECORDING_PRESSURE_DIAGNOSTICS) && BODAQS_RECORDING_PRESSURE_DIAGNOSTICS
+  RecordingPressureDiagnostics::storageOperation(operationCode,startedUs,durationUs,
+      bytes>UINT32_MAX?UINT32_MAX:static_cast<uint32_t>(bytes),queueDepthSnapshot_());
+#else
+  (void)startedUs;
+#endif
   recordStorageWriteStall_(
       operationCode,
       0,
@@ -1798,6 +1805,73 @@ static void appendBdqV2MeasurementFailures_(JsonDocument& document) {
   }
 }
 
+static void appendRecordingPressure_(JsonDocument& document) {
+#if defined(BODAQS_RECORDING_PRESSURE_DIAGNOSTICS) && BODAQS_RECORDING_PRESSURE_DIAGNOSTICS
+  using namespace RecordingPressureDiagnostics;
+  auto output=document["recording_pressure"].to<JsonObject>();
+  output["version"]=1;
+  const auto* finished=RemoteImuRecording::finalFlowSnapshot(false);
+  // This function runs on the storage owner. Never borrow acquisition arrays
+  // until the existing matching-context retirement barrier has been acquired.
+  output["available"]=finished && finished->context==acquisition.context;
+  if(!finished || finished->context!=acquisition.context) return;
+  output["context"]=finished->context;
+  output["clock"]="logger_monotonic_us_modulo_2^32";
+  output["scope"]="observations_not_causal_or_durable_proof";
+  output["post_loss_us"]=postLossUs;
+  output["service_gap_threshold_us"]=serviceGapThresholdUs;
+  output["storage_capacity"]=storageOperationCapacity;
+  output["service_gap_capacity"]=serviceGapCapacity;
+  output["storage_frozen"]=storage.frozen;
+  output["service_gaps_frozen"]=acquisition.frozen;
+  output["storage_overwritten"]=storage.operations.overwritten;
+  output["service_gaps_overwritten"]=acquisition.gaps.overwritten;
+  auto operations=output["storage_operations"].to<JsonArray>();
+  for(size_t i=0;i<storage.operations.count;++i) {
+    const auto& event=storage.operations.at(i);
+    auto item=operations.add<JsonObject>();
+    item["started_us"]=event.startedUs;item["duration_us"]=event.durationUs;
+    item["bytes"]=event.bytes;item["primary_queue_depth"]=event.primaryDepth;
+    item["operation"]=event.operation; // 3=physical write, 4=File.flush
+  }
+  auto gaps=output["service_gaps"].to<JsonArray>();
+  for(size_t i=0;i<acquisition.gaps.count;++i) {
+    const auto& event=acquisition.gaps.at(i);
+    auto item=gaps.add<JsonObject>();
+    item["started_us"]=event.startedUs;item["duration_us"]=event.durationUs;
+  }
+  const auto* first=RemoteImuRecording::finalFlowSnapshot(true);
+  output["first_loss_observed"]=first!=nullptr;
+  if(!first) return; // Loss-free runs retain the final rolling storage history.
+  auto loss=output["first_loss"].to<JsonObject>();
+  loss["observed_us"]=firstLossUs.load(std::memory_order_relaxed);
+  loss["node"]=acquisition.lossNode;loss["class"]=acquisition.lossClass;
+  loss["reason"]=acquisition.lossReason;loss["stage"]=acquisition.lossStage;
+  loss["counter"]=acquisition.lossCounter;
+  loss["services"]=first->services;loss["gate_wait"]=first->gateWait;
+  loss["bridge_wait"]=first->consumerWait[5];loss["management_wait"]=first->consumerWait[6];
+  loss["empty_replies"]=first->empty;loss["wire_failures"]=first->wireFailures;
+  auto requests=loss["requests"].to<JsonArray>();
+  for(auto value:first->requests) requests.add(value);
+  auto nodes=loss["nodes"].to<JsonArray>();
+  for(uint8_t n=0;n<4;++n) {
+    const auto& stats=first->nodes[n];
+    if(!stats.sampleCapacity && !stats.evidenceCapacity) continue;
+    auto node=nodes.add<JsonObject>();
+    node["node"]=n;node["observed_us"]=stats.observedUs;
+    node["packet_queue_depth"]=stats.sampleQueueDepth;node["packet_queue_sampled_peak"]=stats.sampleQueuePeak;
+    node["packet_queue_capacity"]=stats.sampleCapacity;
+    node["evidence_queue_depth"]=stats.evidenceQueueDepth;node["evidence_queue_sampled_peak"]=stats.evidenceQueuePeak;
+    node["evidence_queue_capacity"]=stats.evidenceCapacity;
+    node["consumer_wait"]=stats.consumerWait;
+    node["first_consumer_wait_us"]=stats.firstConsumerWaitUs;node["last_consumer_wait_us"]=stats.lastConsumerWaitUs;
+    node["packets_accepted"]=stats.packetsAccepted;node["samples_accepted"]=stats.samplesAccepted;
+  }
+#else
+  (void)document;
+#endif
+}
+
 static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
   // Finalization is serialized; avoid large diagnostics objects on loopTask.
   static SensorRuntimeDiagnostics diagnostics;
@@ -1813,6 +1887,7 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
   document["remote_reserved_bytes"]=admission.loggerBytes;
   document["remote_cleanup_complete"] = RemoteImuRecording::stopped();
   appendBdqV2MeasurementFailures_(document);
+  appendRecordingPressure_(document);
   JsonArray nodeFlow=document["remote_node_flow"].to<JsonArray>();
   for(uint8_t node=0;node<4;++node) {
     ImuFlowDiagnostics::NodeStats stats;
@@ -2297,6 +2372,9 @@ static void startLog() {
   s_flushMaxMs = 0;
   s_flushTotalMs = 0;
   s_storageTiming = StorageTimingStats{};
+#if defined(BODAQS_RECORDING_PRESSURE_DIAGNOSTICS) && BODAQS_RECORDING_PRESSURE_DIAGNOSTICS
+  RecordingPressureDiagnostics::resetStorage();
+#endif
   s_storageTiming.writeStallThresholdUs = kStorageWriteStallThresholdUs;
   s_rowsWritten = 0;
   s_rowsFormatFailed = 0;
