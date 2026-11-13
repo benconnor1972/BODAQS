@@ -140,7 +140,7 @@ int main(int argc,char** argv) {
   if(!std::strcmp(argv[1],"late-renewal-wire") || !std::strcmp(argv[1],"split-renewal-stop") || !std::strcmp(argv[1],"late-renewal-retry")) {
    const uint32_t confirmedUpper=acquisitions[0].lease_deadline;
    delayRenewalWire=true;
-   controlSteps(1400);assert(renewalWire.size()==2);
+   controlSteps(1400);assert(renewalWire.size()==(68+BODAQS_MEASUREMENT_BODY_BYTES-1)/BODAQS_MEASUREMENT_BODY_BYTES);
    if(!std::strcmp(argv[1],"late-renewal-retry")) {
     delayRenewalWire=false;loseRenewalChallenges=true;controlSteps(800);
     replayRenewalWire=true;

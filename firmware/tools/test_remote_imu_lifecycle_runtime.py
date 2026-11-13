@@ -55,6 +55,7 @@ def main():
     parser.add_argument("--multi-node",action="store_true")
     parser.add_argument("--ack-sweep",action="store_true")
     parser.add_argument("--pipeline-trace",action="store_true")
+    parser.add_argument("--idle-control-fetch",action="store_true")
     args = parser.parse_args()
     if args.ack_sweep: args.multi_node=True
     if args.multi_node: args.scaling=True;args.flow_diagnostics=True
@@ -90,6 +91,7 @@ static void captureFlowLog(const char* tag,const char*,...) {if(!std::strcmp(tag
         if args.multi_node: flags.append("-DBODAQS_MULTI_NODE_BENCH=1")
         if args.ack_sweep: flags.append("-DBODAQS_ACK_FETCH_FRAGMENT_SWEEP=1")
         if args.pipeline_trace: flags += ["-DBODAQS_PIPELINE_TRACE=1","-DBODAQS_IMU_FLOW_DIAGNOSTICS=1"]
+        if args.idle_control_fetch: flags.append("-DBODAQS_RECLAIM_IDLE_CONTROL_FETCH=1")
         if args.v2:
             flags.append("-DBODAQS_SPI_MEASUREMENT_V2=1")
         if args.start_spacing_us:

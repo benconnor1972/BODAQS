@@ -178,8 +178,9 @@ bool transfer(int8_t,const SPISettings& settings,const uint8_t*tx,uint8_t*rx,siz
     if(slot.index==0 && slot.body[12]==0x27) delayedRenewalObject=slot.object;
     if(delayedRenewalObject && slot.object==delayedRenewalObject) {
      DelayedSpiSlot savedSlot={};memcpy(savedSlot.bytes,rx,BODAQS_MEASUREMENT_BYTES);
-     if(renewalWire.size()<2 && slot.index==renewalWire.size()) renewalWire.push_back(savedSlot);
-     suppress=slot.index!=0;
+     constexpr unsigned renewalFragments=(68+BODAQS_MEASUREMENT_BODY_BYTES-1)/BODAQS_MEASUREMENT_BODY_BYTES;
+     if(renewalWire.size()<renewalFragments && slot.index==renewalWire.size()) renewalWire.push_back(savedSlot);
+     suppress=renewalFragments==1 || slot.index!=0;
     }
    }
    if(suppress) {BodaqsMeasurementSlot empty={};empty.node=255;empty.context=master.measurement.mode.context;assert(bodaqs_measurement_encode(&empty,rx,BODAQS_MEASUREMENT_BYTES));}

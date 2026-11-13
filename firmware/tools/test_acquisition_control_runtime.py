@@ -7,6 +7,7 @@ import tempfile
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--compiler", default="g++")
+    parser.add_argument("--idle-control-fetch",action="store_true")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     fixture = (root / "test/measurement_runtime_fixture.cpp").read_text()
@@ -27,9 +28,12 @@ def main():
     with tempfile.TemporaryDirectory(prefix="bodaqs-acquisition-") as temp:
         cpp, exe = Path(temp)/"fixture.cpp", Path(temp)/"fixture.exe"
         cpp.write_text(fixture)
-        subprocess.run([args.compiler, "-std=c++17", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-I", str(root/"test/stubs"), "-I", str(root/"src"), "-I", str(protocol), "-I", str(root/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
+        flags=["-DBODAQS_SPI_MEASUREMENT_V2=1","-DBODAQS_RECLAIM_IDLE_CONTROL_FETCH=1"] if args.idle_control_fetch else []
+        subprocess.run([args.compiler, "-std=c++17", *flags, "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-I", str(root/"test/stubs"), "-I", str(root/"src"), "-I", str(protocol), "-I", str(root/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
-        for scenario in ("lost-renewal-challenge", "lost-renewal-result", "renewal-expiry", "stop-renewal-retry", "renewal-wrap", "late-renewal-wire", "split-renewal-stop", "late-renewal-retry"):
+        scenarios=["lost-renewal-challenge", "lost-renewal-result", "renewal-expiry", "stop-renewal-retry", "renewal-wrap", "late-renewal-wire", "late-renewal-retry"]
+        if not args.idle_control_fetch: scenarios.append("split-renewal-stop") # v2 result is one atomic fragment
+        for scenario in scenarios:
             subprocess.run([str(exe), scenario], check=True)
         for reason in (7, 10, 20, 26):
             subprocess.run([str(exe), f"retryable-error-{reason}"], check=True)

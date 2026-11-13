@@ -7,6 +7,16 @@
 #include <string.h>
 #include <initializer_list>
 
+#ifndef BODAQS_RECLAIM_IDLE_CONTROL_FETCH
+#define BODAQS_RECLAIM_IDLE_CONTROL_FETCH 0
+#endif
+#if BODAQS_RECLAIM_IDLE_CONTROL_FETCH != 0 && BODAQS_RECLAIM_IDLE_CONTROL_FETCH != 1
+#error "Idle control fetch reclamation must be 0 or 1"
+#endif
+#if BODAQS_RECLAIM_IDLE_CONTROL_FETCH && BODAQS_MEASUREMENT_VERSION != 2
+#error "Idle control fetch reclamation requires measurement v2"
+#endif
+
 #if defined(ARDUINO_ARCH_ESP32)
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -71,6 +81,32 @@ struct Lock { Lock() {} ~Lock() {} };
 static bool isOwner() { return servicing; }
 #endif
 static bool due(uint32_t now,uint32_t deadline) { return static_cast<int32_t>(now-deadline)>=0; }
+#if BODAQS_RECLAIM_IDLE_CONTROL_FETCH
+static bool controlFetchPending(uint8_t cls,uint8_t node) {
+  const auto& peer=peers[node];
+  const auto& exchange=cls==4?peer.protectedLane:peer.ordinary;
+  const auto& result=transport.inboxes[cls-1][node];
+  return exchange.pending || transport.controls[cls-3][node].state.complete ||
+      result.ackPending || (result.state.object && (!result.state.complete || !result.admitted));
+}
+static bool chooseIdleTurnData(uint32_t now,uint8_t& cls,uint8_t& node) {
+  // Finish known partial objects first. Otherwise retain the existing empty-head
+  // probe budget and refuse to fetch into a complete, unaccepted RAM head.
+  for(unsigned partial=0;partial<2;++partial) for(unsigned i=0;i<4;++i) {
+    const uint8_t candidate=(dataCursor+i)%4;
+    if(!(dataMask&(1u<<candidate))) continue;
+    for(uint8_t lane:{1,2}) {
+      const auto& inbox=transport.inboxes[lane-1][candidate];
+      const bool unfinished=inbox.state.object && !inbox.state.complete;
+      if(inbox.state.complete && !inbox.admitted) continue;
+      if(partial==0 && !unfinished) continue;
+      if(!unfinished && !due(now,transport.nextHeadPollMs[lane-1][candidate])) continue;
+      cls=lane;node=candidate;dataCursor=(candidate+1)%4;return true;
+    }
+  }
+  return false;
+}
+#endif
 static void publishFenceDiagnostics(uint32_t now) {
   if(!due(now,nextFenceSnapshot)) return;
   nextFenceSnapshot=now+100;
@@ -595,6 +631,20 @@ void service() {
   } else if(!urgent) cursor=(cursor+1)%16;
   transport.timingEnabled=!physicalFenceVerified && dataConsumer && dataMask;
   if(!urgent && transport.timingEnabled && (serviceCursor%20)==0) {cls=5;n=255;}
+#if BODAQS_RECLAIM_IDLE_CONTROL_FETCH
+  if(!urgent && transport.timingEnabled && (cls==3 || cls==4) && !controlFetchPending(cls,n)) {
+    // Preserve the original two-turn cursor progression for real exchanges,
+    // including work on unselected nodes. Only an otherwise idle selection is
+    // replaced; downstream transport still owns outgoing/ACK/bridge priority.
+    bool pending=false;
+    for(unsigned offset=0;offset<16;++offset) {
+      const uint8_t selection=(cursor+15+offset)%16;
+      const uint8_t candidate=(selection/2)%4,lane=(selection/8)%2?3:4;
+      if(controlFetchPending(lane,candidate)) {cls=lane;n=candidate;pending=true;break;}
+    }
+    if(!pending) (void)chooseIdleTurnData(now,cls,n);
+  }
+#endif
 #if BODAQS_PIPELINE_TRACE
   uint8_t ordinaryMask=0,protectedMask=0;
   for(uint8_t peer=0;peer<4;++peer) {
