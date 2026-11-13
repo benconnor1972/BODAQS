@@ -1,8 +1,10 @@
-# Master/logger protocol redesign: ticket publication preview
+# Master/logger protocol redesign: approved and published tickets
 
 Parent specification: [#200](https://github.com/benconnor1972/BODAQS/issues/200).
-The approved specification is published. The child tickets below are local drafts;
-their creation, sub-issue links and blocking relationships await approval.
+The user approved this breakdown and requested implementation. All 13 children
+are published as #201 through #213, with native sub-issue and blocking links
+verified against the approved graph. The local T01-T13 mapping and full receipts
+are retained in `publication.json`; these bodies preserve the approved draft text.
 
 ## Slices and genuine blockers
 
@@ -49,7 +51,7 @@ opportunity to measure, not a mandatory performance promise. T09 and T12 own
 the accepted quality targets: a shortfall report does not complete their pass
 criteria. Review material deficits before expanding scope or changing targets.
 
-## Proposed tracker changes after approval
+## Approved publication operations (completed)
 
 - Create these 13 issues in dependency order, each labelled `enhancement` and
   `ready-for-agent`. Hardware evidence still requires board access/operator help;
@@ -62,7 +64,9 @@ criteria. Review material deficits before expanding scope or changing targets.
 - When a native link operation is unavailable, retain explicit parent/blocker
   references and report the limitation rather than silently lose the dependency.
 
-## Review requested
+## Implementation frontier
 
-Does this granularity fit a fresh context per ticket? Are these only genuine
-blocking edges? Should any tickets be merged or split before publication?
+T01 is [#201](https://github.com/benconnor1972/BODAQS/issues/201), the only
+initially unblocked implementation ticket. Publication is complete; firmware
+implementation and physical qualification remain outstanding. No ticket has been
+closed, and the parent body has not been rewritten.
