@@ -20,7 +20,7 @@ current wiring and SD card unchanged. Controlled storage-stall tests stay deferr
    target session if it prevents the scripting target connection. From PowerShell:
 
 ```powershell
-& 'C:/ti/ccs2101/ccs/scripting/run.bat' 'C:/Users/benco/dev/BODAQS-worktrees/imu-batch-investigation-r23/export_batch_diagnostics.js'
+& 'C:/ti/ccs2101/ccs/scripting/run.bat' 'C:/Users/benco/dev/BODAQS-worktrees/imu-batch-investigation-r23-r2/export_batch_diagnostics.js'
 ```
 
 The exporter briefly connects/suspends the stopped master, loads symbols only,
@@ -35,7 +35,7 @@ do not repeat a recording just to get the file. Existing exports are not overwri
 6. Read out to a fresh directory outside the inputs:
 
 ```powershell
-& 'C:/Users/benco/dev/BODAQS-worktrees/drain-capacity-evidence/spi-prototype/tool-venv/Scripts/python.exe' -B 'C:/Users/benco/dev/BODAQS-worktrees/imu-batch-investigation-r23/assessor-source/firmware/tools/assess_batch_investigation.py' --case 'C:/Users/benco/dev/BODAQS-worktrees/imu-batch-investigation-r23/Results/01-observe/attempt1' --output 'C:/Users/benco/dev/BODAQS-worktrees/imu-batch-investigation-r23-attempt1-report'
+& 'C:/Users/benco/dev/BODAQS-worktrees/drain-capacity-evidence/spi-prototype/tool-venv/Scripts/python.exe' -B 'C:/Users/benco/dev/BODAQS-worktrees/imu-batch-investigation-r23-r2/assessor-source/firmware/tools/assess_batch_investigation.py' --case 'C:/Users/benco/dev/BODAQS-worktrees/imu-batch-investigation-r23-r2/Results/01-observe/attempt1' --output 'C:/Users/benco/dev/BODAQS-worktrees/imu-batch-investigation-r23-attempt1-report'
 ```
 
 The tool retains strict BDQ/primary failures and returns1 if they persist; a

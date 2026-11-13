@@ -9,6 +9,17 @@ import sys
 from read_batch_diagnostics import decode
 
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
+def observation_complete(decoded,assessment):
+    sources={n['node']:n for n in assessment['strict_assessment']['nodes']}
+    if set(sources)!={0,1,2,3} or not assessment['strict_assessment']['final_summary'].get('remote_cleanup_complete'):
+        return False
+    for node in decoded['nodes']:
+        sample,evidence=node['lanes']
+        accepted=sources[node['node']].get('packet_count')
+        if not isinstance(accepted,int) or accepted<=0 or not sample['sealed'] or not evidence['sealed'] or sample['records']<accepted:
+            return False
+        if any(lane['unaccounted_sealed_heads'] for lane in node['lanes']):return False
+    return True
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--bundle',type=Path,default=Path(__file__).resolve().parents[3])
@@ -24,7 +35,7 @@ def main():
         raise RuntimeError('Four-source intake failed')
     assessment=json.loads((out/'assessment.json').read_text(encoding='utf-8'))
     binary=args.case/'master-batch.bin'
-    diagnosis=dict(schema='bodaqs.batch-investigation.v1',available=False,scope_matches=False,
+    diagnosis=dict(schema='bodaqs.batch-investigation.v1',available=False,scope_matches=False,observations_complete=False,
         strict_recording_precheck_passed=assessment['diagnostic_precheck_passed'],master_image_verified=False)
     if binary.is_file():
         owned=out/binary.name;owned.write_bytes(binary.read_bytes())
@@ -35,7 +46,8 @@ def main():
             decoded=decode(owned.read_bytes());diagnosis.update(available=True,diagnostics=decoded)
             scope=decoded['scope'];names={'context':'measurement_context','session':'control_session','recording':'recording_id','boot':'master_boot'}
             nodes=assessment['strict_assessment']['nodes']
-            diagnosis['scope_matches']=len(nodes)==4 and all(all(str(n['source'].get(field))==scope[key] for key,field in names.items()) for n in nodes)
+            diagnosis['scope_matches']=len(nodes)==4 and all(all(str(n.get('source',{}).get(field))==scope[key] for key,field in names.items()) for n in nodes)
+            diagnosis['observations_complete']=observation_complete(decoded,assessment)
         except ValueError as error:
             diagnosis['error']=str(error)
     else:
@@ -46,5 +58,5 @@ def main():
     (out/'batch-investigation.json').write_text(json.dumps(diagnosis,indent=2)+'\n',encoding='utf-8')
     (out/'SHA256SUMS.txt').write_text(''.join(sha(f)+'  '+f.name+'\n' for f in sorted(out.iterdir()) if f.is_file() and f.name!='SHA256SUMS.txt'),encoding='utf-8')
     print(json.dumps({k:v for k,v in diagnosis.items() if k!='diagnostics'},indent=2))
-    return 0 if diagnosis['scope_matches'] and assessment['diagnostic_precheck_passed'] else 1
+    return 0 if diagnosis['scope_matches'] and diagnosis['observations_complete'] and assessment['diagnostic_precheck_passed'] else 1
 if __name__=='__main__':sys.exit(main())

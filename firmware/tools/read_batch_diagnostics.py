@@ -56,6 +56,8 @@ def decode(data):
                 maximum_all_prepared_to_ack_ms=node.prepared_to_ack_max_ms[k],
                 retired_without_all_prepared=node.retired_without_all_prepared[k],
                 fresh_fragment_preparations=node.fresh_preparations[k],repeat_fragment_preparations=node.repeat_preparations[k]))
+        if sum(lane['unaccounted_sealed_heads'] for lane in lanes)>1:
+            raise ValueError('More than one selected head per node')
         nodes.append(dict(node=index,lanes=lanes))
     return dict(schema='bodaqs.batch-diagnostics.v1',scope=scope,nodes=nodes,
         limitation='Main-owner software preparation/ACK events through cleanup; no physical delivery, logger acceptance or pure CPU latency inferred.')

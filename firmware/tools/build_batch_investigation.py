@@ -32,6 +32,7 @@ def main():
         r=json.loads(args.finalize_review.read_text(encoding='utf-8'))
         if m['status']!='built_pending_review' or r['base']!=BASE or r['source_commit']!=m['source_commit'] or r['standards']!='passed' or r['spec']!='passed':
             raise ValueError('Review does not approve this exact build')
+        if not r.get('evidence') or len(r['evidence'])<2:raise ValueError('Both review reports required')
         verify(out)
         for item in r['evidence']:
             if sha(Path(item['path']))!=item['sha256']:raise ValueError('Review hash mismatch')
@@ -69,6 +70,7 @@ def main():
         for label,folder in (('common-host','firmware/can-fd/common/test'),('master-host','firmware/can-fd/master/test')):
             run(label,[make,'-B','-C',folder,'test','CXX='+cxx,'CC='+cc,'PYTHON='+sys.executable])
         run('decoder-tests',py+['firmware/tools/test_batch_tools.py'])
+        run('exporter-tests',['node','firmware/tools/test_batch_export.js'])
         run('master-diagnostic',[make,'-B','-C','firmware/can-fd/master/ticlang',
             'MSPM0_SDK_INSTALL_DIR=C:/ti/mspm0_sdk_2_11_00_07',
             'TICLANG_ARMCOMPILER=C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS',
@@ -106,7 +108,9 @@ def main():
         copy(ROOT/'docs/firmware/IMU_Batch_Investigation_Round23_Runbook.md','RUNBOOK.md')
         case=json.loads((KIT/'CASE_MANIFEST.json').read_text(encoding='utf-8'))
         case.update(parent_bundle=str(PARENT),firmware_source_commit=head,logger_source_commit=BASE,
-            master_image_sha256=sha(image),diagnostic_master=True)
+            master_image_sha256=sha(image),diagnostic_master=True,configuration_only=False,firmware_built=True,
+            only_configuration_changes={},only_firmware_changes='Default-off, main-owner batch diagnostics; logger and nodes unchanged',
+            qualification='Unqualified r23 master-observation capture; physical evidence pending')
         save(out/'CASE_MANIFEST.json',case)
         copy(KIT/'REFERENCE_2IMU.json','REFERENCE_2IMU.json')
         reference=ROOT.parent/'drain-capacity-evidence/first-real-imu-implementation/imu-four-node-load-r22-01-261113_123801-report'

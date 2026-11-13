@@ -128,4 +128,13 @@ int main(int argc,char** argv) {
     assert(gMasterBatchInfo.node[2].retired[0]==0);
 #endif
     print("fence-discard");
+    const auto retained=gMasterBatchInfo;
+    master.measurement.mode.context=0;BodaqsMeasurementSlot idle={};idle.node=255;
+    transfer(idle,42);
+#if BODAQS_MASTER_BATCH_DIAGNOSTICS
+    assert(!std::memcmp(&retained,&gMasterBatchInfo,sizeof retained));
+#else
+    (void)retained;
+#endif
+    print("post-exit-retention");
 }

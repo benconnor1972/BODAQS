@@ -202,7 +202,9 @@ static void transfer_context(BodaqsMasterService *s) {
     s->transfer_recording=s->measurement.mode.recording;
     s->transfer_boot=s->control.master_boot_id;
 #if BODAQS_MASTER_BATCH_DIAGNOSTICS
-    bodaqs_batch_diag_reset(s->transfer_context,s->transfer_session,s->transfer_recording,s->transfer_boot);
+    /* Empty post-exit inspection must not erase the completed capture. */
+    if(s->transfer_context)
+        bodaqs_batch_diag_reset(s->transfer_context,s->transfer_session,s->transfer_recording,s->transfer_boot);
 #endif
     s->bridge_context=0;s->bridge_token=0;s->bridge_tick=0;s->bridge_epoch=0;
     bodaqs_control_exchange_init(&s->authorization,s->control.master_boot_id);

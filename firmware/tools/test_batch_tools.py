@@ -1,6 +1,7 @@
 """Reject malformed snapshots; preserve full 64-bit scope identity."""
 import unittest
 from read_batch_diagnostics import Block,SIZE,decode
+from assess_batch_investigation import observation_complete
 
 class SnapshotChecks(unittest.TestCase):
     def valid(self):
@@ -20,5 +21,24 @@ class SnapshotChecks(unittest.TestCase):
         self.assertEqual(decode(bytes(b))['nodes'][0]['lanes'][0]['unaccounted_sealed_heads'],1)
         b.node[0].retired[0]=1;b.node[0].discarded[0]=1
         with self.assertRaises(ValueError):decode(bytes(b))
+    def test_single_shared_head_and_stopped_capture(self):
+        b=self.valid();n=b.node[0]
+        n.sealed[0]=2;n.records[0][13]=2;n.reasons[0][0]=2
+        with self.assertRaises(ValueError):decode(bytes(b))
+        n.retired[0]=1;n.sealed[1]=1;n.records[1][1]=1;n.reasons[1][5]=1
+        with self.assertRaises(ValueError):decode(bytes(b))
+        n.retired[1]=1
+        decoded=decode(bytes(b))
+        assessment={'strict_assessment':{'nodes':[{'node':i,'packet_count':1} for i in range(4)],'final_summary':{'remote_cleanup_complete':True}}}
+        self.assertFalse(observation_complete(decoded,assessment))
+        # Exact valid scope alone must not turn an empty block into observations.
+        self.assertFalse(observation_complete(decode(bytes(self.valid())),assessment))
+    def test_positive_observation_population(self):
+        b=self.valid()
+        for node in b.node:
+            for k in (0,1):
+                node.sealed[k]=node.retired[k]=1;node.records[k][1]=1;node.reasons[k][5]=1
+        assessment={'strict_assessment':{'nodes':[{'node':i,'packet_count':1} for i in range(4)],'final_summary':{'remote_cleanup_complete':True}}}
+        self.assertTrue(observation_complete(decode(bytes(b)),assessment))
 
 if __name__=='__main__':unittest.main()

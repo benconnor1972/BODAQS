@@ -34,6 +34,6 @@ def main():
     if results[0]!=results[1]:
         raise AssertionError('Observation changed wire bytes or retained populations')
     print(results[1],end='')
-    print('PASS: eight actual-code scenarios, seal/ACK/fence/reset checks, wire equivalence, independent binary decoding')
+    print('PASS: nine actual-code scenarios, seal/ACK/fence/reset checks, wire equivalence, independent binary decoding')
 
 if __name__=='__main__':main()
