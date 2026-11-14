@@ -73,7 +73,7 @@ static inline int bodaqs_fragment_accept(BodaqsFragmentState *s,uint8_t *data,si
     if(a->total<4 || a->total>1024 || a->total>capacity || offset>=a->total ||
        ((cls==3 || cls==4) && a->total!=68) ||
        ((cls==1 && BODAQS_MEASUREMENT_VERSION>=3)?
-           (a->index || a->total<84 || a->total>212 || (a->total-20)%64):
+           (a->index || a->total<84 || a->total>BODAQS_SAMPLE_UNIT_MAX || (a->total-20)%64):
            ((cls==1 || cls==2) && (a->total<96 || (a->total-20)%76))) ||
        (cls==5 && (a->total<28 || (a->total-12)%16))) return -2;
     count=a->total-offset; if(count>BODAQS_MEASUREMENT_BODY_BYTES) count=BODAQS_MEASUREMENT_BODY_BYTES;

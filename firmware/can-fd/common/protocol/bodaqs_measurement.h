@@ -6,7 +6,19 @@
 #include <stddef.h>
 #include <string.h>
 #define BODAQS_MEASUREMENT_CAPABILITY (1UL << 3)
-#if defined(BODAQS_SPI_MEASUREMENT_V4) && BODAQS_SPI_MEASUREMENT_V4
+#ifndef BODAQS_SPI_BULK_BYTES
+#define BODAQS_SPI_BULK_BYTES 0
+#endif
+#if BODAQS_SPI_BULK_BYTES
+#if (BODAQS_SPI_BULK_BYTES != 512 && BODAQS_SPI_BULK_BYTES != 1024) || !BODAQS_SPI_MEASUREMENT_V4
+#error "Bulk requires v4 window semantics and 512 or 1024 physical bytes"
+#endif
+#define BODAQS_MEASUREMENT_VERSION 5U
+#define BODAQS_MEASUREMENT_BYTES BODAQS_SPI_BULK_BYTES
+#define BODAQS_MEASUREMENT_BODY_BYTES (BODAQS_MEASUREMENT_BYTES-40U)
+#define BODAQS_MEASUREMENT_HZ 16000000UL
+#define BODAQS_MEASUREMENT_MAX_KIND 15U
+#elif defined(BODAQS_SPI_MEASUREMENT_V4) && BODAQS_SPI_MEASUREMENT_V4
 #define BODAQS_MEASUREMENT_VERSION 4U
 #define BODAQS_MEASUREMENT_BYTES 256U
 #define BODAQS_MEASUREMENT_BODY_BYTES 216U
@@ -31,6 +43,12 @@
 #define BODAQS_MEASUREMENT_HZ 8000000UL
 #define BODAQS_MEASUREMENT_MAX_KIND 13U
 #endif
+#define BODAQS_SAMPLE_PAYLOADS ((BODAQS_MEASUREMENT_BODY_BYTES-20U)/64U)
+#define BODAQS_SAMPLE_UNIT_MAX (20U+64U*BODAQS_SAMPLE_PAYLOADS)
+#define BODAQS_SAMPLE_STORAGE_BYTES (BODAQS_MEASUREMENT_VERSION>=5?BODAQS_MEASUREMENT_BODY_BYTES:216U)
+#define BODAQS_SAMPLE_RECORD_BYTES (44U+BODAQS_SAMPLE_STORAGE_BYTES)
+/* Preserve the v3/v4 sample queue's payload RAM ceiling. */
+#define BODAQS_SAMPLE_QUEUE_CAPACITY (66560U/BODAQS_SAMPLE_RECORD_BYTES)
 #define BODAQS_MEASUREMENT_FRAGMENT_COUNT ((1024U+BODAQS_MEASUREMENT_BODY_BYTES-1U)/BODAQS_MEASUREMENT_BODY_BYTES)
 #define BODAQS_MEASUREMENT_GAP_US 25U
 #define BODAQS_MEASUREMENT_DEADLINE_MS 1000U
@@ -172,20 +190,35 @@ static inline uint32_t bodaqs_measurement_crc(const uint8_t *p, size_t n) {
     return ~c;
 #endif
 }
-static inline bool bodaqs_measurement_encode(const BodaqsMeasurementSlot *s, uint8_t *p, size_t n) {
-    if(!s || !p || n<BODAQS_MEASUREMENT_BYTES || s->kind>BODAQS_MEASUREMENT_MAX_KIND) return false;
-    memset(p,0,BODAQS_MEASUREMENT_BYTES); p[0]='B'; p[1]='M'; p[2]=BODAQS_MEASUREMENT_VERSION; p[3]=s->kind;
+static inline bool bodaqs_measurement_encode_extent(const BodaqsMeasurementSlot *s, uint8_t *p, size_t n, unsigned extent, unsigned body) {
+    if(!s || !p || n<extent || s->kind>BODAQS_MEASUREMENT_MAX_KIND) return false;
+    memset(p,0,extent); p[0]='B'; p[1]='M'; p[2]=BODAQS_MEASUREMENT_VERSION; p[3]=s->kind;
     bodaqs_measurement_put(p+4,s->context,8); bodaqs_measurement_put(p+12,s->object,4);
     p[16]=s->node; p[17]=s->index; bodaqs_measurement_put(p+18,s->total,2);
-    memcpy(p+20,s->body,BODAQS_MEASUREMENT_BODY_BYTES);
+    memcpy(p+20,s->body,body);
 #if BODAQS_MEASUREMENT_VERSION >= 2
-    p[236]=s->retiredClass;p[237]=s->retiredNode;p[238]=s->retired?1:0;
-    bodaqs_measurement_put(p+240,s->retiredObject,4);bodaqs_measurement_put(p+244,s->retiredTotal,2);
-    bodaqs_measurement_put(p+246,s->available,2);bodaqs_measurement_put(p+248,s->retiredChecksum,4);
+    p[extent-20]=s->retiredClass;p[extent-19]=s->retiredNode;p[extent-18]=s->retired?1:0;
+    bodaqs_measurement_put(p+extent-16,s->retiredObject,4);bodaqs_measurement_put(p+extent-12,s->retiredTotal,2);
+    bodaqs_measurement_put(p+extent-10,s->available,2);bodaqs_measurement_put(p+extent-8,s->retiredChecksum,4);
+#if BODAQS_SPI_BULK_BYTES
+    p[extent-17]=BODAQS_MEASUREMENT_BYTES/512U;
 #endif
-    bodaqs_measurement_put(p+BODAQS_MEASUREMENT_BYTES-4,bodaqs_measurement_crc(p,BODAQS_MEASUREMENT_BYTES-4),4);
+#endif
+    bodaqs_measurement_put(p+extent-4,bodaqs_measurement_crc(p,extent-4),4);
     return true;
 }
+static inline bool bodaqs_measurement_encode(const BodaqsMeasurementSlot *s,uint8_t *p,size_t n) {
+    return bodaqs_measurement_encode_extent(s,p,n,BODAQS_MEASUREMENT_BYTES,BODAQS_MEASUREMENT_BODY_BYTES);
+}
+static inline bool bodaqs_measurement_encode_request(const BodaqsMeasurementSlot *s,uint8_t *p,size_t n) {
+#if BODAQS_SPI_BULK_BYTES
+    if(!s || s->retired || s->available || !bodaqs_measurement_zero(s->body+88,BODAQS_MEASUREMENT_BODY_BYTES-88)) return false;
+    return bodaqs_measurement_encode_extent(s,p,n,128,88);
+#else
+    return bodaqs_measurement_encode(s,p,n);
+#endif
+}
+
 typedef enum {
     BODAQS_MEASUREMENT_DECODE_OK=0, BODAQS_MEASUREMENT_DECODE_ARGUMENT,
     BODAQS_MEASUREMENT_DECODE_SIZE, BODAQS_MEASUREMENT_DECODE_MAGIC,
@@ -202,32 +235,43 @@ static inline const char *bodaqs_measurement_decode_name(BodaqsMeasurementDecode
 }
 /* First failed check, not a physical cause. Preserve the original bool API's
  * order and partial output semantics; callers must ignore rejected outputs. */
-static inline BodaqsMeasurementDecodeResult bodaqs_measurement_decode_result(const uint8_t *p,size_t n,BodaqsMeasurementSlot *s) {
+static inline BodaqsMeasurementDecodeResult bodaqs_measurement_decode_extent(const uint8_t *p,size_t n,BodaqsMeasurementSlot *s,unsigned extent,unsigned body) {
     if(!p || !s) return BODAQS_MEASUREMENT_DECODE_ARGUMENT;
-    if(n!=BODAQS_MEASUREMENT_BYTES) return BODAQS_MEASUREMENT_DECODE_SIZE;
+    if(n!=extent) return BODAQS_MEASUREMENT_DECODE_SIZE;
     if(p[0]!='B' || p[1]!='M') return BODAQS_MEASUREMENT_DECODE_MAGIC;
     if(p[2]!=BODAQS_MEASUREMENT_VERSION) return BODAQS_MEASUREMENT_DECODE_VERSION;
     if(p[3]>BODAQS_MEASUREMENT_MAX_KIND) return BODAQS_MEASUREMENT_DECODE_KIND;
-    if(bodaqs_measurement_crc(p,BODAQS_MEASUREMENT_BYTES-4)!=bodaqs_measurement_get(p+BODAQS_MEASUREMENT_BYTES-4,4)) return BODAQS_MEASUREMENT_DECODE_CRC;
+    if(bodaqs_measurement_crc(p,extent-4)!=bodaqs_measurement_get(p+extent-4,4)) return BODAQS_MEASUREMENT_DECODE_CRC;
     memset(s,0,sizeof(*s)); s->kind=p[3]; s->context=bodaqs_measurement_get(p+4,8);
     s->object=(uint32_t)bodaqs_measurement_get(p+12,4); s->node=p[16]; s->index=p[17];
-    s->total=(uint16_t)bodaqs_measurement_get(p+18,2); memcpy(s->body,p+20,BODAQS_MEASUREMENT_BODY_BYTES);
+    s->total=(uint16_t)bodaqs_measurement_get(p+18,2); memcpy(s->body,p+20,body);
 #if BODAQS_MEASUREMENT_VERSION >= 2
-    if(p[239]) return BODAQS_MEASUREMENT_DECODE_RESERVED;
-    if(p[238]>1) return BODAQS_MEASUREMENT_DECODE_RETIRED_FLAG;
-    if(bodaqs_measurement_get(p+246,2)&~255ULL) return BODAQS_MEASUREMENT_DECODE_AVAILABILITY;
-    if(p[238]) {
-        if(p[236]<1 || p[236]>5 || (p[236]==5?p[237]!=255:p[237]>3) ||
-           !bodaqs_measurement_get(p+240,4) || bodaqs_measurement_get(p+244,2)<4 || bodaqs_measurement_get(p+244,2)>1024) return BODAQS_MEASUREMENT_DECODE_RETIREMENT;
-    } else if(!bodaqs_measurement_zero(p+236,10) || !bodaqs_measurement_zero(p+248,4)) return BODAQS_MEASUREMENT_DECODE_UNEXPECTED_RETIREMENT;
-    s->retired=p[238]!=0;s->retiredClass=p[236];s->retiredNode=p[237];
-    s->retiredObject=(uint32_t)bodaqs_measurement_get(p+240,4);s->retiredTotal=(uint16_t)bodaqs_measurement_get(p+244,2);
-    s->available=(uint16_t)bodaqs_measurement_get(p+246,2);s->retiredChecksum=(uint32_t)bodaqs_measurement_get(p+248,4);
+    if(p[extent-17]!=(BODAQS_SPI_BULK_BYTES?BODAQS_MEASUREMENT_BYTES/512U:0)) return BODAQS_MEASUREMENT_DECODE_RESERVED;
+    if(p[extent-18]>1) return BODAQS_MEASUREMENT_DECODE_RETIRED_FLAG;
+    if(bodaqs_measurement_get(p+extent-10,2)&~255ULL) return BODAQS_MEASUREMENT_DECODE_AVAILABILITY;
+    if(p[extent-18]) {
+        if(p[extent-20]<1 || p[extent-20]>5 || (p[extent-20]==5?p[extent-19]!=255:p[extent-19]>3) ||
+           !bodaqs_measurement_get(p+extent-16,4) || bodaqs_measurement_get(p+extent-12,2)<4 || bodaqs_measurement_get(p+extent-12,2)>1024) return BODAQS_MEASUREMENT_DECODE_RETIREMENT;
+    } else if(!bodaqs_measurement_zero(p+extent-20,3) || !bodaqs_measurement_zero(p+extent-16,6) || !bodaqs_measurement_zero(p+extent-8,4)) return BODAQS_MEASUREMENT_DECODE_UNEXPECTED_RETIREMENT;
+    s->retired=p[extent-18]!=0;s->retiredClass=p[extent-20];s->retiredNode=p[extent-19];
+    s->retiredObject=(uint32_t)bodaqs_measurement_get(p+extent-16,4);s->retiredTotal=(uint16_t)bodaqs_measurement_get(p+extent-12,2);
+    s->available=(uint16_t)bodaqs_measurement_get(p+extent-10,2);s->retiredChecksum=(uint32_t)bodaqs_measurement_get(p+extent-8,4);
     const unsigned padding=(BODAQS_MEASUREMENT_VERSION>=4 && s->kind==14)?48:40;
     if(s->kind!=2 && s->kind!=3 && s->kind!=4 && s->kind!=12 && s->kind!=13 &&
-       !bodaqs_measurement_zero(s->body+padding,BODAQS_MEASUREMENT_BODY_BYTES-padding)) return BODAQS_MEASUREMENT_DECODE_PADDING;
+       !bodaqs_measurement_zero(s->body+padding,body-padding)) return BODAQS_MEASUREMENT_DECODE_PADDING;
 #endif
     return BODAQS_MEASUREMENT_DECODE_OK;
+}
+static inline BodaqsMeasurementDecodeResult bodaqs_measurement_decode_result(const uint8_t *p,size_t n,BodaqsMeasurementSlot *s) {
+    return bodaqs_measurement_decode_extent(p,n,s,BODAQS_MEASUREMENT_BYTES,BODAQS_MEASUREMENT_BODY_BYTES);
+}
+static inline bool bodaqs_measurement_decode_request(const uint8_t *p,size_t n,BodaqsMeasurementSlot *s) {
+#if BODAQS_SPI_BULK_BYTES
+    if(n!=BODAQS_MEASUREMENT_BYTES || bodaqs_measurement_decode_extent(p,128,s,128,88)!=BODAQS_MEASUREMENT_DECODE_OK) return false;
+    return !s->retired && !s->available;
+#else
+    return bodaqs_measurement_decode_result(p,n,s)==BODAQS_MEASUREMENT_DECODE_OK;
+#endif
 }
 static inline bool bodaqs_measurement_decode(const uint8_t *p,size_t n,BodaqsMeasurementSlot *s) {
     return bodaqs_measurement_decode_result(p,n,s)==BODAQS_MEASUREMENT_DECODE_OK;

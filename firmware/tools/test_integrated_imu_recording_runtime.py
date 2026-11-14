@@ -7,10 +7,41 @@ import struct
 from pathlib import Path
 import subprocess
 import tempfile
+import zlib
 
 from runtime_test_helpers import definition
 from test_remote_imu_lifecycle_runtime import fixture_source
 from verify_integrated_imu_recording import verify
+
+
+def verify_bulk_file_integrity(path, output):
+    """Keep the BDQ chunk CRC valid while corrupting upstream unit bytes."""
+    from bodaqs_analysis.can_imu_packets import read_can_imu_packets
+    from bodaqs_analysis.io_bdq import read_bdq
+    info=read_bdq(path)
+    stream=next(d for d in info.stream_catalog['streams'] if d['stream_key']=='can0_imu6')
+    assert stream['acquisition']['payload_schema']=='bodaqs.can_imu_units.v2'
+    original=path.read_bytes()
+    cursor=32
+    while cursor<len(original):
+        _,_,kind,_,length,_=struct.unpack_from('<4sHHIII',original,cursor)
+        start=cursor+20
+        if kind==3 and struct.unpack_from('<H',original,start)[0]==stream['stream_id'] and struct.unpack_from('<I',original,start+12)[0]:
+            record=start+24
+            for name,offset in (('origin',44+20),('geometry',40),('identity',36)):
+                changed=bytearray(original);changed[record+offset]^=1
+                struct.pack_into('<I',changed,cursor+16,zlib.crc32(changed[start:start+length]))
+                bad=output/f'corrupt-{name}.bdq';bad.write_bytes(changed)
+                try:
+                    read_can_imu_packets(bad,'can0_imu6')
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError(f'accepted {name} corruption behind valid BDQ chunk CRC')
+            print('Bulk independent decoder rejects origin, geometry and source corruption with valid file CRC: PASS')
+            return
+        cursor=start+length
+    raise AssertionError('no stored bulk unit for independent corruption test')
 
 
 def saturation_wire(original, output,count=500):
@@ -38,11 +69,14 @@ def main():
     parser.add_argument("--two-node", action="store_true")
     parser.add_argument("--four-node", action="store_true")
     parser.add_argument("--window", action="store_true")
+    parser.add_argument("--bulk-bytes", type=int, choices=(512,1024))
     parser.add_argument("--idle-control-fetch", action="store_true")
     parser.add_argument("--flow-diagnostics", action="store_true")
     parser.add_argument("--pressure-diagnostics", action="store_true")
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
+    if args.bulk_bytes:
+        args.four_node=True
     if args.four_node:
         args.window=True
     if args.window:
@@ -169,6 +203,17 @@ namespace SharedSpiBus {''',1)
             support=support.replace('assert(droppedDataAcks==1);',
                 'assert(droppedDataAcks==1 && windowProofSuppressed==1 && windowCorrupted==1 && windowSuccessorSeen);')
         cpp = temporary / "integrated.cpp"
+        if args.bulk_bytes:
+            # MOSI is a compact command; MISO retains the full physical CRC.
+            source=source.replace('bodaqs_measurement_decode(tx,', 'bodaqs_measurement_decode_request(tx,')
+            for name in ('outgoing','ackSlot'):
+                source=source.replace('bodaqs_measurement_encode(&'+name+',', 'bodaqs_measurement_encode_request(&'+name+',')
+            support=support.replace('bodaqs_measurement_encode(&old,','bodaqs_measurement_encode_request(&old,')
+            # The small known-answer capture has thirteen CAN payloads; seal a
+            # partial first bulk unit by age, then hold it until its successor.
+            support=support.replace('step(8);assert(windowSuccessorSeen && windowDataSuppressed);\n       holdWindowUnit=false;',
+                'step(25);assert(windowDataSuppressed);')
+            source=source.replace('windowSuccessorSeen=true;', 'windowSuccessorSeen=true;\n     if(windowSuccessorSeen) holdWindowUnit=false;')
         cpp.write_text(source + support, encoding="utf-8")
         exe = temporary / "integrated.exe"
         sources = [*common.glob("bodaqs_control*.c"), common / "bodaqs_imu_disabled.c", common / "bodaqs_master_service.c", common / "bodaqs_master_protocol.c"]
@@ -180,6 +225,8 @@ namespace SharedSpiBus {''',1)
             source_flags += ['-DBODAQS_SPI_MEASUREMENT_V4=1']
         if args.four_node:
             source_flags += ['-DBODAQS_V4_FOUR_NODE_BENCH=1']
+        if args.bulk_bytes:
+            source_flags += [f'-DBODAQS_SPI_BULK_BYTES={args.bulk_bytes}']
         if args.pressure_diagnostics:
             source_flags += ['-DBODAQS_RECORDING_PRESSURE_DIAGNOSTICS=1', '-I', str(firmware/'.pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src')]
         sources += [firmware / "src" / name for name in ("CanMasterProtocol.cpp", "SensorAssignment.cpp", "SensorParams.cpp", "Lsm6dso32xConfig.cpp", "RemoteImuStream.cpp", "BdqV2Catalog.cpp", "BdqV2Writer.cpp", "ImuAdmission.cpp")]
@@ -237,6 +284,8 @@ namespace SharedSpiBus {''',1)
                         assert not decoded['gaps'] and not decoded['ambiguous_packets'] and not decoded['duplicates']
                         assert any(r['boundary_event_kind']==8 and r['boundary_validity_flags']&1 and r['related_sequence']==63
                                    for r in decoded['raw_timing_observations'])
+                if args.bulk_bytes:
+                    verify_bulk_file_integrity(output/'good.bdq',output)
                 report=assess_multi_imu_recording(output / 'good.bdq',expected_nodes)
                 assert 'expected_node_membership_mismatch' not in report['issues']
                 assert len(report['nodes'])==len(expected_nodes)

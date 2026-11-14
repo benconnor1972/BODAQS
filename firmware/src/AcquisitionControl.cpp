@@ -25,6 +25,7 @@
 
 namespace AcquisitionControl {
 namespace {
+constexpr uint32_t controlStackBytes=BODAQS_SPI_BULK_BYTES?6144:4096;
 using CanMasterManager::MeasurementInbox;
 struct Exchange {
   BodaqsControlWrapped request = {};
@@ -412,7 +413,7 @@ bool begin(uint64_t recording,uint64_t context) {
   if(!recording || !context) return false;
   {Lock lock;if(owned) return false;}
 #if defined(ARDUINO_ARCH_ESP32)
-  if(!task && xTaskCreate(run,"AcquisitionCtl",4096,nullptr,2,&task)!=pdPASS) return false;
+  if(!task && xTaskCreate(run,"AcquisitionCtl",controlStackBytes,nullptr,2,&task)!=pdPASS) return false;
 #endif
   if(!CanMasterManager::claimMeasurementControl(isOwner)) return false;
 #if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
@@ -439,7 +440,7 @@ size_t reservedBytes() {
  return sizeof(peers)+sizeof(mailboxes)+sizeof(outcomes)+sizeof(transport)+sizeof(fenceSnapshot)+3*sizeof(uint32_t)+
         sizeof(recordingId)+sizeof(contextId)+sizeof(session)+sizeof(masterBoot)+sizeof(nextTransfer)+
         sizeof(nextRead)+sizeof(cursor)+sizeof(dataConsumer)+sizeof(dataMask)+sizeof(dataCursor)+sizeof(serviceCursor)+
-        4096 // configured control task stack; watermark qualification remains deferred
+        controlStackBytes // configured task stack; physical watermark remains deferred
 #if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
         +ImuFlowDiagnostics::reservedBytes()
 #endif

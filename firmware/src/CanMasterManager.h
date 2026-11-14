@@ -133,6 +133,27 @@ void retainMeasurementAllocators(uint32_t nextRead, const uint32_t nextMutation[
 // One bounded physical exchange; caller demultiplexes by immutable identity.
 bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
                              BodaqsMeasurementSlot& response);
+#if BODAQS_SPI_BULK_BYTES
+// A pending custody ACK contains eight meaningful body bytes, never a response
+// payload. Keep its exact predecessor identity without reserving a bulk frame
+// per inbox. Expand only when the acquisition owner selects it for transmission.
+struct MeasurementAcknowledgement {
+  uint64_t context=0;
+  uint32_t object=0;
+  uint16_t total=0;
+  uint8_t node=0,body[8]={};
+  MeasurementAcknowledgement& operator=(const BodaqsMeasurementSlot& slot) {
+    context=slot.context;object=slot.object;total=slot.total;node=slot.node;
+    memcpy(body,slot.body,sizeof body);return *this;
+  }
+  operator BodaqsMeasurementSlot() const {
+    BodaqsMeasurementSlot slot={};slot.kind=5;slot.context=context;slot.object=object;
+    slot.total=total;slot.node=node;memcpy(slot.body,body,sizeof body);return slot;
+  }
+};
+#else
+using MeasurementAcknowledgement=BodaqsMeasurementSlot;
+#endif
 struct MeasurementInbox {
   BodaqsFragmentState state = {};
   uint8_t bytes[1024] = {};
@@ -140,8 +161,15 @@ struct MeasurementInbox {
   bool admitted = false;
   // Scheduling hint only: fragments requested in this sweep, never receipt.
   uint32_t requestedFragments = 0;
-  BodaqsMeasurementSlot pendingAck = {};
+  MeasurementAcknowledgement pendingAck = {};
 };
+inline void rememberMeasurementAcknowledgement(MeasurementInbox& inbox) {
+#if BODAQS_SPI_BULK_BYTES
+  BodaqsMeasurementSlot ack={};bodaqs_fragment_ack(&inbox.state,1,&ack);inbox.pendingAck=ack;
+#else
+  bodaqs_fragment_ack(&inbox.state,1,&inbox.pendingAck);
+#endif
+}
 inline bool measurementObjectReady(const MeasurementInbox& inbox) {
   return inbox.state.complete && !inbox.admitted &&
       !(inbox.ackPending && inbox.pendingAck.object!=inbox.state.object);

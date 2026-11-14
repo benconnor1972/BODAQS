@@ -27,7 +27,7 @@ def read_can_imu_packets(path: str | Path, stream_key: str) -> dict:
     descriptors = {d["stream_key"]: d for d in info.stream_catalog["streams"]}
     descriptor = descriptors[stream_key]
     acquisition = descriptor["acquisition"]
-    unit_schema = acquisition.get("payload_schema") == "bodaqs.can_imu_units.v1"
+    unit_schema = acquisition.get("payload_schema") in ("bodaqs.can_imu_units.v1", "bodaqs.can_imu_units.v2")
     if acquisition.get("payload_schema") != SCHEMA and not unit_schema:
         raise ValueError("not a compact CAN packet observation stream")
     packets = list(iter_bdq_stream_records(path, stream_key))
@@ -143,6 +143,12 @@ def read_can_imu_packets(path: str | Path, stream_key: str) -> dict:
 def _unit_packets(units: list[dict], acquisition: dict, epochs: dict[int, int]) -> list[dict]:
     """Verify retained master bytes before exposing readings; never trust a file CRC alone."""
     packets = []
+    words = 54
+    if acquisition.get('payload_schema') == 'bodaqs.can_imu_units.v2':
+        words = sum(key.startswith('unit_word') for key in units[0]) if units else 118
+        if words not in (118, 246):
+            raise ValueError('invalid bulk sample-unit word geometry')
+    maximum = 20+64*((words*4-20)//64)
     previous = 0
     for index, unit in enumerate(units):
         context = unit['context_low'] | unit['context_high'] << 32
@@ -150,10 +156,10 @@ def _unit_packets(units: list[dict], acquisition: dict, epochs: dict[int, int]) 
         if (unit['sequence'] != index or identity <= previous or not unit['source_segment_id']
                 or context != int(acquisition['measurement_context'])
                 or node != acquisition['node_address'] or unit['object_class'] != 1
-                or unit['direction'] != 1 or not 84 <= total <= 212 or (total-20) % 64):
+                or unit['direction'] != 1 or not 84 <= total <= maximum or (total-20) % 64):
             raise ValueError('invalid sample-unit identity or geometry')
         previous = identity
-        data = b''.join(struct.pack('<I', unit[f'unit_word{i}']) for i in range(54))
+        data = b''.join(struct.pack('<I', unit[f'unit_word{i}']) for i in range(words))
         prefix = struct.pack('<QIBBBxHxx', context, identity, node, 1, 1, total)
         expected = struct.unpack_from('<I', data, total-4)[0]
         if zlib.crc32(prefix + data[:total-4]) != expected:
@@ -171,7 +177,7 @@ def _unit_packets(units: list[dict], acquisition: dict, epochs: dict[int, int]) 
             if not 1 <= readings <= 5 or flags & 128 or any(payload[4+12*readings:]):
                 raise ValueError('invalid sample-unit CAN payload')
             # This is a unit/slot observation order, not a captured CAN ordinal.
-            order = identity*4 + slot
+            order = identity*(16 if acquisition.get('payload_schema') == 'bodaqs.can_imu_units.v2' else 4) + slot
             packet = dict(sequence=len(packets), native_tick=unit['native_tick'],
                 status_flags=unit['status_flags'], source_segment_id=unit['source_segment_id'],
                 sequence_floor=unit['sequence_floor'], master_receive_ordinal_low=order & 0xffffffff,

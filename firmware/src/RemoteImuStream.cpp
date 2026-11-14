@@ -90,6 +90,203 @@ const BdqV2CatalogChannel unitChannels[]={
  {"unit_word51","sample_unit","count","uint32",248,"diagnostic"},
  {"unit_word52","sample_unit","count","uint32",252,"diagnostic"},
  {"unit_word53","sample_unit","count","uint32",256,"diagnostic"},
+#if BODAQS_SPI_BULK_BYTES >= 512
+ {"unit_word54","sample_unit","count","uint32",260,"diagnostic"},
+ {"unit_word55","sample_unit","count","uint32",264,"diagnostic"},
+ {"unit_word56","sample_unit","count","uint32",268,"diagnostic"},
+ {"unit_word57","sample_unit","count","uint32",272,"diagnostic"},
+ {"unit_word58","sample_unit","count","uint32",276,"diagnostic"},
+ {"unit_word59","sample_unit","count","uint32",280,"diagnostic"},
+ {"unit_word60","sample_unit","count","uint32",284,"diagnostic"},
+ {"unit_word61","sample_unit","count","uint32",288,"diagnostic"},
+ {"unit_word62","sample_unit","count","uint32",292,"diagnostic"},
+ {"unit_word63","sample_unit","count","uint32",296,"diagnostic"},
+ {"unit_word64","sample_unit","count","uint32",300,"diagnostic"},
+ {"unit_word65","sample_unit","count","uint32",304,"diagnostic"},
+ {"unit_word66","sample_unit","count","uint32",308,"diagnostic"},
+ {"unit_word67","sample_unit","count","uint32",312,"diagnostic"},
+ {"unit_word68","sample_unit","count","uint32",316,"diagnostic"},
+ {"unit_word69","sample_unit","count","uint32",320,"diagnostic"},
+ {"unit_word70","sample_unit","count","uint32",324,"diagnostic"},
+ {"unit_word71","sample_unit","count","uint32",328,"diagnostic"},
+ {"unit_word72","sample_unit","count","uint32",332,"diagnostic"},
+ {"unit_word73","sample_unit","count","uint32",336,"diagnostic"},
+ {"unit_word74","sample_unit","count","uint32",340,"diagnostic"},
+ {"unit_word75","sample_unit","count","uint32",344,"diagnostic"},
+ {"unit_word76","sample_unit","count","uint32",348,"diagnostic"},
+ {"unit_word77","sample_unit","count","uint32",352,"diagnostic"},
+ {"unit_word78","sample_unit","count","uint32",356,"diagnostic"},
+ {"unit_word79","sample_unit","count","uint32",360,"diagnostic"},
+ {"unit_word80","sample_unit","count","uint32",364,"diagnostic"},
+ {"unit_word81","sample_unit","count","uint32",368,"diagnostic"},
+ {"unit_word82","sample_unit","count","uint32",372,"diagnostic"},
+ {"unit_word83","sample_unit","count","uint32",376,"diagnostic"},
+ {"unit_word84","sample_unit","count","uint32",380,"diagnostic"},
+ {"unit_word85","sample_unit","count","uint32",384,"diagnostic"},
+ {"unit_word86","sample_unit","count","uint32",388,"diagnostic"},
+ {"unit_word87","sample_unit","count","uint32",392,"diagnostic"},
+ {"unit_word88","sample_unit","count","uint32",396,"diagnostic"},
+ {"unit_word89","sample_unit","count","uint32",400,"diagnostic"},
+ {"unit_word90","sample_unit","count","uint32",404,"diagnostic"},
+ {"unit_word91","sample_unit","count","uint32",408,"diagnostic"},
+ {"unit_word92","sample_unit","count","uint32",412,"diagnostic"},
+ {"unit_word93","sample_unit","count","uint32",416,"diagnostic"},
+ {"unit_word94","sample_unit","count","uint32",420,"diagnostic"},
+ {"unit_word95","sample_unit","count","uint32",424,"diagnostic"},
+ {"unit_word96","sample_unit","count","uint32",428,"diagnostic"},
+ {"unit_word97","sample_unit","count","uint32",432,"diagnostic"},
+ {"unit_word98","sample_unit","count","uint32",436,"diagnostic"},
+ {"unit_word99","sample_unit","count","uint32",440,"diagnostic"},
+ {"unit_word100","sample_unit","count","uint32",444,"diagnostic"},
+ {"unit_word101","sample_unit","count","uint32",448,"diagnostic"},
+ {"unit_word102","sample_unit","count","uint32",452,"diagnostic"},
+ {"unit_word103","sample_unit","count","uint32",456,"diagnostic"},
+ {"unit_word104","sample_unit","count","uint32",460,"diagnostic"},
+ {"unit_word105","sample_unit","count","uint32",464,"diagnostic"},
+ {"unit_word106","sample_unit","count","uint32",468,"diagnostic"},
+ {"unit_word107","sample_unit","count","uint32",472,"diagnostic"},
+ {"unit_word108","sample_unit","count","uint32",476,"diagnostic"},
+ {"unit_word109","sample_unit","count","uint32",480,"diagnostic"},
+ {"unit_word110","sample_unit","count","uint32",484,"diagnostic"},
+ {"unit_word111","sample_unit","count","uint32",488,"diagnostic"},
+ {"unit_word112","sample_unit","count","uint32",492,"diagnostic"},
+ {"unit_word113","sample_unit","count","uint32",496,"diagnostic"},
+ {"unit_word114","sample_unit","count","uint32",500,"diagnostic"},
+ {"unit_word115","sample_unit","count","uint32",504,"diagnostic"},
+ {"unit_word116","sample_unit","count","uint32",508,"diagnostic"},
+ {"unit_word117","sample_unit","count","uint32",512,"diagnostic"},
+#endif
+#if BODAQS_SPI_BULK_BYTES >= 1024
+ {"unit_word118","sample_unit","count","uint32",516,"diagnostic"},
+ {"unit_word119","sample_unit","count","uint32",520,"diagnostic"},
+ {"unit_word120","sample_unit","count","uint32",524,"diagnostic"},
+ {"unit_word121","sample_unit","count","uint32",528,"diagnostic"},
+ {"unit_word122","sample_unit","count","uint32",532,"diagnostic"},
+ {"unit_word123","sample_unit","count","uint32",536,"diagnostic"},
+ {"unit_word124","sample_unit","count","uint32",540,"diagnostic"},
+ {"unit_word125","sample_unit","count","uint32",544,"diagnostic"},
+ {"unit_word126","sample_unit","count","uint32",548,"diagnostic"},
+ {"unit_word127","sample_unit","count","uint32",552,"diagnostic"},
+ {"unit_word128","sample_unit","count","uint32",556,"diagnostic"},
+ {"unit_word129","sample_unit","count","uint32",560,"diagnostic"},
+ {"unit_word130","sample_unit","count","uint32",564,"diagnostic"},
+ {"unit_word131","sample_unit","count","uint32",568,"diagnostic"},
+ {"unit_word132","sample_unit","count","uint32",572,"diagnostic"},
+ {"unit_word133","sample_unit","count","uint32",576,"diagnostic"},
+ {"unit_word134","sample_unit","count","uint32",580,"diagnostic"},
+ {"unit_word135","sample_unit","count","uint32",584,"diagnostic"},
+ {"unit_word136","sample_unit","count","uint32",588,"diagnostic"},
+ {"unit_word137","sample_unit","count","uint32",592,"diagnostic"},
+ {"unit_word138","sample_unit","count","uint32",596,"diagnostic"},
+ {"unit_word139","sample_unit","count","uint32",600,"diagnostic"},
+ {"unit_word140","sample_unit","count","uint32",604,"diagnostic"},
+ {"unit_word141","sample_unit","count","uint32",608,"diagnostic"},
+ {"unit_word142","sample_unit","count","uint32",612,"diagnostic"},
+ {"unit_word143","sample_unit","count","uint32",616,"diagnostic"},
+ {"unit_word144","sample_unit","count","uint32",620,"diagnostic"},
+ {"unit_word145","sample_unit","count","uint32",624,"diagnostic"},
+ {"unit_word146","sample_unit","count","uint32",628,"diagnostic"},
+ {"unit_word147","sample_unit","count","uint32",632,"diagnostic"},
+ {"unit_word148","sample_unit","count","uint32",636,"diagnostic"},
+ {"unit_word149","sample_unit","count","uint32",640,"diagnostic"},
+ {"unit_word150","sample_unit","count","uint32",644,"diagnostic"},
+ {"unit_word151","sample_unit","count","uint32",648,"diagnostic"},
+ {"unit_word152","sample_unit","count","uint32",652,"diagnostic"},
+ {"unit_word153","sample_unit","count","uint32",656,"diagnostic"},
+ {"unit_word154","sample_unit","count","uint32",660,"diagnostic"},
+ {"unit_word155","sample_unit","count","uint32",664,"diagnostic"},
+ {"unit_word156","sample_unit","count","uint32",668,"diagnostic"},
+ {"unit_word157","sample_unit","count","uint32",672,"diagnostic"},
+ {"unit_word158","sample_unit","count","uint32",676,"diagnostic"},
+ {"unit_word159","sample_unit","count","uint32",680,"diagnostic"},
+ {"unit_word160","sample_unit","count","uint32",684,"diagnostic"},
+ {"unit_word161","sample_unit","count","uint32",688,"diagnostic"},
+ {"unit_word162","sample_unit","count","uint32",692,"diagnostic"},
+ {"unit_word163","sample_unit","count","uint32",696,"diagnostic"},
+ {"unit_word164","sample_unit","count","uint32",700,"diagnostic"},
+ {"unit_word165","sample_unit","count","uint32",704,"diagnostic"},
+ {"unit_word166","sample_unit","count","uint32",708,"diagnostic"},
+ {"unit_word167","sample_unit","count","uint32",712,"diagnostic"},
+ {"unit_word168","sample_unit","count","uint32",716,"diagnostic"},
+ {"unit_word169","sample_unit","count","uint32",720,"diagnostic"},
+ {"unit_word170","sample_unit","count","uint32",724,"diagnostic"},
+ {"unit_word171","sample_unit","count","uint32",728,"diagnostic"},
+ {"unit_word172","sample_unit","count","uint32",732,"diagnostic"},
+ {"unit_word173","sample_unit","count","uint32",736,"diagnostic"},
+ {"unit_word174","sample_unit","count","uint32",740,"diagnostic"},
+ {"unit_word175","sample_unit","count","uint32",744,"diagnostic"},
+ {"unit_word176","sample_unit","count","uint32",748,"diagnostic"},
+ {"unit_word177","sample_unit","count","uint32",752,"diagnostic"},
+ {"unit_word178","sample_unit","count","uint32",756,"diagnostic"},
+ {"unit_word179","sample_unit","count","uint32",760,"diagnostic"},
+ {"unit_word180","sample_unit","count","uint32",764,"diagnostic"},
+ {"unit_word181","sample_unit","count","uint32",768,"diagnostic"},
+ {"unit_word182","sample_unit","count","uint32",772,"diagnostic"},
+ {"unit_word183","sample_unit","count","uint32",776,"diagnostic"},
+ {"unit_word184","sample_unit","count","uint32",780,"diagnostic"},
+ {"unit_word185","sample_unit","count","uint32",784,"diagnostic"},
+ {"unit_word186","sample_unit","count","uint32",788,"diagnostic"},
+ {"unit_word187","sample_unit","count","uint32",792,"diagnostic"},
+ {"unit_word188","sample_unit","count","uint32",796,"diagnostic"},
+ {"unit_word189","sample_unit","count","uint32",800,"diagnostic"},
+ {"unit_word190","sample_unit","count","uint32",804,"diagnostic"},
+ {"unit_word191","sample_unit","count","uint32",808,"diagnostic"},
+ {"unit_word192","sample_unit","count","uint32",812,"diagnostic"},
+ {"unit_word193","sample_unit","count","uint32",816,"diagnostic"},
+ {"unit_word194","sample_unit","count","uint32",820,"diagnostic"},
+ {"unit_word195","sample_unit","count","uint32",824,"diagnostic"},
+ {"unit_word196","sample_unit","count","uint32",828,"diagnostic"},
+ {"unit_word197","sample_unit","count","uint32",832,"diagnostic"},
+ {"unit_word198","sample_unit","count","uint32",836,"diagnostic"},
+ {"unit_word199","sample_unit","count","uint32",840,"diagnostic"},
+ {"unit_word200","sample_unit","count","uint32",844,"diagnostic"},
+ {"unit_word201","sample_unit","count","uint32",848,"diagnostic"},
+ {"unit_word202","sample_unit","count","uint32",852,"diagnostic"},
+ {"unit_word203","sample_unit","count","uint32",856,"diagnostic"},
+ {"unit_word204","sample_unit","count","uint32",860,"diagnostic"},
+ {"unit_word205","sample_unit","count","uint32",864,"diagnostic"},
+ {"unit_word206","sample_unit","count","uint32",868,"diagnostic"},
+ {"unit_word207","sample_unit","count","uint32",872,"diagnostic"},
+ {"unit_word208","sample_unit","count","uint32",876,"diagnostic"},
+ {"unit_word209","sample_unit","count","uint32",880,"diagnostic"},
+ {"unit_word210","sample_unit","count","uint32",884,"diagnostic"},
+ {"unit_word211","sample_unit","count","uint32",888,"diagnostic"},
+ {"unit_word212","sample_unit","count","uint32",892,"diagnostic"},
+ {"unit_word213","sample_unit","count","uint32",896,"diagnostic"},
+ {"unit_word214","sample_unit","count","uint32",900,"diagnostic"},
+ {"unit_word215","sample_unit","count","uint32",904,"diagnostic"},
+ {"unit_word216","sample_unit","count","uint32",908,"diagnostic"},
+ {"unit_word217","sample_unit","count","uint32",912,"diagnostic"},
+ {"unit_word218","sample_unit","count","uint32",916,"diagnostic"},
+ {"unit_word219","sample_unit","count","uint32",920,"diagnostic"},
+ {"unit_word220","sample_unit","count","uint32",924,"diagnostic"},
+ {"unit_word221","sample_unit","count","uint32",928,"diagnostic"},
+ {"unit_word222","sample_unit","count","uint32",932,"diagnostic"},
+ {"unit_word223","sample_unit","count","uint32",936,"diagnostic"},
+ {"unit_word224","sample_unit","count","uint32",940,"diagnostic"},
+ {"unit_word225","sample_unit","count","uint32",944,"diagnostic"},
+ {"unit_word226","sample_unit","count","uint32",948,"diagnostic"},
+ {"unit_word227","sample_unit","count","uint32",952,"diagnostic"},
+ {"unit_word228","sample_unit","count","uint32",956,"diagnostic"},
+ {"unit_word229","sample_unit","count","uint32",960,"diagnostic"},
+ {"unit_word230","sample_unit","count","uint32",964,"diagnostic"},
+ {"unit_word231","sample_unit","count","uint32",968,"diagnostic"},
+ {"unit_word232","sample_unit","count","uint32",972,"diagnostic"},
+ {"unit_word233","sample_unit","count","uint32",976,"diagnostic"},
+ {"unit_word234","sample_unit","count","uint32",980,"diagnostic"},
+ {"unit_word235","sample_unit","count","uint32",984,"diagnostic"},
+ {"unit_word236","sample_unit","count","uint32",988,"diagnostic"},
+ {"unit_word237","sample_unit","count","uint32",992,"diagnostic"},
+ {"unit_word238","sample_unit","count","uint32",996,"diagnostic"},
+ {"unit_word239","sample_unit","count","uint32",1000,"diagnostic"},
+ {"unit_word240","sample_unit","count","uint32",1004,"diagnostic"},
+ {"unit_word241","sample_unit","count","uint32",1008,"diagnostic"},
+ {"unit_word242","sample_unit","count","uint32",1012,"diagnostic"},
+ {"unit_word243","sample_unit","count","uint32",1016,"diagnostic"},
+ {"unit_word244","sample_unit","count","uint32",1020,"diagnostic"},
+ {"unit_word245","sample_unit","count","uint32",1024,"diagnostic"},
+#endif
+
 };
 const BdqV2CatalogChannel packetChannels[]={
  {"sequence","packet_observation","count","uint32",0,"diagnostic"},
@@ -207,7 +404,7 @@ const BdqV2CatalogChannel evidenceChannels[]={
 bool RemoteImuStream::configure(const RemoteImuBinding& b,uint16_t sample,uint16_t companion) {
   release(); if(!b.boot || b.node>3 || !sample || !companion || sample==companion) return false;
   if(b.sampleUnits && !b.compactPackets) return false;
-  if(!(b.compactPackets?packets_.allocate(b.sampleUnits?260:100,b.sampleUnits?256:2048):samples_.allocate(8192)) ||
+  if(!(b.compactPackets?packets_.allocate(b.sampleUnits?BODAQS_SAMPLE_RECORD_BYTES:100,b.sampleUnits?BODAQS_SAMPLE_QUEUE_CAPACITY:2048):samples_.allocate(8192)) ||
      !evidence_.allocate(224,512)) {release();return false;}
   provenance_=static_cast<char*>(DynamicSpscQueueDetail::allocateBytes(3072));
   models_=static_cast<Model*>(DynamicSpscQueueDetail::allocateBytes(32*sizeof(Model)));
@@ -263,8 +460,8 @@ bool RemoteImuStream::configure(const RemoteImuBinding& b,uint16_t sample,uint16
   if(provenanceLength<0 || size_t(provenanceLength)>=3072) {release();return false;}
   return true;
 }
-size_t RemoteImuStream::allocatedBufferBytes(bool compactPackets) {
- return (compactPackets?2048*100:8192*sizeof(Sample))+512*224+3072+32*sizeof(Model)+32*sizeof(Anchor);
+size_t RemoteImuStream::allocatedBufferBytes(bool compactPackets,bool sampleUnits) {
+ return (compactPackets?(sampleUnits?BODAQS_SAMPLE_QUEUE_CAPACITY*BODAQS_SAMPLE_RECORD_BYTES:2048*100):8192*sizeof(Sample))+512*224+3072+32*sizeof(Model)+32*sizeof(Anchor);
 }
 void RemoteImuStream::release() {
   samples_.release();packets_.release();evidence_.release();sampleId_=evidenceId_=0;
@@ -287,7 +484,7 @@ void RemoteImuStream::release() {
 BdqV2StreamSource RemoteImuStream::sampleSource() {
   BdqV2StreamSource s;s.streamId=sampleId_;s.recordSizeBytes=28;s.nativeTickModulus=uint64_t{1}<<32;
   if(binding_.compactPackets) s.recordSizeBytes=100;
-  if(binding_.sampleUnits) s.recordSizeBytes=260;
+  if(binding_.sampleUnits) s.recordSizeBytes=BODAQS_SAMPLE_RECORD_BYTES;
   s.context=this;s.pendingRecords=pendingSamples;s.pendingObservations=noObservations;s.popRecord=popSample;s.popObservation=noObservation;return s;
 }
 BdqV2StreamSource RemoteImuStream::evidenceSource() {
@@ -336,7 +533,7 @@ BdqV2StreamDescriptor RemoteImuStream::descriptor(bool ev) {
   d.channels=ev?evidenceChannels:sampleChannels;d.channelCount=ev?sizeof evidenceChannels/sizeof *evidenceChannels:sizeof sampleChannels/sizeof *sampleChannels;
   if(!ev && binding_.compactPackets) {d.channels=packetChannels;d.channelCount=sizeof packetChannels/sizeof *packetChannels;}
   if(!ev && binding_.sampleUnits) {
-    std::snprintf(d.payloadSchema,sizeof d.payloadSchema,"bodaqs.can_imu_units.v1");
+    std::snprintf(d.payloadSchema,sizeof d.payloadSchema,BODAQS_SPI_BULK_BYTES?"bodaqs.can_imu_units.v2":"bodaqs.can_imu_units.v1");
     d.channels=unitChannels;d.channelCount=sizeof unitChannels/sizeof *unitChannels;
   }
   d.statusFlags=flags;d.statusFlagCount=sizeof flags/sizeof *flags;d.acquisitionDetailsJson=provenance_;return d;
@@ -477,7 +674,7 @@ RemoteImuStream::Acceptance RemoteImuStream::acceptSampleUnit(uint64_t context,u
   if(!failed_ && !haveBoundary_) return Blocked; // essential START progresses independently
 #endif
   if(!binding_.sampleUnits || failed_ || !p || context!=binding_.context || !object ||
-     !haveBoundary_ || total<84 || total>212 || (total-20)%64 || u16(p)!=2 ||
+     !haveBoundary_ || total<84 || total>(BODAQS_SPI_BULK_BYTES?BODAQS_SAMPLE_UNIT_MAX:212U) || (total-20)%64 || u16(p)!=2 ||
      p[2]!=1 || p[3]!=binding_.node || u32(p+4)!=binding_.boot ||
      u16(p+12)!=(total-20)/64 || u16(p+14)) return Invalid;
   const uint32_t checksum=u32(p+total-4);
@@ -491,7 +688,7 @@ RemoteImuStream::Acceptance RemoteImuStream::acceptSampleUnit(uint64_t context,u
     readings+=count;
   }
   if(nextPacket_==UINT32_MAX) return Invalid;
-  uint8_t record[260]={};put(record,nextPacket_);put(record+4,logger);
+  uint8_t record[BODAQS_SAMPLE_RECORD_BYTES]={};put(record,nextPacket_);put(record+4,logger);
   BdqV2Format::putU16(record+8,BdqV2Format::TimingDegraded);
   put(record+12,segment_);put(record+16,sequenceFloor_);
 #if BODAQS_MEASUREMENT_VERSION >= 4

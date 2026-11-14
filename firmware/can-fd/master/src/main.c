@@ -133,7 +133,7 @@ typedef struct {
      * Batch histogram index is the record count (1..13; index 0 is unused). */
     uint32_t data_objects[2], data_records[2], data_unique_fragments[2], data_repeat_fragments[2];
     uint32_t data_acked_objects[2], data_acked_records[2], data_head_polls[2], data_empty_polls[2];
-    uint32_t data_batch_records[2][14];
+    uint32_t data_batch_records[2][BODAQS_SAMPLE_PAYLOADS>13?BODAQS_SAMPLE_PAYLOADS+1:14];
     /* Main-owned bookkeeping, reset with the START scope. */
     uint32_t data_last_object[2][4], data_fragment_mask[2][4];
 #if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
@@ -163,7 +163,13 @@ typedef struct {
     uint32_t layout_flags, size_bytes; /* bit0 phase timing, bit1 queue timing */
 #endif
 } MasterDrainInfo;
-volatile MasterDrainInfo gMasterDrainInfo;
+/* Bulk needs additional main/IRQ stack margin. Diagnostic storage is main-owned
+ * and, like the expanded transport buffers, requires only awake BANK1 retention. */
+volatile MasterDrainInfo gMasterDrainInfo
+#if BODAQS_SPI_BULK_BYTES
+    __attribute__((section(".bodaqs_spi_buffers"),aligned(8)))
+#endif
+    ;
 /* End drain diagnostic state. */
 
 /* Snapshot at most the configured hardware FIFO depth per interrupt. */
@@ -1221,7 +1227,7 @@ static void drain_transfer(const uint8_t *request,size_t length,const uint8_t *r
         *seen=object;
         const uint16_t records=(uint16_t)bodaqs_measurement_get(reply+32,2);
         ++gMasterDrainInfo.data_objects[0];gMasterDrainInfo.data_records[0]+=records;
-        if(records>=1 && records<=13) ++gMasterDrainInfo.data_batch_records[0][records];
+        if(records>=1 && records<sizeof(gMasterDrainInfo.data_batch_records[0])/sizeof(uint32_t)) ++gMasterDrainInfo.data_batch_records[0][records];
         ++gMasterDrainInfo.data_unique_fragments[0];
         if(object>gMasterDrainInfo.data_last_object[0][node]) gMasterDrainInfo.data_last_object[0][node]=object;
         return;

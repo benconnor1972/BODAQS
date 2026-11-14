@@ -53,6 +53,21 @@ endif
 NAME := bodaqs_can_master
 SPI_SAMPLE_UNITS ?= 0
 SPI_SAMPLE_WINDOW ?= 0
+SPI_BULK_BYTES ?= 0
+ifneq ($(SPI_BULK_BYTES),0)
+ifeq ($(filter $(SPI_BULK_BYTES),512 1024),)
+$(error SPI_BULK_BYTES must be 0, 512 or 1024)
+endif
+ifeq ($(SPI_BULK_BYTES),1024)
+$(error 1024-byte geometry is host-screen only; use the selected 512-byte target profile)
+endif
+ifneq ($(SPI_SAMPLE_WINDOW),1)
+$(error SPI_BULK_BYTES requires SPI_SAMPLE_WINDOW=1)
+endif
+endif
+ifeq ($(SPI_BULK_BYTES),512)
+MASTER_STACK_BYTES := 5120
+endif
 ifneq ($(SPI_SAMPLE_WINDOW),0)
 ifneq ($(SPI_SAMPLE_WINDOW),1)
 $(error SPI_SAMPLE_WINDOW must be 0 or 1)
@@ -191,6 +206,7 @@ CFLAGS := -I../include \
     -DBODAQS_SPI_MEASUREMENT_V2=$(MEASUREMENT_DEFINE) \
     -DBODAQS_SPI_MEASUREMENT_V3=$(SPI_SAMPLE_UNITS) \
     -DBODAQS_SPI_MEASUREMENT_V4=$(SPI_SAMPLE_WINDOW) \
+    -DBODAQS_SPI_BULK_BYTES=$(SPI_BULK_BYTES) \
     -DBODAQS_MASTER_PHASE_TIMING=$(SPI_PHASE_TIMING) \
     -DBODAQS_MASTER_QUEUE_TIMING=$(SPI_QUEUE_TIMING) \
     -DBODAQS_MASTER_BLOCK_CRC=$(MASTER_BLOCK_CRC) \

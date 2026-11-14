@@ -21,7 +21,7 @@ def assess_multi_imu_recording(path: str | Path, expected_nodes) -> dict:
     info = read_bdq(path)
     descriptors = info.stream_catalog.get("streams", [])
     samples = [d for d in descriptors if d.get("acquisition", {}).get("payload_schema")
-               in (SCHEMA, "bodaqs.can_imu_units.v1")]
+               in (SCHEMA, "bodaqs.can_imu_units.v1", "bodaqs.can_imu_units.v2")]
     issues, reports = [], []
     addresses = [d["acquisition"].get("node_address") for d in samples]
     if sorted(addresses, key=str) != sorted(nodes, key=str):

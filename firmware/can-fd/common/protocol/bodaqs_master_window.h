@@ -57,7 +57,7 @@ static void window_advance(BodaqsMasterService *s,uint8_t node,uint32_t now) {
             bodaqs_measurement_put(u->bytes+4,r->boot,4);
             bodaqs_measurement_put(u->bytes+8,r->ordinal_high,4);
         }
-        while(q->count && u->count<3) {
+        while(q->count && u->count<BODAQS_SAMPLE_PAYLOADS) {
             const BodaqsRetainedReception *r=&q->records[q->head];
             if(bodaqs_measurement_get(u->bytes+4,4)!=r->boot ||
                bodaqs_measurement_get(u->bytes+8,4)!=r->ordinal_high ||
@@ -65,7 +65,7 @@ static void window_advance(BodaqsMasterService *s,uint8_t node,uint32_t now) {
             memcpy(u->bytes+16+64*u->count,r->bytes+12,64);++u->count;
             q->head=(uint16_t)((q->head+1)%BODAQS_MASTER_RETENTION_CAPACITY);--q->count;
         }
-        if(u->count && (u->count==3 || q->count || (uint32_t)(now-u->started_ms)>=20)) {
+        if(u->count && (u->count==BODAQS_SAMPLE_PAYLOADS || q->count || (uint32_t)(now-u->started_ms)>=20)) {
             bodaqs_measurement_put(u->bytes+12,u->count,2);++b->next_id[0];
             (void)bodaqs_fragment_seal(&u->object,u->bytes,sizeof(u->bytes),s->transfer_context,
                 b->next_id[0],node,1,1,(uint16_t)(16+64*u->count));

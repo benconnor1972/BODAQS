@@ -756,8 +756,11 @@ bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
   if (!measurementAccess_()) return false;
   if (!s_started || !s_profile.supported || s_profile.cs_pin < 0 ||
       s_profile.spi_bus_index != 0 || s_diagnostics.mode == CanMasterMode::Off) return false;
-  uint8_t tx[BODAQS_MEASUREMENT_BYTES], rx[BODAQS_MEASUREMENT_BYTES];
-  if (!bodaqs_measurement_encode(&request, tx, sizeof tx)) return false;
+  // Only the measurement owner may enter; storage never aliases DMA or an inbox.
+  // Persistent buffers avoid adding two bulk frames to the 4 KiB task stack.
+  static uint8_t tx[BODAQS_MEASUREMENT_BYTES], rx[BODAQS_MEASUREMENT_BYTES];
+  memset(tx,0,sizeof tx);
+  if (!bodaqs_measurement_encode_request(&request, tx, sizeof tx)) return false;
   const SPISettings settings(BODAQS_MEASUREMENT_HZ, MSBFIRST, spiDataMode_(s_profile.spi_mode));
   const uint32_t started=micros();
   auto& timing=s_diagnostics.measurementTiming;
@@ -860,7 +863,7 @@ void releaseMeasurementObject(MeasurementInbox& inbox) {
 #if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
     if(!inbox.admitted) ImuFlowDiagnostics::admitted(inbox.state.cls);
 #endif
-    inbox.admitted=true;inbox.ackPending=true;bodaqs_fragment_ack(&inbox.state,1,&inbox.pendingAck);
+    inbox.admitted=true;inbox.ackPending=true;rememberMeasurementAcknowledgement(inbox);
   }
 }
 
@@ -1211,7 +1214,7 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
           // preserve this immutable outgoing request and its original deadline.
           auto& retained=transport.inboxes[response.body[0]-1][response.node];
           if(retained.admitted && retained.state.complete && retained.state.context==transport.context) {
-            bodaqs_fragment_ack(&retained.state,1,&retained.pendingAck);
+            rememberMeasurementAcknowledgement(retained);
             retained.ackPending=true;
           }
         } else {failed.state.complete=0;failed.error=response.body[1];}

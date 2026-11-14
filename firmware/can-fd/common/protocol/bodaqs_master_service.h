@@ -50,7 +50,7 @@ typedef struct {
 #define BODAQS_ESSENTIAL_RESERVE 4U
 typedef struct {
     BodaqsFragmentState object, acknowledged;
-    uint8_t bytes[216];
+    uint8_t bytes[BODAQS_MEASUREMENT_BODY_BYTES];
     uint32_t started_ms, first_emit_ms;
     uint16_t count;
     uint8_t attempts;

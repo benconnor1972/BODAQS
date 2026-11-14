@@ -444,7 +444,7 @@ bool configure(const LoggerConfig& cfg) {
    discardAllocated();report.reason=ImuAdmission::Reason::Allocation;return true;
   }
  }
- report.loggerBytes=sizeof(peers)+demand.nodes*RemoteImuStream::allocatedBufferBytes(ImuAdmission::singleNodeSmokeBuild())+
+ report.loggerBytes=sizeof(peers)+demand.nodes*RemoteImuStream::allocatedBufferBytes(ImuAdmission::singleNodeSmokeBuild(),ImuAdmission::sampleUnitBenchBuild())+
     AcquisitionControl::reservedBytes()+sizeof(CanMasterManager::Diagnostics);
  selected=mask;for(auto& progress:sharedProgress) progress={};
  return true;

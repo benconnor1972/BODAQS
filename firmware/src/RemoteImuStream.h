@@ -24,7 +24,7 @@ public:
   enum Acceptance { Invalid=-1, Blocked=0, Accepted=1 };
   bool configure(const RemoteImuBinding&,uint16_t sampleId,uint16_t evidenceId);
   Acceptance acceptSampleUnit(uint64_t context,uint32_t object,const uint8_t*,uint16_t total,uint32_t loggerTick);
-  static size_t allocatedBufferBytes(bool compactPackets=false);
+  static size_t allocatedBufferBytes(bool compactPackets=false,bool sampleUnits=false);
   void release(); // only after both producer and storage owner stop
   Acceptance accept(uint16_t identifier,const uint8_t*,size_t length,
                     uint32_t masterTick,uint64_t masterOrder,uint32_t loggerTick,uint8_t receptionFlags=0);
