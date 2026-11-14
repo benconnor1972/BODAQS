@@ -18,11 +18,14 @@ parser.add_argument("--rx-capacity", type=int, choices=(2,4))
 parser.add_argument("--boundary-trace",action="store_true")
 parser.add_argument("--block-crc",action="store_true")
 parser.add_argument("--can-first",action="store_true")
+parser.add_argument("--bulk",action="store_true",help="Selected512 physical extent with compact128 commands")
 args = parser.parse_args()
+if args.bulk:
+    args.v2=True
 if args.rx_capacity:
     assert args.v2
 source = (ROOT / "firmware/can-fd/master/src/main.c").read_text()
-assert "volatile MasterDrainInfo gMasterDrainInfo;" in source, "missing START-scoped drain diagnostics"
+assert "volatile MasterDrainInfo gMasterDrainInfo" in source, "missing START-scoped drain diagnostics"
 def function(name, text=source):
     import re
     match = re.search(r"^(?:static )?[\w *]+\b" + name + r"\([^;{}]*\)\s*\{", text, re.MULTILINE)
@@ -42,6 +45,9 @@ if args.phase_timing:
     assert args.v2
     functions += "\n" + function("bodaqs_master_profile_clock")
     functions += "\n" + function("bodaqs_master_profile_record")
+if args.bulk:
+    window=(ROOT/'firmware/can-fd/common/protocol/bodaqs_master_window.h').read_text()
+    functions=function('window_clear_node',window)+'\n'+functions
 if args.queue_timing:
     assert args.v2 and args.phase_timing
     functions += "\n" + function("drain_queue_sample")
@@ -78,7 +84,7 @@ fixture=fixture.replace("/* SPI_ADAPTER_STORAGE */",owned)
 if args.v2:
     assert "/* SPI adapter ownership storage. */" in source, "v2 DMA storage must match production"
     fixture=fixture[:fixture.index("int main(void) {")]+Path(__file__).with_name("adapter_v2_cases.c").read_text()
-    fixture=fixture.replace("/* RX_RETRY_CASES */",Path(__file__).with_name("adapter_v2_retry_cases.c").read_text())
+    fixture=fixture.replace("/* RX_RETRY_CASES */",'' if args.bulk else Path(__file__).with_name("adapter_v2_retry_cases.c").read_text())
 if args.queue_timing:
     fixture=fixture.replace("/* QUEUE_TIMING_CASES */",Path(__file__).with_name("adapter_queue_cases.c").read_text())
 if args.v2:
@@ -92,6 +98,20 @@ if args.boundary_trace:
     pos=fixture.rfind("\n}")
     assert pos>0
     fixture=fixture[:pos]+Path(__file__).with_name("adapter_trace_cases.c").read_text()+fixture[pos:]
+if args.bulk:
+    assert not args.boundary_trace and not args.queue_timing
+    # Keep the production CS, DMA, copy and publication code untouched. Only
+    # parameterize the existing physical input/output vectors and command oracle.
+    fixture=fixture.replace('256','BODAQS_MEASUREMENT_BYTES').replace('[255]','[BODAQS_MEASUREMENT_BYTES-1]')
+    # Window profiles classify all evidence as essential, unlike v2.
+    fixture=fixture.replace('assert(!gRejectedCan[0].essential);','assert(gRejectedCan[0].essential);')
+    fixture=fixture.replace('{84,BODAQS_MEASUREMENT_BYTES,255,BODAQS_MEASUREMENT_BYTES}',
+        '{84,BODAQS_MEASUREMENT_BYTES,BODAQS_MEASUREMENT_BYTES-1,BODAQS_MEASUREMENT_BYTES}')
+    for command in ('idle','order_idle'):
+        fixture=fixture.replace('bodaqs_measurement_encode(&'+command+',','bodaqs_measurement_encode_request(&'+command+',')
+    fixture=fixture.replace('/* PRODUCTION_FUNCTIONS */','static uint32_t gDrainSampleSeen[4][4];\nstatic BodaqsMasterWindowStorage gWindow;\n/* PRODUCTION_FUNCTIONS */')
+    fixture=fixture.replace('remaining=0;retire_spi_boundary();gSpiTransmitReady=false;\n    service_spi_receive();assert(gSpiTransmitReady',
+        'memset(gReceiveSlots[gReceiveIndex]+128,0xa7,BODAQS_MEASUREMENT_BYTES-128);\n    remaining=0;retire_spi_boundary();gSpiTransmitReady=false;\n    service_spi_receive();assert(gSpiTransmitReady',1)
 with tempfile.TemporaryDirectory() as temp:
     c = Path(temp) / "adapter.c"
     exe = Path(temp) / "adapter.exe"
@@ -99,6 +119,8 @@ with tempfile.TemporaryDirectory() as temp:
     flags=["-DBODAQS_SPI_MEASUREMENT_V2=1", "-Wno-unused-function", "-Wno-unused-variable"] if args.v2 else []
     if args.phase_timing:
         flags.append("-DBODAQS_MASTER_PHASE_TIMING=1")
+    if args.bulk:
+        flags += ['-DBODAQS_SPI_MEASUREMENT_V4=1','-DBODAQS_SPI_BULK_BYTES=512']
     if args.queue_timing:
         flags.append("-DBODAQS_MASTER_QUEUE_TIMING=1")
     if args.rx_capacity:

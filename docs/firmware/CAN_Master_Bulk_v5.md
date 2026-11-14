@@ -94,3 +94,44 @@ Preliminary target links fit both buffer layouts, but 1024 increases nested stac
 frames substantially; only 512 is enabled in the TI target build. The 1024 codec
 and recording geometry remain host-screen options, not an installable profile.
 The next physical test selects 512 with per-request decode/dispatch/encode timing.
+
+### ADC selection gate: average load and burst delay
+
+The equal four-channel examples put two channels on each ADC. At 200 Hz they
+require 800 completed conversions/s in total; at 500 Hz, 2000. Applying the
+earlier measured 159 us cumulative bus ownership/conversion gives 12.7% and
+31.8% ownership respectively. The earlier observed 2168-conversion/s loop costs
+34.5%, so use approximately 35% for the 500 Hz planning case.
+
+| Profile | Bulk raw wire + ADC ownership at 200 Hz | At observed 500 Hz loop | One bulk blocking interval including CS setup |
+|---|---:|---:|---:|
+|512|52.8%|74.6%|261 us + H|
+|1024|90.0%|111.8%|517 us + H|
+
+`H` is unmeasured master transaction prepare/finish overhead while holding SPI;
+the percentages omit that overhead. Both are lower estimates, not schedulability
+proofs. The 1024 option already exceeds the bus budget at the observed 500 Hz
+ADC loop, whereas 512 leaves room to investigate. Poll counts will change on
+real hardware, so the screen does not promise those utilization values.
+
+A pending ADC request can encounter a complete bulk transfer even with low
+average occupancy. In a conditional two-worker model where at most one other
+ADC ownership interval wins ahead of it, conservatively charging the other ADC
+an entire observed 159 us gives bus wait estimates **420 + H + J us** for 512
+and **676 + H + J us** for 1024. `J` represents task/wakeup/mutex scheduling
+delay. These are conditional envelopes, **not established hardware maxima**:
+the current evidence does not bound H, J or repeated arbitration losses.
+Consequently there is no verified maximum ADC bus wait or cached-sample age yet.
+
+For context, ignoring H/J and using the current selector's 1000 SPS (200 Hz
+case) or 2000 SPS (500 Hz case), two conversions/channel-cycle cost
+`2 * (conversion interval + 159 us + conditional bus wait)`. The corresponding
+completion-age envelopes are 3.158/2.158 ms for 512, or 3.670/2.670 ms for 1024,
+against row intervals 5/2 ms. These deliberately charge a blocking event on both
+conversions; they are illustrative worst-phase scheduling budgets, not measured
+sample ages or analog settling bounds. The 512 choice has plausible 200 Hz
+margin; **neither geometry establishes a fresh result for every 500 Hz row**.
+This agrees with prior ~484 fresh observations/s/channel rather than hiding
+reuse inside the 500-row/s figure. The focused physical mixed test must measure
+bus-wait maxima, completion age, freshness/reuse and achieved conversions before
+any mixed admission expansion. Existing ADC-off bench admission is unchanged.

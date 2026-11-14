@@ -27,6 +27,7 @@ def main():
     parser.add_argument("--cc",default="gcc")
     parser.add_argument("--boundary-trace",action="store_true")
     parser.add_argument("--disabled-init",action="store_true")
+    parser.add_argument("--bulk",action="store_true",help="Selected512 physical DMA/FIFO geometry")
     parser.add_argument("--without-init-gate",action="store_true",help="Negative control against actual initialization wrapper")
     parser.add_argument("--negative",choices=("missing-preload","duplicate-prefix","early-enable","missing-mode","enabled-mode"))
     args=parser.parse_args()
@@ -198,6 +199,9 @@ static uint32_t DL_DMA_getTransferSize(int d,int c) {(void)d;return remaining[c]
   assert(!memcmp(gMasterSpiTrace.tx_armed,gTransmitSlots[gTransmitIndex],256));
   assert(gMasterSpiTrace.armed.stat==registers.STAT && gMasterSpiTrace.armed.epoch==7);
 ''')
+        if args.bulk:
+            assert not args.boundary_trace
+            fixture=fixture.replace('256','512').replace('remaining[1]==255','remaining[1]==511')
         source.write_text(fixture.replace("// ACTUAL_ARM",arm),encoding="utf-8")
         variants=((1,0),) if args.boundary_trace or args.disabled_init else ((1,1),) if args.negative in ("missing-mode","enabled-mode") else ((1,0),) if args.negative else ((0,0),(1,0),(1,1))
         for priming,mode in variants:

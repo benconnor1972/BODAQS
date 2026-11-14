@@ -62,6 +62,14 @@ int main(int argc,char** argv) {
                 assert int.from_bytes(wire[-4:], 'little') == zlib.crc32(wire[:-4])
                 assert wire[-17] == size // 512
             print(f'bulk {size}: command128/full-response independent CRC, corruption, geometry and extent checks passed')
+            subprocess.run([args.compiler, '-std=c++17', '-Wall', '-Wextra', '-Werror',
+                '-DBODAQS_SPI_MEASUREMENT_V4=1', f'-DBODAQS_SPI_BULK_BYTES={size}',
+                '-I', str(common), '-I', str(common.parents[2]/'src'),
+                '-I', str(common.parents[2]/'test/stubs'),
+                str(common.parents[2]/'test/bulk_identity_fixture.cpp'),
+                *[str(common/name) for name in ('bodaqs_master_service.c','bodaqs_master_protocol.c',
+                    'bodaqs_control.c','bodaqs_control_exchange.c')], '-o', str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
 
 
 if __name__ == '__main__':
