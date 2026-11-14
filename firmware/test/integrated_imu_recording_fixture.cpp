@@ -236,6 +236,7 @@ static void feedWire(const char* path,unsigned pacing=40,uint8_t liveMask=0x0f) 
      // exist. Fresh same-boot status must resume their immutable identities.
      loseMeasurementReplies=true;step(40);loseMeasurementReplies=false;
    }
+   // WINDOW_SAMPLE_SERVICE
    step(pacing);
    for(uint8_t n=0;n<fixtureSensorCount;++n) if(liveMask&(1u<<n)) {
      RemoteImuRecording::Failure failure;

@@ -198,15 +198,16 @@ namespace SharedSpiBus {''',1)
             support=support.replace('feedWire(argv[1],0);','feedWire(argv[1],1);')
             support=support.replace('step(4200);assert(renewalSequence[0]>=before+3',
                 'step(200);assert(windowBackpressureAds>0);assert(renewalSequence[0]>=before+1')
-            support=support.replace('step(pacing);\n   assert(!RemoteImuRecording::failed());', '''
-   if(id==0x100 && frameNumber<=6) {
+            service_marker='   // WINDOW_SAMPLE_SERVICE\n   step(pacing);'
+            assert support.count(service_marker)==1, 'Window fault injection service seam missing'
+            support=support.replace(service_marker, '''
+   if(liveMask==0x0f && id==0x100 && frameNumber<=6) {
      // Six arrivals before service create at least two immutable units.
      if(frameNumber==6) {
        step(8);assert(windowSuccessorSeen && windowDataSuppressed);
        holdWindowUnit=false;
      }
-   } else step(pacing);
-   assert(!RemoteImuRecording::failed());''')
+   } else step(pacing);''')
             # frameNumber includes early evidence, so use a separate sample count.
             support=support.replace('unsigned id,length,frameNumber=0;', 'unsigned id,length,frameNumber=0,windowSamples=0;')
             support=support.replace('id==0x100 && frameNumber<=6', 'id==0x100 && ++windowSamples<=6')

@@ -2,6 +2,11 @@
 // are injected, while coordinator/control/custody/storage code remains real.
 if(scenario=="shared-startup-failure" || scenario=="shared-runtime-failure") {
   assert(fixtureSensorCount==4);
+#if BODAQS_MEASUREMENT_VERSION >= 4
+  // These cases isolate participant failure; the ordinary scenarios exercise
+  // selective window loss with all sources present.
+  holdWindowUnit=false;dropWindowProof=false;
+#endif
   const bool startup=scenario=="shared-startup-failure";
   fixtureRejectPrepareMask=startup?6:0; // Same two CLOCK_UNTRUSTED refusals seen in r11.
   assert(LoggingManager::requestStart()==LoggingManager::StartResult::Pending);
