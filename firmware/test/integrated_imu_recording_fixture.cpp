@@ -208,13 +208,14 @@ static void awaitRunning() {
  assert(s_running && !s_starting && localStarts==expectedStarts && worker.recording() && !RemoteImuRecording::failed());
  for(unsigned n=0;n<fixtureSensorCount;++n) assert(acquisitions[n].phase==3 && acquisitions[n].lease_valid);
 }
-static void feedWire(const char* path,unsigned pacing=40) {
+static void feedWire(const char* path,unsigned pacing=40,uint8_t liveMask=0x0f) {
  std::ifstream input(path);assert(input);unsigned id,length,frameNumber=0;std::string hex;
  while(input>>id>>length>>hex) {
    assert(length<=64 && hex.size()==length*2);uint8_t payload[64]={};
    for(unsigned i=0;i<length;++i) payload[i]=std::stoul(hex.substr(i*2,2),nullptr,16);
    if(pacing<40 && id!=0x100) step(80); // preserve essential definitions under deliberate overload
    for(uint8_t n=0;n<fixtureSensorCount;++n) {
+     if(!(liveMask&(1u<<n))) continue;
      uint8_t nodePayload[64];std::memcpy(nodePayload,payload,sizeof payload);
      // Distinct source axes make accidental source substitution observable.
      if(ImuAdmission::sampleUnitBenchBuild() && n>0 && id==0x100) {
@@ -236,7 +237,10 @@ static void feedWire(const char* path,unsigned pacing=40) {
      loseMeasurementReplies=true;step(40);loseMeasurementReplies=false;
    }
    step(pacing);
-   assert(!RemoteImuRecording::failed());
+   for(uint8_t n=0;n<fixtureSensorCount;++n) if(liveMask&(1u<<n)) {
+     RemoteImuRecording::Failure failure;
+     assert(!RemoteImuRecording::failure(n,failure));
+   }
  }
  step(100);
 }
@@ -287,6 +291,7 @@ int main(int argc,char** argv) {
    assert(!localStarts && localStops==1 && storage.healthChecks==1);
    assert(std::fclose(inputLedger)==0);assert(std::fclose(controlLedger)==0);puts("Integrated operator cancellation, storage ownership and lease cleanup: PASS");return 0;
  }
+ // SHARED_METADATA_RETIREMENT_CASES
  awaitRunning();if(ImuAdmission::singleNodeSmokeBuild()) step(4200);localRow();
  std::thread writing;
  if(scenario=="stall") {

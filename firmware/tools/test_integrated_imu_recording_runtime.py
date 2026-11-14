@@ -74,6 +74,7 @@ def main():
     parser.add_argument("--flow-diagnostics", action="store_true")
     parser.add_argument("--pressure-diagnostics", action="store_true")
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--only-scenario",choices=('shared-startup-failure','shared-runtime-failure'))
     args = parser.parse_args()
     if args.bulk_bytes:
         args.four_node=True
@@ -105,6 +106,12 @@ def main():
         if args.two_node: producer_env['BODAQS_NODE_FIXTURE_PARTIAL_STOP']='1'
         subprocess.run([str(producer), *([] if args.first_recording else ["6"])], env=producer_env, check=True)
         source = fixture_source(firmware)
+        source=source.replace('static bool lifecycleEnabled=false;', 'static unsigned fixtureRejectPrepareMask=0;\nstatic bool lifecycleEnabled=false;')
+        source=source.replace('event->generation=generation;event->register_proof_current=true;', '''
+ if((fixtureRejectPrepareMask&(1u<<n)) && pending==BODAQS_ACQ_PREPARE) {
+   event->generation=generation;event->kind=BODAQS_ACQ_FAILED;event->reason=35;pendingCommand[n]=0;return;
+ }
+ event->generation=generation;event->register_proof_current=true;''')
         source = source.replace('namespace LoggingManager { bool isRunning() { return recording; } bool configurationLocked() { return recording || starting; } }', '#include "LoggingManager.h"')
         # Lose one *accepted-object* RAM ACK at the SPI boundary. The master
         # retains the immutable head and the production transport must dedupe it.
@@ -158,12 +165,15 @@ namespace SharedSpiBus {''',1)
    }
  }''',1)
         support = (firmware / "test/integrated_imu_recording_fixture.cpp").read_text(encoding="utf-8")
+        support=support.replace('// SHARED_METADATA_RETIREMENT_CASES',
+            (firmware/'test/shared_metadata_retirement_cases.cpp').read_text(encoding='utf-8'))
         if args.pressure_diagnostics:
             # Real coordinator/retirement barrier and production footer adapter.
             # Only filesystem I/O is simulated; the separate sink test checks
             # the target adapter's physical operation timestamps.
             storage_source=(firmware / 'src/StorageManager.cpp').read_text(encoding='utf-8')
             adapter=definition(storage_source,'static void appendRecordingPressure_(')
+            adapter+='\n'+definition(storage_source,'static void appendSharedMetadataRetirements_(')
             support=support.replace('struct FileStorage final:', '#include <ArduinoJson.h>\n'+adapter+'\nstruct FileStorage final:')
             support=support.replace('gate(1);file=std::fopen', 'RecordingPressureDiagnostics::resetStorage();gate(1);file=std::fopen')
             support=support.replace('return std::fwrite(p,1,n,file)==n;', '''
@@ -174,6 +184,7 @@ namespace SharedSpiBus {''',1)
                 'JsonDocument summaryDocument;appendRecordingPressure_(summaryDocument);\n'
                 '   std::string summary;serializeJson(summaryDocument,summary);')
             support=support.replace('writer.end(summary,sizeof summary-1)', 'writer.end(summary.c_str(),summary.size())')
+            support=support.replace('appendRecordingPressure_(summaryDocument);','appendRecordingPressure_(summaryDocument);appendSharedMetadataRetirements_(summaryDocument);')
         logging = (firmware / "src/LoggingManager.cpp").read_text(encoding="utf-8")
         functions = ("bool LoggingManager::isStarting(", "void LoggingManager::cancelStart(",
                      "bool LoggingManager::configurationLocked(", "LoggingManager::StartResult LoggingManager::requestStart(",
@@ -237,9 +248,40 @@ namespace SharedSpiBus {''',1)
         if args.window:
             scenarios+=("lag",)
         if args.four_node:
-            scenarios+=("allocation",)
+            scenarios+=("allocation","shared-startup-failure","shared-runtime-failure")
+        if args.only_scenario:
+            scenarios=(args.only_scenario,)
         for scenario in scenarios:
             subprocess.run([str(exe), str(saturated if scenario == "stall" else wire), str(output / f"{scenario}.bdq"), scenario], check=True, timeout=120)
+        if args.four_node:
+            import sys
+            sys.path.insert(0,str(firmware.parent/'analysis'))
+            from bodaqs_analysis.io_bdq import read_bdq,iter_bdq_stream_records
+            for scenario in scenarios:
+                if not scenario.startswith('shared-'): continue
+                result=output/(scenario+'.bdq')
+                info=read_bdq(result);assert not info.detected_errors
+                failed=(1,2) if scenario=='shared-startup-failure' else (0,)
+                for n in range(4):
+                    rows=list(iter_bdq_stream_records(result,f'can{n}_timing'))
+                    for sequence in (7001,7002):
+                        shared=[r for r in rows if r['sync_sequence']==sequence and r['kind']==4]
+                        assert len(shared)==(0 if n in failed else 1),(scenario,n,sequence,len(shared))
+                    if scenario=='shared-runtime-failure':
+                        assert len([r for r in rows if r['sync_sequence']==7000 and r['kind']==4])==1
+                    if n not in failed:
+                        bridges=[r['bridge_token'] for r in rows if r['kind']==5]
+                        assert bridges and len(bridges)==len(set(bridges)),(scenario,n,bridges)
+                    samples=list(iter_bdq_stream_records(result,f'can{n}_imu6'))
+                    assert bool(samples)==(n not in failed),(scenario,n,len(samples))
+                if args.pressure_diagnostics:
+                    counts=info.final_summary['remote_shared_metadata_retirements']
+                    assert {r['node']:r['sync_objects'] for r in counts}=={n:2 if n in failed else 0 for n in range(4)},counts
+                    assert info.final_summary['remote_shared_metadata_retirements_status']=='complete'
+                    assert all(r['bridge_observations']>0 for r in counts if r['node'] in failed),counts
+                print(f'Independent BDQ {scenario}: live source data, once-only shared fan-out, explicit omissions: PASS')
+        if args.only_scenario:
+            return
         if args.pressure_diagnostics:
             from verify_integrated_imu_recording import read_bdq
             quiet=read_bdq(output/'good.bdq').final_summary['recording_pressure']

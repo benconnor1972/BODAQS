@@ -1805,6 +1805,18 @@ static void appendBdqV2MeasurementFailures_(JsonDocument& document) {
   }
 }
 
+static void appendSharedMetadataRetirements_(JsonDocument& document) {
+  JsonArray entries=document["remote_shared_metadata_retirements"].to<JsonArray>();
+  for(uint8_t node=0;node<4;++node) {
+    RemoteImuRecording::SharedMetadataRetirements counts;
+    if(!RemoteImuRecording::finalSharedMetadataRetirements(node,counts)) continue;
+    auto entry=entries.add<JsonObject>();entry["node"]=node;
+    entry["scope"]="omitted_fanout_after_local_admission_retirement";
+    entry["sync_objects"]=counts.syncObjects;entry["bridge_observations"]=counts.bridgeObservations;
+    entry["at_counter_limit"]=counts.syncObjects==UINT32_MAX || counts.bridgeObservations==UINT32_MAX;
+  }
+  document["remote_shared_metadata_retirements_status"]=entries.size()?"complete":"unavailable";
+}
 static void appendRecordingPressure_(JsonDocument& document) {
 #if defined(BODAQS_RECORDING_PRESSURE_DIAGNOSTICS) && BODAQS_RECORDING_PRESSURE_DIAGNOSTICS
   using namespace RecordingPressureDiagnostics;
@@ -1888,6 +1900,7 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
   document["remote_cleanup_complete"] = RemoteImuRecording::stopped();
   appendBdqV2MeasurementFailures_(document);
   appendRecordingPressure_(document);
+  appendSharedMetadataRetirements_(document);
   JsonArray nodeFlow=document["remote_node_flow"].to<JsonArray>();
   for(uint8_t node=0;node<4;++node) {
     ImuFlowDiagnostics::NodeStats stats;

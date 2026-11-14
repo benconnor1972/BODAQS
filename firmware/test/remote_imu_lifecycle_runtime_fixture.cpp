@@ -534,23 +534,37 @@ int main(int argc,char** argv) {
       assert(!RemoteImuRecording::finalNodeDiagnostics(n,unavailable));
     }
     if(remoteNodes>1) {
-      // Test interleaved fanout with one participant gate closed. The real
-      // shared queue sheds optional evidence on pressure; a closed gate blocks.
-      auto& gate=RemoteImuRecording::peers[remoteNodes-1].dataGate;gate.store(1);
+      // Model ownership interleavings at the existing coordinator seam. A live
+      // callback blocks; closing its gate must still wait for that callback.
+      auto& peer=RemoteImuRecording::peers[1];auto& gate=peer.dataGate;gate.store(2);
       uint8_t sync[28]={1,0,1};sync[4]=1;sync[8]=1;sync[12]=7;sync[20]=1;
       uint8_t bridge[32]={};bridge[0]=17;bridge[12]=2;
       assert(!RemoteImuRecording::consume(5,255,900001,sync,sizeof sync));
       assert(!RemoteImuRecording::consume(6,255,900002,bridge,sizeof bridge));
       const auto healthy=RemoteImuRecording::peers[0].stream.queueState().evidence;
+      const auto later=RemoteImuRecording::peers[remoteNodes-1].stream.queueState().evidence;
+      gate.store(3);
       for(unsigned retry=0;retry<3;++retry) {
         assert(!RemoteImuRecording::consume(5,255,900001,sync,sizeof sync));
         assert(!RemoteImuRecording::consume(6,255,900002,bridge,sizeof bridge));
         assert(RemoteImuRecording::peers[0].stream.queueState().evidence==healthy);
       }
-      gate.store(0);
+      gate.store(1); // Callback has retired; optional fan-out may now retire.
       assert(RemoteImuRecording::consume(5,255,900001,sync,sizeof sync));
       assert(RemoteImuRecording::consume(6,255,900002,bridge,sizeof bridge));
       assert(RemoteImuRecording::peers[0].stream.queueState().evidence==healthy);
+      assert(RemoteImuRecording::peers[remoteNodes-1].stream.queueState().evidence==later);
+      assert(peer.sharedRetirements[0].load()==1 && peer.sharedRetirements[1].load()==1);
+      assert(RemoteImuRecording::consume(5,255,900001,sync,sizeof sync));
+      assert(peer.sharedRetirements[0].load()==1);
+      // Every destination retired, and one counter at its numeric limit.
+      peer.sharedRetirements[0].store(UINT32_MAX);
+      for(unsigned n=0;n<remoteNodes;++n) RemoteImuRecording::peers[n].dataGate.store(1);
+      assert(RemoteImuRecording::consume(5,255,900003,sync,sizeof sync));
+      assert(RemoteImuRecording::consume(6,255,900004,bridge,sizeof bridge));
+      assert(peer.sharedRetirements[0].load()==UINT32_MAX && peer.sharedRetirements[1].load()==2);
+      // Restore only this synthetic interleaving fixture for its normal STOP.
+      for(unsigned n=0;n<remoteNodes;++n) RemoteImuRecording::peers[n].dataGate.store(0);
     }
     if(!std::strcmp(argv[1]+8,"fault")) {
       bodaqs_control_acquisition_exclude(&acquisitions[0],27);recordingSteps(1800);
@@ -568,6 +582,24 @@ int main(int argc,char** argv) {
     simulatedStorage.clear();RemoteImuRecording::release();CanMasterManager::endRecordingHandoff();
     ImuFlowDiagnostics::NodeStats unavailable;assert(!RemoteImuRecording::finalNodeDiagnostics(0,unavailable));
     assert(DynamicSpscQueueDetail::liveAllocations==0);
+    if(remoteNodes>1 && std::strcmp(argv[1]+8,"fault")) {
+      advance(12000);
+      for(unsigned wait=0;wait<300000;++wait) {
+        bool ready=true;for(unsigned n=0;n<remoteNodes;++n) ready&=CanMasterManager::configurationReconciled(n);
+        if(ready) break;
+        advance(1);
+      }
+      assert(RemoteImuRecording::configure(config) && RemoteImuRecording::configured());
+      for(unsigned n=0;n<remoteNodes;++n) {
+        assert(!RemoteImuRecording::peers[n].sharedRetirements[0].load());
+        assert(!RemoteImuRecording::peers[n].sharedRetirements[1].load());
+      }
+      for(const auto& progress:RemoteImuRecording::sharedProgress) assert(!progress.object && !progress.pending);
+      RemoteImuRecording::stop();
+      for(unsigned i=0;i<30000 && !RemoteImuRecording::stopped();++i) recordingSteps(1);
+      assert(RemoteImuRecording::stopped());RemoteImuRecording::release();
+      assert(DynamicSpscQueueDetail::liveAllocations==0);
+    }
     puts("compact multi-node isolation, exact RAM admissions and retired cleanup: PASS");return 0;
   }
 #endif

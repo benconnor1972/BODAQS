@@ -41,6 +41,7 @@ Failure firstFailure;
 // owner closes without waiting; storage finalization starts only after bit1
 // retires. Unaccepted tail objects remain retained until administrative fence.
 std::atomic<uint8_t> dataGate{1};
+std::atomic<uint32_t> sharedRetirements[2]{};
 uint32_t objectProgress[2]={};
 uint16_t recordProgress[2]={};
 bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint16_t total) {
@@ -142,6 +143,7 @@ bool configure(const SensorSpec& chosen,uint64_t sharedRecord,uint64_t sharedCon
   if(!stream.configure(b,uint16_t(34+2*node),uint16_t(35+2*node)) ) {stream.release();fault=true;return true;}
   fault=false;stopIntent=startIntent=false;cleanupQueued=false;phase=Allocated;began=millis();serial=0;
   firstFailure={};
+  for(auto& count:sharedRetirements) count.store(0,std::memory_order_relaxed);
   stopRequestedMs=stopConfirmedMs=0;stopConfirmed=false;completionFrozen=false;
   std::memset(objectProgress,0,sizeof objectProgress);std::memset(recordProgress,0,sizeof recordProgress);
   dataGate.store(0,std::memory_order_release);
@@ -337,14 +339,23 @@ bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint
  auto& progress=sharedProgress[cls-5];
  if(progress.object!=identity) {progress.object=identity;progress.pending=selected;}
  for(uint8_t n=0;n<4;++n) if(progress.pending&(1u<<n)) {
+  // A permanently closed, retired local file gate is not transient queue
+  // pressure. This retires only optional timing fan-out, never source custody.
+  if(peers[n].dataGate.load(std::memory_order_acquire)==1) {
+    // Single acquisition-owner writer; saturate rather than recycle counts.
+    auto& omitted=peers[n].sharedRetirements[cls-5];
+    const uint32_t count=omitted.load(std::memory_order_relaxed);
+    if(count!=UINT32_MAX) omitted.store(count+1,std::memory_order_relaxed);
+    progress.pending&=uint8_t(~(1u<<n));
+    continue;
+  }
   const bool accepted=peers[n].consume(cls,address,identity,p,total);
 #if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
   observeConsumer(cls,peers[n],accepted,p,total);
 #endif
-  if(!accepted) return false;
-  progress.pending&=uint8_t(~(1u<<n));
+  if(accepted) progress.pending&=uint8_t(~(1u<<n));
  }
- return true;
+ return !progress.pending;
 }
 void discardAllocated() {for(auto& peer:peers) {peer.stream.release();peer.phase=Idle;peer.fault=false;}selected=0;}
 }
@@ -494,6 +505,12 @@ bool finalNodeDiagnostics(uint8_t node,ImuFlowDiagnostics::NodeStats& out) {
 #else
  (void)node;(void)out;return false;
 #endif
+}
+bool finalSharedMetadataRetirements(uint8_t node,SharedMetadataRetirements& out) {
+ if(node>3 || !(selected&(1u<<node)) || !stopped() || AcquisitionControl::active()) return false;
+ out.syncObjects=peers[node].sharedRetirements[0].load(std::memory_order_acquire);
+ out.bridgeObservations=peers[node].sharedRetirements[1].load(std::memory_order_acquire);
+ return true;
 }
 const ImuFlowDiagnostics::Snapshot* finalFlowSnapshot(bool firstLoss) {
 #if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
