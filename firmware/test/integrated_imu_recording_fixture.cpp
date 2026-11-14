@@ -178,7 +178,7 @@ static void setup() {
  saved.type=SensorType::LSM6DSO32XImu;std::strcpy(saved.name,"remote_imu");
  assert(savedParams.set("provider","can:0"));assert(savedParams.set("endpoint","imu"));
  assert(savedParams.set("profile","imu6_3333_32g_2000dps_v1"));saved.params.bind(&savedParams);
- fixtureSensorCount=ImuAdmission::sampleUnitBenchBuild()?2:ImuAdmission::singleNodeSmokeBuild()?1:4;
+ fixtureSensorCount=ImuAdmission::fourNodeSampleUnitBenchBuild()?4:ImuAdmission::sampleUnitBenchBuild()?2:ImuAdmission::singleNodeSmokeBuild()?1:4;
  for(unsigned n=1;n<fixtureSensorCount;++n) {
    extra[n-1]=saved;extraParams[n-1]=savedParams;
    char provider[8];std::snprintf(provider,sizeof provider,"can:%u",n);
@@ -217,8 +217,10 @@ static void feedWire(const char* path,unsigned pacing=40) {
    for(uint8_t n=0;n<fixtureSensorCount;++n) {
      uint8_t nodePayload[64];std::memcpy(nodePayload,payload,sizeof payload);
      // Distinct source axes make accidental source substitution observable.
-     if(ImuAdmission::sampleUnitBenchBuild() && n==1 && id==0x100)
-       for(unsigned i=0;i<(payload[3]&7);++i) BdqV2Format::putU16(nodePayload+4+12*i,4660);
+     if(ImuAdmission::sampleUnitBenchBuild() && n>0 && id==0x100) {
+       const uint16_t sourceAx[]={0,4660,9029,13398};
+       for(unsigned i=0;i<(payload[3]&7);++i) BdqV2Format::putU16(nodePayload+4+12*i,sourceAx[n]);
+     }
      const bool accepted=bodaqs_master_service_receive_can(&master,n,id==0x100?1:2,id+(id==0x100?8*n:n),nodePayload,length,0,clockMs*1000,clockMs);
      if(id==0x100) {
        std::fprintf(inputLedger,"%u\t%u\t%u\t%u\t%u\n",n,unsigned(payload[2]),unsigned(BdqV2Format::getU16(payload)),unsigned(payload[3]&7),unsigned(accepted));
@@ -245,6 +247,19 @@ static void awaitFinalized(unsigned expectedFinalizations=1) {
 }
 int main(int argc,char** argv) {
  assert(argc==4);storage.path=argv[2];setup();const std::string scenario=argv[3];
+ if(scenario=="allocation") {
+   assert(ImuAdmission::fourNodeSampleUnitBenchBuild());
+   const auto before=DynamicSpscQueueDetail::liveAllocations;
+   DynamicSpscQueueDetail::allocationsBeforeFailure=15;
+   assert(RemoteImuRecording::configure(config));
+   assert(RemoteImuRecording::admission().reason==ImuAdmission::Reason::Allocation);
+   assert(!RemoteImuRecording::configured() && !AcquisitionControl::active());
+   assert(DynamicSpscQueueDetail::liveAllocations==before);
+   for(unsigned n=0;n<fixtureSensorCount;++n)
+     assert(!acquisitions[n].recording && !acquisitions[n].lease_valid);
+   DynamicSpscQueueDetail::allocationsBeforeFailure=-1;
+   puts("Four-source partial allocation failure: all buffers retired before remote authorization PASS");return 0;
+ }
  const std::string ledgerPath=std::string(argv[2])+".input.tsv";inputLedger=std::fopen(ledgerPath.c_str(),"w");assert(inputLedger);
  const std::string controlPath=std::string(argv[2])+".control.tsv";controlLedger=std::fopen(controlPath.c_str(),"w");assert(controlLedger);
  if(scenario=="cancel-open" || scenario=="cancel-prepare") {

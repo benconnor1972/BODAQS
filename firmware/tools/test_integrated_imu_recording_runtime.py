@@ -36,12 +36,15 @@ def main():
     parser.add_argument("--first-recording", action="store_true")
     parser.add_argument("--sample-units", action="store_true")
     parser.add_argument("--two-node", action="store_true")
+    parser.add_argument("--four-node", action="store_true")
     parser.add_argument("--window", action="store_true")
     parser.add_argument("--idle-control-fetch", action="store_true")
     parser.add_argument("--flow-diagnostics", action="store_true")
     parser.add_argument("--pressure-diagnostics", action="store_true")
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
+    if args.four_node:
+        args.window=True
     if args.window:
         args.first_recording=args.sample_units=args.two_node=True
     if args.pressure_diagnostics:
@@ -175,6 +178,8 @@ namespace SharedSpiBus {''',1)
             source_flags=[]
         if args.window:
             source_flags += ['-DBODAQS_SPI_MEASUREMENT_V4=1']
+        if args.four_node:
+            source_flags += ['-DBODAQS_V4_FOUR_NODE_BENCH=1']
         if args.pressure_diagnostics:
             source_flags += ['-DBODAQS_RECORDING_PRESSURE_DIAGNOSTICS=1', '-I', str(firmware/'.pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src')]
         sources += [firmware / "src" / name for name in ("CanMasterProtocol.cpp", "SensorAssignment.cpp", "SensorParams.cpp", "Lsm6dso32xConfig.cpp", "RemoteImuStream.cpp", "BdqV2Catalog.cpp", "BdqV2Writer.cpp", "ImuAdmission.cpp")]
@@ -184,6 +189,8 @@ namespace SharedSpiBus {''',1)
         scenarios=("good", "short", "cancel-open", "cancel-prepare") if args.first_recording and not args.window else ("good", "stall", "short", "cancel-open", "cancel-prepare")
         if args.window:
             scenarios+=("lag",)
+        if args.four_node:
+            scenarios+=("allocation",)
         for scenario in scenarios:
             subprocess.run([str(exe), str(saturated if scenario == "stall" else wire), str(output / f"{scenario}.bdq"), scenario], check=True, timeout=120)
         if args.pressure_diagnostics:
@@ -193,7 +200,7 @@ namespace SharedSpiBus {''',1)
             assert quiet['available'] and not quiet['first_loss_observed']
             assert blocked['available'] and blocked['first_loss_observed']
             assert blocked['first_loss']['stage']==6 and blocked['first_loss']['counter']>0
-            assert len(blocked['first_loss']['nodes'])==2
+            assert len(blocked['first_loss']['nodes'])==(4 if args.four_node else 2)
             assert any(node['consumer_wait']>0 for node in blocked['first_loss']['nodes'])
             assert blocked['storage_frozen'] and len(blocked['storage_operations'])<=96
             print('Integrated v4 pressure footer: real loss callback, both queues, retired/no-loss snapshots and clean BDQ CRC: PASS')
@@ -204,29 +211,37 @@ namespace SharedSpiBus {''',1)
             from bodaqs_analysis.first_imu_recording import assess_first_imu_recording
             if args.two_node:
                 from bodaqs_analysis.multi_imu_recording import assess_multi_imu_recording
+                expected_nodes=list(range(4 if args.four_node else 2))
                 if args.window:
-                    pressure=assess_multi_imu_recording(output/'stall.bdq',[0,1])
+                    from verify_integrated_imu_recording import input_ledger
+                    accepted,rejected=input_ledger(output/'stall.bdq.input.tsv')
+                    pressure=assess_multi_imu_recording(output/'stall.bdq',expected_nodes)
                     for node in pressure['nodes']:
                         delivery=node['metrics']['sample_delivery']
                         # This legacy hardware stub has UID0, so its overall
                         # identity/qualification metric correctly stays unknown.
                         assert delivery['denominator'] is None
                         assert delivery['unresolved_readings']==0
-                        assert node['gaps']==[dict(source_segment_id=1,first=908,last=1199,count=292,extent='known')]
+                        decoded=read_can_imu_packets(output/'stall.bdq',node['stream_key'])
+                        assert [(row['source_segment_id'],row['sequence']) for row in decoded['readings']]==accepted[node['node']]
+                        assert sum(gap['count'] for gap in node['gaps'])==rejected[node['node']]
+                        assert all(gap['extent']=='known' for gap in node['gaps'])
+                        if not args.four_node:
+                            assert node['gaps']==[dict(source_segment_id=1,first=908,last=1199,count=292,extent='known')]
                     print('Full logger sample buffers: renewal/STOP complete; offline losses remain explicit: PASS')
                 for case in (('good','lag') if args.window else ('good',)):
-                    for node, ax in [(0, -32768), (1, 4660)]:
+                    for node, ax in enumerate([-32768,4660,9029,13398][:len(expected_nodes)]):
                         decoded=read_can_imu_packets(output / f'{case}.bdq', f'can{node}_imu6')
                         assert [r['sequence'] for r in decoded['readings']]==list(range(64))
                         assert all([r[k] for k in ('ax','ay','az','gx','gy','gz')]==[ax,32767,-1,-32768,32767,-1] for r in decoded['readings'])
-                        assert not decoded['gaps'] and not decoded['ambiguous_packets']
+                        assert not decoded['gaps'] and not decoded['ambiguous_packets'] and not decoded['duplicates']
                         assert any(r['boundary_event_kind']==8 and r['boundary_validity_flags']&1 and r['related_sequence']==63
                                    for r in decoded['raw_timing_observations'])
-                report=assess_multi_imu_recording(output / 'good.bdq',[0,1])
+                report=assess_multi_imu_recording(output / 'good.bdq',expected_nodes)
                 assert 'expected_node_membership_mismatch' not in report['issues']
-                assert len(report['nodes'])==2
+                assert len(report['nodes'])==len(expected_nodes)
                 assert report['file_outcome']=='incomplete_or_unresolved'  # Minimal host footer is not physical completion proof.
-                for membership in ([0], [0,1,2,3]):
+                for membership in ([0], [0,1] if args.four_node else [0,1,2,3]):
                     wrong=assess_multi_imu_recording(output / 'good.bdq', membership)
                     assert 'expected_node_membership_mismatch' in wrong['issues']
                 print('Integrated window selective data/ACK/proof loss, origin-CRC repair and partial STOP: PASS'

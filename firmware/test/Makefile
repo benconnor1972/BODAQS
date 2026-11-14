@@ -71,6 +71,7 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_imu_admission_runtime.py --scaling --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_imu_admission_runtime.py --multi-node --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_imu_admission_runtime.py --sample-units-two-node --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_imu_admission_runtime.py --sample-units-four-node --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --smoke --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --smoke --v2 --compiler "$(CXX)"

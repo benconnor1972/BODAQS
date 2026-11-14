@@ -51,6 +51,20 @@ constexpr bool sampleUnitBenchBuild() {
  return false;
 #endif
 }
+#if defined(BODAQS_V4_FOUR_NODE_BENCH) && BODAQS_V4_FOUR_NODE_BENCH != 0 && BODAQS_V4_FOUR_NODE_BENCH != 1
+#error BODAQS_V4_FOUR_NODE_BENCH must be 0 or 1
+#endif
+constexpr bool fourNodeSampleUnitBenchBuild() {
+#if defined(BODAQS_V4_FOUR_NODE_BENCH) && BODAQS_V4_FOUR_NODE_BENCH == 1
+#if !defined(BODAQS_SPI_MEASUREMENT_V4) || BODAQS_SPI_MEASUREMENT_V4 != 1
+#error Four-node sample-unit bench requires v4 measurement
+#endif
+ static_assert(sampleUnitBenchBuild(), "Four-node bench requires sample-unit custody and ADC-off scope");
+ return true;
+#else
+ return false;
+#endif
+}
 #if defined(BODAQS_MULTI_NODE_BENCH) && BODAQS_MULTI_NODE_BENCH != 0 && BODAQS_MULTI_NODE_BENCH != 1
 #error BODAQS_MULTI_NODE_BENCH must be 0 or 1
 #endif
@@ -63,7 +77,7 @@ constexpr bool multiNodeBenchBuild() {
 #endif
 }
 constexpr const char* buildMode() {
- if(sampleUnitBenchBuild()) return "sample_unit_two_node_unqualified";
+ if(sampleUnitBenchBuild()) return fourNodeSampleUnitBenchBuild()?"sample_unit_four_node_unqualified":"sample_unit_two_node_unqualified";
  #if defined(BODAQS_SINGLE_NODE_IMU_ADC_SMOKE) && BODAQS_SINGLE_NODE_IMU_ADC_SMOKE == 1
  static_assert(singleNodeSmokeBuild(), "ADC smoke requires the compact single-node smoke build");
  return multiNodeBenchBuild()?"multi_node_polling_unqualified":scalingBenchBuild()?"single_node_adc_scaling_unqualified":channelRateBenchBuild()?"single_node_adc_channel_rate_unqualified":"single_node_adc_smoke_unqualified";
@@ -107,7 +121,7 @@ struct Report {
 Report evaluate(const Demand&,const Profile&);
 // Experimental opt-in only: no measured costs, capacity or readiness is claimed.
 Report evaluateSingleNodeSmoke(const Demand&,bool otherActiveSensors);
-// Explicit v3 bench: 1/2 IMUs, 500 Hz primary, no ADC or unrelated sensors.
+// Explicit v3 bench: 1/2 IMUs; v4 four-node opt-in also admits4. 500Hz, ADC off.
 Report evaluateSampleUnitBench(const Demand&,bool otherActiveSensors);
 // Exact bench load only, with an ADC-only control using the same image.
 Report evaluateSingleNodeAdcSmoke(const Demand&,bool otherActiveSensors);
@@ -115,7 +129,7 @@ Report evaluateMultiNodeBench(const Demand&,bool otherActiveSensors);
 const char* reasonText(Reason);
 inline const char* reportText(const Report& r) {
  return r.benchOnly && r.reason==Reason::None
-     ? (sampleUnitBenchBuild()?"one/two-node sample-unit bench (unqualified)":multiNodeBenchBuild()?"multi-node polling bench (unqualified)":scalingBenchBuild()?"single-node ADC scaling bench (unqualified)":singleNodeAdcSmokeBuild()?"single-node plus two ADC channels (unqualified)":"single-node smoke test (unqualified)")
+     ? (sampleUnitBenchBuild()?(fourNodeSampleUnitBenchBuild()?"one/two/four-node sample-unit bench (unqualified)":"one/two-node sample-unit bench (unqualified)"):multiNodeBenchBuild()?"multi-node polling bench (unqualified)":scalingBenchBuild()?"single-node ADC scaling bench (unqualified)":singleNodeAdcSmokeBuild()?"single-node plus two ADC channels (unqualified)":"single-node smoke test (unqualified)")
      : reasonText(r.reason);
 }
 }

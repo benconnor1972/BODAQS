@@ -2,9 +2,14 @@
 #include <cassert>
 #include <cmath>
 #include <initializer_list>
+#include <cstring>
 int main() {
 #if defined(BODAQS_V3_TWO_NODE_BENCH) && BODAQS_V3_TWO_NODE_BENCH
+#if defined(BODAQS_V4_FOUR_NODE_BENCH) && BODAQS_V4_FOUR_NODE_BENCH
+ for(uint8_t nodes:{1,2,4}) {
+#else
  for(uint8_t nodes:{1,2}) {
+#endif
   ImuAdmission::Demand bench;bench.nodes=nodes;bench.loggerRateHz=500;
   auto accepted=ImuAdmission::evaluateSampleUnitBench(bench,false);
   assert(accepted.reason==ImuAdmission::Reason::None && accepted.benchOnly && !accepted.qualified);
@@ -18,7 +23,14 @@ int main() {
    bench.loggerRateHz=rate;assert(ImuAdmission::evaluateSampleUnitBench(bench,false).reason==ImuAdmission::Reason::SampleUnitBenchScope);
   }
  }
+#if defined(BODAQS_V4_FOUR_NODE_BENCH) && BODAQS_V4_FOUR_NODE_BENCH
+ assert(std::strcmp(ImuAdmission::buildMode(),"sample_unit_four_node_unqualified")==0);
+#endif
+#if defined(BODAQS_V4_FOUR_NODE_BENCH) && BODAQS_V4_FOUR_NODE_BENCH
+ for(uint8_t nodes:{0,3,5}) {
+#else
  for(uint8_t nodes:{0,3,4}) {
+#endif
   ImuAdmission::Demand bench;bench.nodes=nodes;bench.loggerRateHz=500;
   assert(ImuAdmission::evaluateSampleUnitBench(bench,false).reason==ImuAdmission::Reason::SampleUnitBenchScope);
  }

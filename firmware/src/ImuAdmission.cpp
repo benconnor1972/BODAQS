@@ -83,7 +83,7 @@ Report evaluateSingleNodeSmoke(const Demand& d,bool otherActiveSensors) {
 }
 Report evaluateSampleUnitBench(const Demand& d,bool otherActiveSensors) {
  Report r;r.attempted=d.nodes!=0;r.benchOnly=true;
- if(!sampleUnitBenchBuild() || (d.nodes!=1 && d.nodes!=2) || d.loggerRateHz!=500 || otherActiveSensors)
+ if(!sampleUnitBenchBuild() || (d.nodes!=1 && d.nodes!=2 && !(fourNodeSampleUnitBenchBuild() && d.nodes==4)) || d.loggerRateHz!=500 || otherActiveSensors)
   r.reason=Reason::SampleUnitBenchScope;
  for(const auto& adc:d.adc) if(adc.activeChannels || adc.conversionsPerSecond)
   r.reason=Reason::SampleUnitBenchScope;
@@ -134,7 +134,9 @@ const char* reasonText(Reason r) {
  case Reason::Coverage:return "burst/backlog coverage";case Reason::Allocation:return "remote allocation failed";
  case Reason::Eligibility:return "remote configuration unavailable";
  case Reason::MultiNodeBenchScope:return "polling bench requires 1/2/4 IMUs; ADC-off at500Hz or retained r15 analog cases only";
- case Reason::SampleUnitBenchScope:return "sample-unit bench requires 1/2 CAN IMUs at500Hz primary; mute ADCs and other sensors";
+ case Reason::SampleUnitBenchScope:return fourNodeSampleUnitBenchBuild()
+     ?"sample-unit bench requires 1/2/4 CAN IMUs at500Hz primary; mute ADCs and other sensors"
+     :"sample-unit bench requires 1/2 CAN IMUs at500Hz primary; mute ADCs and other sensors";
  case Reason::SmokeScope:return "smoke build requires one CAN IMU; mute all other sensors";
  case Reason::MixedSmokeScope:return scalingBenchBuild()
      ?"scaling bench adds ain0/1/4/5 at200/500Hz only; at most one CAN IMU; earlier channel/rate cases retained"
