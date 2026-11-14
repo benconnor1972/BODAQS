@@ -173,7 +173,12 @@ volatile MasterDrainInfo gMasterDrainInfo
 /* End drain diagnostic state. */
 
 /* Snapshot at most the configured hardware FIFO depth per interrupt. */
+#define CAN_RX_SERVICE_BUDGET (8U)
+#if BODAQS_SPI_BULK_BYTES == 512
+#define CAN_RX_CAPACITY (32U)
+#else
 #define CAN_RX_CAPACITY (8U)
+#endif
 typedef struct {
     DL_MCAN_RxBufElement message;
     uint32_t received_ms, received_tick;
@@ -181,7 +186,11 @@ typedef struct {
     uint64_t ordinal;
 } CanReceiveRecord;
 static uint64_t gCanReceiveOrdinal;
-static CanReceiveRecord gCanReceiveStorage[CAN_RX_CAPACITY];
+static CanReceiveRecord gCanReceiveStorage[CAN_RX_CAPACITY]
+#if BODAQS_SPI_BULK_BYTES == 512
+    __attribute__((section(".bodaqs_spi_buffers"),aligned(8)))
+#endif
+    ;
 static BodaqsRecordQueue gCanReceiveQueue;
 /* ISR-only accumulation; main copies/clears under a short IRQ fence. No
  * selected reception or service-owned definition is edited in the ISR. */
@@ -683,7 +692,7 @@ static void service_can_receive(void)
 {
     CanReceiveRecord record;
     unsigned node;
-    unsigned remaining = CAN_RX_CAPACITY;
+    unsigned remaining = CAN_RX_SERVICE_BUDGET;
     bool timed=false;
     uint32_t started=0;
     bool losses=false;

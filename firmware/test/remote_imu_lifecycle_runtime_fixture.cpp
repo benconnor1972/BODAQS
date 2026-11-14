@@ -544,12 +544,22 @@ int main(int argc,char** argv) {
       const auto healthy=RemoteImuRecording::peers[0].stream.queueState().evidence;
       const auto later=RemoteImuRecording::peers[remoteNodes-1].stream.queueState().evidence;
       gate.store(3);
+      uint8_t loss[8]={2,14,5,0,0,0,0,0};
+      assert(!RemoteImuRecording::consume(7,1,0,loss,sizeof loss));
       for(unsigned retry=0;retry<3;++retry) {
         assert(!RemoteImuRecording::consume(5,255,900001,sync,sizeof sync));
         assert(!RemoteImuRecording::consume(6,255,900002,bridge,sizeof bridge));
         assert(RemoteImuRecording::peers[0].stream.queueState().evidence==healthy);
       }
       gate.store(1); // Callback has retired; optional fan-out may now retire.
+      assert(RemoteImuRecording::consume(7,1,0,loss,sizeof loss));
+      assert(peer.managementRetirements.load()==1);
+      loss[1]=8;assert(!RemoteImuRecording::consume(7,1,0,loss,sizeof loss));loss[1]=14;
+      peer.managementRetirements.store(UINT32_MAX);
+      assert(RemoteImuRecording::consume(7,1,0,loss,sizeof loss));
+      assert(peer.managementRetirements.load()==UINT32_MAX);
+
+      assert(!RemoteImuRecording::consume(1,1,1,loss,sizeof loss));
       assert(RemoteImuRecording::consume(5,255,900001,sync,sizeof sync));
       assert(RemoteImuRecording::consume(6,255,900002,bridge,sizeof bridge));
       assert(RemoteImuRecording::peers[0].stream.queueState().evidence==healthy);
@@ -593,6 +603,7 @@ int main(int argc,char** argv) {
       for(unsigned n=0;n<remoteNodes;++n) {
         assert(!RemoteImuRecording::peers[n].sharedRetirements[0].load());
         assert(!RemoteImuRecording::peers[n].sharedRetirements[1].load());
+        assert(!RemoteImuRecording::peers[n].managementRetirements.load());
       }
       for(const auto& progress:RemoteImuRecording::sharedProgress) assert(!progress.object && !progress.pending);
       RemoteImuRecording::stop();

@@ -72,6 +72,8 @@ assert result.count("s->acquisition_retirement_pending=true;") == 1
 functions += "\n" + result.replace("s->acquisition_retirement_pending=true;",
     "s->acquisition_retirement_pending=true; injected_cs_preemption();")
 fixture = Path(__file__).with_name("adapter_fixture.c").read_text().replace("/* DRAIN_TYPES */", drain_types)
+constants=source[source.index('#define CAN_RX_SERVICE_BUDGET'):source.index('typedef struct {',source.index('#define CAN_RX_SERVICE_BUDGET'))]
+fixture=fixture.replace('#define CAN_RX_CAPACITY 8U\n#define CAN_RX_SERVICE_BUDGET 8U',constants)
 owned=source[source.index("/* SPI adapter ownership storage. */"):source.index("/* End SPI adapter ownership storage. */")]
 if args.boundary_trace:
     assert args.v2

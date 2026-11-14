@@ -279,6 +279,8 @@ namespace SharedSpiBus {''',1)
                     counts=info.final_summary['remote_shared_metadata_retirements']
                     assert {r['node']:r['sync_objects'] for r in counts}=={n:2 if n in failed else 0 for n in range(4)},counts
                     assert info.final_summary['remote_shared_metadata_retirements_status']=='complete'
+                    if scenario=='shared-runtime-failure':
+                        assert counts[0]['management_reports_retired']>0,counts
                     assert all(r['bridge_observations']>0 for r in counts if r['node'] in failed),counts
                 print(f'Independent BDQ {scenario}: live source data, once-only shared fan-out, explicit omissions: PASS')
         if args.only_scenario:

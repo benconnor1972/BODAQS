@@ -12,6 +12,7 @@
 #include "bodaqs_master_service.h"
 /* DRAIN_TYPES */
 #define CAN_RX_CAPACITY 8U
+#define CAN_RX_SERVICE_BUDGET 8U
 #define MCAN0_INST 0
 #define DL_MCAN_RX_FIFO_NUM_0 0
 #define DL_MCAN_MEM_TYPE_FIFO 0

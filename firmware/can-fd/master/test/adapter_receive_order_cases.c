@@ -27,3 +27,13 @@
     service_receive_queues();
     assert(processed_can==9 && !gCanReceiveQueue.depth && gService.slots_received==1);
     puts("production receive-turn ordering and bounded CAN/SPI service: PASS");
+    static CanReceiveRecord burst_storage[32];
+    bodaqs_record_queue_init(&gCanReceiveQueue,burst_storage,sizeof burst_storage[0],32);
+    processed_can=0;
+    for(unsigned burst=0;burst<4;++burst) {hardware_depth=8;capture_can_receive_fifo();}
+    assert(gCanReceiveQueue.depth==32 && !gCanReceiveQueue.dropped);
+    service_can_receive();
+    assert(processed_can==8 && gCanReceiveQueue.depth==24);
+    for(unsigned turn=0;turn<3;++turn) service_can_receive();
+    assert(processed_can==32 && !gCanReceiveQueue.depth);
+    puts("32 captured CAN receptions survive burst; each turn retires only8: PASS");

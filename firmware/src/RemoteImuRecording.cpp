@@ -42,6 +42,7 @@ Failure firstFailure;
 // retires. Unaccepted tail objects remain retained until administrative fence.
 std::atomic<uint8_t> dataGate{1};
 std::atomic<uint32_t> sharedRetirements[2]{};
+std::atomic<uint32_t> managementRetirements{0};
 uint32_t objectProgress[2]={};
 uint16_t recordProgress[2]={};
 bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint16_t total) {
@@ -144,6 +145,7 @@ bool configure(const SensorSpec& chosen,uint64_t sharedRecord,uint64_t sharedCon
   fault=false;stopIntent=startIntent=false;cleanupQueued=false;phase=Allocated;began=millis();serial=0;
   firstFailure={};
   for(auto& count:sharedRetirements) count.store(0,std::memory_order_relaxed);
+  managementRetirements.store(0,std::memory_order_relaxed);
   stopRequestedMs=stopConfirmedMs=0;stopConfirmed=false;completionFrozen=false;
   std::memset(objectProgress,0,sizeof objectProgress);std::memset(recordProgress,0,sizeof recordProgress);
   dataGate.store(0,std::memory_order_release);
@@ -329,6 +331,16 @@ void logFlowSnapshot(const char* stage,[[maybe_unused]] const ImuFlowDiagnostics
 bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint16_t total) {
  if(address<4) {
   if(!(selected&(1u<<address))) return true;
+  // Retiring a diagnostic for an already closed source is not sample custody.
+  // Preserve the omission count; raw objects still require normal admission.
+  if(cls==7 && peers[address].dataGate.load(std::memory_order_acquire)==1 &&
+     p && total==8 && (p[0]==1 || p[0]==2) && (p[1]==9 || p[1]==14) &&
+     (BdqV2Format::getU16(p+2)==5 || BdqV2Format::getU16(p+2)==6)) {
+    auto& count=peers[address].managementRetirements;
+    const auto previous=count.load(std::memory_order_relaxed);
+    if(previous!=UINT32_MAX) count.store(previous+1,std::memory_order_relaxed);
+    return true;
+  }
   const bool accepted=peers[address].consume(cls,address,identity,p,total);
 #if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
   observeConsumer(cls,peers[address],accepted,p,total);
@@ -510,6 +522,7 @@ bool finalSharedMetadataRetirements(uint8_t node,SharedMetadataRetirements& out)
  if(node>3 || !(selected&(1u<<node)) || !stopped() || AcquisitionControl::active()) return false;
  out.syncObjects=peers[node].sharedRetirements[0].load(std::memory_order_acquire);
  out.bridgeObservations=peers[node].sharedRetirements[1].load(std::memory_order_acquire);
+ out.managementReports=peers[node].managementRetirements.load(std::memory_order_acquire);
  return true;
 }
 const ImuFlowDiagnostics::Snapshot* finalFlowSnapshot(bool firstLoss) {

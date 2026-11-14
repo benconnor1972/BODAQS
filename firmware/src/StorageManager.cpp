@@ -1813,7 +1813,9 @@ static void appendSharedMetadataRetirements_(JsonDocument& document) {
     auto entry=entries.add<JsonObject>();entry["node"]=node;
     entry["scope"]="omitted_fanout_after_local_admission_retirement";
     entry["sync_objects"]=counts.syncObjects;entry["bridge_observations"]=counts.bridgeObservations;
-    entry["at_counter_limit"]=counts.syncObjects==UINT32_MAX || counts.bridgeObservations==UINT32_MAX;
+    entry["management_reports_retired"]=counts.managementReports;
+    entry["management_scope"]="diagnostic_messages_omitted_after_local_admission_retirement_not_unique_losses";
+    entry["at_counter_limit"]=counts.syncObjects==UINT32_MAX || counts.bridgeObservations==UINT32_MAX || counts.managementReports==UINT32_MAX;
   }
   document["remote_shared_metadata_retirements_status"]=entries.size()?"complete":"unavailable";
 }

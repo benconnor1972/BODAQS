@@ -54,7 +54,7 @@ bool stopped();
 bool finalMeasurementFailures(uint32_t& transfer,uint32_t& decode);
 bool finalNodeDiagnostics(uint8_t node,ImuFlowDiagnostics::NodeStats& out);
 struct SharedMetadataRetirements {
-  uint32_t syncObjects=0,bridgeObservations=0;
+    uint32_t syncObjects=0,bridgeObservations=0,managementReports=0;
 };
 // Omitted optional fan-out contributions, not accepted sensor records. Available
 // only after all participants and the acquisition owner retire in this scope.
