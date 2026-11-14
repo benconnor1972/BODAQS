@@ -133,7 +133,7 @@ typedef struct {
      * Batch histogram index is the record count (1..13; index 0 is unused). */
     uint32_t data_objects[2], data_records[2], data_unique_fragments[2], data_repeat_fragments[2];
     uint32_t data_acked_objects[2], data_acked_records[2], data_head_polls[2], data_empty_polls[2];
-    uint32_t data_batch_records[2][BODAQS_SAMPLE_PAYLOADS>13?BODAQS_SAMPLE_PAYLOADS+1:14];
+    uint32_t data_batch_records[2][14];
     /* Main-owned bookkeeping, reset with the START scope. */
     uint32_t data_last_object[2][4], data_fragment_mask[2][4];
 #if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
