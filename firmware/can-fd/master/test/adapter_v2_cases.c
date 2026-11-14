@@ -51,6 +51,18 @@ int main(void) {
     gService.acquisition_retirement_pending=true;gService.acquisition_retirement_generation=1;
     service_spi_retirement();
     assert(bodaqs_measurement_encode(&idle,gReceiveSlots[gReceiveIndex],256));
+    /* DMA completion is not physical CS retirement. Even with a published
+     * fence request, no queue/swap/reset/proof may occur while CS is low. */
+    const unsigned saved_depth=gSpiReceiveQueue.depth,saved_reset=reset_count,saved_arm=arm_count;
+    const unsigned saved_tx=gTransmitIndex,saved_rx=gReceiveIndex;
+    const uint32_t saved_proof=gSpiRetirementProof.generation;
+    uint8_t owned_before[2][BODAQS_MEASUREMENT_BYTES];memcpy(owned_before,gTransmitSlots,sizeof owned_before);
+    remaining=0;cs_high=0;retire_spi_boundary();
+    assert(gSpiReceiveQueue.depth==saved_depth && reset_count==saved_reset && arm_count==saved_arm);
+    assert(gTransmitIndex==saved_tx && gReceiveIndex==saved_rx && gSpiTransmitReady);
+    assert(gSpiRetirementProof.generation==saved_proof && gService.receptions[0].count==2);
+    assert(!memcmp(owned_before,gTransmitSlots,sizeof owned_before));
+    cs_high=1;prefetched_tx=1;
     remaining=0;retire_spi_boundary();
     BodaqsMeasurementSlot decoded;
     assert(bodaqs_measurement_decode(gTransmitSlots[0],256,&decoded) && !decoded.kind);
