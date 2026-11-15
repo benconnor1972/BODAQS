@@ -113,7 +113,11 @@ static bool chooseIdleTurnData(uint32_t now,uint8_t& cls,uint8_t& node) {
     const uint8_t candidate=(dataCursor+i)%4;
     if(!(dataMask&(1u<<candidate))) continue;
     for(uint8_t lane:{1,2}) {
+#if BODAQS_MEASUREMENT_VERSION >= 4
+      const auto& inbox=lane==1?CanMasterManager::nextSampleInbox(transport,candidate):transport.inboxes[1][candidate];
+#else
       const auto& inbox=transport.inboxes[lane-1][candidate];
+#endif
       const bool unfinished=inbox.state.object && !inbox.state.complete;
       if(inbox.state.complete && !inbox.admitted) continue;
       if(partial==0 && !unfinished) continue;
@@ -425,8 +429,20 @@ static void run(void*) {
     // Bounded catch-up group; each service transfers one CS-bounded slot and
     // releases shared SPI before the >=25us rearm/ADC opportunity. The group
     // removes the lease-only one-slot-per-RTOS-tick throughput cap.
+#if BODAQS_ACQUISITION_PROFILE
+    const bool profilingActive=active(); // acquire ownership before reading context
+    const uint32_t burstStart=micros();
+    const uint64_t burstContext=profilingActive?contextId:0;
+#endif
     for(unsigned i=0;i<8 && active();++i) service();
+#if BODAQS_ACQUISITION_PROFILE
+    const uint32_t sleepStart=micros();
+    if(profilingActive && active() && contextId==burstContext)ControlPollingDiagnostics::profile(ControlPollingDiagnostics::Burst,burstStart,sleepStart-burstStart);
+#endif
     vTaskDelay(1);
+#if BODAQS_ACQUISITION_PROFILE
+    if(profilingActive && active() && contextId==burstContext)ControlPollingDiagnostics::profile(ControlPollingDiagnostics::Sleep,sleepStart,micros()-sleepStart);
+#endif
   }
 }
 #endif
@@ -496,6 +512,18 @@ void service() {
 #if defined(BODAQS_RECORDING_PRESSURE_DIAGNOSTICS) && BODAQS_RECORDING_PRESSURE_DIAGNOSTICS
   RecordingPressureDiagnostics::service(micros());
 #endif
+#if BODAQS_ACQUISITION_PROFILE
+  struct ServiceProfile {
+    uint32_t start=micros();unsigned core=2;bool pending=true;
+    ServiceProfile(){
+#if defined(ARDUINO_ARCH_ESP32)
+      core=xPortGetCoreID();
+#endif
+    }
+    void finish(){if(pending){ControlPollingDiagnostics::profile(ControlPollingDiagnostics::Service,start,micros()-start,core);pending=false;}}
+    ~ServiceProfile(){finish();}
+  } serviceProfile;
+#endif
   servicing=true;
   if(transport.failed) for(uint8_t n=0;n<4;++n) {
     Request terminal;bool queued=false;
@@ -526,6 +554,9 @@ void service() {
           CanMasterManager::diagnostics().measurementTiming.decodeReasons);
 #endif
       CanMasterManager::releaseMeasurementControl();
+#if BODAQS_ACQUISITION_PROFILE
+      serviceProfile.finish();
+#endif
       {Lock lock;owned=false;exitPending=false;cleanupRequested=false;}
       servicing=false;return;
     }
@@ -553,6 +584,9 @@ void service() {
           CanMasterManager::diagnostics().measurementTiming.decodeReasons);
 #endif
       CanMasterManager::releaseMeasurementControl();
+#if BODAQS_ACQUISITION_PROFILE
+      serviceProfile.finish();
+#endif
       {Lock lock;owned=false;exitPending=false;}
       servicing=false;return;
     }
@@ -692,7 +726,22 @@ void service() {
       const uint8_t candidate=(selection/2)%4,lane=(selection/8)%2?3:4;
       if(controlFetchPending(lane,candidate)) {cls=lane;n=candidate;pending=true;break;}
     }
-    if(!pending) (void)chooseIdleTurnData(now,cls,n);
+    if(!pending) {
+#if BODAQS_ACQUISITION_PROFILE
+      bool legacyMismatch=false;
+#if BODAQS_MEASUREMENT_VERSION >= 4
+      for(uint8_t peer=0;peer<4;++peer) if(dataMask&(1u<<peer)) {
+        const auto& old=transport.inboxes[0][peer];
+        const auto& current=CanMasterManager::nextSampleInbox(transport,peer);
+        legacyMismatch |= old.state.complete && !old.admitted && !current.state.complete;
+      }
+#endif
+      const bool selected=chooseIdleTurnData(now,cls,n);
+      ControlPollingDiagnostics::reclaimed(micros(),cls,selected,legacyMismatch);
+#else
+      (void)chooseIdleTurnData(now,cls,n);
+#endif
+    }
   }
 #endif
 #if BODAQS_PIPELINE_TRACE
@@ -709,7 +758,15 @@ void service() {
     ControlPollingDiagnostics::peer(peer,x.pending,x.started,x.request.record.operation,x.request.record.opcode,x.request.record.page);
   }
 #endif
+#if BODAQS_ACQUISITION_PROFILE
+  const uint32_t transportStart=micros();
+  ControlPollingDiagnostics::profile(ControlPollingDiagnostics::Selection,serviceProfile.start,transportStart-serviceProfile.start);
+#endif
   const int result=CanMasterManager::serviceMeasurementTransport(transport,cls,n,inbox);
+#if BODAQS_ACQUISITION_PROFILE
+  const uint32_t consumerStart=micros();
+  ControlPollingDiagnostics::profile(ControlPollingDiagnostics::Transport,transportStart,consumerStart-transportStart);
+#endif
   if(result==-14) for(uint8_t peer=0;peer<4;++peer)
     if(peers[peer].recording && !peers[peer].excluded) exclude(peer,26);
   if(result==1 && inbox && (inbox->state.cls==3 || inbox->state.cls==4)) {
@@ -768,6 +825,9 @@ void service() {
     }
     Lock lock;outcomes[node].localFenceComplete=retired;
   }
+#if BODAQS_ACQUISITION_PROFILE
+  ControlPollingDiagnostics::profile(ControlPollingDiagnostics::Consumers,consumerStart,micros()-consumerStart);
+#endif
   publishFenceDiagnostics(millis());
   servicing=false;
 }

@@ -76,11 +76,14 @@ def main():
     parser.add_argument("--storage-timeline",action="store_true")
     parser.add_argument("--sample-queue-capacity",type=int,choices=(512,))
     parser.add_argument("--control-state",action="store_true")
+    parser.add_argument("--acquisition-profile",action="store_true")
     parser.add_argument("--flow-diagnostics", action="store_true")
     parser.add_argument("--pressure-diagnostics", action="store_true")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--only-scenario",choices=('shared-startup-failure','shared-runtime-failure'))
     args = parser.parse_args()
+    if args.acquisition_profile and not args.control_state:
+        parser.error("--acquisition-profile requires control state")
     if args.control_state and not (args.storage_timeline and args.ordinary_fetch_ms==20):
         parser.error('--control-state requires timeline and ordinary20')
     if args.sample_queue_capacity and args.bulk_bytes!=512:
@@ -288,6 +291,8 @@ namespace SharedSpiBus {''',1)
             source_flags += ['-DBODAQS_STORAGE_TIMELINE=1']
         if args.sample_queue_capacity:
             source_flags += [f'-DBODAQS_LOGGER_SAMPLE_QUEUE_CAPACITY={args.sample_queue_capacity}']
+        if args.acquisition_profile:
+            source_flags += ['-DBODAQS_ACQUISITION_PROFILE=1']
         if args.control_state:
             source_flags += ['-DBODAQS_CONTROL_POLL_DIAGNOSTICS=1']
         if args.pressure_diagnostics:

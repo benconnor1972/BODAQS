@@ -18,6 +18,12 @@ inline void append(JsonDocument& document,bool retired,uint64_t context){
   out["acquisition_used"]=acquisition->used;out["memory_used"]=memory->used;
   out["acquisition_overflow_events"]=acquisition->overflow;out["memory_overflow_events"]=memory->overflow;
   out["scope"]="MOSI_attempts_not_response_pairs_memory_point_samples_not_CPU_or_causality";
+#if BODAQS_ACQUISITION_PROFILE
+  out["profile_version"]=1;
+  out["profile_scope"]="start_bin_wall_time_nested_not_CPU_core_at_service_entry";
+  auto stages=out["profile_stages"].to<JsonArray>();
+  for(const char* name:{"service","selection","transport","consumers","encode","spi_wait","spi_prepare","spi_transfer","spi_finish","decode","burst","sleep"})stages.add(name);
+#endif
   auto rows=out["bins"].to<JsonArray>();
   const uint32_t used=acquisition->used>memory->used?acquisition->used:memory->used;
   for(uint32_t i=0;i<used;++i){
@@ -29,6 +35,12 @@ inline void append(JsonDocument& document,bool retired,uint64_t context){
     values(row,"matched_age_max_ms",b.matchedAgeMaxMs);
     auto op=row["last_opcode"].to<JsonArray>();auto page=row["last_page"].to<JsonArray>();
     for(unsigned n=0;n<4;++n){op.add(b.lastOpcode[n]);page.add(b.lastPage[n]);}
+#if BODAQS_ACQUISITION_PROFILE
+    auto profile=row["profile"].to<JsonObject>();
+    values(profile,"total_us",b.profile.totalUs);values(profile,"max_us",b.profile.maxUs);
+    values(profile,"calls",b.profile.calls);values(profile,"cores",b.profile.cores);
+    values(profile,"reclaimed",b.profile.reclaimed);profile["legacy_blocked_window_open"]=b.profile.legacyBlockedWindowOpen;
+#endif
     const auto& m=memory->bins[i];auto mem=row["memory"].to<JsonObject>();
     mem["samples"]=m.samples;mem["elapsed_us"]=m.elapsedUs;
     mem["internal_free"]=m.internalFree;mem["internal_largest"]=m.internalLargest;

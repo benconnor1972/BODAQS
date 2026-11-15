@@ -6,7 +6,8 @@ import subprocess
 import tempfile
 from test_remote_imu_lifecycle_runtime import fixture_source
 
-p=argparse.ArgumentParser();p.add_argument('--compiler',default='g++');p.add_argument('--scenario');p.add_argument('--interval',type=int,choices=(0,20),default=20);p.add_argument('--control-state',action='store_true');a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--compiler',default='g++');p.add_argument('--scenario');p.add_argument('--interval',type=int,choices=(0,20),default=20);p.add_argument('--control-state',action='store_true');p.add_argument('--acquisition-profile',action='store_true');a=p.parse_args()
+if a.acquisition_profile and not a.control_state:p.error('--acquisition-profile requires --control-state')
 if a.control_state and a.interval!=20:p.error('--control-state requires ordinary20')
 root=Path(__file__).resolve().parents[1];common=root/'can-fd/common/protocol'
 fixture=fixture_source(root).replace('static ParamStore extraParams[7];','[[maybe_unused]] static ParamStore extraParams[7];')
@@ -160,6 +161,13 @@ int main(int argc,char** argv){
  if(const char* path=std::getenv("BODAQS_SCHEDULE_OUT")){
    FILE* f=std::fopen(path,"wb");assert(f);assert(std::fwrite(wireJournal.data(),1,wireJournal.size(),f)==wireJournal.size());std::fclose(f);
  }
+#if BODAQS_ACQUISITION_PROFILE
+ if(scenario=="periodic0" || scenario=="periodic1") {
+  uint32_t service=0,transfer=0;
+  for(const auto& b:ControlPollingDiagnostics::acquisition->bins){service+=b.profile.calls[ControlPollingDiagnostics::Service];transfer+=b.profile.calls[ControlPollingDiagnostics::Transport];}
+  assert(service && transfer);
+ }
+#endif
  printf("Actual512 logger/master ordinary-fetch %s: PASS\n",scenario.c_str());
 }
 '''
@@ -170,7 +178,7 @@ with tempfile.TemporaryDirectory(prefix='bodaqs-ordinary-fetch-') as tmp:
     scenarios=[a.scenario] if a.scenario else ['ack-only','lost-ack','pending','wrap','fair','new-command','new-scope','partial','blocked','protected','no-data','periodic0','periodic1','timeout']
     saved={}
     for enabled in ([False,True] if a.control_state else [False]):
-        subprocess.run([a.compiler,'-std=c++17', *(['-DBODAQS_STORAGE_TIMELINE=1','-DBODAQS_RECORDING_PRESSURE_DIAGNOSTICS=1','-DBODAQS_IMU_FLOW_DIAGNOSTICS=1',f'-DBODAQS_CONTROL_POLL_DIAGNOSTICS={int(enabled)}'] if a.control_state else []), '-DBODAQS_SPI_MEASUREMENT_V4=1','-DBODAQS_SPI_BULK_BYTES=512',
+        subprocess.run([a.compiler,'-std=c++17',f'-DBODAQS_ACQUISITION_PROFILE={int(enabled and a.acquisition_profile)}', *(['-DBODAQS_STORAGE_TIMELINE=1','-DBODAQS_RECORDING_PRESSURE_DIAGNOSTICS=1','-DBODAQS_IMU_FLOW_DIAGNOSTICS=1',f'-DBODAQS_CONTROL_POLL_DIAGNOSTICS={int(enabled)}'] if a.control_state else []), '-DBODAQS_SPI_MEASUREMENT_V4=1','-DBODAQS_SPI_BULK_BYTES=512',
         '-DBODAQS_RECLAIM_IDLE_CONTROL_FETCH=1',f'-DBODAQS_ORDINARY_FETCH_INTERVAL_MS={a.interval}',
         '-ffunction-sections','-Wl,--gc-sections','-Wall','-Wextra','-Werror','-Wno-class-memaccess','-Wno-unused-function',
         '-I',str(root/'test/stubs'),'-I',str(root/'src'),'-I',str(common),'-I',str(root/'can-fd/common/test'),

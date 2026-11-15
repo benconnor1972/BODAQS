@@ -8,6 +8,9 @@ import tempfile
 def fixture_source(root,pipeline_trace=False):
     """Real control/master/coordinator composition shared with acceptance."""
     fixture = (root / "test/measurement_runtime_fixture.cpp").read_text()
+    fixture = '#include "SpiTransferTiming.h"\n'+fixture
+    fixture = fixture.replace('SpiTransactionContext* context=nullptr) {',
+        'SpiTransactionContext* context=nullptr,SpiTransferTiming* phaseTiming=nullptr) {\n if(phaseTiming)*phaseTiming={}; // host has no physical SPI/RTOS timing')
     fixture = fixture[:fixture.index("int main() {")]
     if pipeline_trace:
         fixture += '\nconstexpr int LOG_WARN=2;static void Log_taggedPrintln(int,const char*,const char*) {}\n'

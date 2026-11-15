@@ -275,7 +275,11 @@ bool transferSlot_(
     const SPISettings& settings, const uint8_t* tx, uint8_t* rx,
     size_t length = CanMasterProtocol::kSlotBytes, uint32_t guardUs = kInterSlotGuardUs,
     uint32_t minimumStartSpacingUs = 0, uint32_t csSetupUs = 0,
-    SpiTransactionContext* context = nullptr) {
+    SpiTransactionContext* context = nullptr
+#if BODAQS_ACQUISITION_PROFILE
+    , SpiTransferTiming* profileTiming = nullptr
+#endif
+    ) {
   if (s_haveCompletedSlot) {
     const uint32_t elapsedUs = micros() - s_lastSlotCompletedUs;
     if (elapsedUs < guardUs) {
@@ -284,7 +288,11 @@ bool transferSlot_(
   }
   if (!SharedSpiBus::transfer(
           s_profile.cs_pin, settings, tx, rx,
-          length, kSpiLockTimeoutMs, minimumStartSpacingUs, csSetupUs, context)) {
+          length, kSpiLockTimeoutMs, minimumStartSpacingUs, csSetupUs, context
+#if BODAQS_ACQUISITION_PROFILE
+          ,profileTiming
+#endif
+          )) {
     return false;
   }
   s_lastSlotCompletedUs = micros();
@@ -760,10 +768,17 @@ bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
   // Only the measurement owner may enter; storage never aliases DMA or an inbox.
   // Persistent buffers avoid adding two bulk frames to the 4 KiB task stack.
   static uint8_t tx[BODAQS_MEASUREMENT_BYTES], rx[BODAQS_MEASUREMENT_BYTES];
+#if BODAQS_ACQUISITION_PROFILE
+  const uint32_t encodingStart=micros();
+#endif
   memset(tx,0,sizeof tx);
   if (!bodaqs_measurement_encode_request(&request, tx, sizeof tx)) return false;
   const SPISettings settings(BODAQS_MEASUREMENT_HZ, MSBFIRST, spiDataMode_(s_profile.spi_mode));
   const uint32_t started=micros();
+#if BODAQS_ACQUISITION_PROFILE
+  ControlPollingDiagnostics::profile(ControlPollingDiagnostics::Encode,encodingStart,started-encodingStart);
+  SpiTransferTiming phases;
+#endif
   auto& timing=s_diagnostics.measurementTiming;
   if(!timing.slots) measurementTimingStartUs=started;
   else {
@@ -777,7 +792,14 @@ bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
   SpiTransactionContext* busContext=nullptr;
 #endif
   const bool transferred=transferSlot_(settings,tx,rx,BODAQS_MEASUREMENT_BYTES,25,
-      BODAQS_MEASUREMENT_START_SPACING_US,BODAQS_MEASUREMENT_CS_SETUP_US,busContext);
+      BODAQS_MEASUREMENT_START_SPACING_US,BODAQS_MEASUREMENT_CS_SETUP_US,busContext
+#if BODAQS_ACQUISITION_PROFILE
+      ,&phases
+#endif
+      );
+#if BODAQS_ACQUISITION_PROFILE
+  const uint32_t decodingStart=micros();
+#endif
 #if BODAQS_PIPELINE_TRACE
   measurementPhysicalSequence=bus.deviceSequence;
   measurementPhysicalSequenceValid=bus.valid && bus.deviceSequenceValid;
@@ -796,6 +818,13 @@ bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
       ImuFlowDiagnostics::rejectedReply(s_diagnostics.measurementTimingContext,timing.slots+1,request.kind,rx,decodeResult,bus,tx);
 #endif
   }
+#if BODAQS_ACQUISITION_PROFILE
+  const uint32_t decodingEnd=micros();
+  using namespace ControlPollingDiagnostics;
+  profile(Decode,decodingStart,decodingEnd-decodingStart);
+  profile(SpiWait,started,phases.lockWaitUs);profile(SpiPrepare,started,phases.prepareUs);
+  profile(SpiTransfer,started,phases.transferUs);profile(SpiFinish,started,phases.finishUs);
+#endif
   measurementTimingEndUs=micros();
   const uint32_t duration=measurementTimingEndUs-started;
   ++timing.slots;timing.exchangeUs+=duration;

@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 from assess_control_polling import summarize
 
-p=argparse.ArgumentParser();p.add_argument('--compiler',required=True);a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--compiler',required=True);p.add_argument('--acquisition-profile',action='store_true');a=p.parse_args()
 root=Path(__file__).resolve().parents[1]
 fixture=r'''
 #include "RecordingPressureDiagnostics.h"
@@ -48,6 +48,14 @@ int main(){
  C::sampleMemory(origin+20000000U,39000,29000,170000,140000);assert(C::memory->bins[1].samples==1);
  JsonDocument unsafe;ControlPollingJson::append(unsafe,false,context);assert(!unsafe["control_poll_timeline"]["available"]);
  JsonDocument wrong;ControlPollingJson::append(wrong,true,context+1);assert(!wrong["control_poll_timeline"]["available"]);
+#if BODAQS_ACQUISITION_PROFILE
+ C::profile(C::Service,origin+100,250,0);C::profile(C::Service,origin+200,500,1);
+ C::profile(C::SpiTransfer,origin+300,350);C::profile(C::Sleep,origin+400,950);
+ assert(C::acquisition->bins[0].profile.totalUs[C::Service]==750);
+ assert(C::acquisition->bins[0].profile.maxUs[C::Service]==500);
+ assert(C::acquisition->bins[0].profile.calls[C::Service]==2);
+ assert(C::acquisition->bins[0].profile.cores[0]==1&&C::acquisition->bins[0].profile.cores[1]==1);
+#endif
  JsonDocument doc;ControlPollingJson::append(doc,true,context);
  assert(doc["control_poll_timeline"]["available"]==true);
  std::string text;serializeJson(doc,text);puts(text.c_str());
@@ -79,12 +87,17 @@ inline void* heap_caps_malloc(size_t n,int caps){
  return heapFail?nullptr:std::malloc(n);
 }
 ''')
-    subprocess.run([a.compiler,'-std=c++17','-O2','-pthread','-Wall','-Wextra','-Werror',
+    subprocess.run([a.compiler,*(['-DBODAQS_ACQUISITION_PROFILE=1'] if a.acquisition_profile else []),'-std=c++17','-O2','-pthread','-Wall','-Wextra','-Werror',
         '-DARDUINO_ARCH_ESP32=1','-DBODAQS_CONTROL_POLL_DIAGNOSTICS=1','-DBODAQS_STORAGE_TIMELINE=1','-DBODAQS_ORDINARY_FETCH_INTERVAL_MS=20',
         '-DBODAQS_RECORDING_PRESSURE_DIAGNOSTICS=1','-DBODAQS_IMU_FLOW_DIAGNOSTICS=1',
         '-I',str(temp),'-I',str(root/'src'),'-I',str(root/'.pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src'),str(src),'-o',str(exe)],check=True)
     result=subprocess.check_output([str(exe)],text=True)
-    t=json.loads(result)['control_poll_timeline'];r=summarize(t,2**63+123)
+    t=json.loads(result)['control_poll_timeline']
+    if a.acquisition_profile:
+        assert t['profile_version']==1 and len(t['profile_stages'])==12
+        assert t['bins'][0]['profile']['total_us'][0]==750
+        assert t['bins'][0]['profile']['cores']==[1,1,0]
+    r=summarize(t,2**63+123)
     assert r['complete_capture'] and len(r['rows'])==2
     assert list(r['rows'][0]['ordinary_reasons'].values())==[1]*8
     assert r['rows'][0]['pending_age_mean_ms']==[2,None,None,None]

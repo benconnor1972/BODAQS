@@ -12,6 +12,15 @@
 #if BODAQS_CONTROL_POLL_DIAGNOSTICS != 0 && BODAQS_CONTROL_POLL_DIAGNOSTICS != 1
 #error "Control polling diagnostics must be0or1"
 #endif
+#ifndef BODAQS_ACQUISITION_PROFILE
+#define BODAQS_ACQUISITION_PROFILE 0
+#endif
+#if BODAQS_ACQUISITION_PROFILE != 0 && BODAQS_ACQUISITION_PROFILE != 1
+#error "Acquisition profile must be0or1"
+#endif
+#if BODAQS_ACQUISITION_PROFILE && !BODAQS_CONTROL_POLL_DIAGNOSTICS
+#error "Acquisition profiling requires control diagnostics"
+#endif
 #if BODAQS_CONTROL_POLL_DIAGNOSTICS
 #if !BODAQS_STORAGE_TIMELINE || BODAQS_ORDINARY_FETCH_INTERVAL_MS != 20
 #error "Control polling diagnostics require the unchanged timeline/ordinary20 profile"
@@ -22,6 +31,14 @@ namespace ControlPollingDiagnostics {
 constexpr uint32_t capacity=RecordingTimelineDiagnostics::capacity;
 enum Reason {Outgoing,Partial,Unadmitted,PendingFirst,PendingDue,PendingNotDue,AckOnly,Idle,ReasonCount};
 struct Peer {uint32_t startedMs=0,operation=0;uint8_t opcode=0,page=0;bool pending=false;};
+#if BODAQS_ACQUISITION_PROFILE
+enum Stage {Service,Selection,Transport,Consumers,Encode,SpiWait,SpiPrepare,SpiTransfer,SpiFinish,Decode,Burst,Sleep,StageCount};
+struct Profile {
+  uint64_t totalUs[StageCount]={};uint32_t maxUs[StageCount]={},calls[StageCount]={};
+  uint32_t cores[3]={}; // core0, core1, host/unknown
+  uint32_t reclaimed[3]={},legacyBlockedWindowOpen=0; // sample,evidence,none
+};
+#endif
 struct Bin {
   uint32_t targets[8]={},reasons[ReasonCount]={};
   uint32_t fetches[4]={},pendingFetches[4]={},ageMaxMs[4]={};
@@ -29,6 +46,9 @@ struct Bin {
   uint32_t firstOperation[4]={},lastOperation[4]={};
   uint32_t begins[4]={},matched[4]={},timeouts[4]={},matchedAgeMaxMs[4]={};
   uint8_t lastOpcode[4]={},lastPage[4]={};
+#if BODAQS_ACQUISITION_PROFILE
+  Profile profile;
+#endif
 };
 struct MemoryBin {
   uint32_t samples=0,elapsedUs=0,internalFree=0,internalLargest=0,psramFree=0,psramLargest=0;
@@ -49,7 +69,7 @@ inline Memory* memory=nullptr;
 inline std::atomic<Acquisition*> published{nullptr};
 static_assert(std::atomic<Acquisition*>::is_always_lock_free,"Diagnostic publication must not lock");
 static_assert(std::is_trivially_copyable<Acquisition>::value && std::is_trivially_copyable<Memory>::value,"Zeroable scalar banks");
-static_assert(sizeof(Banks)+sizeof(acquisition)+sizeof(memory)+sizeof(published)<=10100,"Bounded control diagnostic RAM");
+static_assert(sizeof(Banks)+sizeof(acquisition)+sizeof(memory)+sizeof(published)<=(BODAQS_ACQUISITION_PROFILE?18000:10100),"Bounded control diagnostic RAM");
 inline size_t reservedBytes(){return sizeof(Banks)+sizeof(acquisition)+sizeof(memory)+sizeof(published);}
 inline Banks* allocateBanks(){
 #if defined(ARDUINO_ARCH_ESP32)
@@ -104,6 +124,22 @@ inline void request(uint8_t target,uint8_t node,bool outgoing,bool partial,bool 
     RecordingTimelineDiagnostics::maximum(b.ageMaxMs[node],age);
   }
 }
+#if BODAQS_ACQUISITION_PROFILE
+inline void reclaimed(uint32_t nowUs,uint8_t cls,bool selected,bool legacyMismatch){
+  if(!acquisition || !acquisition->context)return;
+  const auto i=RecordingTimelineDiagnostics::index(*acquisition,nowUs);if(i==capacity)return;
+  auto& p=acquisition->bins[i].profile;++p.reclaimed[selected?(cls==1?0:1):2];
+  if(legacyMismatch)++p.legacyBlockedWindowOpen;
+}
+// Intervals are charged to their start bin. Nested stages must not be summed.
+inline void profile(Stage stage,uint32_t start,uint32_t duration,unsigned core=2){
+  if(!acquisition || !acquisition->context)return;
+  const auto i=RecordingTimelineDiagnostics::index(*acquisition,start);if(i==capacity)return;
+  auto& p=acquisition->bins[i].profile;++p.calls[stage];p.totalUs[stage]+=duration;
+  RecordingTimelineDiagnostics::maximum(p.maxUs[stage],duration);
+  if(stage==Service)++p.cores[core<2?core:2];
+}
+#endif
 inline bool memoryDue(uint32_t nowUs){
   if(!memory || !memory->initialized || memory->frozen)return false;
   const auto i=RecordingTimelineDiagnostics::index(*memory,nowUs);
