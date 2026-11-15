@@ -95,6 +95,28 @@ int main(void) {
     assert(gMasterDrainInfo.version==5 && gMasterDrainInfo.phase_calls[0]==0);
 #endif
     puts("production phase classification, accumulation, freeze and new-scope reset: PASS");
+    memset((void *)&gMasterSteadyInfo,0,sizeof gMasterSteadyInfo);
+    const uint32_t warm=UINT32_MAX-1000000U;
+    steady_observe(901,1,true,warm,1);
+    assert(gMasterSteadyInfo.state==1);
+    steady_observe(901,1,true,warm+5000000U,1);
+    assert(gMasterSteadyInfo.state==2);
+    gMasterDrainInfo.state=2; /* Loss froze original diagnostics, not this window. */
+    bodaqs_master_profile_record(10,20,30,1,2);
+    assert(gMasterSteadyInfo.phase_calls[2]==1 && gMasterSteadyInfo.phase_total_us[2][2]==30);
+    steady_observe(901,1,true,warm+35000000U,1);
+    assert(gMasterSteadyInfo.state==3 && gMasterSteadyInfo.finish_reason==1);
+    bodaqs_master_profile_record(10,20,30,1,2);
+    assert(gMasterSteadyInfo.phase_calls[2]==1);
+    steady_observe(901,1,false,warm+36000000U,1);
+    assert(gMasterSteadyInfo.finish_reason==1);
+    steady_observe(902,2,true,100,1);
+    assert(gMasterSteadyInfo.state==1 && !gMasterSteadyInfo.phase_calls[2]);
+    steady_observe(902,2,false,200,1);
+    assert(gMasterSteadyInfo.finish_reason==2 && gMasterSteadyInfo.state==3);
+    steady_observe(903,3,true,100,1);steady_observe(903,3,true,101,0);
+    assert(gMasterSteadyInfo.timing_invalid && gMasterSteadyInfo.finish_reason==4);
+    puts("steady acquisition window: wrap, loss independence, bounded freeze, STOP/reset/clock validity PASS");
 #endif
     /* QUEUE_TIMING_CASES */
     /* RX_RETRY_CASES */

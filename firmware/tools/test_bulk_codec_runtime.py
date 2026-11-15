@@ -9,16 +9,22 @@ import zlib
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--compiler', default='g++')
+    parser.add_argument('--ram-table',action='store_true')
     args = parser.parse_args()
     common = pathlib.Path(__file__).resolve().parents[1] / 'can-fd/common/protocol'
     with tempfile.TemporaryDirectory() as temporary:
         root = pathlib.Path(temporary)
+        table=root/'table.cpp'
+        table.write_text('#include "master_crc_table.h"\n')
+        extras=['-DBODAQS_MASTER_CRC_RAM=1','-I',str(common.parents[1]/'master/include'),str(table)] if args.ram_table else []
         source = root / 'codec.cpp'
         source.write_text(r'''
 #include "bodaqs_measurement.h"
 #include <cassert>
 #include <cstdio>
 int main(int argc,char** argv) {
+ assert(bodaqs_measurement_crc(nullptr,0)==0);
+ for(unsigned i=0;i<256;++i) {const uint8_t byte=uint8_t(i);printf("%08x\n",bodaqs_measurement_crc(&byte,1));}
  assert(argc==3); BodaqsMeasurementSlot s={},out={}; s.kind=14;s.node=255;
  s.context=0x123456789abcdef0ULL;s.body[0]=1;s.body[2]=1;
  uint8_t command[BODAQS_MEASUREMENT_BYTES]={},reply[BODAQS_MEASUREMENT_BYTES]={};
@@ -54,8 +60,9 @@ int main(int argc,char** argv) {
             binary, command, reply = (root / name for name in ('codec.exe', 'command.bin', 'reply.bin'))
             subprocess.run([args.compiler, '-std=c++17', '-Wall', '-Wextra', '-Werror',
                             '-DBODAQS_SPI_MEASUREMENT_V4=1', f'-DBODAQS_SPI_BULK_BYTES={size}',
-                            '-I', str(common), str(source), '-o', str(binary)], check=True)
-            subprocess.run([str(binary), str(command), str(reply)], check=True)
+                            '-I', str(common), *extras, str(source), '-o', str(binary)], check=True)
+            oracle=subprocess.run([str(binary), str(command), str(reply)],check=True,capture_output=True,text=True)
+            assert [int(v,16) for v in oracle.stdout.split()]==[zlib.crc32(bytes([i])) for i in range(256)]
             for path, extent in ((command, 128), (reply, size)):
                 wire = path.read_bytes()
                 assert len(wire) == extent
@@ -66,7 +73,7 @@ int main(int argc,char** argv) {
                 '-DBODAQS_SPI_MEASUREMENT_V4=1', f'-DBODAQS_SPI_BULK_BYTES={size}',
                 '-I', str(common), '-I', str(common.parents[2]/'src'),
                 '-I', str(common.parents[2]/'test/stubs'),
-                str(common.parents[2]/'test/bulk_identity_fixture.cpp'),
+                *extras,str(common.parents[2]/'test/bulk_identity_fixture.cpp'),
                 *[str(common/name) for name in ('bodaqs_master_service.c','bodaqs_master_protocol.c',
                     'bodaqs_control.c','bodaqs_control_exchange.c')], '-o', str(binary)], check=True)
             subprocess.run([str(binary)], check=True)

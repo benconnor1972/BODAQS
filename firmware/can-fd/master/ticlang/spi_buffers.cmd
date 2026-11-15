@@ -3,4 +3,5 @@
 SECTIONS
 {
     .bodaqs_spi_buffers : {} > SRAM_BANK1
+    .bodaqs_crc_table : {} > SRAM_BANK1
 }

@@ -15,6 +15,7 @@ BodaqsBatchDiagnostics gMasterBatchInfo __attribute__((section(".bodaqs_spi_buff
 #endif
 #include "bodaqs_node_inventory.h"
 #include "master_identity.h"
+#include "master_crc_table.h"
 #include "master_spi_priming.h"
 #include "ti_msp_dl_config.h"
 #include "bodaqs_can_link_ti.h"
@@ -109,6 +110,42 @@ typedef struct {
 } MasterRuntimeInfo;
 
 /* Active drain diagnostic state. */
+/* Separate main-owner 5s warmup/30s observation; loss never freezes this window. */
+#if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
+typedef struct {
+    uint32_t version,state,finish_reason,crc_ram; /* 1 warmup,2 collecting,3 frozen */
+    uint64_t context,recording;
+    uint32_t warmup_tick,started_tick,elapsed_us,clock_epoch,timing_invalid;
+    uint32_t phase_calls[4],phase_max_us[4][3],replies[16];
+    uint64_t phase_total_us[4][3];
+} MasterSteadyInfo;
+volatile MasterSteadyInfo gMasterSteadyInfo
+#if BODAQS_SPI_BULK_BYTES
+    __attribute__((section(".bodaqs_spi_buffers"),aligned(8)))
+#endif
+    ;
+static void steady_observe(uint64_t context,uint64_t recording,bool active,uint32_t tick,uint32_t epoch) {
+    if(gMasterSteadyInfo.state && (gMasterSteadyInfo.context!=context || gMasterSteadyInfo.recording!=recording)) {
+        if(gMasterSteadyInfo.state!=3) {gMasterSteadyInfo.finish_reason=3;gMasterSteadyInfo.state=3;return;}
+        if(!active) return;
+        memset((void *)&gMasterSteadyInfo,0,sizeof gMasterSteadyInfo);
+    }
+    if(!gMasterSteadyInfo.state && active) {
+        gMasterSteadyInfo.version=1;gMasterSteadyInfo.context=context;gMasterSteadyInfo.recording=recording;
+        gMasterSteadyInfo.crc_ram=BODAQS_MASTER_CRC_RAM;
+        gMasterSteadyInfo.clock_epoch=epoch;gMasterSteadyInfo.warmup_tick=tick;gMasterSteadyInfo.state=1;
+    }
+    if(!gMasterSteadyInfo.state || gMasterSteadyInfo.state==3) return;
+    if(!epoch || epoch!=gMasterSteadyInfo.clock_epoch) {gMasterSteadyInfo.timing_invalid=1;gMasterSteadyInfo.finish_reason=4;gMasterSteadyInfo.state=3;return;}
+    if(gMasterSteadyInfo.state==1 && (uint32_t)(tick-gMasterSteadyInfo.warmup_tick)>=5000000U) {
+        gMasterSteadyInfo.started_tick=tick;gMasterSteadyInfo.state=2;
+    }
+    if(gMasterSteadyInfo.state==2) gMasterSteadyInfo.elapsed_us=tick-gMasterSteadyInfo.started_tick;
+    if(!active || gMasterSteadyInfo.elapsed_us>=30000000U) {
+        gMasterSteadyInfo.finish_reason=active?1:2;gMasterSteadyInfo.state=3;
+    }
+}
+#endif
 /* Main-loop writer only; debugger observation, never protocol/authority state.
  * Scope begins when START is admitted to the CAN control exchange, not when
  * the node physically starts. Freeze after the first observed retention loss
@@ -373,7 +410,7 @@ static void drain_queue_record(const uint8_t *request,size_t length,
 #if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
 uint32_t bodaqs_master_profile_clock(void)
 {
-    return gMasterDrainInfo.state==1 ? drain_clock() : 0;
+    return gMasterDrainInfo.state==1 || gMasterSteadyInfo.state==2 ? drain_clock() : 0;
 }
 
 void bodaqs_master_profile_record(uint32_t decode_us,uint32_t dispatch_us,
@@ -381,8 +418,16 @@ void bodaqs_master_profile_record(uint32_t decode_us,uint32_t dispatch_us,
 {
     unsigned row,phase;
     const uint32_t durations[3]={decode_us,dispatch_us,encode_us};
-    if(gMasterDrainInfo.state!=1) return;
     row=request_kind==14?0:reply_kind==0?1:bodaqs_fragment_class(reply_kind)?2:3;
+    if(gMasterSteadyInfo.state==2) {
+        ++gMasterSteadyInfo.phase_calls[row];
+        if(reply_kind<16) ++gMasterSteadyInfo.replies[reply_kind];
+        for(phase=0;phase<3;++phase) {
+            gMasterSteadyInfo.phase_total_us[row][phase]+=durations[phase];
+            if(durations[phase]>gMasterSteadyInfo.phase_max_us[row][phase]) gMasterSteadyInfo.phase_max_us[row][phase]=durations[phase];
+        }
+    }
+    if(gMasterDrainInfo.state!=1) return;
     ++gMasterDrainInfo.phase_calls[row];
     for(phase=0;phase<3;++phase) {
         gMasterDrainInfo.phase_total_us[row][phase]+=durations[phase];
@@ -411,6 +456,10 @@ static void drain_check(void)
     uint32_t reason=0,epoch;
     const uint64_t context=gService.measurement.mode.context;
     const uint64_t recording=gService.measurement.mode.recording;
+#if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
+    { uint32_t steady_epoch;const uint32_t tick=bodaqs_master_timing_clock(NULL,&steady_epoch);
+      steady_observe(context,recording,gService.measurement.mode.phase==2 && gService.acquisition_started,tick,steady_epoch); }
+#endif
     if(gMasterDrainInfo.state==1 &&
        (gMasterDrainInfo.context!=context || gMasterDrainInfo.recording!=recording)) {
         /* New-context counters may have reset: never subtract old baselines. */

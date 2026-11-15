@@ -86,6 +86,10 @@ endif
 endif
 MASTER_BLOCK_CRC ?= 0
 MASTER_CAN_FIRST ?= 0
+MASTER_CRC_RAM ?= 0
+ifneq ($(filter $(MASTER_CRC_RAM),0 1),$(MASTER_CRC_RAM))
+$(error MASTER_CRC_RAM must be 0 or 1)
+endif
 MASTER_BOUNDARY_RESERVE ?= 0
 ifneq ($(MASTER_BOUNDARY_RESERVE),0)
 ifneq ($(MASTER_BOUNDARY_RESERVE),2)
@@ -211,6 +215,7 @@ CFLAGS := -I../include \
     -DBODAQS_MASTER_QUEUE_TIMING=$(SPI_QUEUE_TIMING) \
     -DBODAQS_MASTER_BLOCK_CRC=$(MASTER_BLOCK_CRC) \
     -DBODAQS_MASTER_CAN_FIRST=$(MASTER_CAN_FIRST) \
+    -DBODAQS_MASTER_CRC_RAM=$(MASTER_CRC_RAM) \
     -DBODAQS_MASTER_BOUNDARY_RESERVE=$(MASTER_BOUNDARY_RESERVE) \
     -DBODAQS_MASTER_SPI_RX_CAPACITY=$(SPI_RX_CAPACITY) \
     -DBODAQS_MASTER_SPI_TX_PRIME=$(SPI_TX_PRIME) \
@@ -269,6 +274,8 @@ clean:
 main.obj master_identity.obj bodaqs_master_service.obj bodaqs_control.obj bodaqs_control_exchange.obj: ../../common/protocol/bodaqs_control.h ../../common/protocol/bodaqs_control_exchange.h
 
 main.obj bodaqs_master_service.obj master_identity.obj: ../../common/protocol/bodaqs_measurement.h
+main.obj bodaqs_master_service.obj master_identity.obj: ../../common/protocol/bodaqs_crc32_table_values.h
+main.obj: ../include/master_crc_table.h
 
 main.obj bodaqs_master_service.obj: ../../common/protocol/bodaqs_master_service.h ../../common/protocol/bodaqs_fragment_transport.h
 main.obj bodaqs_master_service.obj: ../../common/protocol/bodaqs_master_profile.h

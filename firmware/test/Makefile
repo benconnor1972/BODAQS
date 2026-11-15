@@ -85,6 +85,7 @@ test: $(TEST_BIN)
 	$(PYTHON) -m unittest discover -s ../tools -p test_imu_optimization_tools.py
 	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --ack-sweep --start-spacing-us 600 --reply-capture --cs-setup-us 5 --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_master_phase_timing_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_bulk_codec_runtime.py --ram-table --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --phase-timing --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --boundary-trace --compiler "$(CXX)"

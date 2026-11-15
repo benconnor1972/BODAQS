@@ -67,7 +67,7 @@ $(BUILD_DIR)/test_apply.exe: test_apply.cpp $(CONTROL) $(LOGGER_PROTOCOL) $(MAST
 $(BUILD_DIR)/test_measurement.exe: test_measurement.cpp $(LOGGER_PROTOCOL) $(MASTER_PROTOCOL) $(MASTER_SERVICE)
 	$(CXX) $(CXXFLAGS) -I../protocol -I../../../src -o $@ $(filter %.cpp %.c,$^)
 
-$(filter-out $(BUILD_DIR)/test_can_network.exe,$(TEST_BINS)): ../protocol/bodaqs_measurement.h
+$(filter-out $(BUILD_DIR)/test_can_network.exe,$(TEST_BINS)): ../protocol/bodaqs_measurement.h ../protocol/bodaqs_crc32_table_values.h
 $(filter-out $(BUILD_DIR)/test_can_network.exe,$(TEST_BINS)): ../protocol/bodaqs_crc32_blocks.h
 
 $(BUILD_DIR)/test_frag_transport.exe: test_frag_transport.cpp $(MASTER_PROTOCOL) $(MASTER_SERVICE) ../protocol/bodaqs_fragment_transport.h
