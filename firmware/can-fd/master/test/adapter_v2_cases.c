@@ -99,7 +99,7 @@ int main(void) {
     const uint32_t warm=UINT32_MAX-1000000U;
     steady_observe(901,1,true,warm,1);
     assert(gMasterSteadyInfo.state==1);
-    steady_observe(901,1,true,warm+5000000U,1);
+    steady_observe(901,1,true,warm+300000000U,1);
     assert(gMasterSteadyInfo.state==2);
     bodaqs_master_dispatch_record(7,23,5,14,0);
     assert(gMasterDispatchInfo.calls[0]==1 && gMasterDispatchInfo.total_us[0][1]==23);
@@ -108,13 +108,13 @@ int main(void) {
     gMasterDrainInfo.state=2; /* Loss froze original diagnostics, not this window. */
     bodaqs_master_profile_record(10,20,30,1,2);
     assert(gMasterSteadyInfo.phase_calls[2]==1 && gMasterSteadyInfo.phase_total_us[2][2]==30);
-    steady_observe(901,1,true,warm+35000000U,1);
+    steady_observe(901,1,true,warm+330000000U,1);
     assert(gMasterSteadyInfo.state==3 && gMasterSteadyInfo.finish_reason==1);
     bodaqs_master_profile_record(10,20,30,1,2);
     assert(gMasterSteadyInfo.phase_calls[2]==1);
     bodaqs_master_dispatch_record(99,99,99,14,0);
     assert(gMasterDispatchInfo.calls[0]==1);
-    steady_observe(901,1,false,warm+36000000U,1);
+    steady_observe(901,1,false,warm+331000000U,1);
     assert(gMasterSteadyInfo.finish_reason==1);
     steady_observe(902,2,true,100,1);
     assert(gMasterSteadyInfo.state==1 && !gMasterSteadyInfo.phase_calls[2]);
