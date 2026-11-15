@@ -6,6 +6,13 @@
 #include <cmath>
 #include <new>
 #include "../can-fd/common/protocol/bodaqs_fragment_transport.h"
+#ifdef BODAQS_LOGGER_SAMPLE_QUEUE_CAPACITY
+#if BODAQS_LOGGER_SAMPLE_QUEUE_CAPACITY != 512 || BODAQS_SPI_BULK_BYTES != 512 || !BODAQS_V4_FOUR_NODE_BENCH
+#error "Logger sample buffer override requires the selected 512-entry four-node bulk bench"
+#endif
+#else
+#define BODAQS_LOGGER_SAMPLE_QUEUE_CAPACITY BODAQS_SAMPLE_QUEUE_CAPACITY
+#endif
 namespace {
 uint32_t u32(const uint8_t* p) { return BdqV2Format::getU32(p); }
 uint16_t u16(const uint8_t* p) { return BdqV2Format::getU16(p); }
@@ -404,7 +411,7 @@ const BdqV2CatalogChannel evidenceChannels[]={
 bool RemoteImuStream::configure(const RemoteImuBinding& b,uint16_t sample,uint16_t companion) {
   release(); if(!b.boot || b.node>3 || !sample || !companion || sample==companion) return false;
   if(b.sampleUnits && !b.compactPackets) return false;
-  if(!(b.compactPackets?packets_.allocate(b.sampleUnits?BODAQS_SAMPLE_RECORD_BYTES:100,b.sampleUnits?BODAQS_SAMPLE_QUEUE_CAPACITY:2048):samples_.allocate(8192)) ||
+  if(!(b.compactPackets?packets_.allocate(b.sampleUnits?BODAQS_SAMPLE_RECORD_BYTES:100,b.sampleUnits?BODAQS_LOGGER_SAMPLE_QUEUE_CAPACITY:2048):samples_.allocate(8192)) ||
      !evidence_.allocate(224,512)) {release();return false;}
   provenance_=static_cast<char*>(DynamicSpscQueueDetail::allocateBytes(3072));
   models_=static_cast<Model*>(DynamicSpscQueueDetail::allocateBytes(32*sizeof(Model)));
@@ -461,7 +468,7 @@ bool RemoteImuStream::configure(const RemoteImuBinding& b,uint16_t sample,uint16
   return true;
 }
 size_t RemoteImuStream::allocatedBufferBytes(bool compactPackets,bool sampleUnits) {
- return (compactPackets?(sampleUnits?BODAQS_SAMPLE_QUEUE_CAPACITY*BODAQS_SAMPLE_RECORD_BYTES:2048*100):8192*sizeof(Sample))+512*224+3072+32*sizeof(Model)+32*sizeof(Anchor);
+ return (compactPackets?(sampleUnits?BODAQS_LOGGER_SAMPLE_QUEUE_CAPACITY*BODAQS_SAMPLE_RECORD_BYTES:2048*100):8192*sizeof(Sample))+512*224+3072+32*sizeof(Model)+32*sizeof(Anchor);
 }
 void RemoteImuStream::release() {
   samples_.release();packets_.release();evidence_.release();sampleId_=evidenceId_=0;
