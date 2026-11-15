@@ -9,6 +9,7 @@
 
 static BodaqsMasterService service;
 static unsigned profileCalls;
+extern "C" void bodaqs_master_dispatch_record(uint32_t,uint32_t,uint32_t,uint8_t,uint8_t) {}
 extern "C" uint32_t bodaqs_master_profile_clock(void) {
     return static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
