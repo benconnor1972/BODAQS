@@ -119,7 +119,7 @@ typedef struct {
 } MasterRuntimeInfo;
 
 /* Active drain diagnostic state. */
-/* Separate main-owner 5s warmup/30s observation; loss never freezes this window. */
+/* r27 diagnostic: main-owner 300s warmup/30s observation; loss never freezes it. */
 #if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
 typedef struct {
     uint32_t version,reserved;
@@ -165,7 +165,7 @@ static void steady_observe(uint64_t context,uint64_t recording,bool active,uint3
     }
     if(!gMasterSteadyInfo.state || gMasterSteadyInfo.state==3) return;
     if(!epoch || epoch!=gMasterSteadyInfo.clock_epoch) {gMasterSteadyInfo.timing_invalid=1;gMasterSteadyInfo.finish_reason=4;gMasterSteadyInfo.state=3;return;}
-    if(gMasterSteadyInfo.state==1 && (uint32_t)(tick-gMasterSteadyInfo.warmup_tick)>=5000000U) {
+    if(gMasterSteadyInfo.state==1 && (uint32_t)(tick-gMasterSteadyInfo.warmup_tick)>=300000000U) {
         gMasterSteadyInfo.started_tick=tick;gMasterSteadyInfo.state=2;
     }
     if(gMasterSteadyInfo.state==2) gMasterSteadyInfo.elapsed_us=tick-gMasterSteadyInfo.started_tick;
