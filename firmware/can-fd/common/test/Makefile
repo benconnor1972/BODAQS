@@ -14,6 +14,8 @@ NODE_INVENTORY := ../network/bodaqs_node_inventory.c
 .PHONY: test clean
 
 test: $(TEST_BINS)
+	$(PYTHON) ../../../tools/test_master_progress_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../../../tools/test_master_progress_parser.py
 	$(PYTHON) ../../../tools/test_bulk_codec_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../../../tools/test_master_window_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../../../tools/test_master_batch_diagnostics.py --compiler "$(CXX)"

@@ -8,6 +8,14 @@
 #include "bodaqs_master_service.h"
 #include "bodaqs_master_profile.h"
 #include "bodaqs_batch_diagnostics.h"
+#include "bodaqs_progress_diagnostics.h"
+#if BODAQS_MASTER_PROGRESS_DIAGNOSTICS
+/* Main owner, same scope as steady counters; BANK1, never DMA/authority. */
+volatile BodaqsProgressDiagnostics gMasterProgressInfo
+    __attribute__((section(".bodaqs_spi_buffers"),aligned(8)));
+_Static_assert(sizeof(BodaqsProgressNode)==152,"Progress node ABI");
+_Static_assert(sizeof(BodaqsProgressDiagnostics)==1184,"Progress snapshot ABI");
+#endif
 #if BODAQS_MASTER_BATCH_DIAGNOSTICS
 /* Main-loop writer; read only after STOP/cleanup with the target suspended.
  * Use BANK1 to avoid reducing the service/stack headroom in BANK0. */
@@ -145,6 +153,9 @@ static void steady_observe(uint64_t context,uint64_t recording,bool active,uint3
         memset((void *)&gMasterSteadyInfo,0,sizeof gMasterSteadyInfo);
     }
     if(!gMasterSteadyInfo.state && active) {
+#if BODAQS_MASTER_PROGRESS_DIAGNOSTICS
+        bodaqs_progress_reset(context,recording);
+#endif
         memset((void *)&gMasterDispatchInfo,0,sizeof gMasterDispatchInfo);
         gMasterDispatchInfo.version=1;
         gMasterDispatchInfo.context=context;gMasterDispatchInfo.recording=recording;
@@ -489,6 +500,9 @@ static void drain_check(void)
 #if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
     { uint32_t steady_epoch;const uint32_t tick=bodaqs_master_timing_clock(NULL,&steady_epoch);
       steady_observe(context,recording,gService.measurement.mode.phase==2 && gService.acquisition_started,tick,steady_epoch); }
+#if BODAQS_MASTER_PROGRESS_DIAGNOSTICS
+    gMasterProgressInfo.state=gMasterSteadyInfo.state;
+#endif
 #endif
     if(gMasterDrainInfo.state==1 &&
        (gMasterDrainInfo.context!=context || gMasterDrainInfo.recording!=recording)) {

@@ -69,6 +69,9 @@ static void window_advance(BodaqsMasterService *s,uint8_t node,uint32_t now) {
             bodaqs_measurement_put(u->bytes+12,u->count,2);++b->next_id[0];
             (void)bodaqs_fragment_seal(&u->object,u->bytes,sizeof(u->bytes),s->transfer_context,
                 b->next_id[0],node,1,1,(uint16_t)(16+64*u->count));
+#if BODAQS_MASTER_PROGRESS_DIAGNOSTICS
+            bodaqs_progress_seal(node,u,now,q->count!=0);
+#endif
         } else return;
     }
 }
@@ -100,6 +103,9 @@ static bool window_emit(BodaqsMasterService *s,const uint8_t *credits,uint32_t n
             if(u->attempts>=8 && (uint32_t)(now-u->first_emit_ms)>=100) {
                 s->loss[n].failed=true;++s->window->repair_failures[n];break;
             }
+#if BODAQS_MASTER_PROGRESS_DIAGNOSTICS
+            bodaqs_progress_prepare(n,u);
+#endif
             if(!u->attempts) u->first_emit_ms=now;
             if(u->attempts<255) ++u->attempts;
             s->window->cursor[n]=(uint8_t)((index+1)%BODAQS_SAMPLE_WINDOW);

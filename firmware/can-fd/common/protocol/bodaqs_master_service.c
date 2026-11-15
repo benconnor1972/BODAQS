@@ -2,6 +2,7 @@
 #include "bodaqs_master_service.h"
 #include "bodaqs_master_profile.h"
 #include "bodaqs_batch_diagnostics.h"
+#include "bodaqs_progress_diagnostics.h"
 
 #include <string.h>
 #if BODAQS_MEASUREMENT_VERSION >= 4
@@ -593,6 +594,9 @@ static unsigned measurement_retire(BodaqsMasterService *s,const BodaqsMeasuremen
             BodaqsSampleWindowUnit *u=&s->window->units[r->node][i];
             if(measurement_ack_matches(&u->acknowledged,r,combined)) return 1;
             if(!measurement_ack_matches(&u->object,r,combined)) continue;
+#if BODAQS_MASTER_PROGRESS_DIAGNOSTICS
+            bodaqs_progress_retire(r->node,u,now);
+#endif
             u->acknowledged=u->object;u->count=0;memset(&u->object,0,sizeof(u->object));
             ++s->objects_acked;advance_receptions(s,r->node,now);return 1;
         }
@@ -955,6 +959,9 @@ BodaqsMasterSlotResult bodaqs_master_service_process_transfer(
         bodaqs_master_profile_record(profile_decoded-profile_begin,
             profile_dispatched-profile_decoded, profile_encoded-profile_dispatched,
             slot.kind, reply.kind);
+#endif
+#if BODAQS_MASTER_PROGRESS_DIAGNOSTICS
+        bodaqs_progress_reply(service,&slot,&reply);
 #endif
         ++service->slots_received;
         return BODAQS_MASTER_SLOT_PROCESSED;

@@ -19,7 +19,10 @@ parser.add_argument("--boundary-trace",action="store_true")
 parser.add_argument("--block-crc",action="store_true")
 parser.add_argument("--can-first",action="store_true")
 parser.add_argument("--bulk",action="store_true",help="Selected512 physical extent with compact128 commands")
+parser.add_argument("--progress",action="store_true")
 args = parser.parse_args()
+if args.progress:
+    assert args.bulk and args.phase_timing
 if args.bulk:
     args.v2=True
 if args.rx_capacity:
@@ -73,6 +76,9 @@ assert result.count("s->acquisition_retirement_pending=true;") == 1
 functions += "\n" + result.replace("s->acquisition_retirement_pending=true;",
     "s->acquisition_retirement_pending=true; injected_cs_preemption();")
 fixture = Path(__file__).with_name("adapter_fixture.c").read_text().replace("/* DRAIN_TYPES */", drain_types)
+if args.progress:
+    fixture=fixture.replace('#include "bodaqs_master_service.h"',
+        '#include "bodaqs_master_service.h"\n#include "bodaqs_progress_diagnostics.h"\nvolatile BodaqsProgressDiagnostics gMasterProgressInfo;')
 constants=source[source.index('#define CAN_RX_SERVICE_BUDGET'):source.index('typedef struct {',source.index('#define CAN_RX_SERVICE_BUDGET'))]
 fixture=fixture.replace('#define CAN_RX_CAPACITY 8U\n#define CAN_RX_SERVICE_BUDGET 8U',constants)
 owned=source[source.index("/* SPI adapter ownership storage. */"):source.index("/* End SPI adapter ownership storage. */")]
@@ -115,6 +121,8 @@ if args.bulk:
     fixture=fixture.replace('/* PRODUCTION_FUNCTIONS */','static uint32_t gDrainSampleSeen[4][4];\nstatic BodaqsMasterWindowStorage gWindow;\n/* PRODUCTION_FUNCTIONS */')
     fixture=fixture.replace('remaining=0;retire_spi_boundary();gSpiTransmitReady=false;\n    service_spi_receive();assert(gSpiTransmitReady',
         'memset(gReceiveSlots[gReceiveIndex]+128,0xa7,BODAQS_MEASUREMENT_BYTES-128);\n    remaining=0;retire_spi_boundary();gSpiTransmitReady=false;\n    service_spi_receive();assert(gSpiTransmitReady',1)
+if args.progress:
+    fixture=fixture.replace('drain_check();', 'drain_check();assert(gMasterProgressInfo.state==gMasterSteadyInfo.state);')
 with tempfile.TemporaryDirectory() as temp:
     c = Path(temp) / "adapter.c"
     exe = Path(temp) / "adapter.exe"
@@ -122,6 +130,8 @@ with tempfile.TemporaryDirectory() as temp:
     flags=["-DBODAQS_SPI_MEASUREMENT_V2=1", "-Wno-unused-function", "-Wno-unused-variable"] if args.v2 else []
     if args.phase_timing:
         flags.append("-DBODAQS_MASTER_PHASE_TIMING=1")
+    if args.progress:
+        flags.append("-DBODAQS_MASTER_PROGRESS_DIAGNOSTICS=1")
     if args.bulk:
         flags += ['-DBODAQS_SPI_MEASUREMENT_V4=1','-DBODAQS_SPI_BULK_BYTES=512']
     if args.queue_timing:
