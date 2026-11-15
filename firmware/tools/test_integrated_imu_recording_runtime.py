@@ -215,6 +215,19 @@ namespace SharedSpiBus {''',1)
             support=support.replace('feedWire(argv[1],0);','feedWire(argv[1],1);')
             support=support.replace('step(4200);assert(renewalSequence[0]>=before+3',
                 'step(200);assert(windowBackpressureAds>0);assert(renewalSequence[0]>=before+1')
+            if args.sample_queue_capacity:
+                # Prefill larger queues with the storage owner paused. Pin the
+                # actual sink operation afterwards, so STOP still races real
+                # in-flight I/O without turning the longer host feed into the
+                # separate five-second unresponsive-storage test. Keep the
+                # production timeout and every backpressure assertion intact.
+                block='''   writing=std::thread([] {worker.step(clockMs);});
+   while(!storage.entered.load()) std::this_thread::yield();
+'''
+                assert support.count(block)==1
+                support=support.replace(block,'')
+                support=support.replace('   feedWire(argv[1],1);',
+                    '   feedWire(argv[1],1);\n'+block)
             service_marker='   // WINDOW_SAMPLE_SERVICE\n   step(pacing);'
             assert support.count(service_marker)==1, 'Window fault injection service seam missing'
             support=support.replace(service_marker, '''
@@ -267,7 +280,8 @@ namespace SharedSpiBus {''',1)
         sources += [firmware / "src" / name for name in ("CanMasterProtocol.cpp", "SensorAssignment.cpp", "SensorParams.cpp", "Lsm6dso32xConfig.cpp", "RemoteImuStream.cpp", "BdqV2Catalog.cpp", "BdqV2Writer.cpp", "ImuAdmission.cpp")]
         subprocess.run([args.compiler, "-std=c++17", *source_flags, *(["-DBODAQS_SPI_MEASUREMENT_V3=1"] if args.sample_units else []), *(["-DBODAQS_SINGLE_NODE_IMU_SMOKE=1", "-DBODAQS_SPI_MEASUREMENT_V2=1"] if args.first_recording else []), *(["-DBODAQS_V3_TWO_NODE_BENCH=1"] if args.two_node else []), *(["-DBODAQS_IMU_FLOW_DIAGNOSTICS=1"] if args.flow_diagnostics else []), "-pthread", "-DBODAQS_QUEUE_ALLOCATION_TEST", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-Wno-unused-variable", "-I", str(firmware/"test/stubs"), "-I", str(firmware/"src"), "-I", str(common), "-I", str(firmware/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
         saturated = output / "saturation-can.txt"
-        saturation_wire(wire, saturated,1200 if args.window else 500)
+        # Keep the full-buffer/STOP test genuinely saturated with the r28 queue.
+        saturation_wire(wire, saturated,4200 if args.sample_queue_capacity else 1200 if args.window else 500)
         scenarios=("good", "short", "cancel-open", "cancel-prepare") if args.first_recording and not args.window else ("good", "stall", "short", "cancel-open", "cancel-prepare")
         if args.window:
             scenarios+=("lag",)

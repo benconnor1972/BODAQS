@@ -23,4 +23,12 @@ with tempfile.TemporaryDirectory() as temp:
         result=subprocess.check_output([str(exe),str(capacity)],text=True)
         print(result,end='');reports.append(int(re.search(r'bytes_per_node=(\d+)',result)[1]))
     if len(reports)==2:assert reports[1]-reports[0]==198144
+    for capacity,bulk,four in [(256,512,1),(512,0,1),(512,512,0)]:
+        result=subprocess.run([a.compiler,'-std=c++17','-fsyntax-only',
+            '-DBODAQS_SPI_MEASUREMENT_V4=1',f'-DBODAQS_SPI_BULK_BYTES={bulk}',
+            f'-DBODAQS_V4_FOUR_NODE_BENCH={four}',
+            f'-DBODAQS_LOGGER_SAMPLE_QUEUE_CAPACITY={capacity}',
+            str(firmware/'src/RemoteImuStream.cpp')],capture_output=True,text=True)
+        assert result.returncode and 'Logger sample buffer override requires' in result.stderr
 print('Real stream capacity, duplicate/blocked retry, FIFO wrap, exact bytes, release/reset, reservation delta and allocation failure PASS')
+print('Invalid capacity, bulk scope and four-node scope rejected at compile time: PASS')

@@ -47,3 +47,12 @@ drain/refill across ring wrap, exact payload bytes, reservation delta, allocatio
 failure cleanup and reset; full default host suite; selected four-source
 integrated512/timeline/ordinary-fetch20 run; selected ESP32-S3 build and recipe
 flag audit. The target trial remains physical qualification debt.
+
+The selected integrated overload case uses4200 one-reading CAN packets instead
+of1200 to fill the larger queues. It prefills real queues while the storage owner
+is paused, then pins an actual sink operation while exercising renewal and STOP.
+This avoids misclassifying the longer host feed as the distinct five-second
+unresponsive-storage case. Production timeouts and all full-buffer, in-flight
+ownership, STOP, retirement and explicit-loss assertions stay intact. This host
+schedule is not a physical timing/capacity claim. Invalid capacity, wrong bulk
+geometry and disabled four-node scope are rejected by compile-negative checks.
