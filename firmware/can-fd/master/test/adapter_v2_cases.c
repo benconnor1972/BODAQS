@@ -101,6 +101,8 @@ int main(void) {
     assert(gMasterSteadyInfo.state==1);
     steady_observe(901,1,true,warm+5000000U,1);
     assert(gMasterSteadyInfo.state==2);
+    bodaqs_master_work_record(5,71);bodaqs_master_work_record(5,29);
+    assert(gMasterWorkInfo.calls[5]==2 && gMasterWorkInfo.total_us[5]==100 && gMasterWorkInfo.max_us[5]==71);
     bodaqs_master_dispatch_record(7,23,5,14,0);
     assert(gMasterDispatchInfo.calls[0]==1 && gMasterDispatchInfo.total_us[0][1]==23);
     assert(gMasterDispatchInfo.max_us[0][0]==7);
@@ -114,11 +116,13 @@ int main(void) {
     assert(gMasterSteadyInfo.phase_calls[2]==1);
     bodaqs_master_dispatch_record(99,99,99,14,0);
     assert(gMasterDispatchInfo.calls[0]==1);
+    bodaqs_master_work_record(5,99);assert(gMasterWorkInfo.calls[5]==2);
     steady_observe(901,1,false,warm+36000000U,1);
     assert(gMasterSteadyInfo.finish_reason==1);
     steady_observe(902,2,true,100,1);
     assert(gMasterSteadyInfo.state==1 && !gMasterSteadyInfo.phase_calls[2]);
     assert(gMasterDispatchInfo.context==902 && !gMasterDispatchInfo.calls[0]);
+    assert(gMasterWorkInfo.context==902 && !gMasterWorkInfo.calls[5]);
     steady_observe(902,2,false,200,1);
     assert(gMasterSteadyInfo.finish_reason==2 && gMasterSteadyInfo.state==3);
     steady_observe(903,3,true,100,1);steady_observe(903,3,true,101,0);

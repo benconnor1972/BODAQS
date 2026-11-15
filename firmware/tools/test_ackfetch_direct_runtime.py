@@ -9,12 +9,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--compiler', default='g++')
     parser.add_argument('--reference', type=Path)
+    parser.add_argument('--phase-timing', action='store_true')
     args = parser.parse_args()
     common = Path(__file__).resolve().parents[1] / 'can-fd/common/protocol'
     fixture = r'''
 #include "bodaqs_master_service.h"
 #include <cassert>
 #include <cstdio>
+#if BODAQS_MASTER_PHASE_TIMING
+static unsigned workCalls[8];
+extern "C" uint32_t bodaqs_master_profile_clock(void) {static uint32_t tick;return ++tick;}
+extern "C" void bodaqs_master_profile_record(uint32_t,uint32_t,uint32_t,uint8_t,uint8_t) {}
+extern "C" void bodaqs_master_dispatch_record(uint32_t,uint32_t,uint32_t,uint8_t,uint8_t) {}
+extern "C" void bodaqs_master_work_record(unsigned stage,uint32_t) {assert(stage<8);++workCalls[stage];}
+#endif
 static BodaqsMasterService s;
 static BodaqsMasterWindowStorage w;
 static BodaqsMeasurementSlot turn(const BodaqsMeasurementSlot &r,unsigned now=30) {
@@ -59,6 +67,9 @@ int main() {
  const auto retired=s.objects_acked;out=turn(r,202);assert(out.retired && s.objects_acked==retired);
  assert(fwrite(&s.objects_acked,sizeof s.objects_acked,1,stdout)==1);
  assert(fwrite(&u.attempts,sizeof u.attempts,1,stdout)==1);
+#if BODAQS_MASTER_PHASE_TIMING && BODAQS_EXPECT_WORK
+ assert(workCalls[0] && workCalls[1] && workCalls[2] && workCalls[3] && workCalls[7]);
+#endif
 }
 '''
     with tempfile.TemporaryDirectory(prefix='bodaqs-direct-fetch-') as tmp:
@@ -71,6 +82,8 @@ int main() {
                 exe = temp / 'fixture.exe'
                 subprocess.run([args.compiler, '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror',
                                 '-DBODAQS_SPI_MEASUREMENT_V4=1', f'-DBODAQS_SPI_BULK_BYTES={size}',
+                                f'-DBODAQS_MASTER_PHASE_TIMING={int(args.phase_timing)}',
+                                f'-DBODAQS_EXPECT_WORK={int(service == common / "bodaqs_master_service.c")}',
                                 '-I', str(common), str(cpp), str(service),
                                 *[str(common / n) for n in ('bodaqs_master_protocol.c', 'bodaqs_control.c',
                                                            'bodaqs_control_exchange.c')], '-o', str(exe)], check=True)

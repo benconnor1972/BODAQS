@@ -115,6 +115,19 @@ typedef struct {
 typedef struct {
     uint32_t version,reserved;
     uint64_t context,recording;
+    uint32_t calls[8],max_us[8];
+    uint64_t total_us[8];
+} MasterWorkInfo;
+_Static_assert(sizeof(MasterWorkInfo)==152,"Work diagnostic ABI");
+/* Main owner; inclusive operation intervals, never protocol/authority state. */
+volatile MasterWorkInfo gMasterWorkInfo
+#if BODAQS_SPI_BULK_BYTES
+    __attribute__((section(".bodaqs_spi_buffers"),aligned(8)))
+#endif
+    ;
+typedef struct {
+    uint32_t version,reserved;
+    uint64_t context,recording;
     uint32_t calls[4],max_us[4][3];
     uint64_t total_us[4][3];
 } MasterDispatchInfo;
@@ -145,6 +158,8 @@ static void steady_observe(uint64_t context,uint64_t recording,bool active,uint3
     }
     if(!gMasterSteadyInfo.state && active) {
         memset((void *)&gMasterDispatchInfo,0,sizeof gMasterDispatchInfo);
+        memset((void *)&gMasterWorkInfo,0,sizeof gMasterWorkInfo);
+        gMasterWorkInfo.version=1;gMasterWorkInfo.context=context;gMasterWorkInfo.recording=recording;
         gMasterDispatchInfo.version=1;
         gMasterDispatchInfo.context=context;gMasterDispatchInfo.recording=recording;
         gMasterSteadyInfo.version=1;gMasterSteadyInfo.context=context;gMasterSteadyInfo.recording=recording;
@@ -427,6 +442,13 @@ static void drain_queue_record(const uint8_t *request,size_t length,
 uint32_t bodaqs_master_profile_clock(void)
 {
     return gMasterDrainInfo.state==1 || gMasterSteadyInfo.state==2 ? drain_clock() : 0;
+}
+
+void bodaqs_master_work_record(unsigned stage,uint32_t elapsed_us)
+{
+    if(gMasterSteadyInfo.state!=2 || stage>=8) return;
+    ++gMasterWorkInfo.calls[stage];gMasterWorkInfo.total_us[stage]+=elapsed_us;
+    if(elapsed_us>gMasterWorkInfo.max_us[stage]) gMasterWorkInfo.max_us[stage]=elapsed_us;
 }
 
 void bodaqs_master_dispatch_record(uint32_t manage_us,uint32_t transfer_us,

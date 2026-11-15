@@ -17,15 +17,16 @@ def main():
     original = original[:end] + "return 0;\n" + original[end:]
     hooks = '''
 #include "bodaqs_master_profile.h"
+extern "C" void bodaqs_master_work_record(unsigned,uint32_t) {}
 extern "C" void bodaqs_master_dispatch_record(uint32_t manage,uint32_t transfer,uint32_t hints,uint8_t,uint8_t) {
- assert(manage==17 && transfer==17 && hints==17);
+ assert(manage==17 && transfer>=17 && transfer%17==0 && hints==17);
 }
 static unsigned profileRecords, ackFetchRecords, emptyRecords, dataRecords;
 static uint32_t profileClock=0xffffffd0u;
 extern "C" uint32_t bodaqs_master_profile_clock(void) {profileClock+=17;return profileClock;}
 extern "C" void bodaqs_master_profile_record(uint32_t decode,uint32_t dispatch,uint32_t encode,
  uint8_t request,uint8_t reply) {
- assert(decode==17 && dispatch==51 && encode==17);
+ assert(decode==17 && dispatch>=51 && dispatch%17==0 && encode==17);
  ++profileRecords;ackFetchRecords+=request==14;emptyRecords+=reply==0;dataRecords+=reply==2;
 }
 '''

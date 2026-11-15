@@ -823,10 +823,17 @@ static bool measurement_transfer_core(BodaqsMasterService *s,const BodaqsMeasure
  * poll before selecting a sample; this helper neither validates nor retires ACKs. */
 static bool measurement_window_fetch(BodaqsMasterService *s,const uint8_t *credits,
     uint64_t context,uint32_t now,BodaqsMeasurementSlot *out) {
+    BODAQS_WORK_BEGIN(poll_started);
     BodaqsMeasurementSlot poll;memset(&poll,0,sizeof(poll));
     poll.kind=1;poll.context=context;poll.node=255;poll.body[0]=1;
-    if(!measurement_transfer_core(s,&poll,now,out)) return false;
-    if(!out->kind) (void)window_emit(s,credits,now,out);
+    const bool handled=measurement_transfer_core(s,&poll,now,out);
+    BODAQS_WORK_END(1,poll_started);
+    if(!handled) return false;
+    if(!out->kind) {
+        BODAQS_WORK_BEGIN(select_started);
+        (void)window_emit(s,credits,now,out);
+        BODAQS_WORK_END(2,select_started);
+    }
     return true;
 }
 #endif
@@ -852,7 +859,9 @@ static bool measurement_transfer(BodaqsMasterService *s,const BodaqsMeasurementS
         if(r->context!=s->transfer_context) {
             transfer_error(r,out,4);out->body[0]=r->body[0];return true;
         }
+        BODAQS_WORK_BEGIN(retire_started);
         const unsigned retired=measurement_retire(s,r,now,out,true);
+        BODAQS_WORK_END(0,retire_started);
         if(!retired) return false;
         if(retired==2) return true; /* invalid proof never retires */
 #if BODAQS_MEASUREMENT_VERSION >= 4

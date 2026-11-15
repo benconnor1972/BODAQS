@@ -46,6 +46,7 @@ if args.phase_timing:
     functions += "\n" + function("bodaqs_master_profile_clock")
     functions += "\n" + function("bodaqs_master_profile_record")
     functions += "\n" + function("bodaqs_master_dispatch_record")
+    functions += "\n" + function("bodaqs_master_work_record")
 if args.bulk:
     window=(ROOT/'firmware/can-fd/common/protocol/bodaqs_master_window.h').read_text()
     functions=function('window_clear_node',window)+'\n'+functions
