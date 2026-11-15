@@ -72,6 +72,7 @@ def main():
     parser.add_argument("--bulk-bytes", type=int, choices=(512,1024))
     parser.add_argument("--idle-control-fetch", action="store_true")
     parser.add_argument("--ordinary-fetch-ms",type=int,choices=(20,))
+    parser.add_argument("--health-interval-ms",type=int,choices=(2000,4000))
     parser.add_argument("--storage-timeline",action="store_true")
     parser.add_argument("--sample-queue-capacity",type=int,choices=(512,))
     parser.add_argument("--control-state",action="store_true")
@@ -281,6 +282,8 @@ namespace SharedSpiBus {''',1)
             source_flags += [f'-DBODAQS_SPI_BULK_BYTES={args.bulk_bytes}']
         if args.ordinary_fetch_ms:
             source_flags += [f'-DBODAQS_ORDINARY_FETCH_INTERVAL_MS={args.ordinary_fetch_ms}']
+        if args.health_interval_ms:
+            source_flags += [f'-DBODAQS_ACQ_HEALTH_INTERVAL_MS={args.health_interval_ms}']
         if args.storage_timeline:
             source_flags += ['-DBODAQS_STORAGE_TIMELINE=1']
         if args.sample_queue_capacity:

@@ -7,6 +7,12 @@
 #include <string.h>
 #include <initializer_list>
 
+#ifndef BODAQS_ACQ_HEALTH_INTERVAL_MS
+#define BODAQS_ACQ_HEALTH_INTERVAL_MS 2000
+#endif
+static_assert(BODAQS_ACQ_HEALTH_INTERVAL_MS > 0 && BODAQS_ACQ_HEALTH_INTERVAL_MS < 0x80000000UL,
+              "Health observation interval must fit the signed wrap-safe deadline range");
+
 #ifndef BODAQS_RECLAIM_IDLE_CONTROL_FETCH
 #define BODAQS_RECLAIM_IDLE_CONTROL_FETCH 0
 #endif
@@ -447,7 +453,7 @@ bool begin(uint64_t recording,uint64_t context) {
 #if BODAQS_MEASUREMENT_VERSION >= 4
   for(auto& next:transport.sampleNext) next=1;
 #endif
-  nextHealthObservation=millis()+2000;healthCursor=0;physicalFenceVerified=false;nextFenceInspection=0;
+  nextHealthObservation=millis()+BODAQS_ACQ_HEALTH_INTERVAL_MS;healthCursor=0;physicalFenceVerified=false;nextFenceInspection=0;
   fenceInspections=fenceObservations=0;nextFenceSnapshot=millis();
   {Lock lock;fenceSnapshot={};}
   {Lock lock;owned=true;enterPending=true;exitPending=false;cleanupRequested=false;}
@@ -596,8 +602,9 @@ void service() {
       if(!p.protectedLane.pending) challenge(n,false);
     }
   }
-  // One eight-request immutable acquisition snapshot per two seconds globally
-  // costs at most four ordinary requests/s before bounded transport retries.
+  // One eight-request immutable acquisition snapshot per configured interval
+  // globally. The default two seconds costs four ordinary requests/s before retries;
+  // the four-second diagnostic trial leaves half the master's allowance spare.
   // Protected renewals remain the fast fault detector; this fair, optional
   // observation supplements them without spending 32 requests/s on four nodes.
   if(due(now,nextHealthObservation)) for(unsigned i=0;i<4;++i) {
@@ -605,7 +612,7 @@ void service() {
     if(!p.monitoring || !p.leased || p.excluded || p.ordinary.pending || p.phase!=Phase::Idle || p.pendingMutation) continue;
     bool pending;{Lock lock;pending=mailboxes[peer].pending;}
     if(pending || transport.controls[0][peer].state.complete) continue;
-    nextHealthObservation=now+2000;healthCursor=(peer+1)%4;
+    nextHealthObservation=now+BODAQS_ACQ_HEALTH_INTERVAL_MS;healthCursor=(peer+1)%4;
     Request observation;observation.node=peer;observation.action=Action::Snapshot;observation.recording=p.recording;
     beginRequest(peer,observation,true);break;
   }
