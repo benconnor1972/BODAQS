@@ -1,5 +1,11 @@
 #pragma once
 #include "RecordingTimelineDiagnostics.h"
+#include <algorithm>
+#include <new>
+#include <type_traits>
+#if defined(ARDUINO_ARCH_ESP32)
+#include <esp_heap_caps.h>
+#endif
 #ifndef BODAQS_CONTROL_POLL_DIAGNOSTICS
 #define BODAQS_CONTROL_POLL_DIAGNOSTICS 0
 #endif
@@ -35,33 +41,59 @@ struct Memory {
   MemoryBin bins[capacity];uint32_t originUs=0,used=0,overflow=0;
   bool initialized=false,frozen=false;
 };
-inline Acquisition acquisition;
-inline Memory memory;
-static_assert(sizeof(acquisition)+sizeof(memory)<=10000,"Bounded control diagnostic RAM");
-inline size_t reservedBytes(){return sizeof(acquisition)+sizeof(memory);}
-inline void resetStorage(uint32_t origin){memory={};memory.originUs=origin;memory.initialized=true;}
+struct Banks {Acquisition acq;Memory mem;};
+// Persistent allocation, once before acquisition. Each owner retains only its
+// own bank; the pointer publication follows complete bank construction.
+inline Acquisition* acquisition=nullptr;
+inline Memory* memory=nullptr;
+inline std::atomic<Acquisition*> published{nullptr};
+static_assert(std::atomic<Acquisition*>::is_always_lock_free,"Diagnostic publication must not lock");
+static_assert(std::is_trivially_copyable<Acquisition>::value && std::is_trivially_copyable<Memory>::value,"Zeroable scalar banks");
+static_assert(sizeof(Banks)+sizeof(acquisition)+sizeof(memory)+sizeof(published)<=10100,"Bounded control diagnostic RAM");
+inline size_t reservedBytes(){return sizeof(Banks)+sizeof(acquisition)+sizeof(memory)+sizeof(published);}
+inline Banks* allocateBanks(){
+#if defined(ARDUINO_ARCH_ESP32)
+  void* bytes=heap_caps_malloc(sizeof(Banks),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+  return bytes?new(bytes) Banks:nullptr;
+#else
+  return new(std::nothrow) Banks;
+#endif
+}
+inline void resetStorage(uint32_t origin){
+  if(!memory){
+    Banks* banks=allocateBanks();
+    if(!banks){published.store(nullptr,std::memory_order_release);return;}
+    memory=&banks->mem;published.store(&banks->acq,std::memory_order_release);
+  }
+  // Banks contain only unsigned integers, byte enums and bools; avoid a large
+  // reset temporary on either owner's stack.
+  std::fill_n(reinterpret_cast<uint8_t*>(memory),sizeof(*memory),uint8_t(0));
+  memory->originUs=origin;memory->initialized=true;
+}
 inline void resetAcquisition(uint64_t context){
-  acquisition={};acquisition.context=context;
-  acquisition.originUs=RecordingTimelineDiagnostics::acquisition.originUs;
+  acquisition=published.load(std::memory_order_acquire);if(!acquisition)return;
+  std::fill_n(reinterpret_cast<uint8_t*>(acquisition),sizeof(*acquisition),uint8_t(0));
+  acquisition->context=context;
+  acquisition->originUs=RecordingTimelineDiagnostics::acquisition.originUs;
 }
 inline void peer(unsigned node,bool pending,uint32_t started,uint32_t operation,uint8_t opcode,uint8_t page){
-  if(node<4)acquisition.peers[node]={started,operation,opcode,page,pending};
+  if(acquisition && node<4)acquisition->peers[node]={started,operation,opcode,page,pending};
 }
 inline void event(unsigned node,uint8_t kind,uint32_t ageMs,uint32_t nowUs){
-  if(node>=4 || !acquisition.context)return;
-  const auto i=RecordingTimelineDiagnostics::index(acquisition,nowUs);if(i==capacity)return;
-  auto& b=acquisition.bins[i];
+  if(node>=4 || !acquisition || !acquisition->context)return;
+  const auto i=RecordingTimelineDiagnostics::index(*acquisition,nowUs);if(i==capacity)return;
+  auto& b=acquisition->bins[i];
   if(kind==0)++b.begins[node];
   else if(kind==1){++b.matched[node];RecordingTimelineDiagnostics::maximum(b.matchedAgeMaxMs[node],ageMs);}
   else if(kind==2)++b.timeouts[node];
 }
 inline void request(uint8_t target,uint8_t node,bool outgoing,bool partial,bool unadmitted,bool ack,
                     bool seen,uint32_t lastFetchMs,uint32_t nowMs,uint32_t nowUs){
-  if(!acquisition.context)return;
-  const auto i=RecordingTimelineDiagnostics::index(acquisition,nowUs);if(i==capacity)return;
-  auto& b=acquisition.bins[i];++b.targets[target<8?target:7];
+  if(!acquisition || !acquisition->context)return;
+  const auto i=RecordingTimelineDiagnostics::index(*acquisition,nowUs);if(i==capacity)return;
+  auto& b=acquisition->bins[i];++b.targets[target<8?target:7];
   if(target!=3 || node>=4)return;
-  const auto& p=acquisition.peers[node];
+  const auto& p=acquisition->peers[node];
   const Reason reason=outgoing?Outgoing:partial?Partial:unadmitted?Unadmitted:
       p.pending?(!seen?PendingFirst:uint32_t(nowMs-lastFetchMs)>=20?PendingDue:PendingNotDue):ack?AckOnly:Idle;
   ++b.reasons[reason];
@@ -73,15 +105,15 @@ inline void request(uint8_t target,uint8_t node,bool outgoing,bool partial,bool 
   }
 }
 inline bool memoryDue(uint32_t nowUs){
-  if(!memory.initialized || memory.frozen)return false;
-  const auto i=RecordingTimelineDiagnostics::index(memory,nowUs);
-  return i<capacity && !memory.bins[i].samples;
+  if(!memory || !memory->initialized || memory->frozen)return false;
+  const auto i=RecordingTimelineDiagnostics::index(*memory,nowUs);
+  return i<capacity && !memory->bins[i].samples;
 }
 inline void sampleMemory(uint32_t nowUs,uint32_t internalFree,uint32_t internalLargest,
                          uint32_t psramFree,uint32_t psramLargest){
   if(!memoryDue(nowUs))return;
-  const auto i=uint32_t(nowUs-memory.originUs)/RecordingTimelineDiagnostics::binUs;
-  memory.bins[i]={1,uint32_t(nowUs-memory.originUs),internalFree,internalLargest,psramFree,psramLargest};
+  const auto i=uint32_t(nowUs-memory->originUs)/RecordingTimelineDiagnostics::binUs;
+  memory->bins[i]={1,uint32_t(nowUs-memory->originUs),internalFree,internalLargest,psramFree,psramLargest};
 }
 }
 #endif

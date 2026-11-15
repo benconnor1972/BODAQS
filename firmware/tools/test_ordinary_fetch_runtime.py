@@ -43,6 +43,10 @@ int main(int argc,char** argv){
  CanMasterManager::beginRecordingHandoff();
  for(unsigned i=0;i<5500 && !CanMasterManager::recordingHandoffReady();++i)advance(1);
  assert(CanMasterManager::recordingHandoffReady());
+#if BODAQS_CONTROL_POLL_DIAGNOSTICS
+ RecordingTimelineDiagnostics::resetStorage(micros());
+ ControlPollingDiagnostics::resetStorage(RecordingTimelineDiagnostics::storage.originUs);
+#endif
  assert(AcquisitionControl::setDataConsumer(consumeSchedule,3));assert(AcquisitionControl::begin(123,456));
  for(unsigned i=0;i<100 && !CanMasterManager::measurementReady();++i)AcquisitionControl::service();
  assert(CanMasterManager::measurementReady());
@@ -143,12 +147,12 @@ int main(int argc,char** argv){
  }else assert(false);
 #if BODAQS_CONTROL_POLL_DIAGNOSTICS
  if(scenario=="pending") {
-   const auto& b=ControlPollingDiagnostics::acquisition.bins[0];
+   const auto& b=ControlPollingDiagnostics::acquisition->bins[0];
    assert(b.reasons[ControlPollingDiagnostics::PendingFirst]>=1 && b.reasons[ControlPollingDiagnostics::PendingDue]>=1);
  }
  if(scenario=="periodic0" || scenario=="periodic1" || scenario=="timeout"){
    uint32_t begins=0,matched=0,timeouts=0;
-   for(const auto& b:ControlPollingDiagnostics::acquisition.bins){begins+=b.begins[0];matched+=b.matched[0];timeouts+=b.timeouts[0];}
+   for(const auto& b:ControlPollingDiagnostics::acquisition->bins){begins+=b.begins[0];matched+=b.matched[0];timeouts+=b.timeouts[0];}
    if(scenario=="timeout")assert(timeouts==1);
    else assert(begins==1 && matched==1 && timeouts==0);
  }

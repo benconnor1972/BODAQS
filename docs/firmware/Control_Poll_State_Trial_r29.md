@@ -33,10 +33,17 @@ Only environment bodaqs_s3_mini_n4r2_imu_control_state enables new default-off
 BODAQS_CONTROL_POLL_DIAGNOSTICS=1. It requires the existing timeline/ordinary20
 profile. Separate acquisition and storage banks share the existing published
 logger origin,36 x20s bins (12minutes), reset/retirement lifecycle and sticky
-overflow convention. Their total is statically bounded10000bytes and charged
-through existing recording reservation. Acquisition alone writes request/peer
+overflow convention. Their total plus pointer publication is statically bounded
+10100bytes and charged through existing recording reservation. Acquisition alone writes request/peer
 and event state; storage alone writes memory samples. No cross-owner live-array
-reads or new diagnostic locks/allocations. Final JSON reads only after the
+reads or new diagnostic locks. A target link showed insufficient contiguous
+internal DRAM for the banks, so storage allocates one persistent PSRAM-only bank
+before acquisition, constructs it fully and release-publishes the acquisition
+bank pointer. Acquisition acquires that pointer at reset. It is never freed or
+reallocated during normal operation; subsequent recordings reset each owner's
+own bank. Missing allocation makes hooks safe no-ops and the footer explicitly
+unavailable, without altering sensor authorization. There are no allocations in
+sampling/SPI loops. Final JSON reads only after the
 existing matching completed acquisition/FLOW retirement proof. Wrong/absent
 retirement produces unavailable, and storage samples freeze before summary I/O.
 

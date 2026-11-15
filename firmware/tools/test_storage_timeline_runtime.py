@@ -105,8 +105,8 @@ if a.control_state:
     fixture=fixture.replace('std::string json;serializeJson(doc,json);',
         'ControlPollingJson::append(doc,true,context);\n'
         'assert(doc["control_poll_timeline"]["available"]==true);\n'
-        'assert(ControlPollingDiagnostics::memory.bins[17].internalFree==40000 && heapCalls==4);\n'
-        'assert(ControlPollingDiagnostics::memory.bins[17].psramLargest==150000);\n'
+        'assert(ControlPollingDiagnostics::memory->bins[17].internalFree==40000 && heapCalls==4);\n'
+        'assert(ControlPollingDiagnostics::memory->bins[17].psramLargest==150000);\n'
         'std::string json;serializeJson(doc,json);')
 with tempfile.TemporaryDirectory(prefix='bodaqs-timeline-') as temp:
     temp=Path(temp)
