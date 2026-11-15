@@ -86,6 +86,14 @@ no devices. It never runs on untrusted pull requests. A live GitHub run requires
 later authorized publication. Runner labels follow
 [GitHub's self-hosted runner selection](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/use-in-a-workflow).
 
+## Bench flashing preference
+
+For iterative bench testing, the user prefers fixing forward and does not want
+complete flash backups. Do not capture full flash recovery images by default.
+Verify the selected target and programmed application, preserve settings unless
+the task requires changing them, and retain build identity and upload results.
+Existing scripts that mandate full backups should be adapted to this preference.
+
 ## Windows UTF-8 bridge
 
 Prefer `apply_patch` for Unicode edits. For PowerShell native stdin/stdout,
