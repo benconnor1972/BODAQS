@@ -113,6 +113,19 @@ typedef struct {
 /* Separate main-owner 5s warmup/30s observation; loss never freezes this window. */
 #if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
 typedef struct {
+    uint32_t version,reserved;
+    uint64_t context,recording;
+    uint32_t calls[4],max_us[4][3];
+    uint64_t total_us[4][3];
+} MasterDispatchInfo;
+_Static_assert(sizeof(MasterDispatchInfo)==184,"Dispatch diagnostic ABI");
+/* Main owner only; same collection/freeze scope as gMasterSteadyInfo. */
+volatile MasterDispatchInfo gMasterDispatchInfo
+#if BODAQS_SPI_BULK_BYTES
+    __attribute__((section(".bodaqs_spi_buffers"),aligned(8)))
+#endif
+    ;
+typedef struct {
     uint32_t version,state,finish_reason,crc_ram; /* 1 warmup,2 collecting,3 frozen */
     uint64_t context,recording;
     uint32_t warmup_tick,started_tick,elapsed_us,clock_epoch,timing_invalid;
@@ -131,6 +144,9 @@ static void steady_observe(uint64_t context,uint64_t recording,bool active,uint3
         memset((void *)&gMasterSteadyInfo,0,sizeof gMasterSteadyInfo);
     }
     if(!gMasterSteadyInfo.state && active) {
+        memset((void *)&gMasterDispatchInfo,0,sizeof gMasterDispatchInfo);
+        gMasterDispatchInfo.version=1;
+        gMasterDispatchInfo.context=context;gMasterDispatchInfo.recording=recording;
         gMasterSteadyInfo.version=1;gMasterSteadyInfo.context=context;gMasterSteadyInfo.recording=recording;
         gMasterSteadyInfo.crc_ram=BODAQS_MASTER_CRC_RAM;
         gMasterSteadyInfo.clock_epoch=epoch;gMasterSteadyInfo.warmup_tick=tick;gMasterSteadyInfo.state=1;
@@ -411,6 +427,19 @@ static void drain_queue_record(const uint8_t *request,size_t length,
 uint32_t bodaqs_master_profile_clock(void)
 {
     return gMasterDrainInfo.state==1 || gMasterSteadyInfo.state==2 ? drain_clock() : 0;
+}
+
+void bodaqs_master_dispatch_record(uint32_t manage_us,uint32_t transfer_us,
+    uint32_t hints_us,uint8_t request_kind,uint8_t reply_kind)
+{
+    if(gMasterSteadyInfo.state!=2) return;
+    const unsigned row=request_kind==14?0:reply_kind==0?1:bodaqs_fragment_class(reply_kind)?2:3;
+    const uint32_t durations[3]={manage_us,transfer_us,hints_us};
+    ++gMasterDispatchInfo.calls[row];
+    for(unsigned c=0;c<3;++c) {
+        gMasterDispatchInfo.total_us[row][c]+=durations[c];
+        if(durations[c]>gMasterDispatchInfo.max_us[row][c]) gMasterDispatchInfo.max_us[row][c]=durations[c];
+    }
 }
 
 void bodaqs_master_profile_record(uint32_t decode_us,uint32_t dispatch_us,

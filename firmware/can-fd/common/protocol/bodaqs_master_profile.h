@@ -8,6 +8,8 @@
 extern "C" {
 #endif
 uint32_t bodaqs_master_profile_clock(void);
+void bodaqs_master_dispatch_record(uint32_t manage_us, uint32_t transfer_us,
+    uint32_t hints_us, uint8_t request_kind, uint8_t reply_kind);
 void bodaqs_master_profile_record(uint32_t decode_us, uint32_t dispatch_us,
     uint32_t encode_us, uint8_t request_kind, uint8_t reply_kind);
 #ifdef __cplusplus
