@@ -3,6 +3,7 @@
 #include <atomic>
 #include <stddef.h>
 #include <stdint.h>
+#include "RecordingTimelineDiagnostics.h"
 
 #if defined(BODAQS_RECORDING_PRESSURE_DIAGNOSTICS) && BODAQS_RECORDING_PRESSURE_DIAGNOSTICS
 #if !defined(BODAQS_IMU_FLOW_DIAGNOSTICS) || !BODAQS_IMU_FLOW_DIAGNOSTICS
@@ -56,6 +57,9 @@ inline void resetStorage() {
 }
 inline void resetAcquisition(uint64_t context,uint32_t nowUs) {
   acquisition={};acquisition.context=context;acquisition.lastServiceUs=nowUs;
+#if BODAQS_STORAGE_TIMELINE
+  RecordingTimelineDiagnostics::resetAcquisition(context,nowUs);
+#endif
 }
 inline bool pastWindow(uint32_t nowUs) {
   // Signed modulo delta also handles an operation completed just before the
@@ -64,6 +68,9 @@ inline bool pastWindow(uint32_t nowUs) {
       int32_t(nowUs-firstLossUs.load(std::memory_order_relaxed))>=int32_t(postLossUs);
 }
 inline void loss(uint8_t node,uint8_t cls,uint8_t reason,uint16_t stage,uint32_t counter,uint32_t nowUs) {
+#if BODAQS_STORAGE_TIMELINE
+  if(counter)RecordingTimelineDiagnostics::loss(node,cls,nowUs);
+#endif
   if(!counter || triggered.load(std::memory_order_relaxed)) return;
   acquisition.lossNode=node;acquisition.lossClass=cls;acquisition.lossReason=reason;
   acquisition.lossStage=stage;acquisition.lossCounter=counter;
@@ -71,6 +78,9 @@ inline void loss(uint8_t node,uint8_t cls,uint8_t reason,uint16_t stage,uint32_t
   triggered.store(true,std::memory_order_release);
 }
 inline void service(uint32_t nowUs) {
+#if BODAQS_STORAGE_TIMELINE
+  RecordingTimelineDiagnostics::service(nowUs);
+#endif
   if(!acquisition.frozen) {
     const uint32_t elapsed=nowUs-acquisition.lastServiceUs;
     if(acquisition.haveService && elapsed>=serviceGapThresholdUs)
@@ -81,6 +91,9 @@ inline void service(uint32_t nowUs) {
 }
 inline void storageOperation(uint8_t operation,uint32_t startedUs,uint32_t durationUs,
                              uint32_t bytes,uint16_t primaryDepth) {
+#if BODAQS_STORAGE_TIMELINE
+  RecordingTimelineDiagnostics::storageOperation(operation,startedUs,durationUs,bytes,primaryDepth);
+#endif
   if(storage.frozen) return;
   storage.operations.add({startedUs,durationUs,bytes,primaryDepth,operation});
   // Include the first completion crossing the cutoff, including a long write
@@ -88,7 +101,11 @@ inline void storageOperation(uint8_t operation,uint32_t startedUs,uint32_t durat
   storage.frozen=pastWindow(startedUs+durationUs);
 }
 inline size_t reservedBytes() {
-  return sizeof(storage)+sizeof(acquisition)+sizeof(firstLossUs)+sizeof(triggered);
+  return sizeof(storage)+sizeof(acquisition)+sizeof(firstLossUs)+sizeof(triggered)
+#if BODAQS_STORAGE_TIMELINE
+      +RecordingTimelineDiagnostics::reservedBytes()
+#endif
+      ;
 }
 }
 #endif

@@ -278,6 +278,9 @@ SharedProgress sharedProgress[2];
 void observeConsumer(uint8_t cls,Participant& peer,bool accepted,const uint8_t* p,uint16_t total) {
  const uint32_t nowUs=micros();
  const auto queues=peer.stream.queueState();
+#if BODAQS_STORAGE_TIMELINE
+ RecordingTimelineDiagnostics::consumer(peer.node,cls,accepted,queues.samples,queues.evidence,nowUs);
+#endif
  ImuFlowDiagnostics::consumer(cls,accepted,queues.samples,queues.evidence,queues.sampleCapacity,queues.evidenceCapacity);
  ImuFlowDiagnostics::nodeConsumer(peer.node,accepted,queues.packetsAccepted,queues.samplesAccepted,
    queues.samples,queues.evidence,queues.sampleCapacity,queues.evidenceCapacity,nowUs);

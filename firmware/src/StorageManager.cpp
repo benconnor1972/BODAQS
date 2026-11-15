@@ -8,6 +8,7 @@
 #include "BdqLogWriter.h"
 #include "BdqV2Catalog.h"
 #include "BdqV2FileSink.h"
+#include "RecordingTimelineJson.h"
 #include "BdqV2PrimaryStream.h"
 #include "BdqV2Writer.h"
 #include "BdqAdcTimingJson.h"
@@ -1902,6 +1903,10 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
   document["remote_cleanup_complete"] = RemoteImuRecording::stopped();
   appendBdqV2MeasurementFailures_(document);
   appendRecordingPressure_(document);
+#if BODAQS_STORAGE_TIMELINE
+  const auto* timelineFinished=RemoteImuRecording::finalFlowSnapshot(false);
+  RecordingTimelineJson::append(document,timelineFinished!=nullptr,timelineFinished?timelineFinished->context:0);
+#endif
   appendSharedMetadataRetirements_(document);
   JsonArray nodeFlow=document["remote_node_flow"].to<JsonArray>();
   for(uint8_t node=0;node<4;++node) {
@@ -2389,6 +2394,9 @@ static void startLog() {
   s_storageTiming = StorageTimingStats{};
 #if defined(BODAQS_RECORDING_PRESSURE_DIAGNOSTICS) && BODAQS_RECORDING_PRESSURE_DIAGNOSTICS
   RecordingPressureDiagnostics::resetStorage();
+#if BODAQS_STORAGE_TIMELINE
+  RecordingTimelineDiagnostics::resetStorage(micros());
+#endif
 #endif
   s_storageTiming.writeStallThresholdUs = kStorageWriteStallThresholdUs;
   s_rowsWritten = 0;
@@ -3167,6 +3175,9 @@ static void storageService_() {
   unsigned long now = millis();
   if (loggingActive && isBdqV2Format_()) {
     const uint32_t drainStartUs = micros();
+#if BODAQS_STORAGE_TIMELINE
+    const uint64_t timelineIoBefore=RecordingTimelineDiagnostics::storage.ioUs;
+#endif
     uint16_t chunksWritten = 0;
     while (s_bdqV2Writer.hasPendingData()) {
       if (!drainOneReadyBdqV2Chunk_(
@@ -3198,6 +3209,10 @@ static void storageService_() {
       }
       lastFlush = now;
     }
+#if BODAQS_STORAGE_TIMELINE
+    RecordingTimelineDiagnostics::storageService(drainStartUs,uint32_t(micros()-drainStartUs),
+        timelineIoBefore,queueDepthSnapshot_());
+#endif
     return;
   }
 
