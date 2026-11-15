@@ -55,7 +55,9 @@ static void window_advance_impl(BodaqsMasterService *s,uint8_t node,uint32_t now
             if(u->count || u->object.complete) return;
             const BodaqsRetainedReception *r=&q->records[q->head];
             BODAQS_WORK_BEGIN(init_started);
-            memset(u->bytes,0,sizeof(u->bytes));
+            /* Every valid payload byte is copied below; seal writes the CRC.
+             * Only the fixed header has fields/reserved bytes requiring zero. */
+            memset(u->bytes,0,16);
             BODAQS_WORK_END(4,init_started);
             u->started_ms=r->received_ms;u->attempts=0;
             bodaqs_measurement_put(u->bytes,2,2);u->bytes[2]=1;u->bytes[3]=node;

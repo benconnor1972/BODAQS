@@ -88,6 +88,8 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_bulk_codec_runtime.py --ram-table --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_ackfetch_direct_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_ackfetch_direct_runtime.py --phase-timing --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_bounded_initialization_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_ackfetch_direct_runtime.py --phase-timing --no-work-timing --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --phase-timing --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --boundary-trace --compiler "$(CXX)"

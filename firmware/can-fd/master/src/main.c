@@ -113,7 +113,7 @@ typedef struct {
 /* Separate main-owner 5s warmup/30s observation; loss never freezes this window. */
 #if defined(BODAQS_MASTER_PHASE_TIMING) && BODAQS_MASTER_PHASE_TIMING
 typedef struct {
-    uint32_t version,reserved;
+    uint32_t version,disabled;
     uint64_t context,recording;
     uint32_t calls[8],max_us[8];
     uint64_t total_us[8];
@@ -159,7 +159,7 @@ static void steady_observe(uint64_t context,uint64_t recording,bool active,uint3
     if(!gMasterSteadyInfo.state && active) {
         memset((void *)&gMasterDispatchInfo,0,sizeof gMasterDispatchInfo);
         memset((void *)&gMasterWorkInfo,0,sizeof gMasterWorkInfo);
-        gMasterWorkInfo.version=1;gMasterWorkInfo.context=context;gMasterWorkInfo.recording=recording;
+        gMasterWorkInfo.version=1;gMasterWorkInfo.disabled=!BODAQS_MASTER_WORK_TIMING;gMasterWorkInfo.context=context;gMasterWorkInfo.recording=recording;
         gMasterDispatchInfo.version=1;
         gMasterDispatchInfo.context=context;gMasterDispatchInfo.recording=recording;
         gMasterSteadyInfo.version=1;gMasterSteadyInfo.context=context;gMasterSteadyInfo.recording=recording;

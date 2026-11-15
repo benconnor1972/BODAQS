@@ -46,9 +46,14 @@ static inline bool bodaqs_fragment_emit(const BodaqsFragmentState *s,const uint8
     uint8_t index,BodaqsMeasurementSlot *slot) {
     unsigned offset=(unsigned)index*BODAQS_MEASUREMENT_BODY_BYTES, count;
     if(!s->complete || offset>=s->total) return false;
-    memset(slot,0,sizeof(*slot)); slot->kind=bodaqs_fragment_kind(s->cls);
-    slot->context=s->context; slot->object=s->object; slot->node=s->node; slot->index=index; slot->total=s->total;
     count=s->total-offset; if(count>BODAQS_MEASUREMENT_BODY_BYTES) count=BODAQS_MEASUREMENT_BODY_BYTES;
+    /* Initialize metadata, padding and unused body bytes; the complete valid
+     * payload is overwritten once below. Include proof fields after body. */
+    const size_t prefix=offsetof(BodaqsMeasurementSlot,body);
+    memset(slot,0,prefix);
+    memset((uint8_t *)slot+prefix+count,0,sizeof(*slot)-prefix-count);
+    slot->kind=bodaqs_fragment_kind(s->cls);
+    slot->context=s->context; slot->object=s->object; slot->node=s->node; slot->index=index; slot->total=s->total;
     memcpy(slot->body,data+offset,count); return true;
 }
 static inline void bodaqs_fragment_ack(const BodaqsFragmentState *s,uint8_t disposition,BodaqsMeasurementSlot *ack) {
