@@ -158,6 +158,21 @@ int main(int argc,char** argv){
    else assert(begins==1 && matched==1 && timeouts==0);
  }
 #endif
+ // A maintenance exchange is allowed with no acquisition owner. An old
+ // retired diagnostic bank may still exist; it must remain immutable.
+ if(scenario=="periodic0" || scenario=="periodic1") {
+  const auto oldOwner=CanMasterManager::s_measurementOwner.load();
+  CanMasterManager::s_measurementOwner.store(nullptr);
+#if BODAQS_ACQUISITION_PROFILE
+  const auto bankBefore=*ControlPollingDiagnostics::acquisition;
+#endif
+  BodaqsMeasurementSlot request={},reply={};request.context=456;request.node=255;
+  assert(CanMasterManager::exchangeMeasurementSlot(request,reply));
+#if BODAQS_ACQUISITION_PROFILE
+  assert(!memcmp(&bankBefore,ControlPollingDiagnostics::acquisition,sizeof bankBefore));
+#endif
+  CanMasterManager::s_measurementOwner.store(oldOwner);
+ }
  if(const char* path=std::getenv("BODAQS_SCHEDULE_OUT")){
    FILE* f=std::fopen(path,"wb");assert(f);assert(std::fwrite(wireJournal.data(),1,wireJournal.size(),f)==wireJournal.size());std::fclose(f);
  }

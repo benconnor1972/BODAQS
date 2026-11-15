@@ -4,12 +4,16 @@ Regression for selecting the expected window head, not obsolete ring slot0.
 No firmware source is edited. Production definitions are extracted verbatim.
 """
 import json
+import argparse
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 
+parser=argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--compiler',default='g++')
+args=parser.parse_args()
 SOURCE=Path(__file__).resolve().parents[2]
 evidence=tempfile.TemporaryDirectory(prefix='bodaqs-selector-evidence-')
 ROOT=Path(evidence.name)
@@ -60,10 +64,10 @@ int main() {
   printf("slot0_admitted: selected class=%u node=%u\n",cls,node);
 }
 '''
-env=dict(os.environ);env['PATH']='C:/msys64/ucrt64/bin;'+env['PATH']
+env=dict(os.environ)
 with tempfile.TemporaryDirectory(prefix='bodaqs-r30-selector-') as folder:
     folder=Path(folder);(ROOT/'selector.cpp').write_text(cpp,encoding='utf-8')
-    command=['C:/msys64/ucrt64/bin/g++.exe','-std=c++17','-DBODAQS_SPI_MEASUREMENT_V4=1','-DBODAQS_SPI_BULK_BYTES=512',
+    command=[args.compiler,'-std=c++17','-DBODAQS_SPI_MEASUREMENT_V4=1','-DBODAQS_SPI_BULK_BYTES=512',
              '-I',str(SOURCE/'firmware/test/stubs'),'-I',str(SOURCE/'firmware/src'),
              str(ROOT/'selector.cpp'),'-o',str(folder/'probe.exe')]
     build=subprocess.run(command,capture_output=True,env=env)

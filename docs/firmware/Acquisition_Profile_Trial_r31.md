@@ -23,7 +23,9 @@ does not write again after that finish. Burst/sleep observations require active
 ownership acquired before reading the context and a matching context after the
 interval; terminal groups and sleeps crossing retirement/new scope are omitted.
 This intentionally leaves an incomplete final group rather than updating a
-retired bank. Serialization remains under `control_poll_timeline` with the
+retired bank. Exchange hooks additionally require the captured actual measurement
+owner function to be present and admit the caller: permissive ownerless maintenance
+exchanges never update an old acquisition bank. Serialization remains under `control_poll_timeline` with the
 existing version1 fields plus `profile_version=1`, stage names and optional bin
 `profile` objects. No sample or protocol identity/format is changed.
 
@@ -48,7 +50,10 @@ Each profile has arrays `calls`, `total_us` (64-bit), and `max_us` in this order
 
 These are **wall intervals**, not CPU time. Service/transport/burst are nested;
 do not sum them with their children. Counter updates have cost and outer scopes
-include nested instrumentation overhead. SPI child counters are updated after
+include nested instrumentation overhead. The SPI wait interval excludes the outer manager's 25 us rearm guard, which runs
+before the shared-bus timing seam. Not every transport operation has a child
+stage counter; do not require the SPI/decode/encode children to sum exactly to
+Transport. SPI child counters are updated after
 the decode endpoint so their update cost is not charged as decoder work.
 SPI children are grouped by exchange-start bin; they do not individually record
 the physical start of each phase. Other intervals are charged to their own
@@ -75,7 +80,8 @@ host stand-in. Their phase timing is explicitly zero and core is unknown; they
 do not run the ESP32 task loop. The ordinary-fetch runtime's
 `--control-state --acquisition-profile` mode checks complete MOSI bytes/order
 equivalence with both observers disabled/enabled, including periodic request
-loss. The selected integrated fixture supports `--acquisition-profile` to test
+loss. A successful actual ownerless maintenance exchange leaves an existing
+acquisition bank byte-identical in the periodic-loss scenarios. The selected integrated fixture supports `--acquisition-profile` to test
 recording/cleanup and ensure diagnostic JSON remains compatible.
 
 Target compilation covers the real HAL timing pointer and task core/sleep hooks.

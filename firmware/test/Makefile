@@ -1,4 +1,4 @@
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Makefile for host-based tests
 #
 # Compiles stubs + production source + test files with host g++.
@@ -7,7 +7,7 @@
 # Usage:
 #   make -C test test     # build and run tests
 #   make -C test clean    # remove build artifacts
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 CXX      = g++
 PYTHON   ?= python
@@ -44,6 +44,7 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_control_poll_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_control_poll_parser.py
 	$(PYTHON) ../tools/test_ordinary_fetch_runtime.py --control-state --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_window_reclamation_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_storage_timeline_runtime.py --control-state --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_bdq_adc_footer_runtime.py --spi-phase-timing --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_i2c_schedule_runtime.py --compiler "$(CXX)"

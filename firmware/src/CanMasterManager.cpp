@@ -769,6 +769,8 @@ bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
   // Persistent buffers avoid adding two bulk frames to the 4 KiB task stack.
   static uint8_t tx[BODAQS_MEASUREMENT_BYTES], rx[BODAQS_MEASUREMENT_BYTES];
 #if BODAQS_ACQUISITION_PROFILE
+  const auto profileOwner=s_measurementOwner.load();
+  const bool profileExchange=profileOwner && profileOwner();
   const uint32_t encodingStart=micros();
 #endif
   memset(tx,0,sizeof tx);
@@ -776,7 +778,7 @@ bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
   const SPISettings settings(BODAQS_MEASUREMENT_HZ, MSBFIRST, spiDataMode_(s_profile.spi_mode));
   const uint32_t started=micros();
 #if BODAQS_ACQUISITION_PROFILE
-  ControlPollingDiagnostics::profile(ControlPollingDiagnostics::Encode,encodingStart,started-encodingStart);
+  if(profileExchange)ControlPollingDiagnostics::profile(ControlPollingDiagnostics::Encode,encodingStart,started-encodingStart);
   SpiTransferTiming phases;
 #endif
   auto& timing=s_diagnostics.measurementTiming;
@@ -794,7 +796,7 @@ bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
   const bool transferred=transferSlot_(settings,tx,rx,BODAQS_MEASUREMENT_BYTES,25,
       BODAQS_MEASUREMENT_START_SPACING_US,BODAQS_MEASUREMENT_CS_SETUP_US,busContext
 #if BODAQS_ACQUISITION_PROFILE
-      ,&phases
+      ,profileExchange?&phases:nullptr
 #endif
       );
 #if BODAQS_ACQUISITION_PROFILE
@@ -821,9 +823,11 @@ bool exchangeMeasurementSlot(const BodaqsMeasurementSlot& request,
 #if BODAQS_ACQUISITION_PROFILE
   const uint32_t decodingEnd=micros();
   using namespace ControlPollingDiagnostics;
-  profile(Decode,decodingStart,decodingEnd-decodingStart);
-  profile(SpiWait,started,phases.lockWaitUs);profile(SpiPrepare,started,phases.prepareUs);
-  profile(SpiTransfer,started,phases.transferUs);profile(SpiFinish,started,phases.finishUs);
+  if(profileExchange){
+    profile(Decode,decodingStart,decodingEnd-decodingStart);
+    profile(SpiWait,started,phases.lockWaitUs);profile(SpiPrepare,started,phases.prepareUs);
+    profile(SpiTransfer,started,phases.transferUs);profile(SpiFinish,started,phases.finishUs);
+  }
 #endif
   measurementTimingEndUs=micros();
   const uint32_t duration=measurementTimingEndUs-started;
