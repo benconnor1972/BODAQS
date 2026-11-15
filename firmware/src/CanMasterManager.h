@@ -22,6 +22,18 @@
 #error "ACK-fetch fragment sweep requires measurement v2"
 #endif
 
+// Ordinary result discovery only. Protected control, known partial results and
+// ACK transmission retain their existing service. Zero preserves old builds.
+#ifndef BODAQS_ORDINARY_FETCH_INTERVAL_MS
+#define BODAQS_ORDINARY_FETCH_INTERVAL_MS 0
+#endif
+#if BODAQS_ORDINARY_FETCH_INTERVAL_MS < 0 || BODAQS_ORDINARY_FETCH_INTERVAL_MS > 20
+#error "Ordinary fetch interval must be 0..20ms"
+#endif
+#if BODAQS_ORDINARY_FETCH_INTERVAL_MS && (BODAQS_MEASUREMENT_VERSION < 4 || !BODAQS_RECLAIM_IDLE_CONTROL_FETCH)
+#error "Ordinary fetch pacing requires window transport and idle fetch reclamation"
+#endif
+
 namespace CanMasterManager {
 
 enum class State : uint8_t {
@@ -185,6 +197,12 @@ struct MeasurementOutbox {
 };
 struct MeasurementTransport {
   MeasurementInbox inboxes[5][4];
+#if BODAQS_ORDINARY_FETCH_INTERVAL_MS
+  // Acquisition owner only; last attempted MOSI fetch, not response readiness.
+  // Reset with transport scope and on each newly queued ordinary command.
+  uint32_t ordinaryFetchMs[4] = {};
+  uint8_t ordinaryFetchSeen = 0;
+#endif
 #if BODAQS_MEASUREMENT_VERSION >= 4
   MeasurementInbox sampleExtra[4][3];
   uint32_t sampleNext[4] = {1,1,1,1};

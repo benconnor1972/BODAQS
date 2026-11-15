@@ -64,6 +64,7 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_pipeline_serial_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_acquisition_control_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_idle_control_fetch_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_ordinary_fetch_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_acquisition_control_runtime.py --idle-control-fetch --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --ack-sweep --pipeline-trace --idle-control-fetch --start-spacing-us 600 --reply-capture --cs-setup-us 5 --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_imu_admission_runtime.py --compiler "$(CXX)"

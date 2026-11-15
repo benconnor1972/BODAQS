@@ -71,11 +71,14 @@ def main():
     parser.add_argument("--window", action="store_true")
     parser.add_argument("--bulk-bytes", type=int, choices=(512,1024))
     parser.add_argument("--idle-control-fetch", action="store_true")
+    parser.add_argument("--ordinary-fetch-ms",type=int,choices=(20,))
     parser.add_argument("--flow-diagnostics", action="store_true")
     parser.add_argument("--pressure-diagnostics", action="store_true")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--only-scenario",choices=('shared-startup-failure','shared-runtime-failure'))
     args = parser.parse_args()
+    if args.ordinary_fetch_ms and not (args.bulk_bytes and args.idle_control_fetch):
+        parser.error('--ordinary-fetch-ms requires bulk transport and idle control reclamation')
     if args.bulk_bytes:
         args.four_node=True
     if args.four_node:
@@ -239,6 +242,8 @@ namespace SharedSpiBus {''',1)
             source_flags += ['-DBODAQS_V4_FOUR_NODE_BENCH=1']
         if args.bulk_bytes:
             source_flags += [f'-DBODAQS_SPI_BULK_BYTES={args.bulk_bytes}']
+        if args.ordinary_fetch_ms:
+            source_flags += [f'-DBODAQS_ORDINARY_FETCH_INTERVAL_MS={args.ordinary_fetch_ms}']
         if args.pressure_diagnostics:
             source_flags += ['-DBODAQS_RECORDING_PRESSURE_DIAGNOSTICS=1', '-I', str(firmware/'.pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src')]
         sources += [firmware / "src" / name for name in ("CanMasterProtocol.cpp", "SensorAssignment.cpp", "SensorParams.cpp", "Lsm6dso32xConfig.cpp", "RemoteImuStream.cpp", "BdqV2Catalog.cpp", "BdqV2Writer.cpp", "ImuAdmission.cpp")]

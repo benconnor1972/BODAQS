@@ -87,6 +87,16 @@ static bool controlFetchPending(uint8_t cls,uint8_t node) {
   const auto& peer=peers[node];
   const auto& exchange=cls==4?peer.protectedLane:peer.ordinary;
   const auto& result=transport.inboxes[cls-1][node];
+#if BODAQS_ORDINARY_FETCH_INTERVAL_MS
+  if(cls==3) {
+    // A pending ACK needs its existing transport priority, not another fetch
+    // of the same control lane. Never delay known partial/unaccepted results.
+    if(transport.controls[0][node].state.complete ||
+       (result.state.object && (!result.state.complete || !result.admitted))) return true;
+    return exchange.pending && (!(transport.ordinaryFetchSeen&(1u<<node)) ||
+        static_cast<uint32_t>(millis()-transport.ordinaryFetchMs[node])>=BODAQS_ORDINARY_FETCH_INTERVAL_MS);
+  }
+#endif
   return exchange.pending || transport.controls[cls-3][node].state.complete ||
       result.ackPending || (result.state.object && (!result.state.complete || !result.admitted));
 }

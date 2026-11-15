@@ -881,8 +881,12 @@ bool queueMeasurementControl(MeasurementTransport& transport,const BodaqsControl
     if(!authorization || wrapped.record.opcode!=0x25 || objectId<=outbox.state.object) return false;
   }
   memcpy(outbox.bytes,bytes,64);outbox.nextFragment=0;outbox.error=0;outbox.startedMs=millis();
-  return bodaqs_fragment_seal(&outbox.state,outbox.bytes,68,transport.context,objectId,
+  const bool sealed=bodaqs_fragment_seal(&outbox.state,outbox.bytes,68,transport.context,objectId,
       wrapped.node_address,authorization?4:3,0,64);
+#if BODAQS_ORDINARY_FETCH_INTERVAL_MS
+  if(sealed && !authorization) transport.ordinaryFetchSeen &= static_cast<uint8_t>(~(1u<<wrapped.node_address));
+#endif
+  return sealed;
 }
 static uint64_t loggerClockUs_() {
 #if defined(ARDUINO_ARCH_ESP32)
@@ -1118,6 +1122,13 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
 #elif BODAQS_MEASUREMENT_VERSION == 3
   if(request.kind==1 && request.body[0]==1) {
     request={};request.context=transport.context;request.node=255;
+  }
+#endif
+#if BODAQS_ORDINARY_FETCH_INTERVAL_MS
+  const uint8_t fetchClass=request.kind==14?request.body[2]:request.kind==1?request.body[0]:0;
+  const uint8_t fetchNode=request.kind==14?request.body[3]:request.node;
+  if(transport.timingEnabled && fetchClass==3 && fetchNode<4) {
+    transport.ordinaryFetchMs[fetchNode]=millis();transport.ordinaryFetchSeen |= 1u<<fetchNode;
   }
 #endif
   const bool exchanged=exchangeMeasurementSlot(request,response);
