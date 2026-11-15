@@ -623,6 +623,10 @@ proof_error:
     out->body[0]=cls; /* Same error bytes as the normalized kind5 request. */
     return 2;
 }
+#if BODAQS_MEASUREMENT_VERSION >= 4
+static bool measurement_window_fetch(BodaqsMasterService *s,const uint8_t *credits,
+    uint64_t context,uint32_t now,BodaqsMeasurementSlot *out);
+#endif
 static bool measurement_transfer_core(BodaqsMasterService *s,const BodaqsMeasurementSlot *r,
     uint32_t now,BodaqsMeasurementSlot *out) {
     uint8_t cls=bodaqs_fragment_class(r->kind); unsigned i;
@@ -634,11 +638,7 @@ static bool measurement_transfer_core(BodaqsMasterService *s,const BodaqsMeasure
            !bodaqs_measurement_zero(r->body+32,sizeof(r->body)-32)) return false;
         /* Loss notifications remain independently serviceable even when every
          * source advertises zero sample credit. */
-        BodaqsMeasurementSlot poll;memset(&poll,0,sizeof(poll));
-        poll.kind=1;poll.context=r->context;poll.node=255;poll.body[0]=1;
-        if(!measurement_transfer_core(s,&poll,now,out)) return false;
-        if(!out->kind) (void)window_emit(s,r->body,now,out);
-        return true;
+        return measurement_window_fetch(s,r->body,r->context,now,out);
     }
 #endif
     if(r->kind==10) {
@@ -818,6 +818,19 @@ static bool measurement_transfer_core(BodaqsMasterService *s,const BodaqsMeasure
     return true;
 }
 
+#if BODAQS_MEASUREMENT_VERSION >= 4
+/* Credits/context are validated by the caller. Preserve the loss-notification
+ * poll before selecting a sample; this helper neither validates nor retires ACKs. */
+static bool measurement_window_fetch(BodaqsMasterService *s,const uint8_t *credits,
+    uint64_t context,uint32_t now,BodaqsMeasurementSlot *out) {
+    BodaqsMeasurementSlot poll;memset(&poll,0,sizeof(poll));
+    poll.kind=1;poll.context=context;poll.node=255;poll.body[0]=1;
+    if(!measurement_transfer_core(s,&poll,now,out)) return false;
+    if(!out->kind) (void)window_emit(s,credits,now,out);
+    return true;
+}
+#endif
+
 static bool measurement_transfer(BodaqsMasterService *s,const BodaqsMeasurementSlot *r,
     uint32_t now,BodaqsMeasurementSlot *out) {
 #if BODAQS_MEASUREMENT_VERSION >= 2
@@ -842,20 +855,24 @@ static bool measurement_transfer(BodaqsMasterService *s,const BodaqsMeasurementS
         const unsigned retired=measurement_retire(s,r,now,out,true);
         if(!retired) return false;
         if(retired==2) return true; /* invalid proof never retires */
-        BodaqsMeasurementSlot command;
-        memset(&command,0,sizeof command);
-        command.kind=1;command.context=r->context;command.node=r->body[3];
-        command.object=(uint32_t)bodaqs_measurement_get(r->body+8,4);command.index=r->body[12];
-        command.body[0]=r->body[2];
 #if BODAQS_MEASUREMENT_VERSION >= 4
-        if(command.body[0]==1) {
-            command.kind=15;command.node=255;command.object=0;command.index=0;
-            memset(command.body,0,sizeof command.body);memcpy(command.body,r->body+16,32);
-        }
-#elif BODAQS_MEASUREMENT_VERSION == 3
-        if(command.body[0]==1) {command.node=255;command.object=0;command.index=0;}
+        if(r->body[2]==1) {
+            /* The combined-request checks above already validated all credits
+             * and reserved bytes. Avoid reconstructing/revalidating kind15. */
+            if(!measurement_window_fetch(s,r->body+16,r->context,now,out)) return false;
+        } else
 #endif
-        if(!measurement_transfer_core(s,&command,now,out)) return false;
+        {
+            BodaqsMeasurementSlot command;
+            memset(&command,0,sizeof command);
+            command.kind=1;command.context=r->context;command.node=r->body[3];
+            command.object=(uint32_t)bodaqs_measurement_get(r->body+8,4);command.index=r->body[12];
+            command.body[0]=r->body[2];
+#if BODAQS_MEASUREMENT_VERSION == 3
+            if(command.body[0]==1) {command.node=255;command.object=0;command.index=0;}
+#endif
+            if(!measurement_transfer_core(s,&command,now,out)) return false;
+        }
         out->retired=true;out->retiredClass=r->body[0];out->retiredNode=r->node;
         out->retiredObject=r->object;out->retiredTotal=r->total;
         out->retiredChecksum=(uint32_t)bodaqs_measurement_get(r->body+4,4);

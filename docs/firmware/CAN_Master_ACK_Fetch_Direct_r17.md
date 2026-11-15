@@ -1,0 +1,9 @@
+# r17: direct validated sample ACK-and-fetch
+
+Base711c5ad7/r16. Retain RAM CRC, P3 logger,512-byte geometry, pacing, all four nodes and ADC-off configuration. No diagnostic ABI or wire changes.
+
+The combined sample-fetch request already validates context, credits and reserved bytes before retiring the exact predecessor. Previously it reconstructed a full kind15 slot, cleared its body again and called the core path, which then constructed an internal loss-poll slot. The new path calls the shared loss-poll/sample-selection helper directly after successful retirement. Standalone kind15 uses the same helper after its existing validation. Generic fetches and v2/v3 remain unchanged. No CRC, identity, credit, loss priority or proof checks are relaxed.
+
+Hypothesis: removing normalized command staging, redundant output clearing and repeated credit validation reduces transfer wall time. This has not yet been demonstrated on hardware. Keep the r16 steady/detail counters; compare full-window transfer and ACK_FETCH means with r16 and delivered readings per common logger window. Also check storage stalls, all source terminal boundaries, rejected replies, duplicates and sample queue pressure. A host wire oracle is not throughput proof.
+
+Regression test test_ackfetch_direct_runtime.py exercises sample/zero/present credit, invalid ACK/context/reserved bytes, loss-first behavior, replay and exact duplicate retirement. An optional predecessor source oracle compares every full wire response and selected terminal state at512/1024bytes; comparison passed against711c5ad7. Current behavior assertions also pass independently. Relevant complete common/master suites and integrated selected512 recording checks must pass before packaging. A fresh reviewer must inspect validated-request/retirement/lifetime boundaries.
