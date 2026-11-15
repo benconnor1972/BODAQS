@@ -94,6 +94,11 @@ Verify the selected target and programmed application, preserve settings unless
 the task requires changing them, and retain build identity and upload results.
 Existing scripts that mandate full backups should be adapted to this preference.
 
+## Bench results folders
+
+When creating a results directory for the user to populate, also create an empty
+`serial.txt`. Preserve any existing file and its contents; never truncate it.
+
 ## Windows UTF-8 bridge
 
 Prefer `apply_patch` for Unicode edits. For PowerShell native stdin/stdout,
