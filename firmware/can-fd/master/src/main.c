@@ -16,6 +16,7 @@ BodaqsBatchDiagnostics gMasterBatchInfo __attribute__((section(".bodaqs_spi_buff
 #include "bodaqs_node_inventory.h"
 #include "master_identity.h"
 #include "master_crc_table.h"
+#include "master_crc.h"
 #include "master_spi_priming.h"
 #include "ti_msp_dl_config.h"
 #include "bodaqs_can_link_ti.h"
@@ -1145,6 +1146,12 @@ int main(void)
     (void)gMasterOptimizationInfo[0];
     (void)gMasterBoundaryReserve;
     SYSCFG_DL_init();
+#if BODAQS_MASTER_HW_CRC
+    bodaqs_master_crc_init();
+#if defined(BODAQS_CRC_SELFTEST) && BODAQS_CRC_SELFTEST
+    bodaqs_master_crc_selftest();
+#endif
+#endif
     gCanLinkReady = bodaqs_can_link_apply(MCAN0_INST, BODAQS_CAN_LINK_PROFILE);
 
     memset(gTransmitSlots, 0, sizeof(gTransmitSlots));

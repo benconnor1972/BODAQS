@@ -172,7 +172,7 @@ endif
 else ifneq ($(SPI_PHASE_TIMING),0)
 $(error SPI_PHASE_TIMING must be 0 or 1)
 endif
-SOURCES := ../src/main.c ../src/master_timing.c ../src/master_sysconfig.c \
+SOURCES := ../src/master_crc.c ../src/main.c ../src/master_timing.c ../src/master_sysconfig.c \
     ../../common/protocol/bodaqs_control.c \
     ../../common/protocol/bodaqs_control_exchange.c \
     ../src/master_identity.c \
@@ -180,7 +180,7 @@ SOURCES := ../src/main.c ../src/master_timing.c ../src/master_sysconfig.c \
     ../../common/protocol/bodaqs_master_service.c \
     ../../common/network/bodaqs_can_network.c \
     ../../common/network/bodaqs_node_inventory.c
-OBJECTS := master_timing.obj bodaqs_control.obj bodaqs_control_exchange.obj main.obj master_identity.obj bodaqs_master_protocol.obj \
+OBJECTS := master_crc.obj master_timing.obj bodaqs_control.obj bodaqs_control_exchange.obj main.obj master_identity.obj bodaqs_master_protocol.obj \
     bodaqs_master_service.obj bodaqs_can_network.obj \
     bodaqs_node_inventory.obj \
     master_sysconfig.obj $(patsubst %.c,%.obj,$(notdir $(filter-out %/ti_msp_dl_config.c ti_msp_dl_config.c,$(SYSCFG_C_FILES))))

@@ -107,6 +107,24 @@ static inline bool bodaqs_measurement_zero(const uint8_t *p, unsigned n) {
     unsigned i; for(i=0;i<n;++i) if(p[i]) return false;
     return true;
 }
+#ifndef BODAQS_MASTER_HW_CRC
+#define BODAQS_MASTER_HW_CRC 0
+#endif
+#if BODAQS_MASTER_HW_CRC != 0 && BODAQS_MASTER_HW_CRC != 1
+#error BODAQS_MASTER_HW_CRC must be 0 or 1
+#endif
+#if BODAQS_MASTER_HW_CRC && !BODAQS_MASTER_CRC_RAM
+#error Hardware CRC requires the RAM software fallback
+#endif
+#if BODAQS_MASTER_HW_CRC
+#ifdef __cplusplus
+extern "C" {
+#endif
+uint32_t bodaqs_master_crc32_parts(const uint8_t *,size_t,const uint8_t *,size_t);
+#ifdef __cplusplus
+}
+#endif
+#endif
 /* Reflected CRC-32/ISO-HDLC, one byte at a time. The immutable table stays
  * in flash; callers retain the existing initial/final XOR and canonical bytes. */
 #if defined(BODAQS_MASTER_CRC_RAM) && BODAQS_MASTER_CRC_RAM
@@ -139,7 +157,9 @@ static inline uint32_t bodaqs_measurement_crc_step(uint32_t c,uint8_t byte) {
 #include "bodaqs_crc32_blocks.h"
 #endif
 static inline uint32_t bodaqs_measurement_crc(const uint8_t *p, size_t n) {
-#if BODAQS_MASTER_BLOCK_CRC
+#if BODAQS_MASTER_HW_CRC
+    return bodaqs_master_crc32_parts(p,n,NULL,0);
+#elif BODAQS_MASTER_BLOCK_CRC
     return ~bodaqs_measurement_crc_update(0xffffffffU,p,n);
 #else
     uint32_t c=0xffffffffU; size_t i;
