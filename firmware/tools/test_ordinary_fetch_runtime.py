@@ -1,17 +1,20 @@
 """Real acquisition owner, transport and master: ordinary fetch scheduling seam."""
 import argparse
+import os
 from pathlib import Path
 import subprocess
 import tempfile
 from test_remote_imu_lifecycle_runtime import fixture_source
 
-p=argparse.ArgumentParser();p.add_argument('--compiler',default='g++');p.add_argument('--scenario');p.add_argument('--interval',type=int,choices=(0,20),default=20);a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--compiler',default='g++');p.add_argument('--scenario');p.add_argument('--interval',type=int,choices=(0,20),default=20);p.add_argument('--control-state',action='store_true');a=p.parse_args()
+if a.control_state and a.interval!=20:p.error('--control-state requires ordinary20')
 root=Path(__file__).resolve().parents[1];common=root/'can-fd/common/protocol'
 fixture=fixture_source(root).replace('static ParamStore extraParams[7];','[[maybe_unused]] static ParamStore extraParams[7];')
 fixture=fixture.replace('bodaqs_measurement_decode(tx,','bodaqs_measurement_decode_request(tx,')
 fixture=fixture.replace('bodaqs_measurement_encode(&ackSlot,lostAckReplacement,','bodaqs_measurement_encode_request(&ackSlot,lostAckReplacement,')
 fixture=fixture.replace('memcpy(rx,lostAckReplacement,BODAQS_MEASUREMENT_BYTES);','assert(bodaqs_measurement_encode(&ackSlot,rx,BODAQS_MEASUREMENT_BYTES));')
-fixture=fixture.replace('namespace SharedSpiBus {', '''static std::vector<BodaqsMeasurementSlot> capturedSchedule;
+fixture=fixture.replace('namespace SharedSpiBus {', '''static std::vector<uint8_t> wireJournal;
+static std::vector<BodaqsMeasurementSlot> capturedSchedule;
 static bool holdOrdinaryReply=false,ordinaryHeld=false;
 static uint8_t heldOrdinaryNode;static uint16_t heldOrdinaryTransaction;
 static BodaqsControlRecord heldOrdinaryRequest;
@@ -21,7 +24,7 @@ fixture=fixture.replace('if(holdControl(address,request)) return true;', '''if(h
    ordinaryHeld=true;heldOrdinaryRequest=request;heldOrdinaryNode=address;heldOrdinaryTransaction=transaction;return true;
   }''')
 fixture=fixture.replace(' if(!spiAvailable) return false;', ''' if(!spiAvailable) return false;
- if(length==BODAQS_MEASUREMENT_BYTES) {BodaqsMeasurementSlot r={};assert(bodaqs_measurement_decode_request(tx,length,&r));capturedSchedule.push_back(r);}''',1)
+ if(length==BODAQS_MEASUREMENT_BYTES) {BodaqsMeasurementSlot r={};assert(bodaqs_measurement_decode_request(tx,length,&r));capturedSchedule.push_back(r);wireJournal.insert(wireJournal.end(),tx,tx+length);}''',1)
 fixture+=r'''
 static bool consumeSchedule(uint8_t,uint8_t,uint32_t,const uint8_t*,uint16_t){return false;}
 static unsigned fetchClass(const BodaqsMeasurementSlot& r){return r.kind==15?1:r.kind==14?r.body[2]:r.kind==1?r.body[0]:0;}
@@ -131,21 +134,47 @@ int main(int argc,char** argv){
  }else if(scenario=="protected"){
   peers[1].protectedLane.pending=true;peers[1].protectedLane.started=clockMs;
   for(unsigned i=0;i<10;++i)assert(fetchClass(turn())==4);
+ }else if(scenario=="timeout"){
+  peers[0].ordinary.pending=true;peers[0].ordinary.started=clockMs-3500U;peers[0].observing=true;
+  turn();assert(!peers[0].ordinary.pending && !peers[0].observing);
  }else if(scenario=="no-data"){
   peers[0].ordinary.pending=true;peers[0].ordinary.started=clockMs;dataConsumer=nullptr;
   for(unsigned i=0;i<5;++i)assert(fetchClass(turn(8))==3); // No data opportunity, keep drain turns.
  }else assert(false);
+#if BODAQS_CONTROL_POLL_DIAGNOSTICS
+ if(scenario=="pending") {
+   const auto& b=ControlPollingDiagnostics::acquisition.bins[0];
+   assert(b.reasons[ControlPollingDiagnostics::PendingFirst]>=1 && b.reasons[ControlPollingDiagnostics::PendingDue]>=1);
+ }
+ if(scenario=="periodic0" || scenario=="periodic1" || scenario=="timeout"){
+   uint32_t begins=0,matched=0,timeouts=0;
+   for(const auto& b:ControlPollingDiagnostics::acquisition.bins){begins+=b.begins[0];matched+=b.matched[0];timeouts+=b.timeouts[0];}
+   if(scenario=="timeout")assert(timeouts==1);
+   else assert(begins==1 && matched==1 && timeouts==0);
+ }
+#endif
+ if(const char* path=std::getenv("BODAQS_SCHEDULE_OUT")){
+   FILE* f=std::fopen(path,"wb");assert(f);assert(std::fwrite(wireJournal.data(),1,wireJournal.size(),f)==wireJournal.size());std::fclose(f);
+ }
  printf("Actual512 logger/master ordinary-fetch %s: PASS\n",scenario.c_str());
 }
 '''
 sources=[*common.glob('bodaqs_control*.c'),common/'bodaqs_imu_disabled.c',common/'bodaqs_master_service.c',common/'bodaqs_master_protocol.c']
 sources += [root/'src'/n for n in ('CanMasterProtocol.cpp','SensorAssignment.cpp','SensorParams.cpp','Lsm6dso32xConfig.cpp','RemoteImuStream.cpp','BdqV2Catalog.cpp','ImuAdmission.cpp')]
 with tempfile.TemporaryDirectory(prefix='bodaqs-ordinary-fetch-') as tmp:
-    cpp=Path(tmp)/'fixture.cpp';exe=Path(tmp)/'fixture.exe';cpp.write_text(fixture,encoding='utf-8')
-    subprocess.run([a.compiler,'-std=c++17','-DBODAQS_SPI_MEASUREMENT_V4=1','-DBODAQS_SPI_BULK_BYTES=512',
+    cpp=Path(tmp)/'fixture.cpp';exe=Path(tmp)/'fixture.exe';cpp.write_text('#include <cstdlib>\n'+fixture,encoding='utf-8')
+    scenarios=[a.scenario] if a.scenario else ['ack-only','lost-ack','pending','wrap','fair','new-command','new-scope','partial','blocked','protected','no-data','periodic0','periodic1','timeout']
+    saved={}
+    for enabled in ([False,True] if a.control_state else [False]):
+        subprocess.run([a.compiler,'-std=c++17', *(['-DBODAQS_STORAGE_TIMELINE=1','-DBODAQS_RECORDING_PRESSURE_DIAGNOSTICS=1','-DBODAQS_IMU_FLOW_DIAGNOSTICS=1',f'-DBODAQS_CONTROL_POLL_DIAGNOSTICS={int(enabled)}'] if a.control_state else []), '-DBODAQS_SPI_MEASUREMENT_V4=1','-DBODAQS_SPI_BULK_BYTES=512',
         '-DBODAQS_RECLAIM_IDLE_CONTROL_FETCH=1',f'-DBODAQS_ORDINARY_FETCH_INTERVAL_MS={a.interval}',
         '-ffunction-sections','-Wl,--gc-sections','-Wall','-Wextra','-Werror','-Wno-class-memaccess','-Wno-unused-function',
         '-I',str(root/'test/stubs'),'-I',str(root/'src'),'-I',str(common),'-I',str(root/'can-fd/common/test'),
-        str(cpp),*map(str,sources),'-o',str(exe)],check=True)
-    for scenario in ([a.scenario] if a.scenario else ['ack-only','lost-ack','pending','wrap','fair','new-command','new-scope','partial','blocked','protected','no-data','periodic0','periodic1']):
-        subprocess.run([str(exe),scenario],check=True)
+            str(cpp),*map(str,sources),'-o',str(exe)],check=True)
+        for scenario in scenarios:
+            journal=Path(tmp)/f'{scenario}.bin'
+            subprocess.run([str(exe),scenario],env=dict(os.environ,BODAQS_SCHEDULE_OUT=str(journal)),check=True)
+            data=journal.read_bytes()
+            if enabled:assert data==saved[scenario],f'Diagnostic changed MOSI schedule: {scenario}'
+            else:saved[scenario]=data
+    if a.control_state:print('All selected scenarios: complete MOSI bytes/order unchanged with control observer enabled PASS')

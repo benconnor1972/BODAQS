@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 from runtime_test_helpers import definition
 
-p=argparse.ArgumentParser();p.add_argument('--compiler',default='g++');a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--compiler',default='g++');p.add_argument('--control-state',action='store_true');a=p.parse_args()
 root=Path(__file__).resolve().parents[1];source=(root/'src/StorageManager.cpp').read_text()
 observer=definition(source,'static void observeBdqV2FileOperation_(')
 pump=definition(source,'static void storageService_() {')
@@ -92,6 +92,22 @@ int main(){
  T::storageService(1000001,1,0,0);assert(T::storage.bins[0].serviceTimeInvalid==1);
 }
 '''.replace('// OBSERVER',observer).replace('// PUMP',branch)
+if a.control_state:
+    fixture=fixture.replace('#include "RecordingTimelineJson.h"','#include "RecordingTimelineJson.h"\n#include "ControlPollingJson.h"')
+    fixture=fixture.replace('static uint16_t queueDepthSnapshot_()',
+        'constexpr int MALLOC_CAP_INTERNAL=1,MALLOC_CAP_8BIT=2,MALLOC_CAP_SPIRAM=4;\n'
+        'static unsigned heapCalls=0;\n'
+        'static uint32_t heap_caps_get_free_size(int caps){++heapCalls;return caps&1?40000:180000;}\n'
+        'static uint32_t heap_caps_get_largest_free_block(int caps){++heapCalls;return caps&1?30000:150000;}\n'
+        'static uint16_t queueDepthSnapshot_()')
+    fixture=fixture.replace('T::resetStorage(500000);P::resetAcquisition',
+        'T::resetStorage(500000);ControlPollingDiagnostics::resetStorage(500000);P::resetAcquisition')
+    fixture=fixture.replace('std::string json;serializeJson(doc,json);',
+        'ControlPollingJson::append(doc,true,context);\n'
+        'assert(doc["control_poll_timeline"]["available"]==true);\n'
+        'assert(ControlPollingDiagnostics::memory.bins[17].internalFree==40000 && heapCalls==4);\n'
+        'assert(ControlPollingDiagnostics::memory.bins[17].psramLargest==150000);\n'
+        'std::string json;serializeJson(doc,json);')
 with tempfile.TemporaryDirectory(prefix='bodaqs-timeline-') as temp:
     temp=Path(temp)
     (temp/'Arduino.h').write_text('#pragma once\n#include <stdint.h>\n#include <stddef.h>\nuint32_t micros();\n')
@@ -108,6 +124,7 @@ struct File {
 ''')
     cpp=temp/'fixture.cpp';exe=temp/'fixture.exe';cpp.write_text(fixture)
     subprocess.run([a.compiler,'-std=c++17','-O2','-pthread','-Wall','-Wextra','-Werror',
+        *(['-DBODAQS_CONTROL_POLL_DIAGNOSTICS=1','-DBODAQS_ORDINARY_FETCH_INTERVAL_MS=20'] if a.control_state else []),
         '-DBODAQS_STORAGE_TIMELINE=1','-DBODAQS_RECORDING_PRESSURE_DIAGNOSTICS=1','-DBODAQS_IMU_FLOW_DIAGNOSTICS=1',
         '-DBODAQS_TIMING_INSTRUMENTATION=1','-I',str(temp),'-I',str(root/'src'),
         '-I',str(root/'.pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src'),str(cpp),'-o',str(exe)],check=True)

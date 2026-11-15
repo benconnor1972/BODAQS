@@ -9,6 +9,7 @@
 #include "BdqV2Catalog.h"
 #include "BdqV2FileSink.h"
 #include "RecordingTimelineJson.h"
+#include "ControlPollingJson.h"
 #include "BdqV2PrimaryStream.h"
 #include "BdqV2Writer.h"
 #include "BdqAdcTimingJson.h"
@@ -1906,6 +1907,9 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
 #if BODAQS_STORAGE_TIMELINE
   const auto* timelineFinished=RemoteImuRecording::finalFlowSnapshot(false);
   RecordingTimelineJson::append(document,timelineFinished!=nullptr,timelineFinished?timelineFinished->context:0);
+#if BODAQS_CONTROL_POLL_DIAGNOSTICS
+  ControlPollingJson::append(document,timelineFinished!=nullptr,timelineFinished?timelineFinished->context:0);
+#endif
 #endif
   appendSharedMetadataRetirements_(document);
   JsonArray nodeFlow=document["remote_node_flow"].to<JsonArray>();
@@ -2396,6 +2400,9 @@ static void startLog() {
   RecordingPressureDiagnostics::resetStorage();
 #if BODAQS_STORAGE_TIMELINE
   RecordingTimelineDiagnostics::resetStorage(micros());
+#if BODAQS_CONTROL_POLL_DIAGNOSTICS
+  ControlPollingDiagnostics::resetStorage(RecordingTimelineDiagnostics::storage.originUs);
+#endif
 #endif
 #endif
   s_storageTiming.writeStallThresholdUs = kStorageWriteStallThresholdUs;
@@ -3177,6 +3184,14 @@ static void storageService_() {
     const uint32_t drainStartUs = micros();
 #if BODAQS_STORAGE_TIMELINE
     const uint64_t timelineIoBefore=RecordingTimelineDiagnostics::storage.ioUs;
+#if BODAQS_CONTROL_POLL_DIAGNOSTICS
+    if(ControlPollingDiagnostics::memoryDue(drainStartUs))
+      ControlPollingDiagnostics::sampleMemory(drainStartUs,
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
+        heap_caps_get_free_size(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT),
+        heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+#endif
 #endif
     uint16_t chunksWritten = 0;
     while (s_bdqV2Writer.hasPendingData()) {

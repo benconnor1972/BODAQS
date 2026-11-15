@@ -74,11 +74,14 @@ def main():
     parser.add_argument("--ordinary-fetch-ms",type=int,choices=(20,))
     parser.add_argument("--storage-timeline",action="store_true")
     parser.add_argument("--sample-queue-capacity",type=int,choices=(512,))
+    parser.add_argument("--control-state",action="store_true")
     parser.add_argument("--flow-diagnostics", action="store_true")
     parser.add_argument("--pressure-diagnostics", action="store_true")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--only-scenario",choices=('shared-startup-failure','shared-runtime-failure'))
     args = parser.parse_args()
+    if args.control_state and not (args.storage_timeline and args.ordinary_fetch_ms==20):
+        parser.error('--control-state requires timeline and ordinary20')
     if args.sample_queue_capacity and args.bulk_bytes!=512:
         parser.error('--sample-queue-capacity requires selected512 bulk')
     if args.storage_timeline and not (args.pressure_diagnostics and args.bulk_bytes):
@@ -202,6 +205,13 @@ namespace SharedSpiBus {''',1)
                     'appendSharedMetadataRetirements_(summaryDocument);\n'
                     '   const auto* timelineFinished=RemoteImuRecording::finalFlowSnapshot(false);\n'
                     '   RecordingTimelineJson::append(summaryDocument,timelineFinished!=nullptr,timelineFinished?timelineFinished->context:0);')
+                if args.control_state:
+                    support=support.replace('#include "RecordingTimelineJson.h"','#include "RecordingTimelineJson.h"\n#include "ControlPollingJson.h"')
+                    support=support.replace('RecordingTimelineDiagnostics::resetStorage(clockMs*1000);',
+                        'RecordingTimelineDiagnostics::resetStorage(clockMs*1000);ControlPollingDiagnostics::resetStorage(clockMs*1000);')
+                    support=support.replace('RecordingTimelineJson::append(summaryDocument,timelineFinished!=nullptr,timelineFinished?timelineFinished->context:0);',
+                        'RecordingTimelineJson::append(summaryDocument,timelineFinished!=nullptr,timelineFinished?timelineFinished->context:0);\n'
+                        'ControlPollingJson::append(summaryDocument,timelineFinished!=nullptr,timelineFinished?timelineFinished->context:0);')
         logging = (firmware / "src/LoggingManager.cpp").read_text(encoding="utf-8")
         functions = ("bool LoggingManager::isStarting(", "void LoggingManager::cancelStart(",
                      "bool LoggingManager::configurationLocked(", "LoggingManager::StartResult LoggingManager::requestStart(",
@@ -275,6 +285,8 @@ namespace SharedSpiBus {''',1)
             source_flags += ['-DBODAQS_STORAGE_TIMELINE=1']
         if args.sample_queue_capacity:
             source_flags += [f'-DBODAQS_LOGGER_SAMPLE_QUEUE_CAPACITY={args.sample_queue_capacity}']
+        if args.control_state:
+            source_flags += ['-DBODAQS_CONTROL_POLL_DIAGNOSTICS=1']
         if args.pressure_diagnostics:
             source_flags += ['-DBODAQS_RECORDING_PRESSURE_DIAGNOSTICS=1', '-I', str(firmware/'.pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src')]
         sources += [firmware / "src" / name for name in ("CanMasterProtocol.cpp", "SensorAssignment.cpp", "SensorParams.cpp", "Lsm6dso32xConfig.cpp", "RemoteImuStream.cpp", "BdqV2Catalog.cpp", "BdqV2Writer.cpp", "ImuAdmission.cpp")]
@@ -336,6 +348,14 @@ namespace SharedSpiBus {''',1)
                 assert sum(row['sample_waits'] for row in timelines['stall']['rows'])>0
                 assert sum(sum(row['source_loss_report_observations']) for row in timelines['stall']['rows'])>0
                 print('Independent finalized timeline: exact retired context, full geometry, real consumer pressure/loss observations PASS')
+                if args.control_state:
+                    from assess_control_polling import summarize as control_summary
+                    for capture in ('good','stall'):
+                        summary=read_bdq(output/(capture+'.bdq')).final_summary
+                        control=control_summary(summary['control_poll_timeline'],summary['recording_pressure']['context'])
+                        assert control['complete_capture'] and sum(sum(r['targets']) for r in control['rows'])>0
+                        assert sum(sum(r['fetches']) for r in control['rows'])>0
+                    print('Independent finalized control timeline: real MOSI/peer hooks, retirement/context/accounting PASS; heap sampling covered by actual pump test')
             quiet=read_bdq(output/'good.bdq').final_summary['recording_pressure']
             blocked=read_bdq(output/'stall.bdq').final_summary['recording_pressure']
             assert quiet['available'] and not quiet['first_loss_observed']

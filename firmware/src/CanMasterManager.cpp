@@ -5,6 +5,7 @@
 #endif
 #include "CanMasterManager.h"
 #include "ImuFlowDiagnostics.h"
+#include "ControlPollingDiagnostics.h"
 #include "../can-fd/common/transport/bodaqs_spi_bench.h"
 #if BODAQS_SPI_BOUNDARY_TRACE
 #include "../can-fd/common/transport/bodaqs_spi_trace.h"
@@ -1127,6 +1128,20 @@ int serviceMeasurementTransport(MeasurementTransport& transport,uint8_t cls,uint
 #if BODAQS_ORDINARY_FETCH_INTERVAL_MS
   const uint8_t fetchClass=request.kind==14?request.body[2]:request.kind==1?request.body[0]:0;
   const uint8_t fetchNode=request.kind==14?request.body[3]:request.node;
+#if BODAQS_CONTROL_POLL_DIAGNOSTICS
+  if(transport.timingEnabled){
+    const uint8_t target=request.kind==15?1:request.kind==5?6:fetchClass?fetchClass:request.kind==0?0:7;
+    const bool ordinary=target==3 && fetchNode<4;
+    const auto* result=ordinary?&transport.inboxes[2][fetchNode]:nullptr;
+    ControlPollingDiagnostics::request(target,fetchNode,
+      ordinary && transport.controls[0][fetchNode].state.complete,
+      result && result->state.object && !result->state.complete,
+      result && result->state.object && result->state.complete && !result->admitted,
+      result && result->ackPending,
+      ordinary && (transport.ordinaryFetchSeen&(1u<<fetchNode)),
+      ordinary?transport.ordinaryFetchMs[fetchNode]:0,millis(),micros());
+  }
+#endif
   if(transport.timingEnabled && fetchClass==3 && fetchNode<4) {
     transport.ordinaryFetchMs[fetchNode]=millis();transport.ordinaryFetchSeen |= 1u<<fetchNode;
   }

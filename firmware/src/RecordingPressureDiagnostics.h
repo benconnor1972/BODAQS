@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "RecordingTimelineDiagnostics.h"
+#include "ControlPollingDiagnostics.h"
 
 #if defined(BODAQS_RECORDING_PRESSURE_DIAGNOSTICS) && BODAQS_RECORDING_PRESSURE_DIAGNOSTICS
 #if !defined(BODAQS_IMU_FLOW_DIAGNOSTICS) || !BODAQS_IMU_FLOW_DIAGNOSTICS
@@ -59,6 +60,9 @@ inline void resetAcquisition(uint64_t context,uint32_t nowUs) {
   acquisition={};acquisition.context=context;acquisition.lastServiceUs=nowUs;
 #if BODAQS_STORAGE_TIMELINE
   RecordingTimelineDiagnostics::resetAcquisition(context,nowUs);
+#if BODAQS_CONTROL_POLL_DIAGNOSTICS
+  ControlPollingDiagnostics::resetAcquisition(context);
+#endif
 #endif
 }
 inline bool pastWindow(uint32_t nowUs) {
@@ -104,6 +108,9 @@ inline size_t reservedBytes() {
   return sizeof(storage)+sizeof(acquisition)+sizeof(firstLossUs)+sizeof(triggered)
 #if BODAQS_STORAGE_TIMELINE
       +RecordingTimelineDiagnostics::reservedBytes()
+#if BODAQS_CONTROL_POLL_DIAGNOSTICS
+      +ControlPollingDiagnostics::reservedBytes()
+#endif
 #endif
       ;
 }

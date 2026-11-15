@@ -173,6 +173,9 @@ static bool send(uint8_t n,Exchange& exchange,BodaqsControlWrapped q,bool protec
   const uint32_t id=CanMasterManager::nextMeasurementObjectId(protectedLane?4:3,n);
   if(!id || !CanMasterManager::queueMeasurementControl(transport,q,id,protectedLane)) return false;
   exchange.request=q;exchange.object=id;exchange.started=millis();exchange.pending=true;
+#if BODAQS_CONTROL_POLL_DIAGNOSTICS
+  if(!protectedLane)ControlPollingDiagnostics::event(n,0,0,micros());
+#endif
   return true;
 }
 static void fail(uint8_t n,Result result,uint8_t reason) {
@@ -292,7 +295,11 @@ static bool correlated(const Exchange& exchange,const BodaqsControlWrapped& repl
 static void accept(uint8_t n,bool protectedLane,const BodaqsControlWrapped& wrapped) {
   auto& p=peers[n];auto& x=protectedLane?p.protectedLane:p.ordinary;
   if(!correlated(x,wrapped)) return;
-  const auto q=x.request;const auto& r=wrapped.record;x.pending=false;
+  const auto q=x.request;const auto& r=wrapped.record;
+#if BODAQS_CONTROL_POLL_DIAGNOSTICS
+  if(!protectedLane)ControlPollingDiagnostics::event(n,1,uint32_t(millis()-x.started),micros());
+#endif
+  x.pending=false;
   if(r.data_length==4) {
     // A master transport receipt is not a node's 24-byte proof/result.
     if(r.data[3]!=q.record.opcode || r.data[0]<BODAQS_CONTROL_BUSY || r.data[0]>BODAQS_CONTROL_UNCERTAIN) {
@@ -557,6 +564,9 @@ void service() {
       const uint32_t deadline=x==&p.protectedLane?BODAQS_ACQ_RESPONSE_MS:3500;
       // A request may have been queued after the service-level 'now' snapshot.
       if(x->pending && static_cast<uint32_t>(millis()-x->started)>=deadline) {
+#if BODAQS_CONTROL_POLL_DIAGNOSTICS
+        if(x==&p.ordinary)ControlPollingDiagnostics::event(n,2,0,micros());
+#endif
         x->pending=false;
         if(uncertainStop(n,26)) continue;
         if(x==&p.protectedLane) {if(!retryRenewal(n)) exclude(n,26);continue;}
@@ -685,6 +695,12 @@ void service() {
     if(peers[peer].protectedLane.pending) protectedMask|=1u<<peer;
   }
   MeasurementPipelineTrace::pending(ordinaryMask,protectedMask);
+#endif
+#if BODAQS_CONTROL_POLL_DIAGNOSTICS
+  for(unsigned peer=0;peer<4;++peer){
+    const auto& x=peers[peer].ordinary;
+    ControlPollingDiagnostics::peer(peer,x.pending,x.started,x.request.record.operation,x.request.record.opcode,x.request.record.page);
+  }
 #endif
   const int result=CanMasterManager::serviceMeasurementTransport(transport,cls,n,inbox);
   if(result==-14) for(uint8_t peer=0;peer<4;++peer)
