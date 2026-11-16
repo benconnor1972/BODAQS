@@ -165,11 +165,13 @@ int main(int argc,char** argv){
   CanMasterManager::s_measurementOwner.store(nullptr);
 #if BODAQS_ACQUISITION_PROFILE
   const auto bankBefore=*ControlPollingDiagnostics::acquisition;
+  const auto hotBefore=ControlPollingDiagnostics::hotProfile;const auto hotIndexBefore=ControlPollingDiagnostics::hotIndex;
 #endif
   BodaqsMeasurementSlot request={},reply={};request.context=456;request.node=255;
   assert(CanMasterManager::exchangeMeasurementSlot(request,reply));
 #if BODAQS_ACQUISITION_PROFILE
   assert(!memcmp(&bankBefore,ControlPollingDiagnostics::acquisition,sizeof bankBefore));
+  assert(!memcmp(&hotBefore,&ControlPollingDiagnostics::hotProfile,sizeof hotBefore));assert(hotIndexBefore==ControlPollingDiagnostics::hotIndex);
 #endif
   CanMasterManager::s_measurementOwner.store(oldOwner);
  }
@@ -179,7 +181,7 @@ int main(int argc,char** argv){
 #if BODAQS_ACQUISITION_PROFILE
  if(scenario=="periodic0" || scenario=="periodic1") {
   uint32_t service=0,transfer=0;
-  for(const auto& b:ControlPollingDiagnostics::acquisition->bins){service+=b.profile.calls[ControlPollingDiagnostics::Service];transfer+=b.profile.calls[ControlPollingDiagnostics::Transport];}
+  for(unsigned i=0;i<ControlPollingDiagnostics::capacity;++i){const auto& p=ControlPollingDiagnostics::profileAt(i);service+=p.calls[ControlPollingDiagnostics::Service];transfer+=p.calls[ControlPollingDiagnostics::Transport];}
   assert(service && transfer);
  }
 #endif

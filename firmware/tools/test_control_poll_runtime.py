@@ -51,10 +51,18 @@ int main(){
 #if BODAQS_ACQUISITION_PROFILE
  C::profile(C::Service,origin+100,250,0);C::profile(C::Service,origin+200,500,1);
  C::profile(C::SpiTransfer,origin+300,350);C::profile(C::Sleep,origin+400,950);
- assert(C::acquisition->bins[0].profile.totalUs[C::Service]==750);
- assert(C::acquisition->bins[0].profile.maxUs[C::Service]==500);
- assert(C::acquisition->bins[0].profile.calls[C::Service]==2);
- assert(C::acquisition->bins[0].profile.cores[0]==1&&C::acquisition->bins[0].profile.cores[1]==1);
+ assert(C::acquisition->bins[0].profile.calls[C::Service]==0); // hot updates do not touch PSRAM bank
+ C::profile(C::Encode,origin+20000001U,10);
+ assert(C::acquisition->bins[0].profile.calls[C::Service]==2); // transition flush
+ C::profile(C::Decode,origin+999U,20); // nested parent/child can report an older start bin
+ assert(C::hotIndex==1 && C::profileAt(0).totalUs[C::Decode]==20);
+ C::profile(C::Service,origin+20000002U,30,0);
+ assert(C::profileAt(1).calls[C::Service]==1);
+
+ assert(C::profileAt(0).totalUs[C::Service]==750);
+ assert(C::profileAt(0).maxUs[C::Service]==500);
+ assert(C::profileAt(0).calls[C::Service]==2);
+ assert(C::profileAt(0).cores[0]==1&&C::profileAt(0).cores[1]==1);
 #endif
  JsonDocument doc;ControlPollingJson::append(doc,true,context);
  assert(doc["control_poll_timeline"]["available"]==true);
@@ -63,6 +71,9 @@ int main(){
  T::resetStorage(100);C::resetStorage(100);RecordingPressureDiagnostics::resetAcquisition(7,100);
  assert(C::memory==originalBank); // No per-recording allocation/growth.
  assert(heapAllocCalls==2);
+#if BODAQS_ACQUISITION_PROFILE
+ assert(C::hotIndex==C::capacity && C::hotProfile.calls[C::Service]==0);
+#endif
  assert(!C::memory->frozen&&C::acquisition->peers[0].operation==0&&C::acquisition->bins[0].targets[3]==0);
  std::thread sd([]{for(unsigned i=0;i<10000;++i)C::sampleMemory(100+i*100,40000,30000,180000,150000);});
  std::thread acq([]{for(unsigned i=0;i<10000;++i)C::request(1,255,0,0,0,0,0,0,i,100+i*100);});

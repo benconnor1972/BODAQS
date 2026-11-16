@@ -45,6 +45,7 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_control_poll_parser.py
 	$(PYTHON) ../tools/test_ordinary_fetch_runtime.py --control-state --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_window_reclamation_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_evidence_margin_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_storage_timeline_runtime.py --control-state --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_bdq_adc_footer_runtime.py --spi-phase-timing --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_i2c_schedule_runtime.py --compiler "$(CXX)"

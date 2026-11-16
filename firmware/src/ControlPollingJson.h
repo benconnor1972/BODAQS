@@ -37,9 +37,10 @@ inline void append(JsonDocument& document,bool retired,uint64_t context){
     for(unsigned n=0;n<4;++n){op.add(b.lastOpcode[n]);page.add(b.lastPage[n]);}
 #if BODAQS_ACQUISITION_PROFILE
     auto profile=row["profile"].to<JsonObject>();
-    values(profile,"total_us",b.profile.totalUs);values(profile,"max_us",b.profile.maxUs);
-    values(profile,"calls",b.profile.calls);values(profile,"cores",b.profile.cores);
-    values(profile,"reclaimed",b.profile.reclaimed);profile["legacy_blocked_window_open"]=b.profile.legacyBlockedWindowOpen;
+    const auto& current=profileAt(i);
+    values(profile,"total_us",current.totalUs);values(profile,"max_us",current.maxUs);
+    values(profile,"calls",current.calls);values(profile,"cores",current.cores);
+    values(profile,"reclaimed",current.reclaimed);profile["legacy_blocked_window_open"]=current.legacyBlockedWindowOpen;
 #endif
     const auto& m=memory->bins[i];auto mem=row["memory"].to<JsonObject>();
     mem["samples"]=m.samples;mem["elapsed_us"]=m.elapsedUs;

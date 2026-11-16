@@ -67,10 +67,31 @@ struct Banks {Acquisition acq;Memory mem;};
 inline Acquisition* acquisition=nullptr;
 inline Memory* memory=nullptr;
 inline std::atomic<Acquisition*> published{nullptr};
+#if BODAQS_ACQUISITION_PROFILE
+// Single acquisition-task writer, ordinary internal RAM. Flush only when the
+// time bin changes; retired serialization reads the current hot bin directly.
+inline Profile hotProfile;
+inline uint32_t hotIndex=capacity;
+inline const Profile& profileAt(uint32_t i){return i==hotIndex?hotProfile:acquisition->bins[i].profile;}
+inline Profile& profileWrite(uint32_t i){
+  // A parent interval may finish after a child entered the next bin. Its
+  // start-bin update goes to the already flushed bank without rewinding it.
+  if(hotIndex<capacity && i<hotIndex)return acquisition->bins[i].profile;
+  if(i!=hotIndex){
+    if(hotIndex<capacity)acquisition->bins[hotIndex].profile=hotProfile;
+    hotProfile={};hotIndex=i;
+  }
+  return hotProfile;
+}
+#endif
 static_assert(std::atomic<Acquisition*>::is_always_lock_free,"Diagnostic publication must not lock");
 static_assert(std::is_trivially_copyable<Acquisition>::value && std::is_trivially_copyable<Memory>::value,"Zeroable scalar banks");
-static_assert(sizeof(Banks)+sizeof(acquisition)+sizeof(memory)+sizeof(published)<=(BODAQS_ACQUISITION_PROFILE?18000:10100),"Bounded control diagnostic RAM");
-inline size_t reservedBytes(){return sizeof(Banks)+sizeof(acquisition)+sizeof(memory)+sizeof(published);}
+static_assert(sizeof(Banks)+sizeof(acquisition)+sizeof(memory)+sizeof(published)<=(BODAQS_ACQUISITION_PROFILE?18000:10100),"Bounded control diagnostic bank RAM");
+inline size_t reservedBytes(){return sizeof(Banks)+sizeof(acquisition)+sizeof(memory)+sizeof(published)
+#if BODAQS_ACQUISITION_PROFILE
+  +sizeof(hotProfile)+sizeof(hotIndex)
+#endif
+  ;}
 inline Banks* allocateBanks(){
 #if defined(ARDUINO_ARCH_ESP32)
   void* bytes=heap_caps_malloc(sizeof(Banks),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
@@ -91,6 +112,9 @@ inline void resetStorage(uint32_t origin){
   memory->originUs=origin;memory->initialized=true;
 }
 inline void resetAcquisition(uint64_t context){
+#if BODAQS_ACQUISITION_PROFILE
+  hotProfile={};hotIndex=capacity;
+#endif
   acquisition=published.load(std::memory_order_acquire);if(!acquisition)return;
   std::fill_n(reinterpret_cast<uint8_t*>(acquisition),sizeof(*acquisition),uint8_t(0));
   acquisition->context=context;
@@ -128,14 +152,14 @@ inline void request(uint8_t target,uint8_t node,bool outgoing,bool partial,bool 
 inline void reclaimed(uint32_t nowUs,uint8_t cls,bool selected,bool legacyMismatch){
   if(!acquisition || !acquisition->context)return;
   const auto i=RecordingTimelineDiagnostics::index(*acquisition,nowUs);if(i==capacity)return;
-  auto& p=acquisition->bins[i].profile;++p.reclaimed[selected?(cls==1?0:1):2];
+  auto& p=profileWrite(i);++p.reclaimed[selected?(cls==1?0:1):2];
   if(legacyMismatch)++p.legacyBlockedWindowOpen;
 }
 // Intervals are charged to their start bin. Nested stages must not be summed.
 inline void profile(Stage stage,uint32_t start,uint32_t duration,unsigned core=2){
   if(!acquisition || !acquisition->context)return;
   const auto i=RecordingTimelineDiagnostics::index(*acquisition,start);if(i==capacity)return;
-  auto& p=acquisition->bins[i].profile;++p.calls[stage];p.totalUs[stage]+=duration;
+  auto& p=profileWrite(i);++p.calls[stage];p.totalUs[stage]+=duration;
   RecordingTimelineDiagnostics::maximum(p.maxUs[stage],duration);
   if(stage==Service)++p.cores[core<2?core:2];
 }
