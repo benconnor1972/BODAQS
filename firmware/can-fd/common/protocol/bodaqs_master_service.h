@@ -47,7 +47,9 @@ typedef struct {
 #if BODAQS_MEASUREMENT_VERSION >= 4
 #define BODAQS_SAMPLE_WINDOW 4U
 #define BODAQS_ESSENTIAL_QUEUE 16U
-#define BODAQS_ESSENTIAL_RESERVE 4U
+/* Optional snapshots yield half of the fixed queue to anchors/boundaries.
+ * Essential capacity and immutable FIFO order are unchanged. */
+#define BODAQS_ESSENTIAL_RESERVE 8U
 typedef struct {
     BodaqsFragmentState object, acknowledged;
     uint8_t bytes[BODAQS_MEASUREMENT_BODY_BYTES];
