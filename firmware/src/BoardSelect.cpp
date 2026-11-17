@@ -50,6 +50,8 @@ namespace board {
   static const char* rtcTypeName_(RtcType type) {
     switch (type) {
       case RtcType::RV3028: return "RV3028";
+      case RtcType::ISL1208: return "ISL1208";
+      case RtcType::Auto: return "auto";
       case RtcType::None:
       default: return "None";
     }
@@ -138,11 +140,17 @@ namespace board {
       LOGI("  cs%u pin=%d\n", (unsigned)i, (int)bp.spi.cs_pins[i]);
     }
 
-    LOGI_TAG("Board", "RTC: %s addr=0x%02X bus=%u int=%d\n",
-             rtcTypeName_(bp.rtc.type),
-             (unsigned)bp.rtc.i2c_addr,
-             (unsigned)bp.rtc.bus_index,
-             (int)bp.rtc.interrupt_pin);
+    if (bp.rtc.type == RtcType::Auto) {
+      LOGI_TAG("Board", "RTC: auto candidates=0x%02X/0x%02X bus=%u int=%d\n",
+               (unsigned)RTC_RV3028_ADDRESS, (unsigned)RTC_ISL1208_ADDRESS,
+               (unsigned)bp.rtc.bus_index, (int)bp.rtc.interrupt_pin);
+    } else {
+      LOGI_TAG("Board", "RTC: %s addr=0x%02X bus=%u int=%d\n",
+               rtcTypeName_(bp.rtc.type),
+               (unsigned)bp.rtc.i2c_addr,
+               (unsigned)bp.rtc.bus_index,
+               (int)bp.rtc.interrupt_pin);
+    }
 
     LOGI_TAG("Board", "Fuel: type=%u addr=0x%02X bus=%u alert=%d\n",
              (unsigned)bp.fuel.type,

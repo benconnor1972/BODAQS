@@ -260,8 +260,8 @@ static const BoardProfile A8_PROFILE = {
   },
 
   .rtc = {
-    .type = RtcType::RV3028,
-    .i2c_addr = 0x52,
+    .type = RtcType::Auto,
+    .i2c_addr = 0, // resolved by RTCManager at startup
     .bus_index = 0,
     .interrupt_pin = -1,
     .interrupt_active_low = true,
@@ -388,6 +388,8 @@ static const BoardProfile A8_PROFILE = {
 static const BoardProfile V1RC3_PROFILE = [] {
   BoardProfile p = A8_PROFILE;
   p.name = "BODAQS V1RC3";
+  p.rtc.type = RtcType::RV3028;
+  p.rtc.i2c_addr = RTC_RV3028_ADDRESS;
   p.buttons.binding_preset = ButtonBindingPreset::BodaqsRc3;
   p.supports_user_sleep = true;
   return p;

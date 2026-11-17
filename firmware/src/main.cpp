@@ -359,7 +359,7 @@ void setup() {
   WebServerManager::begin(isLoggingPredicate);
     BOOT_LOGI("SETUP: F done\n");
 
-  // Choose RTC from the board profile. A8 uses its RV3028; legacy boards
+  // Choose RTC from the board profile. A8 detects its fitted RTC; legacy boards
   // retain the ESP32 internal clock until network sync.
   RTCManager_begin(gBoard->rtc);
 

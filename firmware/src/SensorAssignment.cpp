@@ -60,7 +60,7 @@ bool assignmentsConflict(const SensorAssignment& a, const SensorAssignment& b) {
 const char* assignmentOwner(const SensorAssignment& a, const board::BoardProfile* bp) {
   if (!bp || a.kind != SensorAssignment::Kind::I2C) return nullptr;
   if (bp->fuel.type != board::FuelGaugeType::None && a.bus == bp->fuel.bus_index && a.input == bp->fuel.i2c_addr) return "fuel gauge";
-  if (bp->rtc.type != board::RtcType::None && a.bus == bp->rtc.bus_index && a.input == bp->rtc.i2c_addr) return "RTC";
+  if (a.bus == bp->rtc.bus_index && bp->rtc.reservesAddress(a.input)) return "RTC";
   if (bp->display.type != board::DisplayType::None && a.bus == bp->display.bus_index &&
       (a.input == bp->display.addr_primary || a.input == bp->display.addr_alt)) return "OLED";
   return nullptr;
