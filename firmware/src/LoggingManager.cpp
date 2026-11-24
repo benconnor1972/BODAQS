@@ -684,7 +684,15 @@ void LoggingManager::refreshConfigurationStatus() {
           readiness.decision.excluded?"Best-effort selection has explicit unavailable-source exclusions":"Ready for START resource reservation");
     } else if(readiness.decision.blocker==RecordingAdmission::Blocker::ParticipantUnavailable) {
       issue=LoggingConfigIssue::PreparingParticipants;
-      snprintf(detail,sizeof detail,"Waiting for requested participants; unavailable mask=0x%lx",static_cast<unsigned long>(readiness.unavailable));
+      char names[88]{};unsigned shown=0,missing=0;
+      for(uint8_t index=0;index<s_cfg->sensorCount() && index<32;++index) {
+        if(!(readiness.unavailable&(uint32_t{1}<<index))) continue;
+        ++missing;SensorSpec spec;if(shown>=3 || !s_cfg->getSensorSpec(index,spec)) continue;
+        const size_t used=strlen(names);
+        snprintf(names+used,sizeof names-used,"%s%s",shown?", ":"",spec.name);++shown;
+      }
+      if(missing>shown) snprintf(detail,sizeof detail,"Waiting for %s and %u more requested sensors",names,missing-shown);
+      else snprintf(detail,sizeof detail,"Waiting for requested sensors: %s",names);
     } else if(readiness.decision.blocker==RecordingAdmission::Blocker::Unqualified ||
         readiness.decision.blocker==RecordingAdmission::Blocker::QualificationRejected ||
         readiness.decision.blocker==RecordingAdmission::Blocker::InvalidQualification) {

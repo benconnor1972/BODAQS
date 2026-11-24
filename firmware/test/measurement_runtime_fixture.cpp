@@ -46,6 +46,10 @@ static BodaqsControlSnapshot snapshot;
 uint8_t LoggerConfig::sensorCount() const { return 1; }
 bool LoggerConfig::getSensorSpec(uint8_t i,SensorSpec& spec) const { if(i) return false; spec=saved; return true; }
 const LoggerConfig& ConfigManager::get() { return config; }
+// Integrated recording scenarios use an already accepted configuration. The
+// real migration owner and its storage failures have a separate runtime seam.
+bool ConfigManager::migrationPending() {return false;}
+String ConfigManager::configurationBlocker() {return String();}
 namespace LoggingManager { bool isRunning() { return recording; } bool configurationLocked() { return recording || starting; } }
 namespace SensorManager {
 enum class DiscoveryReason:uint8_t {TransportUpdate};

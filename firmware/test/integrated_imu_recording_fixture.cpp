@@ -72,6 +72,9 @@ namespace UploadModeManager {bool isActive(){return false;}}
 namespace WebServerManager {bool isRunning(){return false;}void stop(){}}
 namespace WiFiManager {void suspendForLogging(){}void resumeAfterLogging(){}}
 namespace I2CManager {void resetRecoveryStats(){}}
+// This CAN-only composition has no local I2C producer. Retirement races with
+// a live I2C owner are covered by the independent lifecycle adapter fixture.
+namespace I2CBusScheduler {void requestStop(){}bool stopped(){return true;}}
 namespace DisplayManager {void prepareLoggingScreen(uint16_t,uint8_t){}}
 namespace IndicatorManager {void ledOn(){}void ledOff(){}}
 void ButtonManager_setPollingEnabled(bool) {}
