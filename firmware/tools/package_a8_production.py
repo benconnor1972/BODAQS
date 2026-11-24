@@ -21,7 +21,7 @@ FLASH_BYTES = 0x400000
 PUBLIC_SOURCE_ROOTS = ('firmware/src/', 'firmware/boards/', 'firmware/variants/',
     'firmware/tools/', 'firmware/test/', 'firmware/can-fd/', 'analysis/bodaqs_analysis/',
     'analysis/tests/', 'docs/firmware/', 'docs/analysis/', 'docs/agents/', 'docs/adr/')
-PUBLIC_SOURCE_FILES = ('AGENTS.md', 'GLOSSARY.md', 'requirements.txt', 'firmware/platformio.ini',
+PUBLIC_SOURCE_FILES = ('AGENTS.md', 'agents.md', 'GLOSSARY.md', 'requirements.txt', 'firmware/platformio.ini',
     'firmware/bodaqs_4mb.csv', 'firmware/build.sh', 'analysis/pyproject.toml', 'analysis/pytest.ini')
 
 

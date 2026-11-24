@@ -12,7 +12,7 @@ def identity(root: Path, environment: str, options: dict) -> dict:
         board.read_bytes().replace(b"\r\n",b"\n")).hexdigest()
     for folder in ("src", "variants", "can-fd/common/protocol", "can-fd/common/transport"):
         for path in sorted((root / folder).rglob("*")):
-            if path.is_file() and path.suffix in (".h", ".c", ".cpp", ".S"):
+            if path.is_file() and path.suffix in (".h", ".c", ".cpp", ".inc", ".S"):
                 inputs[path.relative_to(root).as_posix()] = hashlib.sha256(
                     path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
     for pattern in ("platformio.ini", "*.csv", "tools/build_identity.py", "tools/configure_build_identity.py"):

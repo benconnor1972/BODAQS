@@ -59,6 +59,13 @@ class BenchTools(unittest.TestCase):
             first=identity(root,"mixed",{})
             header.write_text("mode1")
             self.assertNotEqual(first["id"],identity(root,"mixed",{})["id"])
+    def test_recipe_tracks_included_protocol_implementation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);source=root/"can-fd/common/protocol/packed_master.inc"
+            source.parent.mkdir(parents=True);source.write_text("first implementation")
+            first=identity(root,"production",{})
+            source.write_text("changed implementation")
+            self.assertNotEqual(first["id"],identity(root,"production",{})["id"])
     def test_snapshot_contract_covers_every_actual_master_member(self):
         import re
         text=(bench.ROOT/"firmware/can-fd/master/src/main.c").read_text(encoding="utf-8")
