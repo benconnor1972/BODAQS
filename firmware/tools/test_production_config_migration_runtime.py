@@ -20,7 +20,8 @@ def main():
 std::map<std::string,String> files;
 String disk;
 bool failConfig=false,failReloadAfterWrite=false,failReload=false;
-struct FileSystem { bool exists(const char* path) { return files.count(path); } } SD_MMC;''')
+struct FileSystem { bool exists(const char* path) { return files.count(path); } } SD_MMC;
+namespace StorageFilesystem {auto& card(){return SD_MMC;}}''')
     start = fixture.index('bool StorageManager_loadTextFile(')
     end = fixture.index('namespace SensorRegistry', start)
     fixture = fixture[:start] + '''bool StorageManager_loadTextFile(const char* path,String& out) {

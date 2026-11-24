@@ -15,7 +15,7 @@ CXXFLAGS = -std=gnu++2a -I stubs -I ../src -Wall -Wno-unused
 CXXFLAGS += '-DBODAQS_FW_VERSION="0.4.1"' '-DBODAQS_FW_NAME="BODAQS"'
 
 # Production source files to compile (extend as more files are tested)
-PROD_SRCS = ../src/HtmlUtil.cpp ../src/Routes_Static.cpp ../src/BMI270FifoParser.cpp ../src/BdqV2Catalog.cpp ../src/BdqV2PrimaryStream.cpp ../src/BdqV2Writer.cpp ../src/BoardProfile.cpp ../src/CanMasterProtocol.cpp ../src/SensorParams.cpp ../src/SensorAssignment.cpp ../src/SensorDiagnostics.cpp ../src/SensorInventory.cpp
+PROD_SRCS = ../src/HtmlUtil.cpp ../src/Routes_Static.cpp ../src/BMI270FifoParser.cpp ../src/BdqV2Catalog.cpp ../src/BdqV2PrimaryStream.cpp ../src/BdqV2Writer.cpp ../src/BoardProfile.cpp ../src/CanMasterProtocol.cpp ../src/SensorParams.cpp ../src/SensorAssignment.cpp ../src/SensorDiagnostics.cpp ../src/SensorInventory.cpp ../src/UsbUploadSession.cpp
 
 # Stub source files
 STUB_SRCS = stubs/mocks.cpp stubs/HttpFileSender_stub.cpp
@@ -67,6 +67,8 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_bdq_adc_footer_runtime.py --spi-phase-timing --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_i2c_schedule_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_acquisition_start_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_usb_recording_ownership_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_storage_filesystem_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_rtc_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_i2c_startup_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_startup_log_runtime.py --compiler "$(CXX)"

@@ -1,6 +1,6 @@
 #include "ConfigManager.h"
 #include "ProductionConfigMigration.h"
-#include <SD_MMC.h>
+#include "StorageFilesystem.h"
 #include <vector>
 #include "SensorConfigEdit.h"
 #include "SensorManager.h"
@@ -600,7 +600,7 @@ ConfigManager::MigrationAcceptance ConfigManager::acceptMigrationConfiguration(c
     if(existing!=current) return fail("Original backup differs; nothing saved");
   } else {
     String absolute=backup.startsWith("/")?backup:String("/")+backup;
-    if(SD_MMC.exists(absolute.c_str()) || !StorageManager_saveTextFile(backup.c_str(),current)) return fail("Original backup failed; nothing saved");
+    if(StorageFilesystem::card().exists(absolute.c_str()) || !StorageManager_saveTextFile(backup.c_str(),current)) return fail("Original backup failed; nothing saved");
     if(!StorageManager_loadTextFile(backup.c_str(),existing) || existing!=current) return fail("Original backup verification failed");
   }
   const String proposed=s_migration.proposed().c_str();

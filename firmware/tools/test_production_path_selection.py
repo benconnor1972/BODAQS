@@ -58,9 +58,15 @@ int main() {
     with tempfile.TemporaryDirectory(prefix="bodaqs-path-selection-") as temporary:
         cpp, exe = Path(temporary)/"path.cpp", Path(temporary)/"path.exe"
         cpp.write_text(fixture)
-        for environment in ("bodaqs_a8_production", "bodaqs_a8_integration_candidate", "bodaqs_s3_mini_n4r2_imu_adc_raw"):
+        for environment in ("bodaqs_a8_production", "bodaqs_a8_integration_candidate",
+                            "bodaqs_a8_production_usb", "bodaqs_a8_integration_candidate_usb",
+                            "bodaqs_s3_mini_n4r2_imu_adc_raw"):
             flags = flags_for(config, environment)
             macros = dict(flag[2:].split("=", 1) for flag in flags if flag.startswith("-DBODAQS_") and "=" in flag)
+            if environment.endswith('_usb'):
+                original=set(flags_for(config, environment[:-4]))
+                assert set(flags)-original=={'-DARDUINO_USB_MODE=0','-DBODAQS_A8_USB_DRIVE=1'}
+                assert not original-set(flags)
             if "production" in environment or "integration_candidate" in environment:
                 assert all(macros.get(name)==value for name,value in expected.items()), macros
                 assert not any(("BENCH" in name or "SMOKE" in name) and value!="0" for name,value in macros.items())

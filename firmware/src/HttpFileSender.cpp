@@ -1,6 +1,6 @@
 #include "HttpFileSender.h"
 
-#include "SD_MMC.h"
+#include "StorageFilesystem.h"
 #include "DebugLog.h"
 #include <errno.h>
 #include <lwip/sockets.h>
@@ -180,7 +180,7 @@ bool sendSdFile(WebServer& srv,
                 const String& contentType,
                 const String& downloadName,
                 const String& cacheControl) {
-  File f = SD_MMC.open(path.c_str(), FILE_READ);
+  File f = StorageFilesystem::card().open(path.c_str(), FILE_READ);
   if (!f || f.isDirectory()) {
     if (f) f.close();
     return false;

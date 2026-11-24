@@ -51,7 +51,7 @@
 #include "esp_heap_caps.h"
 
 #include "FS.h"
-#include "SD_MMC.h"
+#include "StorageFilesystem.h"
 
 // Finalization includes nested metadata serializers and libc formatting.
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
@@ -485,6 +485,7 @@ void loop() {
   WiFiManager::loop();
   RTCManager_loop();
   ButtonManager_loop();
+  UploadModeManager::loop();
   StorageManager_loop();       
   WebServerManager::loop();
   LoggingManager::loop();

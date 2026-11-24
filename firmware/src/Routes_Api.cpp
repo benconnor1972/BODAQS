@@ -6,7 +6,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
-#include "SD_MMC.h"
+#include "StorageFilesystem.h"
 
 #include "ConfigManager.h"
 #include "ProductionConfigMigrationApply.h"
@@ -206,7 +206,11 @@ static void sendError_(WebServer& srv, int statusCode, const char* error, const 
 }
 
 static bool requireUploadMode_(WebServer& srv) {
-  if (UploadModeManager::isActive()) return true;
+  if (UploadModeManager::isActive()) {
+    if (StorageFilesystem::ownership().localAvailable()) return true;
+    sendError_(srv, 409, "storage_externally_owned", "Local SD access is paused for external storage access.");
+    return false;
+  }
   sendError_(srv, 409, "upload_mode_required", "Upload mode is required for this endpoint.");
   return false;
 }
@@ -221,12 +225,15 @@ static void addLoggerIdentity_(JsonDocument& doc) {
   doc["display_name"] = ConfigManager::get().loggerName;
 }
 
-static void sendUploadModeState_(WebServer& srv) {
+static void sendUploadModeState_(WebServer& srv, int responseCode = 0) {
   JsonDocument doc;
   addEnvelope_(doc, "bodaqs.logger.upload_mode");
   addLoggerIdentity_(doc);
   doc["upload_mode"] = UploadModeManager::isActive();
-  sendJson_(srv, 200, doc);
+  doc["exit_pending"] = UploadModeManager::exitPending();
+  doc["usb_state"] = UploadModeManager::usbStateKey();
+  doc["transfer_status"] = UploadModeManager::transferLabel();
+  sendJson_(srv, responseCode ? responseCode : (UploadModeManager::exitPending() ? 202 : 200), doc);
 }
 
 static void handleDevice_(WebServer& srv) {
@@ -248,6 +255,7 @@ static void handleDevice_(WebServer& srv) {
 
   JsonArray caps = doc["capabilities"].to<JsonArray>();
   caps.add("upload_mode");
+  if (UploadModeManager::usbEnabled()) caps.add("usb_drive");
   caps.add("session_discovery");
   caps.add("session_archive_zip");
   caps.add("session_data");
@@ -277,12 +285,16 @@ static void handleStatus_(WebServer& srv) {
 #endif
   doc["recording_ownership_retained"] = LoggingManager::configurationLocked();
   doc["stop_reason"] = LoggingManager::stopReasonName(LoggingManager::stopContext().reason);
+  doc["exit_pending"] = UploadModeManager::exitPending();
+  doc["usb_state"] = UploadModeManager::usbStateKey();
+  doc["transfer_status"] = UploadModeManager::transferLabel();
   doc["storage_available"] = scanSummary.storageAvailable;
   doc["storage_directory_opened"] = scanSummary.directoryOpened;
   JsonObject storage = doc["storage"].to<JsonObject>();
   storage["card_detected"] = StorageManager_cardDetected();
   storage["mounted"] = StorageManager_isMounted();
   storage["status"] = StorageManager_lastStatus();
+  storage["ownership"] = StorageManager_ownershipStatus();
 
   JsonObject battery = doc["battery"].to<JsonObject>();
   battery["gauge_ok"] = PowerManager::fuelGaugeOk();
@@ -602,7 +614,7 @@ static void handleStatus_(WebServer& srv) {
 static void handleSessions_(WebServer& srv) {
   if (!requireUploadMode_(srv)) return;
 
-  if (SD_MMC.cardType() == CARD_NONE) {
+  if (StorageFilesystem::card().cardType() == CARD_NONE) {
     sendError_(srv, 503, "storage_unavailable", "SD storage is not available.");
     return;
   }
@@ -648,7 +660,7 @@ static void handleArchive_(WebServer& srv) {
     sendError_(srv, 400, "missing_session_id", "Missing required query argument: id.");
     return;
   }
-  if (SD_MMC.cardType() == CARD_NONE) {
+  if (StorageFilesystem::card().cardType() == CARD_NONE) {
     sendError_(srv, 503, "storage_unavailable", "SD storage is not available.");
     return;
   }
@@ -676,7 +688,7 @@ static void handleData_(WebServer& srv) {
     sendError_(srv, 400, "missing_session_id", "Missing required query argument: id.");
     return;
   }
-  if (SD_MMC.cardType() == CARD_NONE) {
+  if (StorageFilesystem::card().cardType() == CARD_NONE) {
     sendError_(srv, 503, "storage_unavailable", "SD storage is not available.");
     return;
   }
@@ -715,7 +727,7 @@ static bool readJsonBody_(WebServer& srv, JsonDocument& doc) {
 
 static void handleAck_(WebServer& srv) {
   if (!requireUploadMode_(srv)) return;
-  if (SD_MMC.cardType() == CARD_NONE) {
+  if (StorageFilesystem::card().cardType() == CARD_NONE) {
     sendError_(srv, 503, "storage_unavailable", "SD storage is not available.");
     return;
   }
@@ -794,7 +806,7 @@ static void addCleanupResult_(JsonDocument& doc, const UploadSessionCleanup::Cle
 
 static void handleDelete_(WebServer& srv) {
   if (!requireUploadMode_(srv)) return;
-  if (SD_MMC.cardType() == CARD_NONE) {
+  if (StorageFilesystem::card().cardType() == CARD_NONE) {
     sendError_(srv, 503, "storage_unavailable", "SD storage is not available.");
     return;
   }
@@ -1595,6 +1607,22 @@ void registerApiRoutes(WebServer& srv) {
     noteHttpActivity_();
     UploadModeManager::exit();
     sendUploadModeState_(*S);
+  });
+  S->on("/api/v1/upload-mode/cancel-exit", HTTP_POST, [S]() {
+    noteHttpActivity_();
+    if (!UploadModeManager::cancelExit()) {
+      sendError_(*S, 409, "exit_not_cancellable", "No cancellable upload exit is pending.");
+      return;
+    }
+    sendUploadModeState_(*S);
+  });
+  S->on("/api/v1/upload-mode/retry-storage", HTTP_POST, [S]() {
+    noteHttpActivity_();
+    if (!UploadModeManager::retryStorage()) {
+      sendError_(*S, 409, "storage_retry_unavailable", "No USB storage recovery is awaiting retry.");
+      return;
+    }
+    sendUploadModeState_(*S, 202);
   });
 
   S->on("/api/v1/sessions", HTTP_GET, [S]() {

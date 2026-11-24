@@ -3,7 +3,7 @@
 #if !BODAQS_PRODUCTION_RECORDING
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include "SD_MMC.h"   // for SD_MMC backend
+#include "StorageFilesystem.h"   // for SD_MMC backend
 
 #include "HtmlUtil.h"
 #include "WebServerManager.h"
@@ -44,7 +44,7 @@ static String baseName_(const String& path) {
 }
 
 static void addTransformsFromDirMMC_(const char* dirPath, JsonArray outArr) {
-  File dir = SD_MMC.open(dirPath);
+  File dir = StorageFilesystem::card().open(dirPath);
   if (!dir || !dir.isDirectory()) {
     if (dir) dir.close();
     return;
@@ -215,7 +215,7 @@ S->on("/api/transforms/list", HTTP_GET, [S](){
     }
 
     const String sensor = srv.arg("sensor");
-    const bool ok = (SD_MMC.cardType() != CARD_NONE) && gTransforms.reload(sensor, SD_MMC);
+    const bool ok = (StorageFilesystem::card().cardType() != CARD_NONE) && gTransforms.reload(sensor, StorageFilesystem::card());
 
     srv.sendHeader("Cache-Control", "no-store");
     srv.send(ok ? 200 : 500,

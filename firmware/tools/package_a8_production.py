@@ -15,14 +15,16 @@ import sys
 import zipfile
 
 ENVIRONMENTS = ('bodaqs_a8_production', 'bodaqs_a8_integration_candidate')
+USB_ENVIRONMENTS = ('bodaqs_a8_production_usb', 'bodaqs_a8_integration_candidate_usb')
 OFFSETS = {'bootloader.bin': 0, 'partitions.bin': 0x8000,
            'boot_app0.bin': 0xE000, 'firmware.bin': 0x10000}
 FLASH_BYTES = 0x400000
 PUBLIC_SOURCE_ROOTS = ('firmware/src/', 'firmware/boards/', 'firmware/variants/',
-    'firmware/tools/', 'firmware/test/', 'firmware/can-fd/', 'analysis/bodaqs_analysis/',
+    'firmware/tools/', 'firmware/test/', 'firmware/diagnostics/', 'firmware/can-fd/', 'analysis/bodaqs_analysis/',
     'analysis/tests/', 'docs/firmware/', 'docs/analysis/', 'docs/agents/', 'docs/adr/')
 PUBLIC_SOURCE_FILES = ('AGENTS.md', 'agents.md', 'GLOSSARY.md', 'requirements.txt', 'firmware/platformio.ini',
-    'firmware/bodaqs_4mb.csv', 'firmware/build.sh', 'analysis/pyproject.toml', 'analysis/pytest.ini')
+    'firmware/bodaqs_4mb.csv', 'firmware/build.sh', 'analysis/pyproject.toml', 'analysis/pytest.ini',
+    'docs/interchange/USB_Logger_Identity_v1.md', 'docs/specs/A8_USB_Drive_Access.md')
 
 
 def digest(path: Path) -> str:
@@ -116,6 +118,7 @@ def main() -> int:
     parser.add_argument('--esptool', type=Path, required=True, help='PlatformIO esptool.py path')
     parser.add_argument('--source-date-epoch', required=True, type=int)
     parser.add_argument('--jobs', default=4, type=int)
+    parser.add_argument('--usb', action='store_true', help='package the optional A8 composite CDC/MSC variants')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     output = args.output.resolve()
@@ -139,7 +142,8 @@ def main() -> int:
     manifest = {'schema': 'bodaqs.a8-production-package.v1', 'status': 'building',
                 'source_commit': commit, 'source_date_epoch': args.source_date_epoch,
                 'qualification': 'pending; candidate override is not strict production admission',
-                'installation': 'not performed', 'logger': {}, 'peers': {}, 'commands': []}
+                'installation': 'not performed', 'usb_drive_enabled': args.usb,
+                'logger': {}, 'peers': {}, 'commands': []}
     env = {**os.environ, 'SOURCE_DATE_EPOCH': str(args.source_date_epoch), 'PYTHONIOENCODING': 'utf-8'}
 
     def run(label, argv):
@@ -151,7 +155,7 @@ def main() -> int:
         run('platformio-version', [args.pio_python, '-m', 'platformio', '--version'])
         pio_home = Path(os.environ.get('PLATFORMIO_CORE_DIR', Path.home() / '.platformio'))
         boot_app = pio_home / 'packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin'
-        for environment in ENVIRONMENTS:
+        for environment in (USB_ENVIRONMENTS if args.usb else ENVIRONMENTS):
             pio = [args.pio_python, '-m', 'platformio', 'run', '-d', 'firmware', '-e', environment]
             build = root / 'firmware/.pio/build' / environment
             first = output / environment

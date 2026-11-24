@@ -1,7 +1,7 @@
 #include "UploadAckIndex.h"
 
 #include <ArduinoJson.h>
-#include "SD_MMC.h"
+#include "StorageFilesystem.h"
 
 #ifndef FILE_APPEND
 #define FILE_APPEND FILE_WRITE
@@ -36,9 +36,9 @@ static bool isAcknowledgedStatus_(const String& status) {
 }
 
 static bool appendLine_(const String& line, String* error) {
-  File f = SD_MMC.open(kIndexPath, FILE_APPEND);
+  File f = StorageFilesystem::card().open(kIndexPath, FILE_APPEND);
   if (!f) {
-    f = SD_MMC.open(kIndexPath, FILE_WRITE);
+    f = StorageFilesystem::card().open(kIndexPath, FILE_WRITE);
   }
   if (!f) {
     setError_(error, String(F("open failed: ")) + kIndexPath);
@@ -60,11 +60,11 @@ static bool appendLine_(const String& line, String* error) {
 }
 
 static bool openReadableIndex_(File& f, String* error) {
-  if (!SD_MMC.exists(kIndexPath)) {
+  if (!StorageFilesystem::card().exists(kIndexPath)) {
     return false;
   }
 
-  f = SD_MMC.open(kIndexPath, FILE_READ);
+  f = StorageFilesystem::card().open(kIndexPath, FILE_READ);
   if (!f) {
     setError_(error, String(F("open failed: ")) + kIndexPath);
     return false;
@@ -101,7 +101,7 @@ const char* indexPath() {
 bool markSessionAcknowledged(const AckRecord& record, String* error) {
   if (error) *error = "";
 
-  if (SD_MMC.cardType() == CARD_NONE) {
+  if (StorageFilesystem::card().cardType() == CARD_NONE) {
     setError_(error, F("SD storage unavailable"));
     return false;
   }
@@ -143,7 +143,7 @@ bool findSessionAcknowledgement(const char* sessionId, AckRecord& out, String* e
     setError_(error, F("missing session_id"));
     return false;
   }
-  if (SD_MMC.cardType() == CARD_NONE) {
+  if (StorageFilesystem::card().cardType() == CARD_NONE) {
     setError_(error, F("SD storage unavailable"));
     return false;
   }
@@ -185,7 +185,7 @@ bool applyAcknowledgementStatuses(AckStatusLookup* lookups, uint16_t count, Stri
     lookups[i].acknowledged = false;
   }
 
-  if (SD_MMC.cardType() == CARD_NONE) {
+  if (StorageFilesystem::card().cardType() == CARD_NONE) {
     setError_(error, F("SD storage unavailable"));
     return false;
   }
