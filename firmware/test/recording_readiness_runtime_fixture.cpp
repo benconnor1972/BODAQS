@@ -28,7 +28,7 @@ struct DiagnosticList {
   uint8_t count() const {return issuePresent?1:0;}const SensorDiagnosticIssue* at(uint8_t) const {return &issue;}
 };
 struct Sensor {bool ready=true;bool muted() const {return false;}
-  bool validateLoggingStart(const LoggerConfig&,uint16_t,char*,size_t) const {return ready;}};
+  bool observeLoggingReadiness(const LoggerConfig&,uint16_t,char*,size_t) const {return ready;}};
 constexpr unsigned MAX_SENSORS=4;
 namespace SensorManager {
   static std::array<Sensor,4> sensors;static DiagnosticList diagnostics;

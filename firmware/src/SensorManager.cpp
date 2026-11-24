@@ -1,4 +1,5 @@
 #include "SensorManager.h"
+#include "RecordingReadiness.h"
 #include "CanMasterManager.h"
 #include "LoggingManager.h"
 #include "Sensor.h"
@@ -920,6 +921,9 @@ bool validateLoggingStart(
     (void)getMuted(i,muted);
 #endif
     if(muted || s_sessionDiagnostics.excludesSensor(i)) continue;
+#if BODAQS_PRODUCTION_RECORDING
+    if(!RecordingReadiness::selected(i)) continue;
+#endif
     if(spec.type==SensorType::LSM6DSO32XImu &&
        sensorAssignment(spec,board::gBoard).kind==SensorAssignment::Kind::NodeImu) continue;
     if (!s_list[i]) {
@@ -978,7 +982,7 @@ bool validateLoggingStart(
     for(uint8_t index=0;index<cfg.sensorCount() && index<MAX_SENSORS;++index) {
       SensorSpec spec;if(!cfg.getSensorSpec(index,spec)) continue;
       bool muted=spec.mutedDefault;(void)getMuted(index,muted);
-      if(!muted && s_sessionDiagnostics.excludesSensor(index)) {
+      if(!muted && (!RecordingReadiness::selected(index) || s_sessionDiagnostics.excludesSensor(index))) {
         if(error && errorCapacity) snprintf(error,errorCapacity,"strict recording requires all requested sensors");
         s_sessionPlanActive=false;return false;
       }
@@ -1081,6 +1085,7 @@ void onLoggingFinalized() {
 const SensorDiagnosticList& sessionDiagnostics() { return s_sessionDiagnostics; }
 
 uint32_t sessionParticipantMask() {
+  if(!s_sessionPlanActive) return 0;
   uint32_t mask=0;
   for(uint8_t index=0;index<MAX_SENSORS && index<32;++index)
     if(participates_(index)) mask|=uint32_t{1}<<index;

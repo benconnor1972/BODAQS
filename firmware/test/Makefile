@@ -38,6 +38,8 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_published_sensor_counts_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_string_pot_counts_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_bmi270_preview_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_bmi270_readiness_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_admitted_local_plan_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_production_config_migration_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_analog_calibration_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_recording_readiness_runtime.py --compiler "$(CXX)"

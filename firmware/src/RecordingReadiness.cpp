@@ -44,7 +44,7 @@ RecordingAdmission::Inputs inputs_(const LoggerConfig& cfg,bool owned) {
         result.available|=bit;
     } else {
       Sensor* sensor=SensorManager::getConfiguredSensor(index);char error[96]{};
-      if(sensor && !sensor->muted() && sensor->validateLoggingStart(cfg,cfg.sampleRateHz,error,sizeof error))
+      if(sensor && !sensor->muted() && sensor->observeLoggingReadiness(cfg,cfg.sampleRateHz,error,sizeof error))
         result.available|=bit;
     }
   }

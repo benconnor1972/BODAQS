@@ -250,7 +250,7 @@ int main() {
         adapters = adapters.replace("// ACTUAL_READINESS", actual)
         fixture = fixture.replace('#include "RecordingLifecycle.h"', '#include "RecordingLifecycle.h"\n#include "RecordingReadiness.h"')
         fixture = fixture.replace('  uint8_t sensorN = 0;', '  uint8_t sensorN = 0;\n  bool recordingBestEffort = false;')
-        fixture = fixture.replace('  bool muted() const { return mute; }', '  bool muted() const { return mute; }\n  bool validateLoggingStart(const LoggerConfig&, uint16_t, char*, size_t) const { return !stale; }')
+        fixture = fixture.replace('  bool muted() const { return mute; }', '  bool muted() const { return mute; }\n  bool observeLoggingReadiness(const LoggerConfig&, uint16_t, char*, size_t) const { return !stale; }')
         begin = fixture.index('namespace RemoteImuRecording {')
         end = fixture.index('namespace CanMasterManager {', begin)
         remote, adapters = adapters.split('// REMOTE_END', 1)
