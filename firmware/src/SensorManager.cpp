@@ -1005,6 +1005,30 @@ bool onLoggingStart(char* error, size_t errorCapacity) {
 #if BODAQS_ADC_ROW_HANDOFF && !BODAQS_ADC_RAW_RECORDING_BENCH
   prepareSamplingPlan_();
 #endif
+#if BODAQS_PRODUCTION_RECORDING
+  LocalAnalogRecordingPlan plan;
+  if (!s_cfg || !plan.configure(s_cfg->sampleRateHz)) return false;
+  for (uint8_t index = 0; index < MAX_SENSORS; ++index) {
+    if (!participates_(index) || s_list[index]->usesBdqV2NativeStream()) continue;
+    if (s_liveType[index] != SensorType::AnalogPot) {
+      if (error && errorCapacity) snprintf(error, errorCapacity, "count-first adapter unavailable for %s", s_list[index]->name());
+      return false;
+    }
+    const auto& input = s_liveAssignment[index];
+    const bool added = input.provider.kind == SensorProviderKind::Local &&
+        (input.kind == SensorAssignment::Kind::ExternalAdc
+          ? (input.negativeInput == -1 && plan.addExternal(index, input.bus, input.input))
+          : input.kind == SensorAssignment::Kind::Gpio && plan.addGpio(index, input.input));
+    if (!added) {
+      if (error && errorCapacity) snprintf(error, errorCapacity, "invalid analog acquisition plan for %s", s_list[index]->name());
+      return false;
+    }
+  }
+  if (!AnalogInputManager::setRecordingPlan(plan)) {
+    if (error && errorCapacity) snprintf(error, errorCapacity, "analog acquisition plan unavailable");
+    return false;
+  }
+#endif
   return true;
 }
 
@@ -1213,6 +1237,10 @@ uint16_t recordingColumnCapacity(bool excludeBdqV2NativeStreams) {
 bool recordingSamplingPlanReady() { return s_samplingReady; }
 
 bool rawAdcPairEligible() {
+#if BODAQS_PRODUCTION_RECORDING
+  return s_sessionPlanActive && s_cfg && s_cfg->logFormat == LogFormat::BodaqsMultiStreamBinary &&
+      AnalogInputManager::rawRecordingColumns() == describeSensorColumns(nullptr, 0, true);
+#else
   if(!s_sessionPlanActive || !s_cfg || s_cfg->logFormat!=LogFormat::BodaqsMultiStreamBinary)return false;
   unsigned columns=0;
   for(uint8_t i=0;i<MAX_SENSORS;++i) {
@@ -1228,6 +1256,7 @@ bool rawAdcPairEligible() {
     ++columns;
   }
   return columns==RawAdcRecording::kColumns;
+#endif
 }
 
 void sampleRowValues(float* out,uint16_t cap,uint16_t& written,

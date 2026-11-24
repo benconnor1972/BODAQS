@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 namespace Rates {
-#if BODAQS_ADC_RATE_SWEEP_BENCH
+#if BODAQS_ADC_RATE_SWEEP_BENCH || BODAQS_PRODUCTION_RECORDING
   static constexpr uint16_t kList[] = {10,20,50,100,200,300,400,450,500,550,600,650,700,800,900,1000,1200,1500,1667,2000};
 #else
   static constexpr uint16_t kList[] = {10, 20, 50, 100, 200, 300, 400, 500, 650, 700, 1000};

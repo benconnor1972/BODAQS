@@ -29,7 +29,7 @@ def main():
             "const SensorDiagnosticList& configurationDiagnostics(",
             "LoggingConfigIssue configurationIssue(",
             "bool requiresBdqV2(")))
-    fixture = fixture.replace("// PRODUCTION_LIFECYCLE", definition(logging, "  bool phaseIs_("))
+    fixture = fixture.replace("// PRODUCTION_LIFECYCLE", definition(logging, "  bool phaseIs_(") + "\n" + definition(logging, "  unsigned stopPriority_("))
     fixture = fixture.replace("// PRODUCTION_START", "\n".join(
         definition(logging, sig) for sig in (
             "bool retireLocalAcquisition_() {", "void LoggingManager::refreshConfigurationStatus(",
@@ -153,6 +153,20 @@ int main() {
   storageWorker.poll(10900); LoggingManager::loop(); check(s_stopping);
   blocked = false; closing.join(); LoggingManager::loop();
   check(!s_stopping && has("wifi_resume") && !CanMasterManager::fenced);
+  // A source fault must outrank a simultaneous normal sleep request.
+  reset(); add(SensorType::BMI270ImuI2C,"a",1,104); blockedOperation=0;
+  check(LoggingManager::requestStart() == LoggingManager::StartResult::Pending);
+  storageWorker.step(11010); LoggingManager::loop();
+  std::thread powerFault([] {
+    lifecycleOwner=false;
+    LoggingManager::stop(LoggingManager::StopReason::SleepRequest,"sleep");
+    LoggingManager::stop(LoggingManager::StopReason::AnalogRailFault,"rail");
+  });
+  powerFault.join();LoggingManager::loop();
+  check(s_stopContext.reason == LoggingManager::StopReason::AnalogRailFault);
+  LoggingManager::stop(LoggingManager::StopReason::UserRequest,"repeat");
+  LoggingManager::loop();storageWorker.step(11011);LoggingManager::loop();
+  check(LoggingManager::lifecycleState() == LifecycleState::Failed);
   // A returned sink failure shuts down acquisition and preserves a failed file.
   reset(); add(SensorType::BMI270ImuI2C,"a",1,104); blockedOperation = 0;
   check(LoggingManager::requestStart() == LoggingManager::StartResult::Pending);

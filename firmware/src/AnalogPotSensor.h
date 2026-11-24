@@ -46,6 +46,8 @@ public:
   bool muted() const override { return m_muted; }
   void setMuted(bool m) override { m_muted = m; }
 
+  void onLoggingStart() override;
+  void onLoggingFinalized() override;
   uint8_t columnCount() const override;
   void getColumnName(uint8_t idx, char* out, size_t cap) const override;
   void sampleValues(float* out, uint8_t max) override;
@@ -93,6 +95,7 @@ public:
   static Sensor*         create(const char* instanceName, const ParamPack& params, bool mutedDefault);
 
 private:
+  bool m_recordRaw = false;
   void  applyParams(const Params& p);
   int   readOnce(const LocalAdcSnapshot* snapshot = nullptr) const;
   void  sample(float& selectedOut, int& rawOut);

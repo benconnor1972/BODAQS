@@ -44,6 +44,14 @@ struct LoggerConfig;
 #error "Row phase requires pipeline"
 #endif
 namespace AnalogInputManager {
+#if BODAQS_PRODUCTION_RECORDING
+  bool setRecordingPlan(const LocalAnalogRecordingPlan& plan);
+  // Publish/unpark only after the lifecycle owner has entered Recording.
+  bool activateRecordingPlan();
+  unsigned rawRecordingColumns();
+  // Called only inside the ADC owner's inline row-capture callback.
+  bool recordingRowTiming(uint32_t& sequence, uint32_t& missed, uint64_t& deadlineUs);
+#endif
 #if BODAQS_ADC_COMBINED_CAPTURE
   // Idle START only; immutable until scan retirement. Called by the scan owner
   // after all selected channels on both ADCs verify; never STOP/wait on its owner.
@@ -56,7 +64,7 @@ namespace AnalogInputManager {
   bool rowHandoffActive();
   bool captureRowSnapshot(LocalAdcSnapshot& snapshot);
 #if BODAQS_ADC_RAW_RECORDING_BENCH
-  // Verified scan owner only; exact ADC0/ADC1 channel0 raw trial, no sensor calls.
+  // ADC owner only: configured count fields, with no engineering transformations.
   bool captureRawPair(RawAdcRecord& record,uint64_t& capturedUs);
 #endif
   // Consumer task only; caller retains snapshot through sampleValues and clears

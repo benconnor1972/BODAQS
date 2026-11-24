@@ -1071,7 +1071,12 @@ bool StorageManager_enqueueRawAdc(const RawAdcRecord& record,bool mark,uint64_t 
   if(!loggingActive || !s_rawAdc || !s_rawAdc->active)return false;
   ++s_rawAdc->submitted;RawAdcRecord value=record;value.status|=s_primaryPendingStatus;
   size_t depth=0;
-  if(value.reserved || !s_bdqV2PrimaryQueue.push(reinterpret_cast<const uint8_t*>(&value),sizeof(value),&depth)) {
+#if BODAQS_PRODUCTION_RECORDING
+  const size_t recordBytes = s_bdqV2PrimarySchema.recordSizeBytes();
+#else
+  const size_t recordBytes = sizeof(value);
+#endif
+  if(value.reserved || recordBytes > sizeof(value) || !s_bdqV2PrimaryQueue.push(reinterpret_cast<const uint8_t*>(&value),recordBytes,&depth)) {
     if(value.reserved)++s_rowsFormatFailed;
     ++s_samplesDropped;++s_rawAdc->rejected;
     s_primaryPendingStatus|=BdqV2Format::DiscontinuityBefore|BdqV2Format::ProducerQueueDropBefore;
@@ -1102,10 +1107,14 @@ static bool popBdqV2PrimaryRecord_(
     size_t capacity) {
 #if BODAQS_ADC_RAW_RECORDING_BENCH
   if(s_rawAdc && s_rawAdc->active) {
+#if BODAQS_PRODUCTION_RECORDING
+    if (!s_bdqV2PrimaryQueue.pop(destination, capacity)) return false;
+#else
     if(!destination || capacity<sizeof(RawAdcRecord))return false;
     RawAdcRecord record;
     if(!s_bdqV2PrimaryQueue.pop(reinterpret_cast<uint8_t*>(&record),sizeof(record)))return false;
     if(!RawAdcRecording::encode(record,destination,capacity))return false;
+#endif
     ++s_rawAdc->encoded;return true;
   }
 #endif
@@ -1615,8 +1624,8 @@ static bool beginBdqV2_(const BdqLogSessionInfo& info) {
   if(!RawAdcRecording::supportsGeometry(info.sampleRateHz,primaryColumnCount) ||
      !SensorManager::rawAdcPairEligible()) {
     delete[] primaryColumns;
-    STOR_LOGE("raw ADC trial requires%uHz,%u RAW columns in AIN0,AIN4[,AIN1,AIN5] order\n",
-             RawAdcRecording::kRateHz,RawAdcRecording::kColumns);return false;
+    STOR_LOGE("raw recording layout does not match prepared plan: rate_hz=%u columns=%u\n",
+             unsigned(info.sampleRateHz),unsigned(primaryColumnCount));return false;
   }
   // Both queue adapters are pure SPSC sources. Snapshot once per existing
   // writer chunk instead of querying readiness again for each raw row.
@@ -1652,8 +1661,14 @@ static bool beginBdqV2_(const BdqLogSessionInfo& info) {
 
   s_bdqV2Descriptors[0] = s_bdqV2PrimarySchema.descriptor();
 #if BODAQS_ADC_RAW_RECORDING_BENCH
+#if BODAQS_PRODUCTION_RECORDING
+  if (s_bdqV2PrimarySchema.recordSizeBytes() != RawAdcRecording::recordBytes(primaryColumnCount)) { delete[] primaryColumns; return false; }
+  s_rawAdc->active = true; s_rawAdc->qualified = false;
+#else
   if(s_bdqV2PrimarySchema.recordSizeBytes()!=sizeof(RawAdcRecord)) {delete[] primaryColumns;return false;}
-  s_rawAdc->active=s_rawAdc->qualified=true;s_rawAdc->capacity=primaryQueueCapacity;
+  s_rawAdc->active=s_rawAdc->qualified=true;
+#endif
+  s_rawAdc->capacity=primaryQueueCapacity;
 #endif
   const uint16_t nativeStreamCount =
       SensorManager::describeBdqV2Streams(nullptr, 0, 2);

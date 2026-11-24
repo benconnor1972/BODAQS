@@ -371,7 +371,15 @@ CalibrationState AnalogPotSensor::calibration() const {
   return cs;
 }
 
+void AnalogPotSensor::onLoggingStart() {
+#if BODAQS_PRODUCTION_RECORDING
+  m_recordRaw = true;
+#endif
+}
+void AnalogPotSensor::onLoggingFinalized() { m_recordRaw = false; }
+
 uint8_t AnalogPotSensor::columnCount() const {
+  if (m_recordRaw) return 1;
   // Primary output + optional raw counts column
   return m_includeRaw ? 2 : 1;
 }
@@ -380,6 +388,10 @@ void AnalogPotSensor::getColumnName(uint8_t col, char* out, size_t cap) const {
   if (!out || cap < 2) return;
   out[0] = '\0';
 
+  if (m_recordRaw) {
+    if (!col) writeColumnLabel_(name(), "counts", out, cap);
+    return;
+  }
   if (col == 0) {
     // Primary column per mode
     switch (m_mode) {
@@ -416,12 +428,13 @@ bool AnalogPotSensor::describeColumn(uint8_t idx, SensorColumnDescriptor& out) c
   if (!Sensor::describeColumn(idx, out)) return false;
 
   copyField_(out.sensorName, sizeof(out.sensorName), name());
-  out.outputMode = m_mode;
+  const auto recordingMode = m_recordRaw ? OutputMode::RAW : m_mode;
+  out.outputMode = recordingMode;
   out.required = true;
   out.primary = (idx == 0);
-  out.raw = (m_mode == OutputMode::RAW) || (idx == 1 && m_includeRaw);
-  out.calibrated = !out.raw || (idx == 0 && m_mode != OutputMode::RAW);
-  out.transformed = (idx == 0 && (m_mode == OutputMode::POLY || m_mode == OutputMode::LUT));
+  out.raw = (recordingMode == OutputMode::RAW) || (idx == 1 && m_includeRaw);
+  out.calibrated = !out.raw;
+  out.transformed = !m_recordRaw && (idx == 0 && (m_mode == OutputMode::POLY || m_mode == OutputMode::LUT));
 
   copyField_(out.end, sizeof(out.end), m_semanticEnd);
   copyField_(out.domain, sizeof(out.domain), out.raw ? m_rawDomain : m_primaryDomain);
@@ -443,7 +456,9 @@ bool AnalogPotSensor::describeColumn(uint8_t idx, SensorColumnDescriptor& out) c
     selectedTransformId().toCharArray(out.transformChain, sizeof(out.transformChain));
   }
 
-  if (out.end[0] && out.domain[0] && out.quantity[0]) {
+  if (m_recordRaw) {
+    snprintf(out.columnId, sizeof(out.columnId), "%s_raw", name());
+  } else if (out.end[0] && out.domain[0] && out.quantity[0]) {
     snprintf(out.columnId, sizeof(out.columnId), "%s_%s_%s",
              out.end, out.domain, out.quantity);
   } else if (out.quantity[0]) {
@@ -493,6 +508,7 @@ void AnalogPotSensor::sampleRowValues(float* out, uint8_t max, const LocalAdcSna
 
 void AnalogPotSensor::sampleValues_(float* out, uint8_t max, const LocalAdcSnapshot* snapshot) {
   if (!out || max == 0 || m_muted) return;
+  if (m_recordRaw) { out[0] = float(readOnce(snapshot)); return; }
 
   float selected = 0.0f;
   int   counts   = 0;

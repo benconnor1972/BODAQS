@@ -7,10 +7,10 @@ ledger records code dependencies without implicitly closing tracker items.
 | Issue | State | Evidence / remaining work |
 |---|---|---|
 | #214 | Complete | Source-pinned r133 baseline and selected RTC release port; both A8 target builds pass. START harness: 133 checks; remote lifecycle/fault scenarios and RTC runtime tests pass. |
-| #215 | Implemented; qualification pending | Atomic phase, control-task transitions and producer fault requests; nonblocking ADC/row retirement, retained-resource mutation/restart/sleep guards, phase API/UI. START/preflight 133 checks; asynchronous controller 36 checks; target candidate builds. Final fault/outcome checks continue in #226. |
+| #215 | Implemented; qualification pending | Atomic phase, control-task transitions and producer fault requests; nonblocking ADC/row retirement, retained-resource mutation/restart/sleep guards, phase API/UI. START/preflight 133 checks; asynchronous controller 39 checks; target candidate builds. Final fault/outcome checks continue in #226. |
 | #216 | Implemented; qualification pending | Explicit adaptive drain; production ROM CRC and owner-only DMA batches; observers and mandatory console/benchmark gates disabled. Adapter, storage owner/recovery fixtures and candidate target build pass. Physical no-console/mixed-load gate remains. |
-| #217 | In progress | Embedded sensor/config/calibration snapshot and normal raw/basic-engineering import implemented; 21 BDQ v2 import tests and production serializer fixture pass; target build passes. Flexible/direct acquisition and read-only previews follow in #218/#221. |
-| #218 | Pending | Unified timer and flexible per-ADC plans. |
+| #217 | In progress | Embedded sensor/config/calibration snapshot and normal raw/basic-engineering import implemented; 21 BDQ v2 import tests and production serializer fixture pass; target build passes. Flexible/direct acquisition is implemented in #218; read-only previews remain in #221. |
+| #218 | Implemented; qualification pending | START plan binds sensor identities, sparse/unequal/idle external ADCs and direct GPIOs to typed count fields. One rational absolute timer; independent device appointments, skipped-row evidence, no dummy conversions. Actual ADC-manager/SPI/DRDY/timer model and dynamic queue tests pass; candidate build passes. Focused physical comparison remains. |
 | #219 | Pending | Native CAN profiles and normal import. |
 | #220 | Pending | Fast, fair, safely cached reconciliation. |
 | #221 | Pending | String-pot evidence and snapshot previews. |
@@ -78,3 +78,28 @@ allocation recovery, CRC known vectors, exclusive staging ownership, ordered
 and four-node failure fixtures pass. No new physical timing or throughput
 qualification is claimed. The initial candidate still has fixed ADC geometry;
 that is the next acquisition-plan work, not a production admission envelope.
+
+## Acquisition plan (#218)
+
+Production ADC field order follows configured sensor identity, not diagnostic
+AIN ordering. One ADC owner retains its P4/core0 placement and captures inline;
+CAN/storage priorities and placements remain unchanged. Each device advances
+only through its own configured mask. Idle devices have no conversion work.
+All local rows use absolute rational timer deadlines, including rates whose
+period is not an integer number of microseconds. Late wakes skip appointments
+without changing the MUX identity in flight or issuing catch-up rows.
+
+The typed queue copies the declared variable-width prefix, with no acquisition
+engineering transformation or float round trip. Analog engineering output
+settings remain available outside recording; the recording schema is raw and
+sensor-bound. Direct GPIO inputs explicitly select the 12-bit ADC resolution
+and validate that the selected pin has an ADC channel.
+
+The actual ADC manager is exercised against independent register, DRDY, timer
+and conversion models: sparse/unequal layouts, an idle ADC, direct-only input,
+negative-result clamping, fractional cadence, stale/late wakes, mismatched
+register readback, timer-arm failure and repeated sessions. A separate actual
+queue-adapter fixture covers zero through 32 fields, exact byte boundaries,
+marks, overflow gap flags and malformed records. Legacy ADC setup and async
+lifecycle fixtures still pass. These are correctness checks, not measured
+physical settling, CPU capacity or an expanded admission envelope.

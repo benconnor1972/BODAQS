@@ -1,9 +1,10 @@
 # Raw analog recording and embedded calibration
 
 The A8 production integration candidate records local analog inputs in the
-existing `uint16` 0..4095 count domain. Negative conversion results clamp to zero
-and set the record's sensor-error bit; out-of-range positive values clamp to
-4095 with that bit. This does not claim twelve effective bits of accuracy.
+existing `uint16` 0..4095 count domain. Native negative conversion results clamp
+to zero during count scaling, preserving the existing acquisition behavior.
+Values outside the declared domain presented to the record encoder clamp with
+the sensor-error bit. This does not claim twelve effective bits of accuracy.
 
 BDQ v2 session metadata includes `recording_configuration`, with schema
 `bodaqs.recording_configuration.v1`. It snapshots the common local row rate and
@@ -37,6 +38,12 @@ without claiming successful finalization. The importer does not consult later
 configuration/calibration files. Reprocessing an existing session with different
 calibration remains a separate, deferred feature.
 
-This contract change alone does not generalize the benchmark's fixed ADC layout.
-The acquisition-plan slice supplies arbitrary subsets, unequal/idle ADCs and the
-common timer cadence before the complete candidate is qualified on hardware.
+The production plan binds raw fields to configured sensor identities, rather
+than a diagnostic AIN order; analog fields use `<sensor_id>_raw`. ADCs may have
+sparse subsets, unequal counts or an idle device. Applicable direct GPIO inputs
+use the same explicitly selected twelve-bit domain. One rational timer cadence
+supplies the common row rate. Skipped deadlines appear as sequence gaps, with
+no catch-up rows. Reused ADC values carry the timing-degraded bit.
+
+Host checks establish these software properties. Physical timing and mixed-load
+comparison remain required before qualifying the complete candidate.

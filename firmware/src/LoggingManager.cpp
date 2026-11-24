@@ -65,6 +65,20 @@ namespace {
   bool retireLocalAcquisition_();
   bool s_remotePreparing = false;
   bool s_remoteFaultShown = false;
+  unsigned stopPriority_(LoggingManager::StopReason reason) {
+    using Reason = LoggingManager::StopReason;
+    switch (reason) {
+      case Reason::StorageUnresponsive: return 8;
+      case Reason::StorageFailure: return 7;
+      case Reason::SdCardRemoved: return 6;
+      case Reason::AnalogRailFault: return 5;
+      case Reason::StartFailure: return 4;
+      case Reason::Unspecified: return 3;
+      case Reason::SleepRequest: return 2;
+      case Reason::UserRequest: return 1;
+      default: return 0;
+    }
+  }
   // Run-state
 
   LoggingManager::StartFailureHint s_startFailureHint =
@@ -251,11 +265,23 @@ static bool combinedCaptureRow_() {
   s_sampleInProgress.store(true);
   if(!phaseIs_(LifecycleState::Recording)) {s_sampleInProgress.store(false);return true;}
   const uint64_t now=static_cast<uint64_t>(esp_timer_get_time());
+#if BODAQS_PRODUCTION_RECORDING
+  uint32_t sequence = 0, missed = 0;
+  uint64_t scheduled = 0;
+  if (!AnalogInputManager::recordingRowTiming(sequence, missed, scheduled)) {
+    s_sampleInProgress.store(false);
+    return false;
+  }
+  s_sampleCount = sequence;
+  s_missedSampleSlots += missed;
+  const uint64_t lag = now > scheduled ? now - scheduled : 0;
+#else
   if(!s_rowHandoff->combinedNextUs)s_rowHandoff->combinedNextUs=now;
   const uint64_t lag=now>s_rowHandoff->combinedNextUs?now-s_rowHandoff->combinedNextUs:0;
   const uint32_t missed=Rates::missedSlots(lag,s_intervalUs);
   s_sampleCount+=missed;s_missedSampleSlots+=missed;
   s_rowHandoff->combinedNextUs+=uint64_t(missed)*s_intervalUs;
+#endif
   ++s_schedulerWakeups;
   const uint32_t bounded=lag>UINT32_MAX?UINT32_MAX:static_cast<uint32_t>(lag);
   if(bounded>s_lateMaxLagUs)s_lateMaxLagUs=bounded;
@@ -711,12 +737,13 @@ void LoggingManager::loop() {
   // Consume a bounded set, including simultaneous faults. Storage faults win
   // over operator cancellation; no producer-owned string is retained.
   const uint32_t requests = s_lifecycle.takeStopRequests();
+  auto selected = StopReason::None;
   for (int reason = static_cast<int>(StopReason::StorageUnresponsive); reason > 0; --reason) {
-    if (requests & (uint32_t{1} << reason)) {
-      stop(static_cast<StopReason>(reason), "producer_stop_request");
-      break;
-    }
+    const auto candidate = static_cast<StopReason>(reason);
+    if ((requests & (uint32_t{1} << reason)) && stopPriority_(candidate) > stopPriority_(selected))
+      selected = candidate;
   }
+  if (selected != StopReason::None) stop(selected, "producer_stop_request");
 #if BODAQS_ADC_COMBINED_CAPTURE
   if(phaseIs_(LifecycleState::Recording) && !AnalogInputManager::continuousHealthy()) {
     stop(StopReason::Unspecified,"combined_adc_capture_fault");
@@ -840,12 +867,14 @@ bool LoggingManager::start() {
     LOGGING_LOGW("start refused: raw ADC trial requires BDQ v2\n");
     return false;
   }
+#if !BODAQS_PRODUCTION_RECORDING
   if(!RawAdcRecording::supportsGeometry(s_cfg->sampleRateHz,RawAdcRecording::kColumns)) {
     UI::toast("RAW trial rate mismatch",1800,1);
     LOGGING_LOGW("start refused: raw ADC trial rejects requested%uHz for %u channels/ADC\n",
                  s_cfg->sampleRateHz,RawAdcRecording::kChannelsPerAdc);
     return false;
   }
+#endif
 #endif
   TRACE("enter start()");
   const uint32_t startT0 = millis();
@@ -1097,6 +1126,11 @@ void LoggingManager::completeStorageStart() {
   AnalogInputManager::onLoggingStart();
   SensorManager::startLoggingAcquisition();
   s_lifecycle.publish(LifecycleState::Recording);
+#if BODAQS_PRODUCTION_RECORDING
+  if (!AnalogInputManager::activateRecordingPlan()) {
+    stop(StopReason::StartFailure, "adc_acquisition_activation"); return;
+  }
+#endif
 #if BODAQS_ADC_CONTINUOUS_LATEST
   if(!AnalogInputManager::continuousHealthy()) {stop(StopReason::StartFailure,"adc_continuous_start");return;}
 #endif
@@ -1247,8 +1281,7 @@ void LoggingManager::stop(StopReason reason, const char* triggerEvent) {
   }
 #if defined(ESP32)
   if ((phaseIs_(LifecycleState::Stopping) || phaseIs_(LifecycleState::Finalizing))) {
-    if ((reason == StopReason::StorageFailure || reason == StopReason::StorageUnresponsive) &&
-        s_stopContext.reason != reason)
+    if (stopPriority_(reason) > stopPriority_(s_stopContext.reason))
       captureStopContext_(reason, triggerEvent);
     return;
   }
@@ -1402,6 +1435,9 @@ void LoggingManager::finishStorageStop() {
     if(CanMasterManager::recordingHandoffActive()) {
       UI::status("Control cleanup incomplete");
       LOGGING_LOGW("file finalized; control handoff still active\n");
+    } else if (phaseIs_(LifecycleState::Failed)) {
+      UI::status("Recording failed; file closed");
+      LOGGING_LOGW("recording finalized with failure reason=%s\n", stopReasonName(s_stopContext.reason));
     } else {
       UI::status("Recording finalized");
       LOGGING_LOGI("recording finalized; control handoff released\n");
