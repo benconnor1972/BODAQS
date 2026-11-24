@@ -14,6 +14,7 @@ from .io_logger import load_logger_csv_with_log_metadata, parse_run_stats_footer
 from .analog_counts import reconstruct_recorded_analog
 from .can_imu import decode_can_imu_streams
 from .string_pot_counts import reconstruct_string_pots
+from .rotary_counts import reconstruct_rotary_counts
 from .io_bdq import (
     bdq_primary_dataframe_from_streams,
     bdq_to_dataframe,
@@ -983,6 +984,8 @@ def load_bdq_session(
         native_frames.update(can_frames)
         string_frames, string_metadata, string_warnings = reconstruct_string_pots(info.metadata, info.stream_catalog, native_frames)
         native_frames.update(string_frames)
+        rotary_frames, rotary_metadata, rotary_warnings = reconstruct_rotary_counts(info.stream_catalog, native_frames)
+        native_frames.update(rotary_frames)
         analog = reconstruct_recorded_analog(info.metadata, info.stream_catalog, native_frames)
         if analog.frame is not None:
             native_frames["analog_engineering"] = analog.frame
@@ -1006,7 +1009,8 @@ def load_bdq_session(
         secondary_metadata = session["meta"]["secondary_streams"]
         for stream_key, details in string_metadata.items():
             secondary_metadata.setdefault(stream_key, {}).update(details)
-        for warning in can_warnings + string_warnings:
+        secondary_metadata.update(rotary_metadata)
+        for warning in can_warnings + string_warnings + rotary_warnings:
             _append_qc_warning(session, warning)
         if analog.frame is not None:
             session.setdefault("meta", {}).setdefault("secondary_streams", {})["analog_engineering"] = {

@@ -7,6 +7,7 @@
 #include "AS5600BdqV2.h"
 #include "BdqV2StreamQueue.h"
 #include <limits.h>
+#include "RotaryCountStream.h"
 
 class TwoWire;
 
@@ -42,8 +43,17 @@ public:
   bool shutdown() override;
   bool describeI2CStartup(I2CStartupStatus& out) const override;
   bool retryI2CStartup(bool allowBusRecovery) override;
-  void loop() override {}
+  void loop() override;
   void applyConfig(const LoggerConfig&) override {}
+  bool startLoggingSession(char*, size_t) override;
+  bool validateLoggingStart(const LoggerConfig&,uint16_t,char*,size_t) const override;
+  bool usesBdqV2NativeStream() const override {
+#if BODAQS_PRODUCTION_RECORDING
+    return true;
+#else
+    return false;
+#endif
+  }
   void onLoggingStart() override;
   void onLoggingStop() override;
   void onLoggingFinalized() override;
@@ -102,6 +112,7 @@ public:
   bool asyncAcquire() override;
   bool asyncLatencySensitive() const override { return true; }
   uint32_t asyncEstimatedAcquireUs() const override { return 2000u; }
+  void asyncMissedServiceSlots(uint64_t skipped) override;
   void asyncSchedulerStarting() override;
   void asyncSchedulerStopped() override;
 
@@ -140,6 +151,7 @@ private:
     uint16_t magnitude = 0;
     uint32_t rawReadFailures = 0;
     uint32_t diagnosticReadFailures = 0;
+    int32_t calibrationCounts=0;
     uint32_t seq = 0;
     uint64_t acquiredUs = 0;
   };
@@ -254,15 +266,21 @@ private:
 
   mutable bool m_calUnwrapInit = false;
   mutable int32_t m_calLastUnwrapped = 0;
+  mutable RotaryCountStream m_countStream;
+  char m_countProvenance[384]{};
+  bool m_recordingOwned=false;
+  uint32_t m_nextIdleReadMs=0;
   mutable bool m_asyncLoggingActive = false;
   mutable uint32_t m_asyncNextSeq = 0;
   mutable uint32_t m_asyncLastLoggedSeq = 0;
   mutable AsyncSnapshot m_asyncSnapshot;
+#if !BODAQS_PRODUCTION_RECORDING
   static constexpr uint16_t kBdqV2QueueCapacity = 2048;
   mutable BdqV2StreamQueue<
       AS5600BdqV2::kRecordSizeBytes,
       kBdqV2QueueCapacity,
       1> m_bdqV2Queue {0, AS5600BdqV2::kNativeTickModulus};
+#endif
   mutable uint32_t m_bdqV2Sequence = 0;
   mutable bool m_bdqV2LoggingActive = false;
   mutable bool m_bdqV2ReadFailureActive = false;

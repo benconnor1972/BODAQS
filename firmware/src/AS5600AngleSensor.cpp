@@ -1,9 +1,11 @@
 #include "StartupLog.h"
 #include "AS5600AngleSensor.h"
+#include "RotaryRecordingDescriptor.h"
 
 #include <Arduino.h>
 #include <Wire.h>
 #include <math.h>
+#include <algorithm>
 #include <string.h>
 
 #include "ConfigManager.h"
@@ -553,6 +555,9 @@ bool AS5600AngleSensor::reconfigureFromSpec(const SensorSpec& spec) {
 }
 
 void AS5600AngleSensor::onLoggingStart() {
+#if BODAQS_PRODUCTION_RECORDING
+  m_recordingOwned=true;
+#endif
   resetSessionRuntimeDiagnostics_();
   m_asyncLoggingActive = true;
   m_asyncNextSeq = 0;
@@ -566,7 +571,9 @@ void AS5600AngleSensor::onLoggingStart() {
   m_bdqV2LoggingActive = false;
   m_bdqV2Sequence = 0;
   m_bdqV2ReadFailureActive = false;
+#if !BODAQS_PRODUCTION_RECORDING
   m_bdqV2Queue.reset();
+#endif
   resetAsyncSnapshot_();
   recordRuntimeEvent_(SensorRuntimeEventType::LoggingStart);
   (void)acquireAsyncSample_();
@@ -574,6 +581,9 @@ void AS5600AngleSensor::onLoggingStart() {
 }
 
 void AS5600AngleSensor::onLoggingStop() {
+#if BODAQS_PRODUCTION_RECORDING
+  m_countStream.stop();
+#endif
   recordRuntimeEvent_(SensorRuntimeEventType::LoggingStop);
   m_asyncLoggingActive = false;
   m_bdqV2LoggingActive = false;
@@ -593,6 +603,9 @@ void AS5600AngleSensor::onLoggingStop() {
 }
 
 void AS5600AngleSensor::onLoggingFinalized() {
+#if BODAQS_PRODUCTION_RECORDING
+  m_countStream.finalizeSession();m_recordingOwned=false;
+#endif
   if (!m_deferredRecoveryPending) return;
 
   // begin() performs a sensor-level probe, reapplies the configured volatile
@@ -708,7 +721,11 @@ bool AS5600AngleSensor::readRegBytesLocked_(uint8_t reg, uint8_t* out, uint8_t l
 }
 
 size_t AS5600AngleSensor::pendingLoggingRows() const {
+#if BODAQS_PRODUCTION_RECORDING
+  return m_muted?0:m_countStream.pendingRecords();
+#else
   return m_muted ? 0 : m_bdqV2Queue.pendingRecords();
+#endif
 }
 
 bool AS5600AngleSensor::describeBdqV2Stream(
@@ -716,6 +733,9 @@ bool AS5600AngleSensor::describeBdqV2Stream(
     BdqV2StreamDescriptor& out) {
   if (m_muted || streamId == 0) return false;
 
+#if BODAQS_PRODUCTION_RECORDING
+  return describeRotaryCountStream_(m_countStream,streamId,name(),asyncTargetRateHz(),m_countProvenance,out);
+#else
   m_bdqV2Queue.setStreamId(streamId);
   out = BdqV2StreamDescriptor{};
   out.source = m_bdqV2Queue.source();
@@ -738,6 +758,7 @@ bool AS5600AngleSensor::describeBdqV2Stream(
   out.statusFlagCount =
       sizeof(kBdqV2StatusFlags) / sizeof(kBdqV2StatusFlags[0]);
   return out.valid();
+#endif
 }
 
 bool AS5600AngleSensor::readRawAngleBytesLocked_(uint8_t* out) const {
@@ -1287,7 +1308,8 @@ int32_t AS5600AngleSensor::calibrationCountsFromRaw_(int raw) const {
     return m_calLastUnwrapped;
   }
 
-  m_calLastUnwrapped += signedDeltaCounts_(raw, normalizeCount_(m_calLastUnwrapped));
+  const int64_t next=int64_t(m_calLastUnwrapped)+signedDeltaCounts_(raw,normalizeCount_(m_calLastUnwrapped));
+  m_calLastUnwrapped=next>INT32_MAX?INT32_MAX:next<INT32_MIN?INT32_MIN:static_cast<int32_t>(next);
   return m_calLastUnwrapped;
 }
 
@@ -1380,6 +1402,9 @@ bool AS5600AngleSensor::acquireAsyncSample_() const {
     snapshot.angle = snapshot.raw;
   }
 
+#if BODAQS_PRODUCTION_RECORDING
+  if(snapshot.readOk) snapshot.calibrationCounts=calibrationCountsFromRaw_(snapshot.raw);
+#endif
   publishAsyncSnapshot_(snapshot);
   enqueueBdqV2Record_(snapshot);
   return snapshot.readOk;
@@ -1389,6 +1414,16 @@ void AS5600AngleSensor::enqueueBdqV2Record_(
     const AsyncSnapshot& snapshot) const {
   if (!m_bdqV2LoggingActive) return;
 
+#if BODAQS_PRODUCTION_RECORDING
+  RotaryCountStream::Observation record;
+  record.sequence=snapshot.seq-2u;record.tickUs=static_cast<uint32_t>(snapshot.acquiredUs);
+  record.raw=snapshot.raw;record.angle=snapshot.angle;record.deviceStatus=snapshot.status;
+  record.agc=snapshot.agc;record.magnitude=snapshot.magnitude;
+  record.validity=(snapshot.readOk?1:0)|(snapshot.haveAngle?2:0)|(snapshot.haveDiagnostics?4:0)|(snapshot.reused?8:0);
+  record.readFailures=snapshot.rawReadFailures;record.diagnosticFailures=snapshot.diagnosticReadFailures;
+  if(!snapshot.readOk) record.status|=32|BdqV2Format::TimingDegraded;
+  (void)m_countStream.observe(record);
+#else
   AS5600BdqV2::Record record;
   record.sequence = m_bdqV2Sequence++;
   record.nativeTick = static_cast<uint32_t>(snapshot.acquiredUs);
@@ -1439,6 +1474,7 @@ void AS5600AngleSensor::enqueueBdqV2Record_(
   if (AS5600BdqV2::encodeRecord(record, encoded, sizeof(encoded))) {
     (void)m_bdqV2Queue.enqueueRecord(encoded, sizeof(encoded));
   }
+#endif
 }
 
 uint8_t AS5600AngleSensor::columnCount() const {
@@ -1500,10 +1536,17 @@ void AS5600AngleSensor::sampleValuesFromAsync_(float* out, uint8_t max) {
     ? (uint32_t)(nowUs - snapshot.acquiredUs)
     : 0;
   const bool fresh = have && snapshot.seq != m_asyncLastLoggedSeq;
+#if !BODAQS_PRODUCTION_RECORDING
   if (have) m_asyncLastLoggedSeq = snapshot.seq;
   I2CBusScheduler::recordRowUse(this, ageUs, fresh, have);
+#else
+  (void)ageUs;(void)fresh;
+#endif
 
   const int raw = have ? int(snapshot.raw) : 0;
+#if BODAQS_PRODUCTION_RECORDING
+  if(!have || !snapshot.have || !snapshot.readOk || snapshot.reused || nowUs<snapshot.acquiredUs || nowUs-snapshot.acquiredUs>std::max<uint64_t>(100000u,3000000u/asyncTargetRateHz())) { for(uint8_t i=0;i<max;++i) out[i]=NAN;return; }
+#endif
   const float primary = have ? primaryFromRaw_(raw) : NAN;
 
   uint8_t w = 0;
@@ -1540,7 +1583,11 @@ void AS5600AngleSensor::sampleValuesFromAsync_(float* out, uint8_t max) {
 void AS5600AngleSensor::sampleValues(float* out, uint8_t max) {
   if (!out || max == 0 || m_muted) return;
 
+#if BODAQS_PRODUCTION_RECORDING
+  {
+#else
   if (m_asyncLoggingActive) {
+#endif
     sampleValuesFromAsync_(out, max);
     return;
   }
@@ -1791,6 +1838,9 @@ bool AS5600AngleSensor::describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out
     (out.rawReadFailures > 0 || !m_lastReadOk)
       ? m_lastRawRuntimeFailure
       : SensorRuntimeFailure{};
+#if BODAQS_PRODUCTION_RECORDING
+  fillRotaryDiagnostics_(m_countStream,asyncTargetRateHz(),out);
+#else
   const BdqV2StreamQueueStats streamStats = m_bdqV2Queue.stats();
   out.hasBdqV2Stream = true;
   out.bdqV2RecordsEnqueued = streamStats.recordsEnqueued;
@@ -1807,6 +1857,7 @@ bool AS5600AngleSensor::describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out
           ? UINT16_MAX
           : m_bdqV2Queue.pendingRecords());
   out.bdqV2NominalRateHz = asyncTargetRateHz();
+#endif
   return true;
 }
 
@@ -1877,21 +1928,41 @@ bool AS5600AngleSensor::finishCalibration(bool persist) {
 }
 
 int32_t AS5600AngleSensor::currentRawCounts() const {
+#if BODAQS_PRODUCTION_RECORDING
+  AsyncSnapshot snapshot;
+  if(!copyAsyncSnapshot_(snapshot) || !snapshot.have || !snapshot.readOk || snapshot.reused) return INT32_MIN;
+  const uint64_t now=static_cast<uint64_t>(esp_timer_get_time());
+  if(now<snapshot.acquiredUs || now-snapshot.acquiredUs>std::max<uint64_t>(100000u,3000000u/asyncTargetRateHz())) return INT32_MIN;
+  return cal_.phase==CalPhase::ACTIVE && cal_.mode==CalMode::ZERO?snapshot.calibrationCounts:snapshot.raw;
+#else
   const int raw = readRawAngleOnce_();
   if (cal_.phase == CalPhase::ACTIVE && cal_.mode == CalMode::ZERO) {
     return calibrationCountsFromRaw_(raw);
   }
   return raw;
+#endif
 }
 
 bool AS5600AngleSensor::readPreviewValue(OutputMode mode, float& value, char* unit, size_t unitCap) {
+#if BODAQS_PRODUCTION_RECORDING
+  if(mode==OutputMode::RAW) {
+    const auto counts=currentRawCounts();if(counts==INT32_MIN) return false;
+    value=static_cast<float>(counts);copyField_(unit,unitCap,"counts");return true;
+  }
+#else
   if (mode == OutputMode::RAW) return Sensor::readPreviewValue(mode, value, unit, unitCap);
+#endif
   if (mode != OutputMode::LINEAR || m_mode != OutputMode::LINEAR || m_muted) return false;
 
   float primary = 0.0f;
   int raw = 0;
+#if BODAQS_PRODUCTION_RECORDING
+  sampleValuesFromAsync_(&primary,1);
+#else
   sample(primary, raw);
+#endif
   (void)raw;
+  if(!isfinite(primary)) return false;
   value = primary;
   copyField_(unit, unitCap, m_outputUnitsLabel[0] ? m_outputUnitsLabel : "deg");
   return true;
@@ -1962,3 +2033,61 @@ static bool _reg_as5600_angle_i2c =
     &AS5600AngleSensor::create,
     CAL_ZERO
   );
+
+bool AS5600AngleSensor::validateLoggingStart(const LoggerConfig&,uint16_t,char* error,size_t capacity) const {
+#if BODAQS_PRODUCTION_RECORDING
+  if(!m_runtimeDiagnostics.initialProbeOk || !m_lastReadOk) {
+    if(error && capacity) snprintf(error,capacity,"rotary sensor is not ready");
+    return false;
+  }
+#else
+  (void)error;(void)capacity;
+#endif
+  return true;
+}
+bool AS5600AngleSensor::startLoggingSession(char* error,size_t capacity) {
+#if BODAQS_PRODUCTION_RECORDING
+  if(m_recordingOwned || m_countStream.pendingRecords()) {
+    if(error && capacity) snprintf(error,capacity,"rotary recording still owned");
+    return false;
+  }
+  const int size=snprintf(m_countProvenance,sizeof m_countProvenance,
+    "\"sensor_family\":\"as5600\",\"counts_per_turn\":4096,"
+    "\"zero_count\":%ld,\"direction_sign\":%d,\"zero_provenance\":\"configured_not_physical_proof\","
+    "\"sequence_basis\":\"scheduled_acquisition_slots\","
+    "\"auxiliary_validity\":{\"raw_current\":1,\"angle_current\":2,\"diagnostics_available\":4,\"raw_reused\":8}",
+    long(m_zeroCount),int(m_directionSign));
+  if(size<0 || size_t(size)>=sizeof m_countProvenance) {
+    if(error && capacity) snprintf(error,capacity,"rotary provenance overflow");
+    return false;
+  }
+#else
+  (void)error;(void)capacity;
+#endif
+  onLoggingStart();
+#if BODAQS_PRODUCTION_RECORDING
+  // The preparation read is preview-only. Reserve and reset the native queue
+  // before scheduler activation, without claiming a preparation-time sample.
+  if(!m_countStream.begin()) {
+    onLoggingStop();m_recordingOwned=false;
+    if(error && capacity) snprintf(error,capacity,"rotary queue reservation failed");
+    return false;
+  }
+#endif
+  return true;
+}
+void AS5600AngleSensor::loop() {
+#if BODAQS_PRODUCTION_RECORDING
+  const uint32_t now=millis();
+  if(m_muted || m_recordingOwned || int32_t(now-m_nextIdleReadMs)<0) return;
+  m_nextIdleReadMs=now+20; (void)acquireAsyncSample_();
+#endif
+}
+void AS5600AngleSensor::asyncMissedServiceSlots(uint64_t skipped) {
+#if BODAQS_PRODUCTION_RECORDING
+  m_asyncNextSeq+=static_cast<uint32_t>(skipped);
+  if(skipped) m_countStream.markGap();
+#else
+  (void)skipped;
+#endif
+}
