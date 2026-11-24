@@ -152,6 +152,9 @@ int main(int argc,char**) {
  // A real change after capture rejects the candidate and keeps old provenance.
  const auto verifiedEpoch=node.view.endpoint_epoch[0];
  const auto verifiedResets=node.regs.resets;
+ // A healthy unchanged endpoint reuses its scoped snapshot. A real external
+ // change first requires recapture, then another change races its final proof.
+ ++node.view.endpoint_epoch[0];
  changeEpochOnEffectiveRelease=true;
  unsigned changedWait=0;
  while((changeEpochOnEffectiveRelease || CanMasterManager::configurationReconciled(0)) && changedWait<10000) {
@@ -160,11 +163,11 @@ int main(int argc,char**) {
  assert(changedWait<10000 && !CanMasterManager::diagnostics().control.nodes[0].endpoints[0].current);
  assert(bodaqs_control_get_u64(CanMasterManager::diagnostics().control.nodes[0].endpoints[0].effective+184)==verifiedEpoch);
  reconcile();
- assert(bodaqs_control_get_u64(CanMasterManager::diagnostics().control.nodes[0].endpoints[0].effective+184)==verifiedEpoch+1);
+ assert(bodaqs_control_get_u64(CanMasterManager::diagnostics().control.nodes[0].endpoints[0].effective+184)==verifiedEpoch+2);
  assert(node.regs.resets==verifiedResets);
  // A saved edit cannot queue apply while a retained-current refresh owns the link.
  unsigned refreshWait=0;
- while(!CanMasterManager::diagnostics().control.snapshot_phase && refreshWait<10000) {
+ while(!CanMasterManager::diagnostics().control.pending && refreshWait<10000) {
   advance(100); refreshWait+=100;
  }
  assert(refreshWait<10000);

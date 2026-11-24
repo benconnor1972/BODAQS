@@ -25,6 +25,7 @@ def main():
     fixture = fixture.replace("// PRODUCTION_EDIT", without_includes((root / "src/SensorConfigEdit.cpp").read_text(encoding="utf-8")))
     routes = (root / "src/Routes_Api.cpp").read_text(encoding="utf-8")
     fixture = fixture.replace("// PRODUCTION_API", "\n".join(definition(routes, sig) for sig in (
+        "constexpr bool productionRecordingBuild_(",
         "static bool configEditLocked_(", "static bool rejectConfigEditLocked_(",
         "static bool parseSensorTypeKey_(", "static const char* loggerOutputModeName_(",
         "static long parseLoggerOutputMode_(", "static void addSensorParamsJson_(",
