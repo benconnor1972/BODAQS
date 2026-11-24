@@ -45,7 +45,9 @@ last-known coordinates into the stream or invalidating independent healthy sourc
 The ordinary `load_bdq_session` importer retains the integer stream and produces
 `<sensor>_native_engineering` using float64 scaling. It publishes the established
 GPS signal registry for normal source discovery. Default/fresh policies suppress
-no-fix coordinates, altitude and motion; latest-with-status preserves the requested
+no-fix coordinates, altitude and motion; time-only/unknown fix types, source
+errors and impossible coordinate ranges never establish a valid position. Ambiguous
+sensor identities remain raw. latest-with-status preserves the requested
 receiver values alongside validity. Quality evidence remains available. No samples
 are held, interpolated or extrapolated across missing/stale intervals. UTC values
 are exposed only with receiver date/time validity and never prove cross-source UTC

@@ -34,7 +34,8 @@ public:
     if(!active_) return;
     Record r{};auto* b=r.bytes;
     BdqV2Format::putU32(b,sequence_++);BdqV2Format::putU32(b+4,tickUs);
-    const bool valid=(p.flags&7)==3 && p.fixType>=2;
+    const bool valid=(p.flags&7)==3 && p.fixType>=2 && p.fixType<=4 &&
+      p.latE7>=-900000000 && p.latE7<=900000000 && p.lonE7>=-1800000000 && p.lonE7<=1800000000;
     BdqV2Format::putU16(b+8,pendingStatus_|(valid?0:32));
     const uint32_t words[]={uint32_t(p.latE7),uint32_t(p.lonE7),uint32_t(p.altMslMm),
       uint32_t(p.groundSpeedMmS),uint32_t(p.headingDegE5),p.hAccMm,p.vAccMm,p.speedAccMmS,

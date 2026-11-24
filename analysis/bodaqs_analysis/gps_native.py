@@ -1,4 +1,5 @@
 """Receiver-native GPS conversion; receive timestamps never prove GNSS/RTC alignment."""
+from collections import Counter
 from collections.abc import Mapping
 import pandas as pd
 
@@ -15,7 +16,10 @@ _FIELDS = {
 
 def reconstruct_gps(catalog, frames):
     result, provenance, warnings = {}, {}, []
-    for descriptor in catalog.get('streams', []):
+    descriptors = catalog.get('streams', [])
+    identities = Counter(d.get('sensor_id') for d in descriptors
+                         if isinstance(d, Mapping) and isinstance(d.get('sensor_id'), str))
+    for descriptor in descriptors:
         acquisition = descriptor.get('acquisition', {})
         if not isinstance(acquisition, Mapping) or acquisition.get('payload_schema') != 'bodaqs.gps_nav_pvt.v1':
             continue
@@ -26,6 +30,7 @@ def reconstruct_gps(catalog, frames):
         fields = {c.get('field'): (c.get('storage_type'), c.get('byte_offset'))
                   for c in descriptor.get('channels', []) if isinstance(c, Mapping)}
         if (descriptor.get('record_size_bytes') != 64 or not descriptor.get('sensor_id')
+                or identities[descriptor['sensor_id']] != 1
                 or any(fields.get(name) != kind or name not in frame for name, kind in _FIELDS.items())
                 or type(acquisition.get('validity_policy')) is not int
                 or acquisition['validity_policy'] not in (0, 1, 2)
@@ -42,11 +47,14 @@ def reconstruct_gps(catalog, frames):
                                             'receiver_flags', 'fix_type', 'satellites', 'receiver_tow_ms') if c in frame]].copy()
         flags = frame.receiver_flags.astype('uint64')
         have = (flags & 1) != 0
-        valid = have & ((flags & 6) == 2) & (frame.fix_type >= 2) & (flags <= 31)
+        known = (flags <= 31) & frame.fix_type.between(0, 5)
+        coordinates = frame.latitude_e7.between(-900000000, 900000000) & frame.longitude_e7.between(-1800000000, 1800000000)
+        source_ok = (frame.status_flags.astype('uint64') & 32) == 0
+        valid = have & known & coordinates & source_ok & ((flags & 6) == 2) & frame.fix_type.isin([2, 3, 4])
         derived['valid'] = valid
         derived['receiver_time_of_week_s'] = frame.receiver_tow_ms.astype('float64') / 1000
         # Each row is one newly received observation; no upsampling, repeat-last, or stale holding.
-        allowed = have if acquisition['validity_policy'] == 1 else valid
+        allowed = (have & known & coordinates) if acquisition['validity_policy'] == 1 else valid
         conversions = []
         if acquisition['emit_position']:
             conversions += [('latitude', 'latitude_e7', 1e7), ('longitude', 'longitude_e7', 1e7)]

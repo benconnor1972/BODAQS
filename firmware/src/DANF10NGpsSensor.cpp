@@ -560,7 +560,8 @@ void DANF10NGpsSensor::updateSnapshotFromGnss_(uint32_t generation) {
   s.timeValid = m_gnss->getTimeValid(0);
   s.gpsUnixSeconds = s.dateValid && s.timeValid ? m_gnss->getUnixEpoch(0) : 0;
   s.receivedMs = millis();
-  s.valid = s.fixOk && !s.invalidLlh && s.fixType >= 2;
+  s.valid = s.fixOk && !s.invalidLlh && s.fixType >= 2 && s.fixType <= 4 &&
+    s.latE7>=-900000000 && s.latE7<=900000000 && s.lonE7>=-1800000000 && s.lonE7<=1800000000;
   s.seq = ++m_nextSeq;
 
 #if defined(ESP32)
