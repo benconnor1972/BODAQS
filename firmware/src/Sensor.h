@@ -264,6 +264,8 @@ public:
       uint16_t,
       BdqV2StreamDescriptor&) { return false; }
   virtual bool usesBdqV2NativeStream() const { return false; }
+  // Acquisition-owner publication; observers must not trigger another read.
+  virtual void publishAcquiredCounts(int32_t, uint32_t, uint16_t) {}
 
   // ----- Runtime muting -----
   virtual bool muted() const = 0;

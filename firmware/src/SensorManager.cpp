@@ -1024,7 +1024,10 @@ bool onLoggingStart(char* error, size_t errorCapacity) {
       return false;
     }
   }
-  if (!AnalogInputManager::setRecordingPlan(plan)) {
+  const auto publish=[](uint8_t index,int32_t counts,uint32_t tick,uint16_t status) {
+    if(index<MAX_SENSORS && s_list[index]) s_list[index]->publishAcquiredCounts(counts,tick,status);
+  };
+  if (!AnalogInputManager::setRecordingPlan(plan,publish)) {
     if (error && errorCapacity) snprintf(error, errorCapacity, "analog acquisition plan unavailable");
     return false;
   }

@@ -35,6 +35,7 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_adc_setup_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_adc_acquisition_plan_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_production_adc_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_published_sensor_counts_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_raw_recording_queue_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_adc_setup_runtime.py --spi-phase-timing --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_adc_setup_runtime.py --spi-phase-timing --adc-task-priority 3 --compiler "$(CXX)"

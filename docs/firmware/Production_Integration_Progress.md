@@ -13,7 +13,7 @@ ledger records code dependencies without implicitly closing tracker items.
 | #218 | Implemented; qualification pending | START plan binds sensor identities, sparse/unequal/idle external ADCs and direct GPIOs to typed count fields. One rational absolute timer; independent device appointments, skipped-row evidence, no dummy conversions. Actual ADC-manager/SPI/DRDY/timer model and dynamic queue tests pass; candidate build passes. Focused physical comparison remains. |
 | #219 | Implemented; qualification pending | Existing native 833/1667/3333 node profiles retained and exercised; normal import exposes independently verified six-axis counts/scaling while preserving unit/timing streams. Source-bounded completeness, uncertain timing and corrupt-source isolation tested. Four-node real recording composition imports normally. Physical profile/UI qualification remains. |
 | #220 | Implemented core; qualification/UI pending | Bounded 5ms idle control progress while configured nodes are unreconciled; priority/fair cursors, faster inventory discovery, scoped snapshot reuse and explicit invalidation. API preparation/blockers added. Actual manager/model cold/change/late/failing-peer checks and target build pass; broader migration/UI #225 and physical before/after remain. |
-| #221 | Pending | String-pot evidence and snapshot previews. |
+| #221 | In progress | Analog-pot preview/calibration now reads owner-published count snapshots; concurrent coherence and actual preview-adapter tests pass. ADC owner publishes without extra reads. String-pot native count/tracking adaptation and other-family preview conversion remain. |
 | #222 | Pending | I2C rotary sensor preservation. |
 | #223 | Pending | Local BMI270 native preservation. |
 | #224 | Pending | UART GPS preservation. |
@@ -157,3 +157,32 @@ Cache/session/epoch/reboot invalidation, actual profile/register application,
 authority and snapshot suites pass; existing remote recording/fault lifecycle
 regressions pass. A8 target build passes. Physical preparation measurements and
 complete menu/web readiness presentation remain pending.
+
+## Read-only count snapshots (#221, partial)
+
+The ADC owner publishes each analog count and its own source status while
+capturing the row. Analog-pot preview/calibration readers use an atomic,
+generation-checked snapshot and never request another hardware conversion.
+An overlapping publication returns unavailable instead of waiting. Independent
+idle acquisition publishes at 50Hz; it is parked from session start through
+finalization. Failed idle reads are unavailable, rather than valid zero values.
+Reconfiguration invalidates the old snapshot.
+
+Concurrent publication/coherent-read checks and the actual analog preview
+adapter exercise no-observation, raw/engineering preview, repeated reads,
+acquisition-owner publication, recording/idle transitions and invalid reads.
+The actual ADC-manager model verifies configured sensor identity/count/tick
+publication. The target builds. String-pot tracking/native records and the
+remaining sensor families are still unimplemented in this slice.
+
+## Interim independent review
+
+Standards review found no confirmed documented-standard breach and noted the
+imported timing decoder's opaque numeric evidence offsets as a maintainability
+issue for later cleanup. Specification review identified omitted known CAN
+terminal gap intervals and a zero-based START assumption. Both are corrected
+with normal-import regressions: missing interval 2..3 is explicit; a source
+starting at 3 does not invent losses 0..2. Missing STOP retains an uncertain tail.
+The old assessment helper no longer duplicates terminal-gap construction.
+The reviewer rechecked and confirmed the finding resolved. This interim review
+does not replace the final review/qualification of the complete integration.

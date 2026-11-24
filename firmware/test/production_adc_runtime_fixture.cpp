@@ -3,13 +3,20 @@
 std::vector<RawAdcRecord> captured;
 unsigned targetRows = 16;
 LocalAnalogRecordingPlan expectedPlan;
+struct Publication {uint8_t sensor;int32_t count;uint32_t tick;uint16_t status;};
+std::vector<Publication> publications;
+void publishCount(uint8_t sensor,int32_t count,uint32_t tick,uint16_t status) {
+  publications.push_back({sensor,count,tick,status});
+}
 bool captureProductionRow() {
   RawAdcRecord record;
   uint32_t missed = 0;
   uint64_t deadline = 0, observed = 0;
   assert(AnalogInputManager::recordingRowTiming(record.sequence, missed, deadline));
   assert(uint64_t(nowUs) >= deadline);
+  publications.clear();
   assert(AnalogInputManager::captureRawPair(record, observed));
+  assert(publications.size()==expectedPlan.columns());
   assert(observed >= deadline);
   for (unsigned field = 0; field < expectedPlan.columns(); ++field) {
     const auto& input = expectedPlan.column(field);
@@ -17,6 +24,8 @@ bool captureProductionRow() {
     const uint16_t expected = input.external
         ? (conversion < 0 ? 0 : uint16_t(double(conversion) * 4095.0 / 8388607.0 + 0.5)) : 123;
     assert(record.counts[field] == expected);
+    assert(publications[field].sensor==input.sensorIndex && publications[field].count==expected);
+    assert(publications[field].tick==record.tick);
   }
   uint8_t encoded[sizeof(RawAdcRecord)] = {};
   assert(RawAdcRecording::encode(record, encoded, sizeof(encoded), expectedPlan.columns()));
@@ -34,7 +43,7 @@ void run(const LocalAnalogRecordingPlan& plan, bool delayed = false, bool badRea
   config.sampleRateHz = plan.rateHz();
   assert(AnalogInputManager::configureFromConfig(config, plan.rateHz()) == plan.rateHz());
   assert(AnalogInputManager::reserveScanTask());
-  assert(AnalogInputManager::setRecordingPlan(plan));
+  assert(AnalogInputManager::setRecordingPlan(plan,publishCount));
   expectedPlan = plan;
   assert(AnalogInputManager::setScanRowCapture(captureProductionRow));
   captured.clear(); notifications = 0;

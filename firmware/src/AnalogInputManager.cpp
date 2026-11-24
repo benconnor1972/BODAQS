@@ -60,6 +60,7 @@ uint8_t s_scanRegisters[2][BODAQS_ADC_BOUNDARY_BENCH?4:2][4]={};
 struct RecordingScanState {
   LocalAnalogRecordingPlan plan;
   AdcAcquisitionCadence::Due row;
+  AnalogInputManager::CountPublisher publisher=nullptr;
 };
 RecordingScanState* s_recordingScan = nullptr; // Persistent, bounded START reservation.
 #endif
@@ -1245,7 +1246,7 @@ void adcTaskFn_(void* arg) {
 namespace AnalogInputManager {
 
 #if BODAQS_PRODUCTION_RECORDING
-bool setRecordingPlan(const LocalAnalogRecordingPlan& plan) {
+bool setRecordingPlan(const LocalAnalogRecordingPlan& plan, CountPublisher publisher) {
   if (!plan.rateHz() || s_scanSession || s_timingWorkers.load(std::memory_order_acquire)) return false;
   for (unsigned field = 0; field < plan.columns(); ++field)
     if (!plan.column(field).external && digitalPinToAnalogChannel(uint8_t(plan.column(field).pin)) < 0) return false;
@@ -1256,6 +1257,7 @@ bool setRecordingPlan(const LocalAnalogRecordingPlan& plan) {
   if (!s_recordingScan) return false;
   s_recordingScan->plan = plan;
   s_recordingScan->row = {};
+  s_recordingScan->publisher=publisher;
   for (unsigned adc = 0; adc < 2; ++adc) {
     auto& dev = s_ads[adc];
     for (unsigned channel = 0; channel < 4; ++channel) dev.channelUsed[channel] = (plan.mask(adc) & (1u << channel)) != 0;
@@ -1333,17 +1335,21 @@ bool captureRawPair(RawAdcRecord& record,uint64_t& capturedUs) {
   for (unsigned index = 0; index < s_recordingScan->plan.columns(); ++index) {
     const auto& source = s_recordingScan->plan.column(index);
     int32_t value = 0;
+    uint16_t fieldStatus=0;
     if (source.external) {
       auto& dev = s_ads[source.adc];
-      if (!dev.cachedValid[source.channel]) record.status |= RawAdcRecording::kSensorError;
+      if (!dev.cachedValid[source.channel]) fieldStatus |= RawAdcRecording::kSensorError;
       else value = dev.cachedCounts[source.channel];
       const bool fresh = dev.cachedSeq[source.channel] != dev.lastRowSeq[source.channel];
-      if (!fresh) record.status |= BdqV2Format::TimingDegraded;
+      if (!fresh) fieldStatus |= BdqV2Format::TimingDegraded;
       dev.lastRowSeq[source.channel] = dev.cachedSeq[source.channel];
       const uint32_t age = now >= dev.cachedAcquiredUs[source.channel] ? uint32_t(now - dev.cachedAcquiredUs[source.channel]) : 0;
       recordCachedRowUse_(source.adc, source.channel, dev.cachedValid[source.channel], fresh, age);
     } else value = analogRead(uint8_t(source.pin));
-    record.counts[index] = RawAdcRecording::count(value, record.status);
+    record.counts[index] = RawAdcRecording::count(value, fieldStatus);
+    record.status |= fieldStatus;
+    if(s_recordingScan->publisher)
+      s_recordingScan->publisher(source.sensorIndex,record.counts[index],record.tick,fieldStatus);
   }
   return true;
 #else
