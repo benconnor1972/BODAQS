@@ -97,6 +97,11 @@ namespace SensorManager {
 class ConfigManager {
 public:
   static LoggerConfig s_cfg;
+  static bool migrationRequired;
+  static bool migrationPending() { return migrationRequired; }
+  static String configurationBlocker() { return migrationRequired?"Migration required":""; }
+  static String migrationChanges() { return ""; }
+  static String migrationRevision() { return ""; }
   static const LoggerConfig& get() { return g_cfg; }
   static bool save(const LoggerConfig& cfg) {
     events.push_back("save");
@@ -106,6 +111,7 @@ public:
   static bool setLogFormat(LogFormat, bool persist = true);
 };
 LoggerConfig ConfigManager::s_cfg;
+bool ConfigManager::migrationRequired=false;
 // PRODUCTION_FORMAT
 
 namespace UI {
@@ -299,6 +305,10 @@ int main() {
   check(LoggingManager::lifecycleState() == LifecycleState::Completed);
 
   using T = SensorType; using I = LoggingConfigIssue;
+  reset(); ConfigManager::migrationRequired=true;
+  check(LoggingManager::requestStart()==LoggingManager::StartResult::Failed);
+  check(!has("file") && !has("acquire") && !LoggingManager::configurationLocked());
+  ConfigManager::migrationRequired=false;
   reset();
   add(T::LSM6DSO32XImu,"imu0",0,0,false);
   set(0,"provider","can:0"); set(0,"endpoint","imu");

@@ -41,7 +41,7 @@ def main():
     fixture = fixture.replace("// PRODUCTION_TOGGLE", definition(buttons, "void ButtonActions::onToggleLogging(").replace("void ButtonActions::onToggleLogging(", "void onToggleLogging("))
     fixture = fixture.replace("// PRODUCTION_BUTTON", definition(buttons, "  void handleButtonBinding_("))
     fixture = fixture.replace("// PRODUCTION_NOTICE", "namespace HtmlUtil {\n" +
-        definition(html, "  String htmlEscape(") + "\n}\n" + definition(routes, "static String configurationNotice_("))
+        definition(html, "  String htmlEscape(") + "\n}\n" + definition(routes, "static String productionMigrationHtml_(") + "\n" + definition(routes, "static String configurationNotice_("))
     fixture = fixture.replace("// PRODUCTION_BMI_PARAMS", definition(bmi_header, "  struct Params {") + ";")
     fixture = fixture.replace("// PRODUCTION_BMI", "\n".join(
         definition(bmi, sig) for sig in (

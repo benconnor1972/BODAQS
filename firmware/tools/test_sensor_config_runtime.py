@@ -17,6 +17,8 @@ def main():
     root = Path(__file__).resolve().parents[1]
     json_include = root / ".pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src"
     if not (json_include / "ArduinoJson.h").exists():
+        json_include = root / ".pio/libdeps/bodaqs_a8_production/ArduinoJson/src"
+    if not (json_include / "ArduinoJson.h").exists():
         parser.error("Install A8 dependencies first: pio pkg install -d firmware -e bodaqs_s3_mini_n4r2")
     fixture = (root / "test/sensor_config_runtime_fixture.cpp").read_text(encoding="utf-8")
     fixture = fixture.replace("// PRODUCTION_CONFIG", without_includes((root / "src/ConfigManager.cpp").read_text(encoding="utf-8")))

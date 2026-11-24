@@ -515,6 +515,7 @@ void AS5600StringPotSensorBase::setOutputMode(OutputMode m) {
 }
 
 bool AS5600StringPotSensorBase::beginCalibration(CalMode mode) {
+  if(!ConfigManager::configurationMutable()) return false;
   if (mode == CalMode::NONE) return false;
   cal_ = CalState{};
   cal_.mode = mode;
@@ -525,6 +526,7 @@ bool AS5600StringPotSensorBase::beginCalibration(CalMode mode) {
 }
 
 bool AS5600StringPotSensorBase::updateCalibration(int32_t latestCounts) {
+  if(!ConfigManager::configurationMutable()) return false;
   if (cal_.phase != CalPhase::ACTIVE) return false;
   ++cal_.samples;
 
@@ -541,15 +543,15 @@ bool AS5600StringPotSensorBase::updateCalibration(int32_t latestCounts) {
 }
 
 bool AS5600StringPotSensorBase::finishCalibration(bool persist) {
+  if(!ConfigManager::configurationMutable()) return false;
   if (cal_.phase != CalPhase::ACTIVE) return false;
 
   if (cal_.mode == CalMode::ZERO) {
     const bool haveZero = (cal_.first_counts != INT32_MAX);
-    installed_zero_count_ = haveZero ? cal_.first_counts : currentRawCounts();
-    if (persist) {
-      const char* sname = name();
-      ConfigManager::saveSensorParamByName(sname, "installed_zero_count", String(installed_zero_count_));
-    }
+    const int32_t zero=haveZero ? cal_.first_counts : currentRawCounts();
+    if(persist) { const char* keys[]={"installed_zero_count"};const String values[]={String(zero)};
+      if(!ConfigManager::saveSensorParamsByName(name(),keys,values,1))return false; }
+    installed_zero_count_=zero;
   } else if (cal_.mode == CalMode::RANGE) {
     const bool haveFirst = (cal_.first_counts != INT32_MAX);
     const bool haveSecond = (cal_.second_counts != INT32_MIN);
@@ -559,16 +561,15 @@ bool AS5600StringPotSensorBase::finishCalibration(bool persist) {
       return false;
     }
 
+    if(persist) { const char* keys[]={"sensor_zero_count","sensor_full_count"};
+      const String values[]={String(cal_.first_counts),String(cal_.second_counts)};
+      if(!ConfigManager::saveSensorParamsByName(name(),keys,values,2))return false; }
     sensor_zero_count_ = cal_.first_counts;
     sensor_full_count_ = cal_.second_counts;
     m_invert = (sensor_full_count_ < sensor_zero_count_);
     recomputeScale();
 
-    if (persist) {
-      const char* sname = name();
-      ConfigManager::saveSensorParamByName(sname, "sensor_zero_count", String(sensor_zero_count_));
-      ConfigManager::saveSensorParamByName(sname, "sensor_full_count", String(sensor_full_count_));
-    }
+
   }
 
   cal_.phase = CalPhase::COMPLETE;

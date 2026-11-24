@@ -1116,6 +1116,7 @@ bool BMI270ImuSensor::captureImuOrientation(
     ImuOrientationCalibration& out,
     char* error,
     size_t errorCapacity) {
+  if(!ConfigManager::configurationMutable()) return fail_(error,errorCapacity,"Configuration locked");
   out = ImuOrientationCalibration{};
   out.plane = plane;
   out.normalSign = normalSign;
@@ -1299,46 +1300,20 @@ bool BMI270ImuSensor::saveImuOrientation(
       "orient_accel_mean_g", "orient_accel_std_g",
       "orient_gyro_std_dps", "orient_gyro_max_dps", "orient_roll_deg",
   };
-  String previous[sizeof(keys) / sizeof(keys[0])];
-  bool hadPrevious[sizeof(keys) / sizeof(keys[0])] {};
-  for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
-    hadPrevious[i] = spec.params.get(keys[i], previous[i]);
-  }
-  auto restorePrevious = [&]() {
-    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
-      if (hadPrevious[i]) (void)spec.params.set(keys[i], previous[i]);
-    }
-  };
-
+  if(!ConfigManager::configurationMutable()) return fail_(error,errorCapacity,"Configuration locked");
   char epoch[24];
-  snprintf(epoch, sizeof(epoch), "%llu",
-           static_cast<unsigned long long>(calibration.capturedAtUnixMs));
-  bool stored =
-      spec.params.setBool("orient_valid", true) &&
-      spec.params.set("orient_plane", ImuOrientation::planeKey(calibration.plane)) &&
-      spec.params.setInt("orient_normal_sign", calibration.normalSign) &&
-      spec.params.setFloat("orient_qw", calibration.quaternionWxyz[0]) &&
-      spec.params.setFloat("orient_qx", calibration.quaternionWxyz[1]) &&
-      spec.params.setFloat("orient_qy", calibration.quaternionWxyz[2]) &&
-      spec.params.setFloat("orient_qz", calibration.quaternionWxyz[3]) &&
-      spec.params.setInt("orient_samples", static_cast<long>(calibration.sampleCount)) &&
-      spec.params.set("orient_epoch_ms", epoch) &&
-      spec.params.setFloat("orient_mean_ax", calibration.meanAccelRaw[0]) &&
-      spec.params.setFloat("orient_mean_ay", calibration.meanAccelRaw[1]) &&
-      spec.params.setFloat("orient_mean_az", calibration.meanAccelRaw[2]) &&
-      spec.params.setFloat("orient_accel_mean_g", calibration.accelMagnitudeMeanG) &&
-      spec.params.setFloat("orient_accel_std_g", calibration.accelMagnitudeStdG) &&
-      spec.params.setFloat("orient_gyro_std_dps", calibration.gyroStdMaximumDps) &&
-      spec.params.setFloat("orient_gyro_max_dps", calibration.maximumGyroMagnitudeDps) &&
-      spec.params.setFloat("orient_roll_deg", calibration.rollDeviationDeg);
-  if (!stored) {
-    restorePrevious();
-    return fail_(error, errorCapacity, "%s orientation configuration is full", params_.name);
-  }
-  if (!ConfigManager::save(ConfigManager::get())) {
-    restorePrevious();
-    return fail_(error, errorCapacity, "%s orientation could not be persisted", params_.name);
-  }
+  snprintf(epoch,sizeof(epoch),"%llu",static_cast<unsigned long long>(calibration.capturedAtUnixMs));
+  const String values[] = {
+    "true",ImuOrientation::planeKey(calibration.plane),String(calibration.normalSign),
+    String(calibration.quaternionWxyz[0],8),String(calibration.quaternionWxyz[1],8),
+    String(calibration.quaternionWxyz[2],8),String(calibration.quaternionWxyz[3],8),
+    String(calibration.sampleCount),epoch,
+    String(calibration.meanAccelRaw[0],8),String(calibration.meanAccelRaw[1],8),String(calibration.meanAccelRaw[2],8),
+    String(calibration.accelMagnitudeMeanG,8),String(calibration.accelMagnitudeStdG,8),
+    String(calibration.gyroStdMaximumDps,8),String(calibration.maximumGyroMagnitudeDps,8),String(calibration.rollDeviationDeg,8),
+  };
+  if(!ConfigManager::saveSensorParamsByName(params_.name,keys,values,sizeof(keys)/sizeof(keys[0])))
+    return fail_(error,errorCapacity,"%s orientation could not be persisted",params_.name);
   params_.orientation = calibration;
   return true;
 }

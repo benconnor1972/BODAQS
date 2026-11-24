@@ -120,11 +120,12 @@ namespace {
   enum class SettingsItem : uint8_t {
     WiFiMode = 0,
     LogFormat,
+    RecordingMembership,
     ResetTime,
     Health,
     About
   };
-  static inline uint8_t settingsItemCount_() { return 5; }
+  static inline uint8_t settingsItemCount_() { return 6; }
 
   static State   s_state       = State::Inactive;
   static uint8_t s_mainSel     = 0;
@@ -270,6 +271,8 @@ namespace {
       case SettingsItem::WiFiMode:
         return String("WiFi mode: ") +
                (ConfigManager::get().wifiMode == WiFiMode::AccessPoint ? "AP" : "STA");
+      case SettingsItem::RecordingMembership:
+        return ConfigManager::get().recordingBestEffort?"Membership: best effort":"Membership: strict";
       case SettingsItem::LogFormat:
         return "Log format";
       case SettingsItem::ResetTime:
@@ -346,6 +349,11 @@ namespace {
         break;
       }
 
+      case SettingsItem::RecordingMembership: {
+        LoggerConfig updated=ConfigManager::get(); updated.recordingBestEffort=!updated.recordingBestEffort;
+        if(!ConfigManager::save(updated)) UI::toastModal("Not saved; locked or SD failure",2000,1);
+        drawSettings_(); break;
+      }
       case SettingsItem::LogFormat: {
         s_swallowEnterRelease = true;
         guardEnterRight();
@@ -1098,6 +1106,9 @@ namespace {
         return true;
 
       case State::CalibDetail: {
+        if(LoggingManager::configurationLocked() || ConfigManager::migrationPending()) {
+          UI::toastModal("Configuration locked",1500,1);return true;
+        }
         Sensor* s = SensorManager::at(s_calSel);
         if (!s) {
           s_state = State::CalibSensors;
@@ -1278,7 +1289,7 @@ namespace {
               drawCalibDetail_();
               return true;
             }
-            if (LoggingManager::isRunning()) {
+            if (LoggingManager::configurationLocked() || ConfigManager::migrationPending()) {
               UI::toastModal("Stop logging first", 2000, 1);
               deferUiFor(2000);
               return true;
@@ -1370,10 +1381,18 @@ namespace {
   static uint8_t  s_rateIdx = 0;   // selection within Rates::kList
   static uint8_t  s_logFormatIdx = 0;
   static uint8_t  s_wifiModeIdx = 0;
+  static String s_migrationReview,s_migrationRevision;
+  static uint16_t s_migrationPage=0;
+#if BODAQS_PRODUCTION_RECORDING
+  static constexpr uint8_t kLogFormatCount = 1;
+#else
   static constexpr uint8_t kLogFormatCount = 3;
+#endif
   static constexpr LogFormat kLogFormatOptions[kLogFormatCount] = {
+#if !BODAQS_PRODUCTION_RECORDING
     LogFormat::BodaqsStandard,
     LogFormat::BodaqsCompactBinary,
+#endif
     LogFormat::BodaqsMultiStreamBinary
   };
   static constexpr uint8_t kWiFiModeCount = 2;
@@ -1437,6 +1456,7 @@ namespace {
 
     uint16_t hz = Rates::kList[s_rateIdx];
     LoggingManager::setSampleRateHz(hz);
+    if(ConfigManager::get().sampleRateHz!=hz) {UI::toastModal("Rate not saved",2000,1);return;}
     UI::toastModal(String("Rate: ") + hz + " Hz", 2000, 1);
     deferUiFor(2000);
     s_state = State::Main;
@@ -1446,7 +1466,15 @@ namespace {
   static void drawLogFormatPicker_() {
     if ((long)(s_deferUiUntilMs - millis()) > 0) return;
     UI::clear(UI::TARGET_OLED);
-    drawHeader_("Log Format");
+    drawHeader_(ConfigManager::migrationPending()?"Review migration":"Log Format");
+    if(ConfigManager::migrationPending()) {
+      for(uint8_t row=0;row<3;++row) {
+        const unsigned start=s_migrationPage*63u+row*21u;
+        UI::oledText(0,12+row*12,s_migrationReview.substring(start,start+21));
+      }
+      UI::oledText(0,52,(s_migrationPage+1u)*63u>=s_migrationReview.length()?"Enter accept / Left cancel":"Down review / Left cancel");
+      DisplayManager::present(); return;
+    }
 
     const LogFormat active = ConfigManager::get().logFormat;
 
@@ -1471,6 +1499,8 @@ namespace {
   }
 
   static void enterLogFormatPicker_() {
+    s_migrationPage=0; s_migrationRevision=ConfigManager::migrationRevision();
+    s_migrationReview=ConfigManager::migrationChanges(); s_migrationReview.replace("\n"," | ");
     const LogFormat cur = ConfigManager::get().logFormat;
     s_logFormatIdx = 0;
     for (uint8_t i = 0; i < kLogFormatCount; ++i) {
@@ -1490,8 +1520,18 @@ namespace {
       return;
     }
 
+    if(ConfigManager::migrationPending()) {
+      if((s_migrationPage+1u)*63u<s_migrationReview.length()) { UI::toastModal("Review all changes",1500,1); return; }
+      char error[128]{};
+      if(!ConfigManager::acceptMigration(s_migrationRevision.c_str(),error,sizeof(error))) {UI::toastModal(error,2500,1);return;}
+      const bool applied=SensorManager::rebuildFromConfig(ConfigManager::get(),error,sizeof(error));
+      if(applied) StorageManager_setSampleRate(AnalogInputManager::configureFromConfig(ConfigManager::get(),ConfigManager::get().sampleRateHz));
+      LoggingManager::refreshConfigurationStatus();
+      UI::toastModal(applied?"Migration accepted":"Saved; restart to apply",2000,1);
+      s_state=State::Settings; drawSettings_();return;
+    }
     const LogFormat format = kLogFormatOptions[s_logFormatIdx];
-    ConfigManager::setLogFormat(format);
+    if(!ConfigManager::setLogFormat(format)) {UI::toastModal("Format not saved",2000,1);return;}
     UI::toastModal(String("Format: ") + ConfigManager::logFormatLabel(format), 2000, 1);
     deferUiFor(2000);
     s_state = State::Settings;
@@ -1551,6 +1591,7 @@ namespace {
     const bool serverWasRunning = WebServerManager::isRunning();
 
     ConfigManager::setWifiMode(mode);
+    if(ConfigManager::get().wifiMode!=mode) {UI::toastModal("WiFi mode not saved",2000,1);return;}
 
     if (changed && wifiWasActive) {
       WebServerManager::stop();
@@ -1866,6 +1907,10 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
     }
 
     case State::LogFormatPicker: {
+      if(ConfigManager::migrationPending() && ev==BUTTON_PRESSED) {
+        if(d==Dir::Up && s_migrationPage) {--s_migrationPage;drawLogFormatPicker_();return;}
+        if(d==Dir::Down && (s_migrationPage+1u)*63u<s_migrationReview.length()) {++s_migrationPage;drawLogFormatPicker_();return;}
+      }
       if (d == Dir::Left && (ev == BUTTON_PRESSED || ev == BUTTON_RELEASED)) {
         s_state = State::Settings;
         drawSettings_();

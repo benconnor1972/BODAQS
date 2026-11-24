@@ -6,6 +6,7 @@
 void convertFromJson(JsonVariantConst value, String& out) { out = value.as<const char*>(); }
 bool canConvertFromJson(JsonVariantConst value, const String&) { return value.is<const char*>(); }
 #include "ConfigManager.h"
+#include "ProductionConfigMigration.h"
 #include "SensorRegistry.h"
 #include "SensorAssignment.h"
 #include "SensorConfigEdit.h"
@@ -49,6 +50,8 @@ uint8_t acquisitionLinkProfile(uint8_t) {return 0;}
 bool acquisitionLinkCompatible(uint8_t) {return false;}
 const Diagnostics& diagnostics() { return controlDiagnostics; }
 bool configurationReconciled(uint8_t) { return false; }
+const char* configurationPreparationState(uint8_t) { return "unavailable"; }
+uint32_t configurationReadinessBlockers(uint8_t) { return 0; }
 void scheduleConfigurationReconciliation() {}
 }
 namespace RemoteImuRecording { const ImuAdmission::Report& admission() {static ImuAdmission::Report report;return report;} }

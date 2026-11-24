@@ -6,6 +6,7 @@
 #include "HtmlUtil.h"
 #include "WebServerManager.h"
 #include "ConfigManager.h"
+#include "LoggingManager.h"
 #include "SensorManager.h"
 #include "TransformRegistry.h"
 #include "PowerManager.h"
@@ -144,6 +145,12 @@ S->on("/api/transforms/list", HTTP_GET, [S](){
   S->on("/api/transforms/select", HTTP_POST, [S](){
     auto& srv = *S;
     noteHttpActivity_();
+#if BODAQS_PRODUCTION_RECORDING
+    srv.send(410,"application/json","{\"error\":\"on_device_transforms_retired\"}"); return;
+#else
+    if(LoggingManager::configurationLocked()) { srv.send(423,"application/json","{\"error\":\"configuration_locked\"}"); return; }
+#endif
+
 
     if (!srv.hasArg("sensor") || !srv.hasArg("id")) {
       srv.send(400, F("application/json"), F("{\"error\":\"sensor and id required\"}"));
@@ -193,6 +200,12 @@ S->on("/api/transforms/list", HTTP_GET, [S](){
   S->on("/api/transforms/reload", HTTP_POST, [S](){
     auto& srv = *S;
     noteHttpActivity_();
+#if BODAQS_PRODUCTION_RECORDING
+    srv.send(410,"application/json","{\"error\":\"on_device_transforms_retired\"}"); return;
+#else
+    if(LoggingManager::configurationLocked()) { srv.send(423,"application/json","{\"error\":\"configuration_locked\"}"); return; }
+#endif
+
 
     if (!srv.hasArg("sensor")) {
       srv.send(400, F("application/json"), F("{\"error\":\"sensor required\"}"));

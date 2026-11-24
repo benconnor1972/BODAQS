@@ -663,6 +663,13 @@ void LoggingManager::begin(const LoggerConfig* cfg) {
 
 void LoggingManager::refreshConfigurationStatus() {
   if (!s_cfg || phaseIs_(LifecycleState::Recording)) return;
+  if(ConfigManager::migrationPending()) {
+    s_configurationIssue=LoggingConfigIssue::InvalidConfig;
+    snprintf(s_configurationDetail,sizeof(s_configurationDetail),"Review and accept production configuration migration in Settings / Log format or web config");
+    return;
+  }
+  const String blocker=ConfigManager::configurationBlocker();
+  if(blocker.length()) {s_configurationIssue=LoggingConfigIssue::InvalidConfig;snprintf(s_configurationDetail,sizeof(s_configurationDetail),"%s",blocker.c_str());return;}
   char detail[sizeof(s_configurationDetail)] = {};
   const auto issue = SensorManager::configurationIssue(*s_cfg, detail, sizeof(detail));
   if (issue != s_configurationIssue || strcmp(detail, s_configurationDetail) != 0) {
@@ -716,6 +723,7 @@ bool LoggingManager::configurationLocked() {
 
 LoggingManager::StartResult LoggingManager::requestStart() {
   if (!isLifecycleOwner_()) return StartResult::Failed;
+  if(ConfigManager::configurationBlocker().length()) { UI::status(ConfigManager::configurationBlocker()); refreshConfigurationStatus(); return StartResult::Failed; }
   if (phaseIs_(LifecycleState::Recording)) return StartResult::Started;
   if ((phaseIs_(LifecycleState::Stopping) || phaseIs_(LifecycleState::Finalizing))) return StartResult::Failed;
   // A completed file must not turn a failed ownership handoff into an
@@ -885,9 +893,10 @@ bool LoggingManager::start() {
   s_startFailureHint = StartFailureHint::None;
   s_stopContext = StopContext{};
   if (!s_cfg) return false;
+  if(ConfigManager::configurationBlocker().length()) { UI::status(ConfigManager::configurationBlocker()); return false; }
 #if BODAQS_ADC_RAW_RECORDING_BENCH
   if(s_cfg->logFormat!=LogFormat::BodaqsMultiStreamBinary) {
-    UI::toast("RAW trial needs BDQ v2",1800,1);
+    UI::toast("Select BDQ v2 in settings",1800,1);
     LOGGING_LOGW("start refused: raw ADC trial requires BDQ v2\n");
     return false;
   }
@@ -1200,6 +1209,7 @@ void LoggingManager::setSampleRateHz(uint16_t hz) {
   int idx = Rates::indexOf(hz);
   if (idx < 0) return;
   ConfigManager::setSampleRateHz(hz);        // update + persist
+  if(ConfigManager::get().sampleRateHz!=hz) return; // save failed; retain applied cadence
   const uint16_t effectiveHz = AnalogInputManager::configureFromConfig(ConfigManager::get(), hz);
   StorageManager_setSampleRate(effectiveHz); // apply to the live logging cadence
   s_intervalUs = StorageManager_getSampleIntervalUs();

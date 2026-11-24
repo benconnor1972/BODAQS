@@ -55,7 +55,12 @@ struct LoggerConfig {
   // sampling / time
   uint16_t sampleRateHz     = 100;
   bool     timestampHuman   = true;
+#if BODAQS_PRODUCTION_RECORDING
+  LogFormat logFormat       = LogFormat::BodaqsMultiStreamBinary;
+#else
   LogFormat logFormat       = LogFormat::BodaqsStandard;
+#endif
+  bool     recordingBestEffort = false; // explicit opt-in; strict membership is the default
   bool     omitMetadata     = false;
   bool     startupLogToSd   = false; // capture on next boot, before acquisition
   CanMasterMode canMasterMode = CanMasterMode::Auto;
@@ -125,6 +130,16 @@ struct LoggerConfig {
 class ConfigManager {
   public:
     static void begin(const char* filename);
+    static bool migrationPending();
+    static bool configurationMutable();
+    static String configurationBlocker();
+    static String migrationRevision();
+    static String migrationChanges();
+    static String migrationProposedText();
+    static bool acceptMigration(const char* revision, char* error, size_t capacity);
+    static String sensorTypeKey(uint8_t index);
+    static bool saveSensorParamsByName(const char* sensorName,
+        const char* const* keys, const String* values, size_t count);
 
     // Wi-Fi config accessors (read-only)
     static bool hasConfiguredNetworks();

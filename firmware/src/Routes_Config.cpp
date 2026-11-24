@@ -31,8 +31,21 @@
 #define WEB_LOGW(...) LOGW_TAG("WEB", __VA_ARGS__)
 
 // ---- Helpers (file scope) ----
+static String productionMigrationHtml_() {
+  String migration;
+  if(ConfigManager::migrationPending()) {
+    migration=F("<div class='alert-warn'><strong>Review production configuration migration</strong><pre>");
+    migration+=HtmlUtil::htmlEscape(ConfigManager::migrationChanges());
+    migration+=F("</pre><form method='POST' action='/config/migration'><input type='hidden' name='revision' value='");
+    migration+=HtmlUtil::htmlEscape(ConfigManager::migrationRevision());
+    migration+=F("'><button type='submit' name='acknowledge' value='yes'>Accept these changes and preserve original</button></form></div>");
+  }
+  return migration;
+}
+
 static String configurationNotice_(bool outOfBand = false) {
   LoggingManager::refreshConfigurationStatus();
+  const String migration=productionMigrationHtml_();
   String html = outOfBand ? F("<div id='logging-config-notice' hx-swap-oob='outerHTML'>")
       : F("<div id='logging-config-notice'>");
   const auto issue = LoggingManager::configurationIssue();
@@ -101,7 +114,7 @@ static String configurationNotice_(bool outOfBand = false) {
     }
     html += F("</ul>Healthy, independent sensors can still log.</div>");
   }
-  return html + F("</div>");
+  return html + migration + F("</div>");
 }
 
 static String fmtIPv4(const uint8_t a[4]) {
@@ -141,7 +154,7 @@ static void noteHttpActivity_() {
 }
 
 static bool configEditLocked_(String* reason = nullptr) {
-  if (LoggingManager::configurationLocked() || !WebServerManager::canStart()) {
+  if (ConfigManager::migrationPending() || LoggingManager::configurationLocked() || !WebServerManager::canStart()) {
     if (reason) *reason = F("recording starts, runs, or stops; stop recording, then retry. Nothing was changed");
     return true;
   }
@@ -676,7 +689,7 @@ static void emitOutputModeRow_(ChunkedHtmlResponse& html, uint8_t idx, const Sen
   html += F(">RAW</option><option value='1'");
   if (mode == OutputMode::LINEAR) html += F(" selected");
   html += F(">LINEAR</option></select>");
-  html += F("<small>Complex transforms are applied downstream during import/analysis.");
+  html += F("<small>Recording stores counts/native evidence. RAW/LINEAR choose idle preview units; calibrated units are reconstructed during import.");
   if (stored == (long)OutputMode::POLY || stored == (long)OutputMode::LUT) {
     html += F(" Legacy POLY/LUT config will be saved back as LINEAR.");
   }
@@ -766,9 +779,20 @@ static void emitSensorEditor_(ChunkedHtmlResponse& html,
   html += F("'><legend>");
   html += htmlEscape(String(dispName));
   html += F(" - ");
+  if(sp.type==SensorType::Unknown) { html+=htmlEscape(ConfigManager::sensorTypeKey(idx)); html+=F(" (unsupported; START blocked) "); }
   html += htmlEscape(String(typeLbl ? typeLbl : "Unknown Sensor"));
   html += F("</legend>");
 
+#if BODAQS_PRODUCTION_RECORDING
+  html+=F("<p>Recording retains raw counts/native evidence. Calibration affects idle previews and offline reconstruction.</p>");
+  if(sp.type==SensorType::AnalogPot || sp.type==SensorType::AS5600StringPotAnalog || sp.type==SensorType::AS5600StringPotI2C) {
+    double travel=0;long zero=0,full=0;
+    const bool calibrated=sp.params.getFloat("sensor_full_travel_mm",travel) && travel>0 &&
+        sp.params.getInt("sensor_zero_count",zero) && sp.params.getInt("sensor_full_count",full) && zero!=full;
+    html+=calibrated?F("<p>Calibration: saved count anchors and travel; original count domain retained.</p>"):
+        F("<p>Calibration unavailable: raw recording is supported; unsupported displacement values remain unavailable.</p>");
+  }
+#endif
   html += F("<h4>Basic</h4>");
   html += F("<div class='row'><label>Name</label><input type='text' name='s");
   html += String(idx);
@@ -908,7 +932,7 @@ static void emitSensorEditor_(ChunkedHtmlResponse& html,
   if (findParamDef_(defs, defCount, "output_mode")) {
     html += F("<h4>Output</h4>");
     emitOutputModeRow_(html, idx, sp, locked);
-    emitParamRow_(html, idx, sp, defs, defCount, "include_raw", "Include raw column", locked);
+    emitParamRow_(html, idx, sp, defs, defCount, "include_raw", "Legacy extra raw preference (v2 retains counts)", locked);
     emitParamRow_(html, idx, sp, defs, defCount, "sensor_full_travel_mm", "Sensor full travel (mm)", locked);
     emitParamRow_(html, idx, sp, defs, defCount, "installed_range", "Installed range", locked);
   }
@@ -965,10 +989,25 @@ static void emitSensorEditor_(ChunkedHtmlResponse& html,
   html += F("</fieldset>");
 }
 
+static void handleProductionMigrationWeb_(WebServer& srv) {
+    char error[128]{};
+    if(!srv.hasArg("acknowledge") || srv.arg("acknowledge")!="yes" ||
+        !ConfigManager::acceptMigration(srv.arg("revision").c_str(),error,sizeof(error))) {
+      srv.send(409,"text/plain",error[0]?error:"Explicit acknowledgement required"); return;
+    }
+    if(!SensorManager::rebuildFromConfig(ConfigManager::get(),error,sizeof(error))) {
+      srv.send(500,"text/plain",error[0]?error:"Migration saved; restart required to apply"); return;
+    }
+    StorageManager_setSampleRate(AnalogInputManager::configureFromConfig(ConfigManager::get(),ConfigManager::get().sampleRateHz));
+    LoggingManager::refreshConfigurationStatus();
+    srv.sendHeader("Location","/config"); srv.send(303,"text/plain","Migration accepted; original preserved");
+}
+
 void registerConfigRoutes(WebServer& srv) {
   WebServer* S = &srv;
 
   // -------------------- GET /config --------------------
+  S->on("/config/migration", HTTP_POST, [S]() { handleProductionMigrationWeb_(*S); });
   S->on("/config", HTTP_GET, [S](){
     auto& srv = *S;
     noteHttpActivity_();
@@ -1043,16 +1082,21 @@ void registerConfigRoutes(WebServer& srv) {
     }
     html += F("</select><br>");
 
+    html += F("<label>Recording membership: </label><select name='recording_best_effort'"); html+=dis; html+=F(">");
+    html+=F("<option value='false'"); if(!cfg.recordingBestEffort)html+=F(" selected"); html+=F(">Require all requested participants</option>");
+    html+=F("<option value='true'"); if(cfg.recordingBestEffort)html+=F(" selected"); html+=F(">Best effort; record explicit exclusions</option></select><br>");
     html += F("<label>Log format: </label>");
+#if !BODAQS_PRODUCTION_RECORDING
     html += F("<label><input type='radio' name='log_format' value='bodaqs_standard'");
     if (cfg.logFormat == LogFormat::BodaqsStandard) html += F(" checked");
     html += dis; html += F("> BODAQS CSV</label> ");
     html += F("<label><input type='radio' name='log_format' value='bodaqs_compact_binary'");
     if (cfg.logFormat == LogFormat::BodaqsCompactBinary) html += F(" checked");
     html += dis; html += F("> BODAQS compact binary</label> ");
+#endif
     html += F("<label><input type='radio' name='log_format' value='bodaqs_multi_stream_binary'");
     if (cfg.logFormat == LogFormat::BodaqsMultiStreamBinary) html += F(" checked");
-    html += dis; html += F("> BODAQS multi-stream binary (experimental)</label><br>");
+    html += dis; html += F("> BODAQS multi-stream binary (counts/native streams)</label><br>");
 
     html += F("<label><input type='checkbox' name='omit_metadata' value='true'");
     if (cfg.omitMetadata) html += F(" checked");
@@ -1960,6 +2004,7 @@ void registerConfigRoutes(WebServer& srv) {
     LoggerConfig tmp = ConfigManager::get();
 
     // ---------- GLOBALS ----------
+    if(srv.hasArg("recording_best_effort")) { bool value; if(!ConfigManager::parseBool(srv.arg("recording_best_effort"),value)) {srv.send(400,"text/plain","Invalid membership mode");return;} tmp.recordingBestEffort=value; }
     if (srv.hasArg("logger_name")) {
       String loggerName = srv.arg("logger_name");
       loggerName.trim();

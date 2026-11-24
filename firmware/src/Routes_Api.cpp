@@ -802,7 +802,7 @@ static void handleDelete_(WebServer& srv) {
 }
 
 static bool configEditLocked_() {
-  return LoggingManager::configurationLocked() || UploadModeManager::isActive();
+  return ConfigManager::migrationPending() || LoggingManager::configurationLocked() || UploadModeManager::isActive();
 }
 
 static bool rejectConfigEditLocked_(WebServer& srv) {
@@ -922,7 +922,7 @@ static void addSensorParamsJson_(JsonObject obj, const SensorSpec& sp) {
 static void addSensorJson_(JsonObject obj, uint8_t index, const SensorSpec& sp, bool includeParams) {
   obj["index"] = index;
   obj["name"] = sp.name;
-  obj["type"] = SensorRegistry::typeKey(sp.type);
+  obj["type"] = ConfigManager::sensorTypeKey(index);
   obj["type_label"] = SensorRegistry::typeLabel(sp.type);
   obj["muted"] = sp.mutedDefault;
   bool runtimeMuted = sp.mutedDefault;
@@ -1013,12 +1013,17 @@ static void addSensorJson_(JsonObject obj, uint8_t index, const SensorSpec& sp, 
   if (!calMethods.length()) calMethods = "NONE";
   obj["calibration_methods"] = calMethods;
   obj["calibration_methods_read_only"] = true;
+#if BODAQS_PRODUCTION_RECORDING
+  obj["recording_representation"]="counts_or_native_evidence";
+  obj["output_mode_scope"]="idle_preview";
+#endif
   if (includeParams) addSensorParamsJson_(obj, sp);
 }
 
 static void addConfigGlobalsJson_(JsonObject obj, const LoggerConfig& cfg) {
   obj["logger_name"] = cfg.loggerName;
   obj["sample_rate_hz"] = cfg.sampleRateHz;
+  obj["recording_best_effort"] = cfg.recordingBestEffort;
   obj["log_format"] = ConfigManager::logFormatKey(cfg.logFormat);
   obj["omit_metadata"] = cfg.omitMetadata;
   obj["timestamp_mode"] = cfg.timestampHuman ? "human" : "fast";
@@ -1035,6 +1040,11 @@ static void addConfigGlobalsJson_(JsonObject obj, const LoggerConfig& cfg) {
       ConfigManager::oledLoggingPolicyKey(cfg.oledLoggingPolicy);
   obj["can_master_mode"] = ConfigManager::canMasterModeKey(cfg.canMasterMode);
   obj["sensor_count"] = cfg.sensorCount();
+  JsonObject migration=obj["production_migration"].to<JsonObject>();
+  migration["pending"]=ConfigManager::migrationPending();
+  migration["revision"]=ConfigManager::migrationRevision();
+  migration["changes"]=ConfigManager::migrationChanges();
+  migration["accept_url"]="/api/v1/config/migration";
 }
 
 static void handleConfigGet_(WebServer& srv) {
@@ -1054,6 +1064,7 @@ static void handleConfigPut_(WebServer& srv) {
 
   LoggerConfig tmp = ConfigManager::get();
 
+  if(!req["recording_best_effort"].isNull()) { if(!req["recording_best_effort"].is<bool>()) {sendError_(srv,400,"invalid_membership","recording_best_effort must be boolean");return;} tmp.recordingBestEffort=req["recording_best_effort"].as<bool>(); }
   if (!req["logger_name"].isNull()) {
     String s = req["logger_name"] | "";
     s.trim();
@@ -1070,7 +1081,11 @@ static void handleConfigPut_(WebServer& srv) {
   if (!req["log_format"].isNull()) {
     String s = req["log_format"] | "";
     LogFormat f;
-    if (ConfigManager::parseLogFormat(s.c_str(), f)) tmp.logFormat = f;
+    if (!ConfigManager::parseLogFormat(s.c_str(), f)) { sendError_(srv,400,"invalid_format","Unknown format"); return; }
+#if BODAQS_PRODUCTION_RECORDING
+    if(f!=LogFormat::BodaqsMultiStreamBinary) { sendError_(srv,400,"retired_format","Production recording requires BDQ v2"); return; }
+#endif
+    tmp.logFormat=f;
   }
   if (!req["omit_metadata"].isNull()) tmp.omitMetadata = req["omit_metadata"] | tmp.omitMetadata;
   if (!req["timestamp_mode"].isNull()) {
@@ -1439,6 +1454,20 @@ static void handleSensorDelete_(WebServer& srv) {
   sendJson_(srv, 200, doc);
 }
 
+static void handleProductionMigrationApi_(WebServer& srv) {
+    JsonDocument request;
+    if(!readJsonBody_(srv,request)) return;
+    if(!request["acknowledge"].is<bool>() || !request["acknowledge"].as<bool>()) { sendError_(srv,400,"acknowledgement_required","Review the exact migration changes first"); return; }
+    char error[128]{};
+    if(!ConfigManager::acceptMigration(request["revision"] | "",error,sizeof(error))) { sendError_(srv,409,"migration_failed",error); return; }
+    const bool applied=SensorManager::rebuildFromConfig(ConfigManager::get(),error,sizeof(error));
+    if(applied) StorageManager_setSampleRate(AnalogInputManager::configureFromConfig(ConfigManager::get(),ConfigManager::get().sampleRateHz));
+    LoggingManager::refreshConfigurationStatus();
+    JsonDocument response; response["saved"]=true; response["applied"]=applied;
+    if(!applied) response["error"]=error[0]?error:"Restart required";
+    sendJson_(srv,applied?200:500,response);
+}
+
 } // namespace
 
 void registerApiRoutes(WebServer& srv) {
@@ -1454,6 +1483,7 @@ void registerApiRoutes(WebServer& srv) {
     handleStatus_(*S);
   });
 
+  S->on("/api/v1/config/migration", HTTP_POST, [S]() { handleProductionMigrationApi_(*S); });
   S->on("/api/v1/config", HTTP_GET, [S]() {
     noteHttpActivity_();
     handleConfigGet_(*S);

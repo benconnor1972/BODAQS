@@ -8,7 +8,18 @@
 struct LoggerConfig {};
 uint32_t micros() {return 1000;}
 int64_t esp_timer_get_time() {return 2000;}
-class ConfigManager {public:static bool saveSensorParamByName(const char*,const char*,const String&) {return true;}};
+static bool configMutable=true,calibrationSaveOk=true;
+static unsigned calibrationWrites=0;
+class ConfigManager {
+public:
+  static bool configurationMutable(){return configMutable;}
+  static bool saveSensorParamsByName(const char*,const char* const*,const String*,size_t count){
+    if(!calibrationSaveOk)return false;
+    calibrationWrites+=count;
+    return true;
+  }
+  static bool saveSensorParamByName(const char*,const char*,const String&) {return true;}
+};
 // ACTUAL_SENSOR
 // ACTUAL_BASE_FUNCTIONS
 
@@ -141,4 +152,18 @@ int main(int argc,char** argv) {
   assert((BdqV2Format::getU16(auxiliary+14)&12)==12); // Gap and retained uncertainty, without a read failure.
   assert((BdqV2Format::getU16(auxiliary+8)&9)==9);
   skipped.onLoggingStop();skipped.onLoggingFinalized();
+  TestSensor calibrating(params,false);
+  calibrating.setOutputMode(OutputMode::LINEAR);
+  const auto originalCalibration=calibrating.calibration();
+  assert(calibrating.beginCalibration(CalMode::RANGE));
+  assert(calibrating.updateCalibration(100) && calibrating.updateCalibration(200));
+  configMutable=false;
+  assert(!calibrating.finishCalibration(true) && !calibrating.beginCalibration(CalMode::ZERO));
+  configMutable=true;calibrationSaveOk=false;
+  assert(!calibrating.finishCalibration(true));
+  assert(calibrating.calibration().scale==originalCalibration.scale && calibrationWrites==0);
+  calibrationSaveOk=true;
+  assert(calibrating.finishCalibration(true) && calibrationWrites==2);
+  assert(fabs(calibrating.calibration().scale-1.0f)<1e-6f);
+
 }

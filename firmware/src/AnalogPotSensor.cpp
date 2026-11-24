@@ -267,6 +267,7 @@ bool AnalogPotSensor::setCalibration(const CalibrationState& state) {
 
 
 bool AnalogPotSensor::beginCalibration(CalMode mode) {
+  if(!ConfigManager::configurationMutable()) return false;
   if (mode == CalMode::NONE) return false;
 
   cal_ = CalState{}; // reset everything
@@ -277,6 +278,7 @@ bool AnalogPotSensor::beginCalibration(CalMode mode) {
 }
 
 bool AnalogPotSensor::updateCalibration(int32_t latestCounts) {
+  if(!ConfigManager::configurationMutable()) return false;
   if (cal_.phase != CalPhase::ACTIVE) return false;
 
   ++cal_.samples;
@@ -299,16 +301,15 @@ bool AnalogPotSensor::updateCalibration(int32_t latestCounts) {
 }
 
 bool AnalogPotSensor::finishCalibration(bool persist) {
+  if(!ConfigManager::configurationMutable()) return false;
   if (cal_.phase != CalPhase::ACTIVE) return false;
 
   if (cal_.mode == CalMode::ZERO) {
     const int32_t now = currentRawCounts();
+    if(persist) { const char* keys[]={"installed_zero_count"}; const String values[]={String(now)};
+      if(!ConfigManager::saveSensorParamsByName(name(),keys,values,1)) return false; }
     installed_zero_count_ = now;
 
-    if (persist) {
-      const char* sname = this->name();
-      ConfigManager::saveSensorParamByName(sname, "installed_zero_count", String(installed_zero_count_));
-    }
   } else if (cal_.mode == CalMode::RANGE) {
     const bool haveMin = (cal_.min_counts != INT32_MAX);
     const bool haveMax = (cal_.max_counts != INT32_MIN);
@@ -317,6 +318,9 @@ bool AnalogPotSensor::finishCalibration(bool persist) {
       cal_.mode  = CalMode::NONE;
       return false;
     }
+    if(persist) { const char* keys[]={"sensor_zero_count","sensor_full_count"};
+      const String values[]={String(cal_.min_counts),String(cal_.max_counts)};
+      if(!ConfigManager::saveSensorParamsByName(name(),keys,values,2)) return false; }
     sensor_zero_count_ = cal_.min_counts;
     sensor_full_count_ = cal_.max_counts;
 
@@ -341,12 +345,7 @@ bool AnalogPotSensor::finishCalibration(bool persist) {
       counts_per_mm_ = 0.0;  // invalid; sampling will output a safe 0
     }
 
-    if (persist) {
-      const char* sname = this->name();
-      ConfigManager::saveSensorParamByName(sname, "sensor_zero_count", String(sensor_zero_count_));
-      ConfigManager::saveSensorParamByName(sname, "sensor_full_count", String(sensor_full_count_));
 
-    }
   }
 
   // Recompute linear scale if you still call this, or update counts_per_mm_ inline

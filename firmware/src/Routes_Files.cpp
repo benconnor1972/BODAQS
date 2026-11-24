@@ -48,7 +48,7 @@ static String prettySize_(uint64_t bytes) {
 }
 
 static bool manualFileMutationBlocked_(String* reason = nullptr) {
-  if (LoggingManager::isRunning()) {
+  if (LoggingManager::configurationLocked() || ConfigManager::migrationPending()) {
     if (reason) *reason = F("logging is active");
     return true;
   }
