@@ -16,6 +16,11 @@ permitted alternatives.
 The state in which an endpoint has a verified applied configuration, whether or
 not acquisition is active.
 
+**Configuration reconciliation**:
+Establishing verified agreement between a participant's desired and effective
+configuration under its current identity and authority. This agreement does not
+by itself mean acquisition is active or that a recording is ready to start.
+
 **Acquisition-active state**:
 The state in which an endpoint is acquiring samples under its effective
 configuration.
