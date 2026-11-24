@@ -11,6 +11,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import zipfile
 
 ENVIRONMENTS = ('bodaqs_a8_production', 'bodaqs_a8_integration_candidate')
 OFFSETS = {'bootloader.bin': 0, 'partitions.bin': 0x8000,
@@ -77,6 +78,8 @@ def main() -> int:
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--peer-bundle', required=True, type=Path, help='sealed r133 reference bundle')
     parser.add_argument('--node-image', type=Path, help='explicit external node image, still checked against r133 hash')
+    parser.add_argument('--node-inputs', type=Path, required=True, help='historical node-inputs.json referenced by r133')
+    parser.add_argument('--master-command', type=Path, required=True, help='historical r109 master-command.json')
     parser.add_argument('--pio-python', default=sys.executable)
     parser.add_argument('--esptool', type=Path, required=True, help='PlatformIO esptool.py path')
     parser.add_argument('--source-date-epoch', required=True, type=int)
@@ -105,7 +108,7 @@ def main() -> int:
                 'source_commit': commit, 'source_date_epoch': args.source_date_epoch,
                 'qualification': 'pending; candidate override is not strict production admission',
                 'installation': 'not performed', 'logger': {}, 'peers': {}, 'commands': []}
-    env = {**os.environ, 'SOURCE_DATE_EPOCH': str(args.source_date_epoch)}
+    env = {**os.environ, 'SOURCE_DATE_EPOCH': str(args.source_date_epoch), 'PYTHONIOENCODING': 'utf-8'}
 
     def run(label, argv):
         manifest['commands'].append({'label': label, 'argv': argv, 'cwd': str(root)})
@@ -142,7 +145,12 @@ def main() -> int:
             audit = audit_images(first)
             stamp = audit_build_timestamp((first / 'firmware.bin').read_bytes(), args.source_date_epoch)
             for name in ('firmware.bin', 'bootloader.bin'):
-                run(f'{environment}-{name}-image-info', [args.pio_python, str(args.esptool), '--chip', 'esp32s3', 'image_info', str(first / name)])
+                label = f'{environment}-{name}-image-info'
+                run(label, [args.pio_python, str(args.esptool), '--chip', 'esp32s3', 'image_info', str(first / name)])
+                # esptool reports invalid checksums/digests in text without a failing exit code.
+                if '(invalid' in (output / f'{label}.log').read_text(encoding='utf-8'):
+                    raise ValueError(f'{name}: esptool image checksum or validation hash invalid')
+            run(f'{environment}-partition-info', [args.pio_python, str(pio_home / 'packages/framework-arduinoespressif32/tools/gen_esp32part.py'), str(first / 'partitions.bin')])
             merged = bytearray(b'\xff' * max(s['end'] for s in audit['segments'].values()))
             for name, entry in audit['segments'].items():
                 merged[entry['offset']:entry['end']] = (first / name).read_bytes()
@@ -150,7 +158,7 @@ def main() -> int:
             manifest['logger'][environment] = {**audit, 'recipe_id': recipe['id'], 'compiler_timestamp': stamp,
                                                'clean_rebuild_equal': True, 'build_artifacts': hashes[0],
                                                'merged': record(first / 'recovery-merged.bin')}
-            run(f'{environment}-resolved-packages', [args.pio_python, '-m', 'platformio', 'pkg', 'list', '-d', 'firmware', '-e', environment, '--json-output'])
+            run(f'{environment}-resolved-packages', [args.pio_python, '-m', 'platformio', 'pkg', 'list', '-d', 'firmware', '-e', environment])
         for role in ('master', 'node'):
             folder = output / role
             folder.mkdir()
@@ -176,6 +184,24 @@ def main() -> int:
         archive = peer_root / peer_manifest['source_archive']['path']
         if digest(archive) != peer_manifest['source_archive']['sha256']:
             raise ValueError('historical source archive hash mismatch')
+        if digest(args.node_inputs) != peer_manifest['node']['input_manifest']['sha256']:
+            raise ValueError('historical node build-input hash mismatch')
+        shutil.copyfile(args.node_inputs, output / 'node-inputs.json')
+        shutil.copyfile(args.master_command, output / 'master-command.json')
+        manifest['peer_build_inputs'] = {'node': record(output / 'node-inputs.json'),
+                                        'master': {**record(output / 'master-command.json'),
+                                                   'status': 'historical supplied command; no independent build attestation'}}
+        with zipfile.ZipFile(archive) as source:
+            changed = []
+            for name in source.namelist():
+                if name.startswith(('firmware/can-fd/master/', 'firmware/can-fd/node/', 'firmware/can-fd/common/')) and name.endswith(('.c', '.h', '.syscfg', 'makefile')):
+                    current = root / name
+                    if not current.exists() or current.read_bytes().replace(b'\r\n', b'\n') != source.read(name).replace(b'\r\n', b'\n'):
+                        changed.append(name)
+            manifest['peer_source_comparison'] = {'reference_archive_sha256': digest(archive),
+                'method': 'LF-normalized reference master/node/common source comparison',
+                'different_reference_files': changed,
+                'meaning': 'review differences with integrated protocol/lifecycle evidence; not runtime attestation'}
         # Preserve public build provenance only; never include private reference configurations.
         (output / 'PEER_PROVENANCE.json').write_text(json.dumps({
             'schema': peer_manifest['schema'], 'source_commit': peer_manifest['source_commit'],
@@ -188,6 +214,8 @@ def main() -> int:
             raise ValueError('source changed during build')
         subprocess.run(['git', 'archive', '--format=zip', '--output', str(output / 'SOURCE.zip'), commit], cwd=root, check=True)
         manifest['source_archive'] = record(output / 'SOURCE.zip')
+        manifest['build_hooks'] = {p.relative_to(root).as_posix(): record(p)
+                                   for p in (root / 'firmware/tools').glob('configure_*.py')}
         manifest['tool_packages'] = {}
         for folder in ('packages', 'platforms'):
             for path in sorted((pio_home / folder).glob('*/package.json')):
