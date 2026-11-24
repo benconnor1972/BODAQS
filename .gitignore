@@ -65,6 +65,7 @@ To do/~$To do list.xlsx
 analysis/exports/
 
 # Generated build and release package outputs
+/.scratch/
 analysis/build/
 analysis/dist/
 analysis/build-*/

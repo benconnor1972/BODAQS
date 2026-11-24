@@ -19,6 +19,7 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
+from dataclasses import replace
 from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
@@ -6083,7 +6084,11 @@ class ImportAgentManagerWindow:
 
     def _scan_usb_loggers(self, *, force: bool = False) -> None:
         if self._usb_scan_running or self._usb_prompt_open or self._import_now_running():
+            if force:
+                self._set_manager_status("USB discovery is busy. Wait for the current operation, then try again.")
             return
+        if force:
+            self._set_manager_status("Looking for mounted USB loggers...")
         self._usb_scan_running = True
         supervisor = self.watch_service.supervisor if self._watch_running() else None
         self._usb_acquiring = supervisor is not None
@@ -6113,6 +6118,9 @@ class ImportAgentManagerWindow:
             for error in acquisition["errors"]:
                 self._append_log(f"  {error['file']}: {error['error']}")
         candidates = result["devices"] if force else result["unpaired"]
+        if force and not candidates:
+            messagebox.showinfo("Pair USB logger", "No USB logger found. Enable UPLOAD mode and wait for its drive to mount."
+                                + ("\n\n" + "\n".join(sorted(issues)) if issues else ""), parent=self.root)
         if not force and self.root.grab_current() is not None:
             return  # Offer pairing after the existing modal interaction ends.
         for device in candidates:
@@ -6122,11 +6130,21 @@ class ImportAgentManagerWindow:
             if not self.controller.has_config():
                 self._set_manager_status(f"USB logger {device.display_name} detected. Create a local source to pair it.")
                 continue
-            sources = [source for source in load_managed_import_source_configs(
-                self.controller.require_config(), enabled_only=True)
-                       if source.source_type == SOURCE_TYPE_FILESYSTEM_ARCHIVE]
+            try:
+                config = self.controller.require_config()
+                local_config = replace(config, sources=tuple(
+                    source for source in config.sources
+                    if source.enabled and source.source_type == SOURCE_TYPE_FILESYSTEM_ARCHIVE))
+                sources = load_managed_import_source_configs(local_config, enabled_only=True)
+            except Exception as exc:
+                self._set_manager_status(f"USB pairing failed: {exc}")
+                if force:
+                    messagebox.showerror("Pair USB logger", str(exc), parent=self.root)
+                continue
             if not sources:
                 self._set_manager_status("Create or enable a local archive source, then choose Discover / pair USB loggers.")
+                if force:
+                    messagebox.showinfo("Pair USB logger", "Create or enable a local archive source, then try pairing again.", parent=self.root)
                 continue
             choices = "\n".join(f"{i}. {source.description or source.source_id} → {source.library_id or source.artifacts_dir.name}"
                                 for i, source in enumerate(sources, 1))
@@ -6145,6 +6163,8 @@ class ImportAgentManagerWindow:
                     self._set_manager_status(f"Paired {device.display_name}; start the watcher for automatic import.")
             except Exception as exc:
                 self._set_manager_status(f"USB pairing failed: {exc}")
+                if force:
+                    messagebox.showerror("Pair USB logger", str(exc), parent=self.root)
             finally:
                 self._usb_prompt_open = False
 

@@ -35,6 +35,12 @@ local-source configuration. That source supplies bike, profile, inbox, and
 library settings. Mount paths are not persisted as identity. Moving a source
 configuration requires pairing it again.
 
+The Import Manager's **Discover / pair USB loggers...** action offers enabled
+local archive sources. Missing Wi-Fi source files do not prevent USB pairing.
+A missing local source configuration is reported as a pairing error; repair its
+path or disable that source and retry. Manual discovery also reports when no
+logger is found. Pairing failures leave subsequent discovery available.
+
 Pairing and acquisition reject workspace, inbox, staging, library, state, and
 other output paths anywhere on the mounted card, including siblings of the
 recording directory. Manual acquisition uses the enclosing mounted volume as

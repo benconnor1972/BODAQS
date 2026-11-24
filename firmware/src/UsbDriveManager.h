@@ -15,4 +15,7 @@ uint8_t phase();
 const char* stateKey();
 const char* label();
 const char* shortLabel();
+#if defined(BODAQS_USB_DIAGNOSTICS)
+const char* diagnosticLine(uint8_t row);
+#endif
 }

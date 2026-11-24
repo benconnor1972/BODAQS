@@ -162,16 +162,41 @@ A change is considered done when:
 - The change is reviewable (diff is reasonably scoped).
 - Any required manual steps (Arduino IDE compile/upload, notebook run) are clearly listed.
 
-## 9) Azure Boards backlog management
+## 9) GitHub Issues backlog management
 
-- Organization: `bodaqs`
-- Project: `BODAQS`
-- Team: `BODAQS Team`
-- Process: Agile
-- Default product-backlog work item type: `User Story`
-- Use the configured Azure DevOps MCP server for backlog requests.
-- Treat an explicit request to "add" or "create" an item as authorization for that
-  item. Otherwise, prepare a preview before writing to Azure DevOps.
-- Do not delete work items, perform bulk updates, or change item state unless the
-  user explicitly requests it.
-- After creating an item, report its work item ID and URL.
+- Repository: `benconnor1972/BODAQS`.
+- Use GitHub Issues for new backlog work. Azure Boards is retired for this project.
+- Follow `docs/agents/issue-tracker.md` for tracker access and write rules.
+- Treat an explicit request to "add" or "create" an issue as authorization for that
+  issue. Otherwise, prepare a preview before writing to GitHub.
+- Do not delete issues, perform bulk updates, or close/reopen issues unless the
+  user explicitly requests it. Completing implementation does not authorize closing.
+- After creating an issue, report its issue number and URL.
+- Do not migrate or change existing Azure Boards items without an explicit request.
+
+## Agent skills
+
+Project-local skills live in `.agents/skills/`. Read the selected skill's
+`SKILL.md` and its referenced resources; when a skill says to invoke another
+skill, load that skill from this directory if no skill-invocation tool exists.
+Repository instructions and the user's authorization take precedence over skill
+defaults, including tracker publishing, committing, closing issues, and testing.
+Keep an existing agreement in force; do not ask for the same approval again.
+
+### Issue tracker
+
+GitHub Issues: `benconnor1972/BODAQS`. Read `docs/agents/issue-tracker.md`
+before tracker operations. Triage labels are mapped in
+`docs/agents/triage-labels.md`; installation does not authorize remote triage.
+
+### Domain docs
+
+Single-context: root `GLOSSARY.md` and `docs/adr/`, created when needed.
+Read `docs/agents/domain.md` before design work.
+
+### Engineering workflow
+
+Read `docs/agents/engineering.md` for software, firmware, and hardware validation.
+The installed skills, prerequisites, pinned source, and update procedure are recorded
+in `docs/agents/skills.md`. Existing build guidance remains in
+`skills/firmware-build/SKILL.md`.

@@ -1470,6 +1470,47 @@ def test_mounted_folder_scan_limit_does_not_starve_later_recordings(tmp_path):
     assert first.exists() and second.exists()
 
 
+@pytest.mark.parametrize("missing_type", [SOURCE_TYPE_LOGGER_WIFI, SOURCE_TYPE_FILESYSTEM_ARCHIVE])
+def test_usb_pairing_handles_missing_source_config(tmp_path, monkeypatch, missing_type):
+    from types import SimpleNamespace
+    from bodaqs_analysis.import_agent_usb import UsbLogger
+
+    workspace = _prepare_source(tmp_path, "usb", tmp_path / "library")
+    config = provisioning_module.ImportAgentAppConfig(
+        sources_root=tmp_path, libraries_root=tmp_path,
+        libraries=(ImportAgentLibraryConfig("library", "Library", tmp_path / "library"),),
+        sources=(
+            ImportAgentManagedSourceConfig("missing", "Missing source", tmp_path / "missing", "library", missing_type),
+            ImportAgentManagedSourceConfig("usb", "USB", workspace, "library"),
+        ),
+    )
+    window = object.__new__(import_agent_setup_module.ImportAgentManagerWindow)
+    window.controller = SimpleNamespace(has_config=lambda: True, require_config=lambda: config)
+    window.root = SimpleNamespace(grab_current=lambda: None)
+    window._usb_seen_unpaired = set()
+    window._usb_issues = set()
+    window._show_window = lambda: None
+    window._append_log = lambda message: None
+    window._set_manager_status = lambda message: None
+    paired = []
+    errors = []
+    window._usb_service = SimpleNamespace(pair=lambda device, source: paired.append(source.source_id))
+    monkeypatch.setattr(import_agent_setup_module.simpledialog, "askinteger", lambda *a, **kw: 1)
+    monkeypatch.setattr(import_agent_setup_module.messagebox, "showerror", lambda title, message, **kw: errors.append(message))
+    device = UsbLogger("device", "logger", "Logger", tmp_path / "card", tmp_path / "card")
+
+    window._handle_usb_loggers({"devices": [device], "unpaired": [device], "issues": [], "acquisitions": {}}, force=True)
+
+    if missing_type == SOURCE_TYPE_LOGGER_WIFI:
+        assert paired == ["usb"]
+        assert not errors
+    else:
+        assert not paired
+        assert len(errors) == 1
+        assert "Import source config not found" in errors[0]
+    assert not window._usb_scan_running
+
+
 def test_usb_logger_discovery_pairs_and_imports_without_consuming_card(tmp_path):
     from bodaqs_analysis.import_agent_usb import UsbLoggerService
 

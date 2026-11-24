@@ -15,6 +15,9 @@
 #include "ButtonActions.h"
 #include "WiFiManager.h"
 #include "UploadModeManager.h"
+#if defined(BODAQS_USB_DIAGNOSTICS)
+#include "UsbDriveManager.h"
+#endif
 #include "UploadSessionScanner.h"
 #include "FirmwareInfo.h"
 #include "StorageManager.h"
@@ -977,11 +980,20 @@ namespace {
     const bool uploadMode = UploadModeManager::isActive();
 
     UI::clear(UI::TARGET_OLED);
+#if defined(BODAQS_USB_DIAGNOSTICS)
+    UI::oledText(0, 0, "USB reconnect v1");
+#else
     UI::oledText(0, 0, "Upload mode");
+#endif
     UI::oledText(0, 12, UploadModeManager::usbEnabled()
         ? UploadModeManager::shortTransferLabel()
         : String("State: ") + (uploadMode ? "ON" : "OFF"));
 
+#if defined(BODAQS_USB_DIAGNOSTICS)
+    for (uint8_t row = 0; row < 4; ++row) {
+      UI::oledText(0, 22 + 10 * row, truncateForOled_(UsbDriveManager::diagnosticLine(row), 21));
+    }
+#else
     String network = st.networkUp ? st.ssid : String("off");
     if (!network.length()) network = ConfigManager::wifiModeLabel(st.mode);
     UI::oledText(0, 22, truncateForOled_(String("WiFi: ") + network, 21));
@@ -999,6 +1011,7 @@ namespace {
       UI::oledText(0, 54, UploadModeManager::exitPending() ? "Enter cancel exit" :
           (strcmp(UploadModeManager::usbStateKey(), "error") == 0 ? "Enter retry storage" : "Enter toggle"));
     }
+#endif
     DisplayManager::present();
   }
 
@@ -2063,9 +2076,17 @@ void MenuSystem::select()   { onNav(Dir::Enter, BUTTON_PRESSED); }
 void MenuSystem::loop() {
   if (s_state == State::Inactive) return;
   if (s_state == State::UploadStatus && UploadModeManager::usbEnabled()) {
+#if defined(BODAQS_USB_DIAGNOSTICS)
+    static uint32_t lastProbeDrawMs = 0;
+    if (uint32_t(millis() - lastProbeDrawMs) >= 1000) {
+      lastProbeDrawMs = millis();
+      drawUploadStatus_();
+    }
+#else
     static uint8_t previousUsbPhase = 255;
     const uint8_t phase = UploadModeManager::usbPhase();
     if (phase != previousUsbPhase) { previousUsbPhase = phase; drawUploadStatus_(); }
+#endif
   }
 
   tickActiveRangeCalibration_();

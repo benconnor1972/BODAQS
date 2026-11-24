@@ -38,6 +38,12 @@ std::atomic<bool> busy{false}, hostEjected{false}, ioFailed{false};
 std::atomic<uint32_t> lastIoMs{0};
 std::atomic<bool> usbConfigured{false}, mediaPublished{false};
 std::atomic<uint32_t> usbConnectionEpoch{0}, publishedEpoch{0};
+#if defined(BODAQS_USB_DIAGNOSTICS)
+// Temporary reconnect probe. Excluded from ordinary development/release builds.
+std::atomic<uint32_t> probeStarted{0}, probeStopped{0}, probeSuspended{0}, probeResumed{0};
+std::atomic<uint32_t> probeReads{0}, probeWrites{0}, probeFailures{0}, probeLockTimeouts{0};
+std::atomic<int32_t> probeLastError{0};
+#endif
 
 void publishMedia(bool present) {
   mediaPublished = present;
@@ -88,7 +94,13 @@ bool beginRaw() {
 }
 
 int32_t transfer(uint32_t lba, uint32_t offset, void* data, uint32_t size, bool write) {
+#if defined(BODAQS_USB_DIAGNOSTICS)
+  if (write) ++probeWrites; else ++probeReads;
+#endif
   if (!ioLock || xSemaphoreTake(ioLock, pdMS_TO_TICKS(1000)) != pdTRUE) {
+#if defined(BODAQS_USB_DIAGNOSTICS)
+    ++probeLockTimeouts;
+#endif
     return -1;
   }
   const uint32_t epoch = usbConnectionEpoch.load();
@@ -114,9 +126,15 @@ int32_t transfer(uint32_t lba, uint32_t offset, void* data, uint32_t size, bool 
       result = sdmmc_write_sectors(&rawCard, sector, block, 1);
     } else if (result == ESP_OK) memcpy(bytes, sector + within, count);
     ok = result == ESP_OK;
+#if defined(BODAQS_USB_DIAGNOSTICS)
+    if (!ok) probeLastError = result;
+#endif
     bytes += count; position += count; remaining -= count;
   }
   if (!ok) ioFailed = true;
+#if defined(BODAQS_USB_DIAGNOSTICS)
+  if (!ok) ++probeFailures;
+#endif
   lastIoMs = millis();
   busy = false;
   xSemaphoreGive(ioLock);
@@ -195,6 +213,14 @@ void begin() {
         usbConfigured = true;
       }
     }
+#if defined(BODAQS_USB_DIAGNOSTICS)
+    switch (event) {
+      case ARDUINO_USB_STARTED_EVENT: ++probeStarted; break;
+      case ARDUINO_USB_STOPPED_EVENT: ++probeStopped; break;
+      case ARDUINO_USB_SUSPEND_EVENT: ++probeSuspended; break;
+      case ARDUINO_USB_RESUME_EVENT: ++probeResumed; break;
+    }
+#endif
   });
   drive.onRead([](uint32_t lba, uint32_t offset, void* data, uint32_t size) {
     return transfer(lba, offset, data, size, false);
@@ -216,6 +242,20 @@ void loop() {
   if (session.active() && input.connected && session.state() != UsbUploadSession::State::Ejected &&
       session.state() != UsbUploadSession::State::Error) PowerManager::noteActivity();
   if (previous != session.state()) { UI::status(session.label()); WiFiManager::refreshDiscovery(); }
+#if defined(BODAQS_USB_DIAGNOSTICS)
+  static uint32_t lastProbeMs = 0;
+  if (uint32_t(millis() - lastProbeMs) >= 1000 && Serial) {
+    lastProbeMs = millis();
+    Serial.printf("[DEBUG-a8usb] state=%s owner=%s connected=%u mounted=%u suspended=%u media=%u busy=%u "
+                  "start=%lu stop=%lu suspend=%lu resume=%lu read=%lu write=%lu failed=%lu lock_timeout=%lu error=%ld\n",
+                  session.stateKey(), StorageManager_ownershipStatus(), usbConfigured.load(), tud_mounted(), tud_suspended(),
+                  mediaPublished.load(), busy.load(), (unsigned long)probeStarted.load(), (unsigned long)probeStopped.load(),
+                  (unsigned long)probeSuspended.load(), (unsigned long)probeResumed.load(),
+                  (unsigned long)probeReads.load(), (unsigned long)probeWrites.load(),
+                  (unsigned long)probeFailures.load(), (unsigned long)probeLockTimeouts.load(),
+                  (long)probeLastError.load());
+  }
+#endif
 }
 bool active() { return session.active(); }
 bool enter(bool logging) { return session.enter(logging); }
@@ -231,6 +271,28 @@ uint8_t phase() { return uint8_t(session.state()); }
 const char* stateKey() { return session.stateKey(); }
 const char* label() { return session.label(); }
 const char* shortLabel() { return session.shortLabel(); }
+#if defined(BODAQS_USB_DIAGNOSTICS)
+const char* diagnosticLine(uint8_t row) {
+  static char text[48];
+  switch (row) {
+    case 0:
+      snprintf(text, sizeof(text), "C%u M%u S%u B%u", usbConfigured.load(), tud_mounted(), tud_suspended(), busy.load());
+      break;
+    case 1:
+      snprintf(text, sizeof(text), "U%lu D%lu S%lu R%lu", (unsigned long)probeStarted.load(),
+               (unsigned long)probeStopped.load(), (unsigned long)probeSuspended.load(), (unsigned long)probeResumed.load());
+      break;
+    case 2:
+      snprintf(text, sizeof(text), "R%lu W%lu E%lu", (unsigned long)probeReads.load(),
+               (unsigned long)probeWrites.load(), (unsigned long)probeFailures.load());
+      break;
+    default:
+      snprintf(text, sizeof(text), "L%lu rc%lx", (unsigned long)probeLockTimeouts.load(), (unsigned long)probeLastError.load());
+      break;
+  }
+  return text;
+}
+#endif
 }
 #else
 namespace UsbDriveManager {
