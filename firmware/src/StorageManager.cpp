@@ -1,3 +1,4 @@
+#include "RecordingFeatures.h"
 #include "BoundedJsonAllocator.h"
 #include "CpuOccupancy.h"
 #include "StoragePathProbe.h"
@@ -86,7 +87,7 @@ static BdqV2FileSink s_bdqV2FileSink(logFileMMC);
 static BdqV2Writer s_bdqV2Writer;
 static BdqV2PrimaryStreamSchema s_bdqV2PrimarySchema;
 static DynamicSpscRecordQueue s_bdqV2PrimaryQueue;
-#if defined(BODAQS_BACKLOG_BALANCE_BENCH) && BODAQS_BACKLOG_BALANCE_BENCH
+#if defined(BODAQS_ADAPTIVE_DRAIN_OWNER) && BODAQS_ADAPTIVE_DRAIN_OWNER
 static std::atomic<size_t> s_balancePrimaryCapacity{0};
 #endif
 static BdqV2StreamDescriptor
@@ -197,7 +198,7 @@ static uint16_t  s_qCount = 0;
 static uint16_t  s_qMax   = 0;
 static uint32_t  s_samplesDropped = 0;
 static uint16_t  s_primaryPendingStatus = 0;
-#if BODAQS_ADC_RAW_RECORDING_BENCH
+#if BODAQS_RAW_COUNT_RECORDING
 static RawAdcRecordingStats* s_rawAdc=nullptr;
 static_assert(RawAdcRecording::kSensorError==BdqV2PrimaryStreamSchema::kSensorErrorStatus,"Raw flags match existing schema");
 #endif
@@ -255,11 +256,19 @@ static void setupCardDetectPin_() {
 }
 
 static bool isCompactBinaryFormat_() {
+#if BODAQS_PRODUCTION_RECORDING
+  return false;
+#else
   return s_activeLogFormat == LogFormat::BodaqsCompactBinary;
+#endif
 }
 
 static bool isBdqV2Format_() {
+#if BODAQS_PRODUCTION_RECORDING
+  return true;
+#else
   return s_activeLogFormat == LogFormat::BodaqsMultiStreamBinary;
+#endif
 }
 
 static bool isBinaryFormat_() {
@@ -636,14 +645,14 @@ static void resetQueueState_() {
 }
 
 static void releaseBdqV2Session_() {
-#if defined(BODAQS_BACKLOG_BALANCE_BENCH) && BODAQS_BACKLOG_BALANCE_BENCH
+#if defined(BODAQS_ADAPTIVE_DRAIN_OWNER) && BODAQS_ADAPTIVE_DRAIN_OWNER
   s_balancePrimaryCapacity.store(0,std::memory_order_release);
 #endif
   s_bdqV2Writer.abort();
   s_bdqV2Writer.clearStreams();
   s_bdqV2FileSink.reset();
   s_bdqV2PrimaryQueue.release();
-#if BODAQS_ADC_RAW_RECORDING_BENCH
+#if BODAQS_RAW_COUNT_RECORDING
   if(s_rawAdc)s_rawAdc->active=false; // Keep final counters until the next recording begins.
 #endif
   delete[] s_bdqV2Workspace;
@@ -859,7 +868,9 @@ static bool mountSdmmc_() {
   uint64_t sizeMB = SD_MMC.cardSize() / (1024ULL * 1024ULL);
   STOR_LOGI("SD card size: %llu MB\n", (unsigned long long)sizeMB);
 
+#if !BODAQS_PRODUCTION_RECORDING
   promoteStaleSessionArchives_();
+#endif
 
   STOR_LOGI("SD_MMC.begin OK.\n");
   return true;
@@ -874,7 +885,7 @@ bool StorageManager_enqueueSample(
     bool mark,
     uint64_t hostMonotonicUs,
     uint64_t markHostMonotonicUs) {
-#if BODAQS_ADC_RAW_RECORDING_BENCH
+#if BODAQS_RAW_COUNT_RECORDING
   if(s_rawAdc && s_rawAdc->active){++s_rawAdc->genericAttempts;return false;}
 #endif
   if (!loggingActive) return false;
@@ -1068,7 +1079,7 @@ static bool dequeueSample(SampleRow &out) {
   return true;
 }
 
-#if BODAQS_ADC_RAW_RECORDING_BENCH
+#if BODAQS_RAW_COUNT_RECORDING
 bool StorageManager_enqueueRawAdc(const RawAdcRecord& record,bool mark,uint64_t markTime,uint64_t capturedUs) {
   if(!loggingActive || !s_rawAdc || !s_rawAdc->active)return false;
   ++s_rawAdc->submitted;RawAdcRecord value=record;value.status|=s_primaryPendingStatus;
@@ -1107,7 +1118,7 @@ static bool popBdqV2PrimaryRecord_(
     void*,
     uint8_t* destination,
     size_t capacity) {
-#if BODAQS_ADC_RAW_RECORDING_BENCH
+#if BODAQS_RAW_COUNT_RECORDING
   if(s_rawAdc && s_rawAdc->active) {
 #if BODAQS_PRODUCTION_RECORDING
     if (!s_bdqV2PrimaryQueue.pop(destination, capacity)) return false;
@@ -1619,7 +1630,7 @@ static bool beginBdqV2_(const BdqLogSessionInfo& info) {
   primarySource.pendingObservations = &pendingBdqV2PrimaryObservations_;
   primarySource.popRecord = &popBdqV2PrimaryRecord_;
   primarySource.popObservation = &popBdqV2PrimaryObservation_;
-#if BODAQS_ADC_RAW_RECORDING_BENCH
+#if BODAQS_RAW_COUNT_RECORDING
   if(!s_rawAdc)s_rawAdc=new(std::nothrow) RawAdcRecordingStats;
   if(!s_rawAdc){delete[] primaryColumns;return false;}
   *s_rawAdc={};
@@ -1655,14 +1666,14 @@ static bool beginBdqV2_(const BdqLogSessionInfo& info) {
   }
   s_bdqV2AllocatedPrimary.store(primaryQueueCapacity *
       s_bdqV2PrimarySchema.recordSizeBytes());
-#if defined(BODAQS_BACKLOG_BALANCE_BENCH) && BODAQS_BACKLOG_BALANCE_BENCH
+#if defined(BODAQS_ADAPTIVE_DRAIN_OWNER) && BODAQS_ADAPTIVE_DRAIN_OWNER
   s_balancePrimaryCapacity.store(primaryQueueCapacity,std::memory_order_release);
 #endif
   s_qCap = primaryQueueCapacity;
   s_qMax = 0;
 
   s_bdqV2Descriptors[0] = s_bdqV2PrimarySchema.descriptor();
-#if BODAQS_ADC_RAW_RECORDING_BENCH
+#if BODAQS_RAW_COUNT_RECORDING
 #if BODAQS_PRODUCTION_RECORDING
   if (s_bdqV2PrimarySchema.recordSizeBytes() != RawAdcRecording::recordBytes(primaryColumnCount)) { delete[] primaryColumns; return false; }
   s_rawAdc->active = true; s_rawAdc->qualified = false;
@@ -2149,7 +2160,7 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
   document["primary_samples_dropped"] = endInfo.samplesDropped;
   document["primary_queue_capacity"] = endInfo.queueDepth;
   document["primary_queue_high_water"] = endInfo.queueMax;
-#if BODAQS_ADC_RAW_RECORDING_BENCH
+#if BODAQS_RAW_COUNT_RECORDING
   JsonObject rawAdc=document["raw_adc_recording"].to<JsonObject>();
   rawAdc["qualified"]=s_rawAdc->qualified;rawAdc["record_bytes"]=sizeof(RawAdcRecord);
   rawAdc["capacity"]=s_rawAdc->capacity;rawAdc["submitted"]=s_rawAdc->submitted;
@@ -2540,6 +2551,12 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
 // Start new log file
 static void startLog() {
   if (loggingActive) return;
+#if BODAQS_PRODUCTION_RECORDING
+  if (ConfigManager::get().logFormat != LogFormat::BodaqsMultiStreamBinary) {
+    setStatus_("Production recording requires BDQ v2");
+    return;
+  }
+#endif
   const uint32_t totalT0 = millis();
   const char* backendName = "SD_MMC";
 
@@ -3289,6 +3306,10 @@ static void recordCsvFormatFailure_(uint32_t sampleId, uint16_t nValues) {
 
 void StorageManager_logCsvDynamic(uint32_t sample_id, uint64_t ts_ms, const float* values, uint16_t nValues, bool mark)
 {
+#if BODAQS_PRODUCTION_RECORDING
+    (void)sample_id; (void)ts_ms; (void)values; (void)nValues; (void)mark;
+    ++s_rowsFormatFailed;
+#else
     if (!logIsOpen()) {
         STOR_LOGW("logCsvDynamic: file not open\n");
         return;
@@ -3403,6 +3424,7 @@ void StorageManager_logCsvDynamic(uint32_t sample_id, uint64_t ts_ms, const floa
     ++s_rowsWritten;
 
     // 4) No per-line flush here; periodic flush handled in StorageManager_loop()
+#endif
 }
 
 static void refreshValueColumnTypes_()
@@ -3668,7 +3690,13 @@ class LoggerStorageSink final : public RecordingStorageSink {
       STOR_LOGE("START refused: storage DMA reservation unavailable; retry after restart\n");
       return false;
     }
+#if BODAQS_STORAGE_PATH_PROBE
+#if defined(BODAQS_PACKED_STARTUP_DIAGNOSTICS) && BODAQS_PACKED_STARTUP_DIAGNOSTICS
     StoragePathProbe::begin(AcquisitionControl::startupDiagnostics().context);
+#else
+    StoragePathProbe::begin(0);
+#endif
+#endif
     ::startLog();
     if (!loggingActive) { StoragePathProbe::finish(false); RecordingStoragePath::finish(); }
     return loggingActive;
@@ -3701,7 +3729,7 @@ static void storageTaskFn_(void*) {
 }
 #endif
 
-#if defined(BODAQS_BACKLOG_BALANCE_BENCH) && BODAQS_BACKLOG_BALANCE_BENCH
+#if defined(BODAQS_ADAPTIVE_DRAIN_OWNER) && BODAQS_ADAPTIVE_DRAIN_OWNER
 size_t StorageManager_primaryPendingForBalance(){return s_bdqV2PrimaryQueue.size();}
 size_t StorageManager_primaryCapacityForBalance(){return s_balancePrimaryCapacity.load(std::memory_order_acquire);}
 #endif

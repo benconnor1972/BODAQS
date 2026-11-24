@@ -81,6 +81,10 @@ static void captureFlowLog(const char* tag,const char*,...) {if(!std::strcmp(tag
 #undef LOGW_TAG
 #define LOGW_TAG(tag,...) captureFlowLog(tag,__VA_ARGS__)
 #include "RemoteImuRecording.h"''')
+    if args.production_idle:
+        # These idle reconciliation scenarios return before recording admission.
+        # Make the boundary explicit: accidentally starting a recording fails.
+        fixture += "\nnamespace RecordingReadiness { bool selected(uint8_t) {assert(false);return false;} const Observation& session() {assert(false);static Observation unused;return unused;} }\n"
     fixture += (root / "test/remote_imu_lifecycle_runtime_fixture.cpp").read_text()
     protocol = root / "can-fd/common/protocol"
     sources = [*protocol.glob("bodaqs_control*.c"), protocol / "bodaqs_imu_disabled.c", protocol / "bodaqs_master_service.c", protocol / "bodaqs_master_protocol.c"]

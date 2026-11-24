@@ -1,4 +1,5 @@
 #pragma once
+#include "RecordingFeatures.h"
 #include <stdint.h>
 #include "ImuAdmission.h"
 #include "ImuFlowDiagnostics.h"
@@ -47,7 +48,7 @@ uint8_t startupSampleMask();
 #endif
 bool prepared();
 bool recording();
-#if defined(BODAQS_BACKLOG_BALANCE_BENCH) && BODAQS_BACKLOG_BALANCE_BENCH
+#if defined(BODAQS_ADAPTIVE_DRAIN_OWNER) && BODAQS_ADAPTIVE_DRAIN_OWNER
 // Acquisition owner only. Atomic queue indices; stream allocation survives owner retirement.
 void queuePressureForBalance(unsigned& samplePermille,unsigned& evidencePermille,bool& available);
 #endif

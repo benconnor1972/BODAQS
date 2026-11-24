@@ -1,8 +1,6 @@
 #pragma once
 #include <stdint.h>
-#ifndef BODAQS_BACKLOG_BALANCE_BENCH
-#define BODAQS_BACKLOG_BALANCE_BENCH 0
-#endif
+#include "RecordingFeatures.h"
 namespace BacklogBalance {
 struct Pressure {unsigned primary=0,samples=0,evidence=0;bool valid=false,running=false;};
 struct Decision {unsigned priority,calls,budgetUs,sleepTicks;};
@@ -16,8 +14,12 @@ public:
   return recovery?Decision{2,1,0,1}:Decision{3,8,6000,1};
  }
 };
-#if BODAQS_BACKLOG_BALANCE_BENCH
+#if BODAQS_ADAPTIVE_DRAIN_OWNER
+#if BODAQS_PRODUCTION_RECORDING
+inline void bootGate(){}
+#else
 void bootGate();
+#endif
 void runOwner(bool (*isActive)(),uint64_t (*context)(),void (*service)());
 #else
 inline void bootGate(){}

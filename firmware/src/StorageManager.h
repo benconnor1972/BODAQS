@@ -1,3 +1,4 @@
+#include "RecordingFeatures.h"
 #ifndef STORAGE_MANAGER_H
 #define STORAGE_MANAGER_H
 
@@ -35,7 +36,7 @@ bool StorageManager_enqueueSample(
     uint64_t hostMonotonicUs = 0,
     uint64_t markHostMonotonicUs = 0);
 bool StorageManager_usesIndependentStreams();
-#if BODAQS_ADC_RAW_RECORDING_BENCH
+#if BODAQS_RAW_COUNT_RECORDING
 bool StorageManager_enqueueRawAdc(const RawAdcRecord& record,bool mark,uint64_t markTime,uint64_t capturedUs);
 RawAdcRecordingStats StorageManager_rawAdcStats(); // Retired owners only.
 #endif
@@ -82,7 +83,7 @@ StorageRecordingAllocation StorageManager_recordingAllocation();
 
 // Nonblocking observations; pending includes startup, recording and finalization.
 bool StorageManager_recordingIoPending();
-#if defined(BODAQS_BACKLOG_BALANCE_BENCH) && BODAQS_BACKLOG_BALANCE_BENCH
+#if defined(BODAQS_ADAPTIVE_DRAIN_OWNER) && BODAQS_ADAPTIVE_DRAIN_OWNER
 // Hints only: static atomic indices and separately published capacity tolerate STOP/reset.
 size_t StorageManager_primaryPendingForBalance();
 size_t StorageManager_primaryCapacityForBalance();

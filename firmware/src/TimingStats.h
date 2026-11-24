@@ -1,4 +1,5 @@
 #pragma once
+#include "RecordingFeatures.h"
 
 #include <Arduino.h>
 #include <stdint.h>
@@ -42,7 +43,7 @@ struct ExternalAdcChannelTimingStats {
 };
 
 struct ExternalAdcTimingStats {
-#if BODAQS_ADC_BOUNDARY_BENCH
+#if BODAQS_VARIABLE_ADC_SCAN
   // One shared owner, reset after retirement with the session statistics.
   struct AppointmentWait {
     uint32_t episodes=0,armAttempts=0,armFailures=0,elapsedBeforeArm=0;
@@ -68,10 +69,10 @@ struct ExternalAdcTimingStats {
 #endif
 
   struct AdcStats {
-#if BODAQS_ADC_CONCENTRATED_SCAN_BENCH
+#if BODAQS_SCANNED_ADC_ACQUISITION
     bool concentratedScan=false;
     uint32_t scanStarts=0,scanMissedAppointments=0,scanMaximumLagTicks=0;
-#if BODAQS_ADC_BOUNDARY_BENCH
+#if BODAQS_VARIABLE_ADC_SCAN
     uint32_t scanRowPeriodUs=0,scanMaximumLagUs=0;
 #endif
     uint32_t scanReads=0,scanReadFailures=0,scanConfigFaults=0,scanWaitTimeouts=0;

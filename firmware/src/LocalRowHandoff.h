@@ -1,4 +1,5 @@
 #pragma once
+#include "RecordingFeatures.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "AdcConcentratedScan.h"
@@ -8,8 +9,8 @@
 // travel by value; a consumer never borrows producer-owned mutable cache memory.
 struct LocalAdcSnapshot {
   uint64_t capturedUs = 0;
-  static constexpr unsigned kPerAdc = BODAQS_ADC_BOUNDARY_BENCH ? 4 : 2;
-  static constexpr unsigned kChannels = BODAQS_ADC_DUAL_SCAN_BENCH ? 2*kPerAdc : kPerAdc;
+  static constexpr unsigned kPerAdc = BODAQS_VARIABLE_ADC_SCAN ? 4 : 2;
+  static constexpr unsigned kChannels = BODAQS_MULTI_ADC_SCAN ? 2*kPerAdc : kPerAdc;
   int32_t counts[kChannels] = {};
   uint32_t sequence[kChannels] = {};
   uint64_t acquiredUs[kChannels] = {};

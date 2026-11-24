@@ -1,3 +1,4 @@
+#include "RecordingFeatures.h"
 #include "CpuOccupancy.h"
 #include "AnalogInputManager.h"
 #include "SharedSpiBus.h"
@@ -22,7 +23,7 @@
 #if defined(ESP32)
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#if BODAQS_ADC_CONCENTRATED_SCAN_BENCH
+#if BODAQS_SCANNED_ADC_ACQUISITION
 #include "esp_heap_caps.h"
 #endif
 #endif
@@ -42,7 +43,7 @@ static_assert(BODAQS_ADC_TASK_PRIORITY > 0 && BODAQS_ADC_TASK_PRIORITY < configM
 #endif
 
 namespace {
-#if BODAQS_ADC_CONCENTRATED_SCAN_BENCH
+#if BODAQS_SCANNED_ADC_ACQUISITION
 static_assert(BODAQS_ADC_CONTINUOUS_LATEST, "Scan bench requires continuous baseline support");
 bool s_scanSession=false;
 #if BODAQS_ADC_COMBINED_CAPTURE
@@ -55,7 +56,7 @@ uint64_t s_scanRowAnchor=0; // Written once before release-valid; readers acquir
 std::atomic<bool> s_scanRowAnchorValid{false};
 #endif
 // Prepared by startup before worker publication; immutable until retirement.
-uint8_t s_scanRegisters[2][BODAQS_ADC_BOUNDARY_BENCH?4:2][4]={};
+uint8_t s_scanRegisters[2][BODAQS_VARIABLE_ADC_SCAN?4:2][4]={};
 #if BODAQS_PRODUCTION_RECORDING
 struct RecordingScanState {
   LocalAnalogRecordingPlan plan;
@@ -66,7 +67,7 @@ RecordingScanState* s_recordingScan = nullptr; // Persistent, bounded START rese
 #endif
 #if defined(ESP32)
 TaskHandle_t s_scanTask=nullptr; // Persistent, parked until priming completes.
-#if BODAQS_ADC_BOUNDARY_BENCH
+#if BODAQS_VARIABLE_ADC_SCAN
 esp_timer_handle_t s_scanAppointmentTimer=nullptr;
 void scanAppointmentWake_(void*) {if(s_scanTask)xTaskNotifyGive(s_scanTask);}
 #endif
@@ -195,10 +196,10 @@ SPISettings spiSettings_(const AdsDevice& dev) {
     ? s_board->spi.hz_default
     : 1000000UL;
   uint32_t hz = dev.cfg.spi_hz ? dev.cfg.spi_hz : boardDefaultHz;
-#if BODAQS_ADC_CONCENTRATED_SCAN_BENCH
+#if BODAQS_SCANNED_ADC_ACQUISITION
   // Exact scan-session override, including full startup priming and POWERDOWN.
   // Split continuous acquisition and all non-scan calls retain board settings.
-  if(s_scanSession && (&dev==&s_ads[0] || (BODAQS_ADC_DUAL_SCAN_BENCH && &dev==&s_ads[1])))hz=BODAQS_ADC_SCAN_SPI_HZ;
+  if(s_scanSession && (&dev==&s_ads[0] || (BODAQS_MULTI_ADC_SCAN && &dev==&s_ads[1])))hz=BODAQS_ADC_SCAN_SPI_HZ;
 #endif
   return SPISettings(hz, MSBFIRST, SPI_MODE1);
 }
@@ -292,7 +293,7 @@ uint32_t adsMaxSps_(const AdsDevice& dev) {
 
 uint32_t usableLoggerHzForAdc_(const AdsDevice& dev, uint8_t activeChannels) {
   if (activeChannels == 0) return 0;
-  #if BODAQS_ADC_BOUNDARY_BENCH
+  #if BODAQS_VARIABLE_ADC_SCAN
   if(AdcConcentratedScan::boundaryCase(activeChannels,s_requestedHz) && adsMaxSps_(dev)>=2000)return s_requestedHz;
 #endif
   const uint32_t usableSps = (adsMaxSps_(dev) * kExternalAdcUtilizationPermille) / 1000UL;
@@ -304,7 +305,7 @@ uint32_t targetDataRateSps_(uint16_t loggerHz, uint8_t activeChannels) {
   (void)loggerHz; (void)activeChannels;
   return 2000;
 #endif
-  #if BODAQS_ADC_BOUNDARY_BENCH
+  #if BODAQS_VARIABLE_ADC_SCAN
   if(AdcConcentratedScan::boundaryCase(activeChannels,loggerHz))return 2000;
 #endif
   const uint32_t requiredSps = (uint32_t)loggerHz * (uint32_t)activeChannels;
@@ -672,7 +673,7 @@ bool acquireAndPublishChannel_(uint8_t adcIndex, uint8_t channel) {
   return ok;
 }
 
-#if BODAQS_ADC_CONCENTRATED_SCAN_BENCH
+#if BODAQS_SCANNED_ADC_ACQUISITION
 bool concentratedScope_() {
 #if BODAQS_PRODUCTION_RECORDING
   if (!s_recordingScan || s_recordingScan->plan.rateHz() != s_effectiveHz) return false;
@@ -684,7 +685,7 @@ bool concentratedScope_() {
   return true;
 #else
   const auto& a=s_ads[0];const auto& b=s_ads[1];
-#if BODAQS_ADC_BOUNDARY_BENCH
+#if BODAQS_VARIABLE_ADC_SCAN
   if(!AdcConcentratedScan::boundaryCase(a.activeChannels,s_effectiveHz) || b.activeChannels!=a.activeChannels)return false;
   for(unsigned adc=0;adc<2;++adc) {
     const auto& dev=s_ads[adc];
@@ -693,7 +694,7 @@ bool concentratedScope_() {
   }
   return true;
 #else
-  const bool second= !b.activeChannels || (BODAQS_ADC_DUAL_SCAN_BENCH &&
+  const bool second= !b.activeChannels || (BODAQS_MULTI_ADC_SCAN &&
       b.present && b.initialized && b.activeChannels==2 && b.channelUsed[0] && b.channelUsed[1] &&
       b.dataRateSps==2000 && b.cfg.drdy_pin>=0);
   return a.present && a.initialized && a.activeChannels==2 && a.channelUsed[0] && a.channelUsed[1] &&
@@ -706,7 +707,7 @@ unsigned scanAdcCount_() {
 #if BODAQS_PRODUCTION_RECORDING
   return 2;
 #else
-  return BODAQS_ADC_DUAL_SCAN_BENCH && s_ads[1].activeChannels ? 2u : 1u;
+  return BODAQS_MULTI_ADC_SCAN && s_ads[1].activeChannels ? 2u : 1u;
 #endif
 }
 unsigned scanChannelCount_() {
@@ -714,7 +715,7 @@ unsigned scanChannelCount_() {
   return s_recordingScan ? (s_recordingScan->plan.channels(0) > s_recordingScan->plan.channels(1)
       ? s_recordingScan->plan.channels(0) : s_recordingScan->plan.channels(1)) : 0;
 #else
-  return BODAQS_ADC_BOUNDARY_BENCH?s_ads[0].activeChannels:2u;
+  return BODAQS_VARIABLE_ADC_SCAN?s_ads[0].activeChannels:2u;
 #endif
 }
 void scanMemory_(const char* stage) {
@@ -806,7 +807,7 @@ bool concentratedExchange_(uint8_t channel,uint8_t adc=0) {
   TimingStats_record(stats.channel[channel].totalUs,micros()-began+waited);return true;
 }
 #endif
-#if BODAQS_ADC_BOUNDARY_BENCH
+#if BODAQS_VARIABLE_ADC_SCAN
 void waitScanAppointment_(uint64_t deadlineUs) {
   auto& stats=s_timingStats.scanAppointmentWait;
   const uint64_t began=static_cast<uint64_t>(esp_timer_get_time());
@@ -912,7 +913,7 @@ void concentratedTask_(void*) {
       dev.asyncRunning=true;s_timingStats.adc[adc].asyncRunning=true;
     }
     uint32_t next=xTaskGetTickCount();
-#if BODAQS_ADC_BOUNDARY_BENCH
+#if BODAQS_VARIABLE_ADC_SCAN
     const uint32_t rowUs=Rates::periodUs(s_effectiveHz);
     const unsigned channelCount=scanChannelCount_();
     const bool tickCadence=AdcConcentratedScan::usesTickCadence(rowUs,channelCount);
@@ -923,7 +924,7 @@ void concentratedTask_(void*) {
     next+=configTICK_RATE_HZ/1000;bool seeded=false;uint8_t pending=0;
 #endif
     while(s_scanRun.load() && !s_scanFault.load()) {
-#if BODAQS_ADC_BOUNDARY_BENCH
+#if BODAQS_VARIABLE_ADC_SCAN
       uint32_t missed=0,lagUs=0;
       if(!tickCadence) {
         const auto a=AdcConcentratedScan::claimMicros(static_cast<uint64_t>(esp_timer_get_time()),nextUs,rowUs,channelCount,cadenceRemainder);
@@ -943,7 +944,7 @@ void concentratedTask_(void*) {
 #endif
       for(unsigned adc=0;adc<adcCount;++adc) {
         auto& stats=s_timingStats.adc[adc];
-#if BODAQS_ADC_BOUNDARY_BENCH
+#if BODAQS_VARIABLE_ADC_SCAN
         stats.scanMissedAppointments+=missed;
         if(lagUs>stats.scanMaximumLagUs)stats.scanMaximumLagUs=lagUs;
         if(lagUs/1000u>stats.scanMaximumLagTicks)stats.scanMaximumLagTicks=lagUs/1000u;
@@ -994,7 +995,7 @@ void concentratedTask_(void*) {
       const uint32_t ownerElapsed=micros()-began;
       for(unsigned adc=0;adc<adcCount;++adc)TimingStats_record(s_timingStats.adc[adc].asyncLoopUs,ownerElapsed);
     }
-#if BODAQS_ADC_BOUNDARY_BENCH
+#if BODAQS_VARIABLE_ADC_SCAN
     (void)esp_timer_stop(s_scanAppointmentTimer);
 #endif
     for(unsigned adc=0;adc<adcCount;++adc) {
@@ -1021,7 +1022,7 @@ bool concentratedStart_() {
   for(unsigned adc=0;adc<adcCount;++adc) {
     if (!s_ads[adc].activeChannels) continue;
     s_timingStats.adc[adc].concentratedScan=true;
-#if BODAQS_ADC_BOUNDARY_BENCH
+#if BODAQS_VARIABLE_ADC_SCAN
     s_timingStats.adc[adc].scanRowPeriodUs=Rates::periodUs(s_effectiveHz);
 #endif
     for(uint8_t channel=0;channel<4;++channel)if(s_ads[adc].channelUsed[channel])adsChannelRegisters_(s_ads[adc],channel,s_scanRegisters[adc][channel]);
@@ -1045,7 +1046,7 @@ bool concentratedStart_() {
       s_recordingScan->plan.mask(0), s_recordingScan->plan.mask(1),
       s_recordingScan->plan.columns(), s_effectiveHz);
   return true;
-#elif BODAQS_ADC_BOUNDARY_BENCH
+#elif BODAQS_VARIABLE_ADC_SCAN
   AIN_LOGI("bounded scan: adcs=%u channels=%u rate_hz=%u configured_sps=2000 row_period_us=%lu appointment=%lu/%u us scheduler=%s spi_hz=%u full_prime=%u verify_regs=4\n",
       adcCount,scanChannelCount_(),s_effectiveHz,(unsigned long)Rates::periodUs(s_effectiveHz),
       (unsigned long)Rates::periodUs(s_effectiveHz),scanChannelCount_(),
@@ -1113,10 +1114,10 @@ bool continuousPoll_(uint8_t adc) {
 }
 void continuousStart_() {
   s_continuousSession=true;s_continuousHealthy=true;
-#if BODAQS_ADC_CONCENTRATED_SCAN_BENCH
+#if BODAQS_SCANNED_ADC_ACQUISITION
   s_scanSession=false;s_scanFault.store(false);
-  if(BODAQS_PRODUCTION_RECORDING || (BODAQS_ADC_BOUNDARY_BENCH && anyActiveExternalAdc_()) ||
-     (s_ads[0].activeChannels==2 && (!s_ads[1].activeChannels || BODAQS_ADC_DUAL_SCAN_BENCH))) {
+  if(BODAQS_PRODUCTION_RECORDING || (BODAQS_VARIABLE_ADC_SCAN && anyActiveExternalAdc_()) ||
+     (s_ads[0].activeChannels==2 && (!s_ads[1].activeChannels || BODAQS_MULTI_ADC_SCAN))) {
     s_continuousHealthy=concentratedStart_();return;
   }
 #endif
@@ -1324,7 +1325,7 @@ void useRowSnapshot(const LocalAdcSnapshot* snapshot) {
   s_rowSnapshot = snapshot;
   portEXIT_CRITICAL(&s_cacheMux);
 }
-#if BODAQS_ADC_RAW_RECORDING_BENCH
+#if BODAQS_RAW_COUNT_RECORDING
 bool captureRawPair(RawAdcRecord& record,uint64_t& capturedUs) {
 #if BODAQS_PRODUCTION_RECORDING
   if (!s_recordingScan || !s_scanSession || !s_scanRun.load() || s_scanFault.load() ||
@@ -1382,14 +1383,14 @@ bool captureRawPair(RawAdcRecord& record,uint64_t& capturedUs) {
 #endif
 #endif
 
-#if BODAQS_ADC_CONCENTRATED_SCAN_BENCH
+#if BODAQS_SCANNED_ADC_ACQUISITION
 bool reserveScanTask() {
   if(s_scanSession || s_timingWorkers.load(std::memory_order_acquire))return false;
 #if !BODAQS_PRODUCTION_RECORDING
   if(!concentratedScope_())return true;
 #endif
 #if defined(ESP32)
-  #if BODAQS_ADC_BOUNDARY_BENCH
+  #if BODAQS_VARIABLE_ADC_SCAN
   if(!s_scanAppointmentTimer) {
     esp_timer_create_args_t args={};args.callback=scanAppointmentWake_;args.name="adc_appointment";
     if(esp_timer_create(&args,&s_scanAppointmentTimer)!=ESP_OK){AIN_LOGE("scan reservation failed stage=timer_create\n");return false;}
@@ -1596,7 +1597,7 @@ bool readSnapshotCounts(uint8_t ain, int32_t& outCounts, const LocalAdcSnapshot&
 #endif
 
 uint16_t configureFromConfig(const LoggerConfig& cfg, uint16_t requestedHz) {
-#if BODAQS_ADC_CONCENTRATED_SCAN_BENCH
+#if BODAQS_SCANNED_ADC_ACQUISITION
   // A timed-out STOP must not let a new configuration/cache reset race the
   // old owner. Preserve its statistics and require retirement before retry.
   if(s_scanSession || s_timingWorkers.load(std::memory_order_acquire)) {
@@ -1722,7 +1723,7 @@ const ExternalAdcTimingStats* stoppedTimingStats() {
 
 #if BODAQS_ADC_CONTINUOUS_LATEST
 bool continuousHealthy(){return s_continuousSession && s_continuousHealthy
-#if BODAQS_ADC_CONCENTRATED_SCAN_BENCH
+#if BODAQS_SCANNED_ADC_ACQUISITION
   && !s_scanFault.load()
 #endif
   ;}
@@ -1740,7 +1741,7 @@ bool scanRowDeadline(int64_t nowUs,int64_t& deadline) {
 }
 #endif
 void onLoggingStart() {
-#if BODAQS_ADC_CONCENTRATED_SCAN_BENCH
+#if BODAQS_SCANNED_ADC_ACQUISITION
   if(s_scanSession || s_timingWorkers.load(std::memory_order_acquire)) {
     s_scanFault.store(true);s_continuousHealthy=false;return;
   }
@@ -1813,7 +1814,7 @@ void onLoggingStop() {
 #if BODAQS_ADC_SCAN_ROW_PHASE
   s_scanRowAnchorValid.store(false,std::memory_order_release);
 #endif
-#if BODAQS_ADC_CONCENTRATED_SCAN_BENCH
+#if BODAQS_SCANNED_ADC_ACQUISITION
   if(s_scanSession){concentratedStop_();return;}
 #endif
 #if BODAQS_ADC_CONTINUOUS_LATEST
@@ -1859,7 +1860,7 @@ int64_t beginRowPacing() {
 void beginSample() {
 #if BODAQS_ADC_CONTINUOUS_LATEST
   if(s_continuousSession) {
-#if BODAQS_ADC_CONCENTRATED_SCAN_BENCH
+#if BODAQS_SCANNED_ADC_ACQUISITION
     if(s_scanSession){s_inSample=true;return;}
 #endif
     for(unsigned adc=0;adc<board::BOARD_MAX_EXTERNAL_ADCS && s_continuousHealthy;++adc)(void)continuousPoll_(adc);

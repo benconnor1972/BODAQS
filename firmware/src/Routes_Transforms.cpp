@@ -1,4 +1,6 @@
+#include "RecordingFeatures.h"
 #include "Routes_Transforms.h"
+#if !BODAQS_PRODUCTION_RECORDING
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include "SD_MMC.h"   // for SD_MMC backend
@@ -221,3 +223,7 @@ S->on("/api/transforms/list", HTTP_GET, [S](){
              ok ? F("{\"ok\":true}") : F("{\"ok\":false}"));
   });
 }
+
+#else
+void registerTransformRoutes(WebServer&) {}
+#endif

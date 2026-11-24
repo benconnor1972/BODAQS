@@ -1,4 +1,5 @@
 #pragma once
+#include "RecordingFeatures.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "Calibration.h"
@@ -385,7 +386,11 @@ public:
 protected:
   // Derived classes call this right before publishing/logging (normalized space ok)
   float applyTransform(float x) const {
+#if BODAQS_PRODUCTION_RECORDING
+    return x; // Recorded calibration/engineering previews retain their own processing.
+#else
     return m_transform ? m_transform->apply(x) : x;
+#endif
   }
 
   // Hook points for derived classes

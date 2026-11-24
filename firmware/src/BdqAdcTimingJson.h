@@ -1,4 +1,5 @@
 #pragma once
+#include "RecordingFeatures.h"
 
 #include <ArduinoJson.h>
 #include "TimingStats.h"
@@ -35,12 +36,12 @@ inline void append(JsonObject out, const ExternalAdcTimingStats& stats) {
     const auto& a=stats.adc[i];
     if(!a.present && !a.activeChannels && !a.scanUs.count) continue;
     JsonObject value=out[adcKeys[i]].to<JsonObject>();
-#if BODAQS_ADC_CONCENTRATED_SCAN_BENCH
+#if BODAQS_SCANNED_ADC_ACQUISITION
     value["concentrated_scan"]=a.concentratedScan;
     if(a.concentratedScan) {
       value["scan_starts"]=a.scanStarts;value["scan_missed_appointments"]=a.scanMissedAppointments;
       value["scan_maximum_lag_ticks"]=a.scanMaximumLagTicks;
-#if BODAQS_ADC_BOUNDARY_BENCH
+#if BODAQS_VARIABLE_ADC_SCAN
       value["scan_row_period_us"]=a.scanRowPeriodUs;
       value["scan_appointment_numerator_us"]=a.scanRowPeriodUs;
       value["scan_appointment_denominator"]=a.activeChannels;
@@ -63,7 +64,7 @@ inline void append(JsonObject out, const ExternalAdcTimingStats& stats) {
       value["scan_config_faults"]=a.scanConfigFaults;value["scan_wait_timeouts"]=a.scanWaitTimeouts;
       value["scan_spi_hz"]=BODAQS_ADC_SCAN_SPI_HZ;
       value["scan_setup_policy"]=BODAQS_ADC_SCAN_MUX_ONLY?"reg0_after_full_prime":"full_wreg_each_conversion";
-      value["scan_full_prime_target"]=BODAQS_ADC_BOUNDARY_BENCH?a.activeChannels:2;value["scan_verified_registers"]=4;
+      value["scan_full_prime_target"]=BODAQS_VARIABLE_ADC_SCAN?a.activeChannels:2;value["scan_verified_registers"]=4;
 #if BODAQS_ADC_SCAN_PIPELINE
       #if BODAQS_ADC_SCAN_ROW_PHASE
       value["scan_row_phase_offset_us"]=250;
@@ -79,9 +80,9 @@ inline void append(JsonObject out, const ExternalAdcTimingStats& stats) {
       value["scan_unpublished_attempts"]=a.scanStarts-a.scanReads;
       value["scan_read_phase_scope"]="priming reads plus compound verified-read/next-start calls";
 #endif
-      value["scan_scope"]=BODAQS_ADC_BOUNDARY_BENCH
+      value["scan_scope"]=BODAQS_VARIABLE_ADC_SCAN
           ?"both ADCs contiguous equal1..4 channels; one owner, full-image prime per channel, verified single-shot pipeline; fractional microsecond appointments, no catch-up; shared wall intervals overlap"
-          :BODAQS_ADC_DUAL_SCAN_BENCH
+          :BODAQS_MULTI_ADC_SCAN
           ?"each active ADC channels0/1; one shared owner, verified single-shot pipeline, bounded1ms appointments; async_loop_us repeats shared owner wall time, not additive CPU time"
           :"ADC0 channels0/1; single-shot WREG+START, DRDY notification wait, register-verified read; bounded 1ms tick appointments; no catch-up";
     }
@@ -99,7 +100,7 @@ inline void append(JsonObject out, const ExternalAdcTimingStats& stats) {
     value["continuous_reads"]=a.continuousReads;value["continuous_config_faults"]=a.continuousConfigFaults;
     value["continuous_read_failures"]=a.continuousReadFailures;value["continuous_stalls"]=a.continuousStalls;
     value["continuous_stop_failures"]=a.continuousStopFailures;
-#if BODAQS_ADC_CONCENTRATED_SCAN_BENCH
+#if BODAQS_SCANNED_ADC_ACQUISITION
     if(a.concentratedScan) {
       value["conversion_mode"]="paced_verified_single_shot_scan";
       value["total_us_scope"]="setup plus conversion wait plus register-verified data read; publication is after validation";

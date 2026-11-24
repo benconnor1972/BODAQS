@@ -1,3 +1,4 @@
+#include "RecordingFeatures.h"
 #include "CpuOccupancy.h"
 #include <Arduino.h>
 #include "LoggingManager.h"
@@ -32,7 +33,7 @@
 #include "DebugLog.h"
 #include "LoggerLimits.h"
 #include "FirmwareInfo.h"
-#if BODAQS_ADC_RAW_RECORDING_BENCH && (!BODAQS_ADC_ROW_HANDOFF || !BODAQS_ADC_COMBINED_CAPTURE || !BODAQS_ADC_INLINE_ROW || !BODAQS_ADC_DUAL_SCAN_BENCH || !BODAQS_ADC_BOUNDARY_BENCH)
+#if BODAQS_RAW_COUNT_RECORDING && (!BODAQS_ADC_ROW_HANDOFF || !BODAQS_ADC_COMBINED_CAPTURE || !BODAQS_ADC_INLINE_ROW || !BODAQS_MULTI_ADC_SCAN || !BODAQS_VARIABLE_ADC_SCAN)
 #error "Raw ADC trial requires the verified dual-scan inline owner"
 #endif
 #include <atomic>
@@ -218,7 +219,7 @@ static inline bool sampleOnce_ (bool allowStopped, const LocalRowFrame* frame);
 static bool captureRow_() {
   if (!phaseIs_(LifecycleState::Recording)) return false;
   const uint32_t began = micros();
-#if BODAQS_ADC_RAW_RECORDING_BENCH
+#if BODAQS_RAW_COUNT_RECORDING
   RawAdcRecord record;record.sequence=static_cast<uint32_t>(s_sampleCount++);
   uint64_t capturedUs=0;
   const uint32_t captureBegin=micros();
@@ -955,7 +956,7 @@ bool LoggingManager::start() {
     return false;
   }
 #endif
-#if BODAQS_ADC_RAW_RECORDING_BENCH
+#if BODAQS_RAW_COUNT_RECORDING
   if(s_cfg->logFormat!=LogFormat::BodaqsMultiStreamBinary) {
     UI::toast("Select BDQ v2 in settings",1800,1);
     LOGGING_LOGW("start refused: raw ADC trial requires BDQ v2\n");
@@ -1075,7 +1076,7 @@ bool LoggingManager::start() {
   const uint32_t wifiOffMs = millis() - wifiOffT0;
   TRACE("stop webserver/wifi? (if any)");
 
-#if BODAQS_ADC_CONCENTRATED_SCAN_BENCH
+#if BODAQS_SCANNED_ADC_ACQUISITION
   // Reserve the parked owner while internal memory is still unfragmented.
   // SD/session/remote buffers must not consume its stack first. This does no
   // conversion work, and the normal split continuous control allocates nothing.
@@ -1231,7 +1232,7 @@ void LoggingManager::completeStorageStart() {
     stop(StopReason::StartFailure,"recording_not_admitted");return;
   }
 #endif
-#if BODAQS_ADC_RAW_RECORDING_BENCH
+#if BODAQS_RAW_COUNT_RECORDING
   const auto raw=StorageManager_rawAdcStats();
   Serial.printf("{\"schema\":\"bodaqs.raw-adc.v1\",\"type\":\"selected\",\"recipe\":\"%s\",\"qualified\":%s,\"capacity\":%lu,\"record_bytes\":%u}\n",
     FirmwareInfo::buildRecipe(),raw.qualified?"true":"false",(unsigned long)raw.capacity,
@@ -1395,6 +1396,7 @@ bool retireLocalAcquisition_() {
     if (!drained) return false;
   }
   #endif
+#if !BODAQS_PRODUCTION_RECORDING
   Serial.printf("{\"schema\":\"bodaqs.local-row-handoff.v1\",\"captured\":%lu,\"assembled\":%lu,\"enqueued\":%lu,\"enqueue_failed\":%lu,\"queue_dropped\":%lu,\"marks_dropped\":%lu,\"queue_peak\":%lu,\"capacity\":%u,\"capture_max_us\":%lu,\"assembly_delay_max_us\":%lu,\"assembly_delay_total_us\":%llu}\n",
       (unsigned long)s_rowHandoff->captured,(unsigned long)s_rowHandoff->assembled,(unsigned long)s_rowHandoff->enqueued,
       (unsigned long)s_rowHandoff->enqueueFailed,(unsigned long)s_rowHandoff->queueDrops,
@@ -1406,6 +1408,7 @@ bool retireLocalAcquisition_() {
 #if BODAQS_ADC_COMBINED_CAPTURE
   if(AnalogInputManager::rowHandoffActive())Serial.printf("{\"schema\":\"bodaqs.combined-row-capture.v1\",\"trigger\":\"verified_pair\",\"nominal_interval_us\":%lu,\"sampler_task_exists\":%s,\"missed_row_slots\":%lu}\n",
       (unsigned long)s_intervalUs,s_sampleTask ? "true" : "false",(unsigned long)s_missedSampleSlots);
+#endif
 #endif
 #endif
   AnalogInputManager::onLoggingStop();
@@ -1508,7 +1511,7 @@ void LoggingManager::stop(StopReason reason, const char* triggerEvent) {
 #if BODAQS_TIMING_INSTRUMENTATION && BODAQS_ADC_ROW_HANDOFF
 static void printRetiredRowCosts_() {
   const auto stats=LoggingManager::runtimeStats();
-#if BODAQS_ADC_RAW_RECORDING_BENCH
+#if BODAQS_RAW_COUNT_RECORDING
   const auto raw=StorageManager_rawAdcStats();
   Serial.printf("{\"schema\":\"bodaqs.raw-adc.v1\",\"type\":\"retired\",\"recipe\":\"%s\",\"qualified\":%s,\"capacity\":%lu,\"submitted\":%lu,\"enqueued\":%lu,\"encoded\":%lu,\"rejected\":%lu,\"generic_attempts\":%lu}\n",
     FirmwareInfo::buildRecipe(),raw.qualified?"true":"false",(unsigned long)raw.capacity,
@@ -1521,7 +1524,7 @@ static void printRetiredRowCosts_() {
   };
   Serial.printf("{\"schema\":\"bodaqs.row-cost.v1\",\"type\":\"retired\",\"recipe\":\"%s\",\"scope\":\"nested_wall_time_not_exclusive_cpu\",\"sampling_plan\":%s,\"raw_acquisition\":%s,\"rows\":%lu,\"sample_once_us\":",
     FirmwareInfo::buildRecipe(),SensorManager::recordingSamplingPlanReady()?"true":"false",
-    BODAQS_ADC_RAW_RECORDING_BENCH?"true":"false",(unsigned long)stats.samplerWakeups);
+    BODAQS_RAW_COUNT_RECORDING?"true":"false",(unsigned long)stats.samplerWakeups);
   print(stats.sampleOnceUs);Serial.print(",\"sensor_sample_us\":");print(stats.sensorSampleUs);
   Serial.print(",\"enqueue_us\":");print(stats.enqueueUs);Serial.print(",\"sensors\":[");
   bool comma=false;

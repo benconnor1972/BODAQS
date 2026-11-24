@@ -1,4 +1,5 @@
 #pragma once
+#include "RecordingFeatures.h"
 
 #include <Arduino.h>
 #include <stdint.h>
@@ -16,7 +17,7 @@
 #if BODAQS_ADC_COMBINED_CAPTURE && !BODAQS_ADC_ROW_HANDOFF
 #error "Combined capture requires the immutable row handoff"
 #endif
-#if BODAQS_ADC_ROW_HANDOFF && (!BODAQS_ADC_CONCENTRATED_SCAN_BENCH || !BODAQS_ADC_SCAN_PIPELINE)
+#if BODAQS_ADC_ROW_HANDOFF && (!BODAQS_SCANNED_ADC_ACQUISITION || !BODAQS_ADC_SCAN_PIPELINE)
 #error "Row handoff requires the verified concentrated pipeline bench"
 #endif
 
@@ -64,7 +65,7 @@ namespace AnalogInputManager {
 #if BODAQS_ADC_ROW_HANDOFF
   bool rowHandoffActive();
   bool captureRowSnapshot(LocalAdcSnapshot& snapshot);
-#if BODAQS_ADC_RAW_RECORDING_BENCH
+#if BODAQS_RAW_COUNT_RECORDING
   // ADC owner only: configured count fields, with no engineering transformations.
   bool captureRawPair(RawAdcRecord& record,uint64_t& capturedUs);
 #endif
@@ -80,7 +81,7 @@ namespace AnalogInputManager {
   // Pending until the first validated pipeline publication; no hardware access.
   bool scanRowDeadline(int64_t nowUs,int64_t& deadline);
 #endif
-#if BODAQS_ADC_CONCENTRATED_SCAN_BENCH
+#if BODAQS_SCANNED_ADC_ACQUISITION
   // Idle startup only, after configureFromConfig and Wi-Fi shutdown, before
   // recording buffers/SD I/O. No-op outside the explicitly selected bench scope.
   // Retains one parked worker across recordings; never starts ADC acquisition.

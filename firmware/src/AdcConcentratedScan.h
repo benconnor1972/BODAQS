@@ -1,4 +1,5 @@
 #pragma once
+#include "RecordingFeatures.h"
 #include <stdint.h>
 #ifndef BODAQS_ADC_BOUNDARY_BENCH
 #define BODAQS_ADC_BOUNDARY_BENCH 0
@@ -43,7 +44,7 @@
 #ifndef BODAQS_ADC_SCAN_SPI_HZ
 #define BODAQS_ADC_SCAN_SPI_HZ 1000000
 #endif
-#if BODAQS_ADC_SCAN_PIPELINE && (!BODAQS_ADC_SCAN_MUX_ONLY || !BODAQS_ADC_CONCENTRATED_SCAN_BENCH)
+#if BODAQS_ADC_SCAN_PIPELINE && (!BODAQS_ADC_SCAN_MUX_ONLY || !BODAQS_SCANNED_ADC_ACQUISITION)
 #error "Pipeline requires concentrated register0-only bench"
 #endif
 #if BODAQS_ADC_SCAN_MUX_ONLY != 0 && BODAQS_ADC_SCAN_MUX_ONLY != 1
@@ -52,7 +53,7 @@
 #if BODAQS_ADC_SCAN_SPI_HZ != 1000000 && BODAQS_ADC_SCAN_SPI_HZ != 2000000
 #error "Selected scan SPI trial supports1MHz or2MHz"
 #endif
-#if !BODAQS_ADC_CONCENTRATED_SCAN_BENCH && (BODAQS_ADC_SCAN_MUX_ONLY || BODAQS_ADC_SCAN_SPI_HZ != 1000000)
+#if !BODAQS_SCANNED_ADC_ACQUISITION && (BODAQS_ADC_SCAN_MUX_ONLY || BODAQS_ADC_SCAN_SPI_HZ != 1000000)
 #error "Scan optimizations require the explicit concentrated bench"
 #endif
 
@@ -73,7 +74,7 @@
 #endif
 namespace AdcConcentratedScan {
 constexpr bool usesTickCadence(uint32_t rowUs,unsigned channels) {
-  return !BODAQS_ADC_FORCE_TIMER_BENCH && rowUs==1000u*channels;
+  return !BODAQS_PRODUCTION_RECORDING && !BODAQS_ADC_FORCE_TIMER_BENCH && rowUs==1000u*channels;
 }
 // Diagnostic operating points, per ADC. Both devices use the same contiguous
 // channel mask and one shared row rate. This is not a production admission rule.

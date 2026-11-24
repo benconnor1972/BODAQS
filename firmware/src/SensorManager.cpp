@@ -1,3 +1,4 @@
+#include "RecordingFeatures.h"
 #include "SensorManager.h"
 #include "RecordingReadiness.h"
 #include "CanMasterManager.h"
@@ -1022,7 +1023,7 @@ bool onLoggingStart(char* error, size_t errorCapacity) {
       if (error && errorCapacity) error[0] = '\0';
     }
   }
-#if BODAQS_ADC_ROW_HANDOFF && !BODAQS_ADC_RAW_RECORDING_BENCH
+#if BODAQS_ADC_ROW_HANDOFF && !BODAQS_RAW_COUNT_RECORDING
   prepareSamplingPlan_();
 #endif
 #if BODAQS_PRODUCTION_RECORDING
@@ -1151,7 +1152,7 @@ bool setMuted(uint8_t index, bool muted) {
 #if BODAQS_PRODUCTION_RECORDING
   if(!ConfigManager::configurationMutable()) return false;
 #endif
-#if BODAQS_ADC_RAW_RECORDING_BENCH
+#if BODAQS_RAW_COUNT_RECORDING
   // This diagnostic records a frozen two-column raw layout. Reject mutation
   // before any saved/default/overlay state changes, including local mute.
   if(LoggingManager::configurationLocked())return false;

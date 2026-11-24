@@ -1,4 +1,5 @@
 #pragma once
+#include "RecordingFeatures.h"
 #include "BdqV2Catalog.h"
 #include "DynamicSpscQueue.h"
 
@@ -44,7 +45,7 @@ public:
   // Source line in this build's RemoteImuStream.cpp; diagnostic, not a wire reason.
   uint16_t failureSite() const { return failureSite_.load(std::memory_order_acquire); }
   bool empty() const { return !holding_ && samples_.empty() && packets_.empty() && evidence_.empty(); }
-#if defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS
+#if BODAQS_ADAPTIVE_DRAIN_OWNER || (defined(BODAQS_IMU_FLOW_DIAGNOSTICS) && BODAQS_IMU_FLOW_DIAGNOSTICS)
   struct QueueState {size_t samples,evidence,sampleCapacity,evidenceCapacity;uint32_t packetsAccepted;uint64_t samplesAccepted;};
   // Producer only (or after retirement): acceptance counts are producer-owned.
   // Queue indices are atomic; allocations/capacities stay fixed while owned.

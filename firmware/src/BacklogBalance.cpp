@@ -1,5 +1,6 @@
+#include "RecordingFeatures.h"
 #include "BacklogBalance.h"
-#if BODAQS_BACKLOG_BALANCE_BENCH
+#if BODAQS_ADAPTIVE_DRAIN_OWNER
 #include <Arduino.h>
 #include <cstring>
 #include "FirmwareInfo.h"
@@ -33,11 +34,16 @@ struct Counters {
   if(q.samples>samplePeak)samplePeak=q.samples;
   if(q.evidence>evidencePeak)evidencePeak=q.evidence;
  }
- void print(){Serial.printf("{\"schema\":\"bodaqs.backlog-balance.v1\",\"type\":\"retired\",\"context\":\"%llu\",\"adaptive\":%s,\"services\":%lu,\"bursts\":%lu,\"boosted_bursts\":%lu,\"recovery_bursts\":%lu,\"priority_switches\":%lu,\"primary_peak_permille\":%u,\"sample_peak_permille\":%u,\"evidence_peak_permille\":%u}\n",
+ void print(){
+#if !BODAQS_PRODUCTION_RECORDING
+ Serial.printf("{\"schema\":\"bodaqs.backlog-balance.v1\",\"type\":\"retired\",\"context\":\"%llu\",\"adaptive\":%s,\"services\":%lu,\"bursts\":%lu,\"boosted_bursts\":%lu,\"recovery_bursts\":%lu,\"priority_switches\":%lu,\"primary_peak_permille\":%u,\"sample_peak_permille\":%u,\"evidence_peak_permille\":%u}\n",
   (unsigned long long)context,adaptive?"true":"false",(unsigned long)services,(unsigned long)bursts,
-  (unsigned long)boosted,(unsigned long)recovery,(unsigned long)switches,primaryPeak,samplePeak,evidencePeak);}
+  (unsigned long)boosted,(unsigned long)recovery,(unsigned long)switches,primaryPeak,samplePeak,evidencePeak);
+#endif
+ }
 };
 }
+#if !BODAQS_PRODUCTION_RECORDING
 void bootGate(){
  char line[32]={};unsigned used=0;bool overflow=false;uint32_t announced=0;
  for(;;){
@@ -56,6 +62,7 @@ void bootGate(){
   delay(10);
  }
 }
+#endif
 void runOwner(bool (*isActive)(),uint64_t (*context)(),void (*service)()) {
  Policy policy;Counters stats,pending;bool have=false,havePending=false;unsigned priority=2;
  auto setPriority=[&](unsigned next){if(next!=priority){priority=next;++stats.switches;vTaskPrioritySet(nullptr,next);}};

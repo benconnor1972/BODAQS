@@ -8,7 +8,7 @@
 #include <new>
 #include "../can-fd/common/protocol/bodaqs_fragment_transport.h"
 #ifdef BODAQS_LOGGER_SAMPLE_QUEUE_CAPACITY
-#if BODAQS_LOGGER_SAMPLE_QUEUE_CAPACITY != 512 || BODAQS_SPI_BULK_BYTES != 512 || !BODAQS_V4_FOUR_NODE_BENCH
+#if BODAQS_LOGGER_SAMPLE_QUEUE_CAPACITY != 512 || BODAQS_SPI_BULK_BYTES != 512 || (!BODAQS_PRODUCTION_RECORDING && !BODAQS_V4_FOUR_NODE_BENCH)
 #error "Logger sample buffer override requires the selected 512-entry four-node bulk bench"
 #endif
 #else

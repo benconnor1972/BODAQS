@@ -1,3 +1,4 @@
+#include "RecordingFeatures.h"
 #include "SparseCostProbe.h"
 #include "RemoteImuRecording.h"
 #include "RecordingReadiness.h"
@@ -429,14 +430,15 @@ bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint
 }
 void discardAllocated() {for(auto& peer:peers) {peer.stream.release();peer.phase=Idle;peer.fault=false;}selected=0;}
 }
-#if defined(BODAQS_BACKLOG_BALANCE_BENCH) && BODAQS_BACKLOG_BALANCE_BENCH
+#if defined(BODAQS_ADAPTIVE_DRAIN_OWNER) && BODAQS_ADAPTIVE_DRAIN_OWNER
 void queuePressureForBalance(unsigned& samples,unsigned& evidence,bool& available) {
  samples=evidence=0;available=selected!=0;
  for(unsigned n=0;n<4;++n)if(selected&(1u<<n)) {
   const auto q=peers[n].stream.queueState();
   if(!q.sampleCapacity || !q.evidenceCapacity){available=false;continue;}
   const unsigned s=unsigned(1000*q.samples/q.sampleCapacity),e=unsigned(1000*q.evidence/q.evidenceCapacity);
-  if(s>samples)samples=s;if(e>evidence)evidence=e;
+  if(s>samples)samples=s;
+  if(e>evidence)evidence=e;
  }
 }
 #endif
@@ -478,7 +480,9 @@ bool configure(const LoggerConfig& cfg) {
  AcquisitionControl::resetStartupDiagnostics(0,0);
 #endif
  report={};report.benchOnly=ImuAdmission::singleNodeSmokeBuild();SensorSpec chosen[4];uint8_t mask=0;
+#if !BODAQS_PRODUCTION_RECORDING
  bool otherActiveSensors=false;uint8_t benchAdcMask=0;
+#endif
  for(uint8_t i=0;i<cfg.sensorCount();++i) {
   SensorSpec spec;bool muted=false;
   if(!cfg.getSensorSpec(i,spec)) continue;
@@ -488,6 +492,7 @@ bool configure(const LoggerConfig& cfg) {
   if(!SensorManager::getMuted(i,muted)) muted=spec.mutedDefault;
   if(muted) continue;
   if(spec.type!=SensorType::LSM6DSO32XImu) {
+#if !BODAQS_PRODUCTION_RECORDING
    const auto a=sensorAssignment(spec,board::gBoard);
    long ain=-1,mode=1;bool includeRaw=false;
    spec.params.getInt("ain",ain);spec.params.getInt("output_mode",mode);
@@ -502,6 +507,7 @@ bool configure(const LoggerConfig& cfg) {
       bit && !(benchAdcMask&bit) && !includeRaw && modeAllowed)
     benchAdcMask|=bit;
    else otherActiveSensors=true;
+#endif
    continue;
   }
   report.attempted=true;
@@ -530,11 +536,11 @@ bool configure(const LoggerConfig& cfg) {
       (ImuAdmission::scalingBenchBuild() && benchAdcMask==0x33)):benchAdcMask==3;
  const bool bulkAdcOff=!demand.adc[0].activeChannels && !demand.adc[1].activeChannels &&
      !demand.adc[0].conversionsPerSecond && !demand.adc[1].conversionsPerSecond;
- const bool bulkMaskAllowed=BODAQS_ADC_BOUNDARY_BENCH
+ const bool bulkMaskAllowed=BODAQS_VARIABLE_ADC_SCAN
      ?(bulkAdcOff?benchAdcMask==0:(benchAdcMask==0x11 || benchAdcMask==0x33 || benchAdcMask==0x77 || benchAdcMask==0xff))
      :bulkAdcOff?benchAdcMask==0:(benchAdcMask==0x11 ||
-     (BODAQS_ADC_CONCENTRATED_SCAN_BENCH && (benchAdcMask==0x03 ||
-       (BODAQS_ADC_DUAL_SCAN_BENCH && benchAdcMask==0x33))));
+     (BODAQS_SCANNED_ADC_ACQUISITION && (benchAdcMask==0x03 ||
+       (BODAQS_MULTI_ADC_SCAN && benchAdcMask==0x33))));
  report=ImuAdmission::bulkMixedAdcBenchBuild()
      ? ImuAdmission::evaluateBulkMixedBench(demand,otherActiveSensors || !bulkMaskAllowed)
      : ImuAdmission::sampleUnitBenchBuild()

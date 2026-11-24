@@ -188,7 +188,9 @@ static void applyLogSettings_(const LoggerConfig& cfg) {
 
 
 LoggerConfig g_cfg;  
+#if !BODAQS_PRODUCTION_RECORDING
 TransformRegistry gTransforms;
+#endif
 
 using namespace board;
 

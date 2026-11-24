@@ -1,3 +1,4 @@
+#include "RecordingFeatures.h"
 #include "CpuOccupancy.h"
 #include "BacklogBalance.h"
 #include "SparseCostProbe.h"
@@ -456,7 +457,7 @@ static void accept(uint8_t n,bool protectedLane,const BodaqsControlWrapped& wrap
 }
 #if defined(ARDUINO_ARCH_ESP32)
 static void run(void*) {
-#if BODAQS_BACKLOG_BALANCE_BENCH
+#if BODAQS_ADAPTIVE_DRAIN_OWNER
   BacklogBalance::runOwner([](){return active();}, [](){return contextId;}, [](){service();});
   return;
 #endif

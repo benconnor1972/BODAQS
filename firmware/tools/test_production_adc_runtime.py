@@ -81,12 +81,11 @@ uint32_t ulTaskNotifyTake(int, TickType_t ticks) {
         cpp, exe = folder / "adc.cpp", folder / "adc.exe"
         cpp.write_text(fixture, encoding="utf-8")
         flags = {"ADC_TEST_ASYNC": 1, "ADC_TEST_WREG_STARTS": 0, "ADC_TEST_EXPECTED_PRIORITY": 4,
-                 "BODAQS_PRODUCTION_RECORDING": 1, "BODAQS_ADC_CONCENTRATED_SCAN_BENCH": 1,
-                 "BODAQS_ADC_BOUNDARY_BENCH": 1, "BODAQS_ADC_DUAL_SCAN_BENCH": 1,
+                 "BODAQS_PRODUCTION_RECORDING": 1,
                  "BODAQS_ADC_ROW_HANDOFF": 1, "BODAQS_ADC_COMBINED_CAPTURE": 1,
                  "BODAQS_ADC_INLINE_ROW": 1, "BODAQS_ADC_SCAN_PIPELINE": 1,
                  "BODAQS_ADC_SCAN_MUX_ONLY": 1, "BODAQS_ADC_CONTINUOUS_LATEST": 1,
-                 "BODAQS_ADC_RAW_RECORDING_BENCH": 1, "BODAQS_ADC_TASK_PRIORITY": 4,
+                 "BODAQS_ADC_TASK_PRIORITY": 4,
                  "BODAQS_ADC_SCAN_ROW_PHASE": 0}
         subprocess.run([args.compiler, "-std=c++17", "-Wall", "-Wextra", "-Wno-unused-variable", "-Wno-unused-function", "-Wno-unused-parameter",
                         *(f"-D{key}={value}" for key, value in flags.items()),
