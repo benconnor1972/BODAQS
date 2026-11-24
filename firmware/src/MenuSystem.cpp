@@ -2,6 +2,7 @@
 #include "MenuSystem.h"
 #include "UI.h"
 #include "ConfigManager.h"
+#include "ProductionConfigMigrationApply.h"
 #include "SensorManager.h"
 #include "WebServerManager.h"
 #include "DisplayManager.h"
@@ -1523,10 +1524,9 @@ namespace {
     if(ConfigManager::migrationPending()) {
       if((s_migrationPage+1u)*63u<s_migrationReview.length()) { UI::toastModal("Review all changes",1500,1); return; }
       char error[128]{};
-      if(!ConfigManager::acceptMigration(s_migrationRevision.c_str(),error,sizeof(error))) {UI::toastModal(error,2500,1);return;}
-      const bool applied=SensorManager::rebuildFromConfig(ConfigManager::get(),error,sizeof(error));
-      if(applied) StorageManager_setSampleRate(AnalogInputManager::configureFromConfig(ConfigManager::get(),ConfigManager::get().sampleRateHz));
-      LoggingManager::refreshConfigurationStatus();
+      const auto result=ProductionConfigMigrationApply::accept(s_migrationRevision.c_str(),error,sizeof(error));
+      if(result==ProductionConfigMigrationApply::Result::Rejected) {UI::toastModal(error,2500,1);return;}
+      const bool applied=result==ProductionConfigMigrationApply::Result::Applied;
       UI::toastModal(applied?"Migration accepted":"Saved; restart to apply",2000,1);
       s_state=State::Settings; drawSettings_();return;
     }

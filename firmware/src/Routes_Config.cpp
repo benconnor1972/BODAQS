@@ -7,6 +7,7 @@
 
 #include "HtmlUtil.h"
 #include "ConfigManager.h"
+#include "ProductionConfigMigrationApply.h"
 #include "SensorConfigEdit.h"
 #include "SensorManager.h"
 #include "SensorAssignment.h"
@@ -990,17 +991,19 @@ static void emitSensorEditor_(ChunkedHtmlResponse& html,
 }
 
 static void handleProductionMigrationWeb_(WebServer& srv) {
-    char error[128]{};
-    if(!srv.hasArg("acknowledge") || srv.arg("acknowledge")!="yes" ||
-        !ConfigManager::acceptMigration(srv.arg("revision").c_str(),error,sizeof(error))) {
-      srv.send(409,"text/plain",error[0]?error:"Explicit acknowledgement required"); return;
-    }
-    if(!SensorManager::rebuildFromConfig(ConfigManager::get(),error,sizeof(error))) {
-      srv.send(500,"text/plain",error[0]?error:"Migration saved; restart required to apply"); return;
-    }
-    StorageManager_setSampleRate(AnalogInputManager::configureFromConfig(ConfigManager::get(),ConfigManager::get().sampleRateHz));
-    LoggingManager::refreshConfigurationStatus();
-    srv.sendHeader("Location","/config"); srv.send(303,"text/plain","Migration accepted; original preserved");
+  if(!srv.hasArg("acknowledge") || srv.arg("acknowledge")!="yes") {
+    srv.send(409,"text/plain","Explicit acknowledgement required");return;
+  }
+  char error[128]{};
+  const auto result=ProductionConfigMigrationApply::accept(srv.arg("revision").c_str(),error,sizeof(error));
+  if(result==ProductionConfigMigrationApply::Result::Rejected) {
+    srv.send(409,"text/plain",error);return;
+  }
+  if(result==ProductionConfigMigrationApply::Result::SavedNotApplied) {
+    srv.send(500,"text/plain",String("Migration saved; not applied: ")+error);return;
+  }
+  srv.sendHeader("Location","/config");
+  srv.send(303,"text/plain","Migration accepted; original preserved");
 }
 
 void registerConfigRoutes(WebServer& srv) {

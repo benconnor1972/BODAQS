@@ -8,6 +8,7 @@
 #include "SD_MMC.h"
 
 #include "ConfigManager.h"
+#include "ProductionConfigMigrationApply.h"
 #include "SensorConfigEdit.h"
 #include "Lsm6dso32xConfig.h"
 #include "DisplayManager.h"
@@ -1459,10 +1460,9 @@ static void handleProductionMigrationApi_(WebServer& srv) {
     if(!readJsonBody_(srv,request)) return;
     if(!request["acknowledge"].is<bool>() || !request["acknowledge"].as<bool>()) { sendError_(srv,400,"acknowledgement_required","Review the exact migration changes first"); return; }
     char error[128]{};
-    if(!ConfigManager::acceptMigration(request["revision"] | "",error,sizeof(error))) { sendError_(srv,409,"migration_failed",error); return; }
-    const bool applied=SensorManager::rebuildFromConfig(ConfigManager::get(),error,sizeof(error));
-    if(applied) StorageManager_setSampleRate(AnalogInputManager::configureFromConfig(ConfigManager::get(),ConfigManager::get().sampleRateHz));
-    LoggingManager::refreshConfigurationStatus();
+    const auto result=ProductionConfigMigrationApply::accept(request["revision"] | "",error,sizeof(error));
+    if(result==ProductionConfigMigrationApply::Result::Rejected) { sendError_(srv,409,"migration_failed",error); return; }
+    const bool applied=result==ProductionConfigMigrationApply::Result::Applied;
     JsonDocument response; response["saved"]=true; response["applied"]=applied;
     if(!applied) response["error"]=error[0]?error:"Restart required";
     sendJson_(srv,applied?200:500,response);

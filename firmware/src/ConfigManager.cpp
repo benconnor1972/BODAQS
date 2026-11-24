@@ -584,8 +584,8 @@ String ConfigManager::sensorTypeKey(uint8_t index) {
   if(g_specs[index].type!=SensorType::Unknown) return typeKeyForSave(g_specs[index].type);
   return g_typeTokens[index].length()?g_typeTokens[index]:String("unknown");
 }
-bool ConfigManager::acceptMigration(const char* revision,char* error,size_t capacity) {
-  auto fail=[&](const char* detail) { if(error && capacity) snprintf(error,capacity,"%s",detail); return false; };
+ConfigManager::MigrationAcceptance ConfigManager::acceptMigrationConfiguration(const char* revision,char* error,size_t capacity) {
+  auto fail=[&](const char* detail) { if(error && capacity) snprintf(error,capacity,"%s",detail); return MigrationAcceptance::Rejected; };
   if(LoggingManager::configurationLocked() || UploadModeManager::isActive()) return fail("Recording or upload owns configuration");
 #if !BODAQS_PRODUCTION_RECORDING
   (void)revision; return fail("No migration pending");
@@ -605,10 +605,16 @@ bool ConfigManager::acceptMigration(const char* revision,char* error,size_t capa
   }
   const String proposed=s_migration.proposed().c_str();
   if(!StorageManager_saveTextFile(g_cfgName,proposed)) return fail("Migration save failed; original retained");
-  if(!reload()) return fail("Migration saved but reload failed; restart required");
+  if(!reload()) {
+    fail("Migration saved but reload failed; restart required");
+    return MigrationAcceptance::SavedNotApplied;
+  }
   if(error && capacity) error[0]='\0';
-  return true;
+  return MigrationAcceptance::Loaded;
 #endif
+}
+bool ConfigManager::acceptMigration(const char* revision,char* error,size_t capacity) {
+  return acceptMigrationConfiguration(revision,error,capacity)==MigrationAcceptance::Loaded;
 }
 bool ConfigManager::saveSensorParamsByName(const char* sensorName,
     const char* const* keys,const String* values,size_t count) {

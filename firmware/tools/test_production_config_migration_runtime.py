@@ -19,19 +19,23 @@ def main():
 #include "ProductionConfigMigration.h"
 std::map<std::string,String> files;
 String disk;
-bool failConfig=false;
+bool failConfig=false,failReloadAfterWrite=false,failReload=false;
 struct FileSystem { bool exists(const char* path) { return files.count(path); } } SD_MMC;''')
     start = fixture.index('bool StorageManager_loadTextFile(')
     end = fixture.index('namespace SensorRegistry', start)
     fixture = fixture[:start] + '''bool StorageManager_loadTextFile(const char* path,String& out) {
+  if(failReload && std::string(path)=="loggercfg")return false;
   auto found=files.find(path); if(found==files.end()) return false; out=found->second;return true;
 }
 bool StorageManager_saveTextFile(const char* path,const String& text) {
-  if(!saveOk || (failConfig && std::string(path)=="loggercfg")) return false; files[path]=text;return true;
+  if(!saveOk || (failConfig && std::string(path)=="loggercfg")) return false; files[path]=text;
+  if(failReloadAfterWrite && std::string(path)=="loggercfg") failReload=true;
+  return true;
 }
 ''' + fixture[end:]
     source = '\n'.join(line for line in (root/'src/ConfigManager.cpp').read_text(encoding='utf-8').splitlines()
                        if not line.startswith('#include'))
+    fixture = fixture.replace('void refreshConfigurationStatus() {}','unsigned statusRefreshes=0; void refreshConfigurationStatus() {++statusRefreshes;}')
     fixture = fixture.replace('// PRODUCTION_CONFIG', source)
     web = (root/'src/Routes_Config.cpp').read_text(encoding='utf-8')
     api = (root/'src/Routes_Api.cpp').read_text(encoding='utf-8')
@@ -42,6 +46,9 @@ void sendJson_(WebServer& srv,int status,JsonDocument& doc) { std::string json;s
 void sendError_(WebServer& srv,int status,const char* code,const char* message) {JsonDocument doc;doc["error"]=code;doc["message"]=message;sendJson_(srv,status,doc);}
 bool readJsonBody_(WebServer& srv,JsonDocument& doc) {return !deserializeJson(doc,srv.arg("plain").c_str());}
 """
+    fixture += '#include "ProductionConfigMigrationApply.h"\n'
+    fixture += '\n'.join(line for line in (root/'src/ProductionConfigMigrationApply.cpp').read_text(encoding='utf-8').splitlines()
+                         if not line.startswith('#include'))
     fixture += definition(web,'static String productionMigrationHtml_(')
     fixture += definition(web,'static void handleProductionMigrationWeb_(')
     fixture += definition(api,'static void handleProductionMigrationApi_(')
@@ -156,6 +163,35 @@ int main() {
   assert(ConfigManager::reload());
   assert(ConfigManager::acceptMigration(ConfigManager::migrationRevision().c_str(),error,sizeof(error)));
   assert(!ConfigManager::get().recordingBestEffort);
+  files["loggercfg"]=old;ConfigManager::begin("loggercfg");assert(ConfigManager::load(cfg));
+  SensorManager::rebuildOk=false;
+  const auto refreshesBeforeFailure=LoggingManager::statusRefreshes;
+  mockReset();mockSetArg("acknowledge","yes");mockSetArg("revision",ConfigManager::migrationRevision());
+  handleProductionMigrationWeb_(request);
+  assert(mockLastStatus==500 && !ConfigManager::migrationPending());
+  assert(LoggingManager::statusRefreshes==refreshesBeforeFailure+1);
+
+  // Physical acceptance reports the same persisted-but-not-applied result.
+  files["loggercfg"]=old;ConfigManager::begin("loggercfg");assert(ConfigManager::load(cfg));
+  s_migrationReview=ConfigManager::migrationChanges();s_migrationRevision=ConfigManager::migrationRevision();
+  s_migrationPage=uint16_t((s_migrationReview.length()-1)/63);
+  applyLogFormat_();
+  assert(UI::toast=="Saved; restart to apply" && !ConfigManager::migrationPending());
+  SensorManager::rebuildOk=true;
+  // A completed replacement followed by a failed reload remains saved=true in JSON.
+  files["loggercfg"]=old;ConfigManager::begin("loggercfg");assert(ConfigManager::load(cfg));
+  failReloadAfterWrite=true;
+  const String reloadBody=String("{\\"acknowledge\\":true,\\"revision\\":\\"")+ConfigManager::migrationRevision()+"\\"}";
+  mockReset();mockSetArg("plain",reloadBody);
+  const auto rebuildsBeforeReloadFailure=rebuilds;
+  const auto refreshesBeforeReloadFailure=LoggingManager::statusRefreshes;
+  handleProductionMigrationApi_(request);
+  assert(mockLastStatus==500 && rebuilds==rebuildsBeforeReloadFailure);
+  JsonDocument result;assert(!deserializeJson(result,mockLastBody.c_str()));
+  assert(result["saved"].as<bool>() && !result["applied"].as<bool>());
+  assert(LoggingManager::statusRefreshes==refreshesBeforeReloadFailure+1);
+  failReloadAfterWrite=false;failReload=false;
+  assert(ConfigManager::reload() && !ConfigManager::migrationPending());
 
 }
 '''

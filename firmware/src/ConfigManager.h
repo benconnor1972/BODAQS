@@ -136,6 +136,8 @@ class ConfigManager {
     static String migrationRevision();
     static String migrationChanges();
     static String migrationProposedText();
+    enum class MigrationAcceptance { Rejected, SavedNotApplied, Loaded };
+    static MigrationAcceptance acceptMigrationConfiguration(const char* revision, char* error, size_t capacity);
     static bool acceptMigration(const char* revision, char* error, size_t capacity);
     static String sensorTypeKey(uint8_t index);
     static bool saveSensorParamsByName(const char* sensorName,

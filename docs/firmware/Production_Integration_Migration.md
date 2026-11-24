@@ -10,7 +10,8 @@ because migration was accepted. Qualification/admission is a separate observatio
 
 `ProductionConfigMigration` captures the loaded file before parsing, default
 insertion or BMI normalization. Loading/rendering is read-only. Its proposal
-preserves unchanged lines and unknown sensor type tokens, changes legacy formats
+preserves unchanged lines and unknown sensor type tokens, recognizes keys
+case-insensitively with the loader's final duplicate taking precedence, changes legacy formats
 to `bodaqs_multi_stream_binary`, explicitly retires POLY/LUT and output transform
 selection, records revision 1, and defaults membership to strict only when no
 explicit prior `recording_best_effort` exists. Web/API and the paged physical
@@ -25,6 +26,12 @@ An existing matching backup permits retry; a differing or unreadable backup is
 never overwritten. Backup/save failures retain the original and pending state.
 A successful reload sees the persisted revision and does not prompt again.
 Application failures report saved-but-not-applied and require repair/restart.
+`ProductionConfigMigrationApply` owns the post-acceptance ownership check,
+runtime rebuild, ADC cadence application and status refresh. UI callers render
+its explicit result. ConfigManager exposes a typed persistence/reload result
+without depending on new hardware/application work; its existing boolean
+acceptance wrapper remains compatible. A completed save followed by failed reload
+is still reported as saved, and does not rebuild runtime sensors.
 
 The migration forms are `POST /config/migration` (`acknowledge=yes`, `revision`)
 and `POST /api/v1/config/migration` (JSON boolean `acknowledge`, string `revision`).
@@ -72,7 +79,7 @@ Additional focused checks cover real analog calibration preview behavior after
 save failure/success, string-pot calibration guards and unchanged raw previews,
 existing sensor web/JSON edits and START lifecycle fixtures. Target compilation
 uses `bodaqs_a8_production` and passed (RAM 286348 / 327680 bytes, flash
-2209069 / 4063232 bytes). START checks: 135 passed; async storage/controller:
+2209489 / 4063232 bytes). START checks: 135 passed; async storage/controller:
 39 passed. Existing ArduinoJson deprecation warnings remain. No flash was performed. The integration branch owns
 full-suite and fresh standards/spec reviews.
 
