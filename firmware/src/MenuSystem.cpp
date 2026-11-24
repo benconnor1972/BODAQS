@@ -357,7 +357,7 @@ namespace {
         s_swallowEnterRelease = true;
         guardEnterRight();
 
-        if (LoggingManager::isRunning()) {
+        if (LoggingManager::configurationLocked()) {
           UI::toastModal("Stop logging first", 1200, 1);
           deferUiFor(1200);
           drawSettings_();
@@ -473,7 +473,7 @@ namespace {
       case MainItem::SagHelper: {
         s_swallowEnterRelease = true;
         guardEnterRight();
-        if (LoggingManager::isRunning()) {
+        if (LoggingManager::configurationLocked()) {
           UI::toastModal("Stop log first", 1500, 1);
           deferUiFor(1500);
           drawMain_();
@@ -491,7 +491,7 @@ namespace {
         s_swallowEnterRelease = true;
         guardEnterRight();
 
-        if (LoggingManager::isRunning()) {
+        if (LoggingManager::configurationLocked()) {
           UI::toastModal("Stop logging first", 1200, 1);
           deferUiFor(1200);
           drawMain_();
@@ -1429,7 +1429,7 @@ namespace {
   }
 
   static void applyRate_() {
-    if (LoggingManager::isRunning()) {
+    if (LoggingManager::configurationLocked()) {
       UI::toastModal("Stop log", 2000, 1);
       deferUiFor(2000);
       return;
@@ -1484,7 +1484,7 @@ namespace {
   }
 
   static void applyLogFormat_() {
-    if (LoggingManager::isRunning()) {
+    if (LoggingManager::configurationLocked()) {
       UI::toastModal("Stop log", 2000, 1);
       deferUiFor(2000);
       return;
@@ -1539,7 +1539,7 @@ namespace {
   }
 
   static void applyWiFiMode_() {
-    if (LoggingManager::isRunning()) {
+    if (LoggingManager::configurationLocked()) {
       UI::toastModal("Stop log", 2000, 1);
       deferUiFor(2000);
       return;
@@ -1935,7 +1935,7 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
     }
 
     case State::SagHelper: {
-      if (LoggingManager::isRunning()) {
+      if (LoggingManager::configurationLocked()) {
         s_sagFrozen = false;
         s_state = State::Main;
         UI::toastModal("Logging active", 1500, 1);
@@ -2082,7 +2082,7 @@ void MenuSystem::loop() {
   }
 
   if (s_state == State::SagHelper) {
-    if (LoggingManager::isRunning()) {
+    if (LoggingManager::configurationLocked()) {
       s_sagFrozen = false;
       s_state = State::Main;
       UI::toastModal("Logging active", 1500, 1);

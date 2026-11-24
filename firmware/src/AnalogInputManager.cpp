@@ -1145,12 +1145,12 @@ void adcTaskFn_(void* arg) {
 namespace AnalogInputManager {
 #if BODAQS_ADC_COMBINED_CAPTURE
 bool scanRowCaptureEligible() {return concentratedScope_();}
-void retireScanRowCapture() {
-  if(!s_scanSession)return;
+bool retireScanRowCapture() {
+  if(!s_scanSession)return true;
   s_scanRun.store(false);
   if(s_scanTask)xTaskNotifyGive(s_scanTask);
   // Never release frames/storage while this owner may still publish a row.
-  while(s_timingWorkers.load(std::memory_order_acquire))vTaskDelay(1);
+  return s_timingWorkers.load(std::memory_order_acquire) == 0;
 }
 bool setScanRowCapture(bool (*capture)()) {
   if(s_timingWorkers.load(std::memory_order_acquire) || s_scanSession)return false;

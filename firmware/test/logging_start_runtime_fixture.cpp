@@ -13,6 +13,8 @@
 #include <string>
 #include <algorithm>
 #include <cassert>
+#include "RecordingLifecycle.h"
+#include "CpuOccupancy.h"
 
 #define TRACE(...) do {} while (0)
 #define LOGGING_LOGI(...) do {} while (0)
@@ -68,7 +70,9 @@ uint8_t excludedSensors = 0;
 int prepares = 0;
 LogFormat preparedFormat, fileFormat;
 
-extern bool s_stopping;
+extern RecordingLifecycle s_lifecycle;
+using LifecycleState = RecordingLifecycle::State;
+bool phaseIs_(LifecycleState);
 namespace SensorManager {
   Sensor* s_list[MAX_SENSORS] = {};
   SensorAssignment s_liveAssignment[MAX_SENSORS];
@@ -84,7 +88,7 @@ namespace SensorManager {
   bool onLoggingStart(char*, size_t) { events.push_back("sensors"); return sensorsStartOk; }
   void startLoggingAcquisition() { events.push_back("acquire"); }
   void onLoggingStop() { events.push_back("sensor_stop"); }
-  void onLoggingFinalized() { events.push_back(s_stopping ? "finalize_locked" : "finalize"); }
+  void onLoggingFinalized() { events.push_back((phaseIs_(LifecycleState::Stopping) || phaseIs_(LifecycleState::Finalizing)) ? "finalize_locked" : "finalize"); }
   uint8_t sessionExcludedCount() { return excludedSensors; }
   uint8_t activeCount() { return 2; }
   size_t pendingLoggingRows() { return 0; }
@@ -161,16 +165,19 @@ namespace ButtonManager { }
 void ButtonManager_setPollingEnabled(bool) {}
 namespace LoggingManager {
   enum class StartResult : uint8_t { Failed, Pending, Started };
+  using LifecycleState = RecordingLifecycle::State;
+  LifecycleState lifecycleState();
+  const char* lifecycleStateName();
   StartResult requestStart();
   bool isStarting();
   void cancelStart();
   bool configurationLocked();
   void loop();
   enum class StartFailureHint { None, RestartNow, ConfigConflict };
-  enum class StopReason { StartFailure, UserRequest, Unspecified };
+  enum class StopReason : uint8_t { None, UserRequest, AnalogRailFault, SleepRequest, SdCardRemoved, StartFailure, Unspecified, StorageFailure, StorageUnresponsive };
   void stop(StopReason, const char*);
   struct StopContext {
-    StopReason reason=StopReason::StartFailure; uint32_t uptimeMs=0;
+    StopReason reason=StopReason::None; uint32_t uptimeMs=0;
     const char* triggerEvent=""; bool sdDetectAvailable=false,sdCardDetected=true,analogRailFault=false;
   };
   const char* stopReasonName(StopReason) { return "test"; }
@@ -180,14 +187,21 @@ namespace LoggingManager {
   bool start();
 }
 const LoggerConfig* s_cfg = &g_cfg;
-bool s_running = false, s_starting = false, s_stopping = false, s_remotePreparing=false, s_remoteFaultShown=false;
+RecordingLifecycle s_lifecycle;
+using LifecycleState = RecordingLifecycle::State;
+thread_local bool lifecycleOwner = true;
+bool isLifecycleOwner_() { return lifecycleOwner; }
+bool s_localStopPending = false;
+bool retireLocalAcquisition_();
+bool s_remotePreparing = false, s_remoteFaultShown = false;
+// PRODUCTION_LIFECYCLE
 LoggingManager::StartFailureHint s_startFailureHint;
 LoggingManager::StopContext s_stopContext;
 LoggingConfigIssue s_configurationIssue = LoggingConfigIssue::None;
 char s_configurationDetail[160] = {};
 uint32_t s_intervalUs;
 uint64_t s_t0UnixUs, s_sampleCount;
-void captureStopContext_(LoggingManager::StopReason, const char*) {}
+void captureStopContext_(LoggingManager::StopReason reason, const char*) { s_stopContext.reason = reason; }
 namespace LoggingManager { void completeStorageStart(); void finishStorageStop(); }
 // PRODUCTION_START
 
@@ -196,7 +210,7 @@ bool menuActive = false, revealRestartOnPress = false;
 int restartCount = 0, boundActions = 0;
 namespace MenuSystem { bool isActive() { return menuActive; } }
 namespace DeviceRestart { void restart() { ++restartCount; } }
-namespace LoggingManager { bool isRunning() { return s_running; } }
+namespace LoggingManager { bool isRunning() { return phaseIs_(LifecycleState::Recording); } }
 namespace CanMasterManager { bool requiredAndUnavailable() { return false; } }
 // PRODUCTION_NOTICE
 namespace ButtonActions {
@@ -231,7 +245,7 @@ void checkAt(bool ok, int line) {
 Sensor live[MAX_SENSORS];
 void reset() {
   g_cfg = LoggerConfig{}; savedConfig = LoggerConfig{}; profile = board::BoardProfile{};
-  events.clear(); s_running = s_starting = s_stopping = false; CanMasterManager::handoffReady=true; CanMasterManager::fenced=false; s_configurationIssue = LoggingConfigIssue::None; s_configurationDetail[0] = 0;
+  events.clear(); s_localStopPending = false; s_lifecycle.publish(LifecycleState::Ready); (void)s_lifecycle.takeStopRequests(); s_stopContext={}; CanMasterManager::handoffReady=true; CanMasterManager::fenced=false; s_configurationIssue = LoggingConfigIssue::None; s_configurationDetail[0] = 0;
   saveOk = powerOk = storageOk = openOk = validateOk = sensorsStartOk = true; upload = false; prepares = 0;
   excludedSensors = 0;
   for (int i = 0; i < MAX_SENSORS; ++i) { SensorManager::s_list[i] = nullptr; live[i] = Sensor{}; }
@@ -261,6 +275,10 @@ void set(int i, const char* key, const char* value) { g_cfg.stores[i].set(key, v
 bool has(const char* event) { return std::find(events.begin(), events.end(), event) != events.end(); }
 int index(const char* event) { return std::find(events.begin(), events.end(), event) - events.begin(); }
 int main() {
+  CanMasterManager::handoffActive = true;
+  assert(LoggingManager::configurationLocked());
+  CanMasterManager::handoffActive = false;
+
   using T = SensorType; using I = LoggingConfigIssue;
   reset();
   add(T::LSM6DSO32XImu,"imu0",0,0,false);
@@ -279,27 +297,27 @@ int main() {
   CanMasterManager::handoffReady=false;
   ButtonActions::onToggleLogging(BUTTON_CLICK);
   check(LoggingManager::requestStart()==LoggingManager::StartResult::Pending);
-  check(LoggingManager::isStarting() && LoggingManager::configurationLocked() && !s_running && !has("acquire"));
+  check(LoggingManager::isStarting() && LoggingManager::configurationLocked() && !phaseIs_(LifecycleState::Recording) && !has("acquire"));
   check(LoggingManager::requestStart()==LoggingManager::StartResult::Pending);
   CanMasterManager::handoffReady=true; LoggingManager::loop();
-  check(s_running && !LoggingManager::isStarting() && has("acquire"));
+  check(phaseIs_(LifecycleState::Recording) && !LoggingManager::isStarting() && has("acquire"));
   LoggingManager::stop(LoggingManager::StopReason::UserRequest,"test");
   check(!LoggingManager::configurationLocked() && !CanMasterManager::fenced && has("finalize_locked"));
   reset();
   CanMasterManager::handoffReady=false;
   check(LoggingManager::requestStart()==LoggingManager::StartResult::Pending);
   LoggingManager::cancelStart(); LoggingManager::cancelStart();
-  check(!LoggingManager::configurationLocked() && !CanMasterManager::fenced && !s_running);
+  check(!LoggingManager::configurationLocked() && !CanMasterManager::fenced && !phaseIs_(LifecycleState::Recording));
   CanMasterManager::handoffReady=true; LoggingManager::loop(); check(!has("acquire"));
   reset();
   CanMasterManager::handoffReady=false;
   check(LoggingManager::requestStart()==LoggingManager::StartResult::Pending);
   powerOk=false; CanMasterManager::handoffReady=true; LoggingManager::loop();
-  check(!s_running && !LoggingManager::configurationLocked() && !CanMasterManager::fenced);
+  check(!phaseIs_(LifecycleState::Recording) && !LoggingManager::configurationLocked() && !CanMasterManager::fenced);
   reset();
   add(T::BMI270ImuI2C, "imu0", 1, 104); add(T::BMI270ImuI2C, "imu1", 1, 105);
   check(issue() == I::None); check(SensorManager::requiresBdqV2(g_cfg));
-  check(LoggingManager::start()); check(s_running); check(savedConfig.logFormat == LogFormat::BodaqsMultiStreamBinary);
+  check(LoggingManager::start()); check(phaseIs_(LifecycleState::Recording)); check(savedConfig.logFormat == LogFormat::BodaqsMultiStreamBinary);
   check(preparedFormat == LogFormat::BodaqsMultiStreamBinary); check(fileFormat == preparedFormat);
   check(index("save") < index("prepare")); check(index("prepare") < index("sensors"));
   check(index("sensors") < index("file")); check(index("file") < index("acquire")); check(has("paint"));
@@ -351,10 +369,10 @@ int main() {
   upload = true; check(!LoggingManager::start() && !has("save"));
   upload = false; powerOk = false; check(!LoggingManager::start() && !has("save"));
   powerOk = true; storageOk = false; check(!LoggingManager::start() && !has("save"));
-  storageOk = true; openOk = false; check(!LoggingManager::start()); check(has("wifi_resume") && !s_running);
+  storageOk = true; openOk = false; check(!LoggingManager::start()); check(has("wifi_resume") && !phaseIs_(LifecycleState::Recording));
   check(has("sensor_stop") && has("finalize"));
   reset(); add(T::BMI270ImuI2C,"a",1,104); sensorsStartOk = false;
-  check(!LoggingManager::start()); check(!has("file") && has("finalize") && has("sensor_stop") && !s_running);
+  check(!LoggingManager::start()); check(!has("file") && has("finalize") && has("sensor_stop") && !phaseIs_(LifecycleState::Recording));
   reset(); add(T::BMI270ImuI2C,"a",1,104);
   profile.buttons.count = 1; strcpy(profile.buttons.btn[0].id,"nav_enter");
   revealRestartOnPress = true;

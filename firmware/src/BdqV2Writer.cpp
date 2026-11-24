@@ -1,5 +1,6 @@
 #include "BdqV2Writer.h"
 #include "StoragePathProbe.h"
+#include "RecordingStoragePath.h"
 
 #include <limits.h>
 #include <string.h>
@@ -245,7 +246,9 @@ bool BdqV2Writer::writeChunk_(
   chunk.type = type;
   chunk.sequence = nextChunkSequence_;
   chunk.payloadLength = static_cast<uint32_t>(length);
-#if BODAQS_STORAGE_PATH_PROBE
+#if BODAQS_PRODUCTION_RECORDING
+  chunk.payloadCrc32 = RecordingStoragePath::payloadCrc(payload, length);
+#elif BODAQS_STORAGE_PATH_PROBE
   chunk.payloadCrc32 = StoragePathProbe::payloadCrc(payload, length);
 #else
   chunk.payloadCrc32 = BdqV2Format::crc32(payload, length);

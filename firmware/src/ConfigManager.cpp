@@ -780,6 +780,7 @@ bool ConfigManager::parseCanMasterMode(const char* text, CanMasterMode& out) {
 
 
 void ConfigManager::setSampleRateHz(uint16_t hz, bool persist) {
+  if (LoggingManager::configurationLocked()) return;
   hz = Rates::nearest(hz);
 
   LoggerConfig cfg = ConfigManager::get();     // ← copy existing
@@ -795,6 +796,9 @@ void ConfigManager::setSampleRateHz(uint16_t hz, bool persist) {
 }
 
 bool ConfigManager::setLogFormat(LogFormat format, bool persist) {
+#if BODAQS_PRODUCTION_RECORDING
+  if (LoggingManager::configurationLocked()) return false;
+#endif
   LoggerConfig cfg = ConfigManager::get();
   if (cfg.logFormat == format) return true;
   cfg.logFormat = format;
@@ -809,6 +813,7 @@ bool ConfigManager::setLogFormat(LogFormat format, bool persist) {
 }
 
 void ConfigManager::setWifiMode(WiFiMode mode, bool persist) {
+  if (LoggingManager::configurationLocked()) return;
   LoggerConfig cfg = ConfigManager::get();
   if (cfg.wifiMode == mode) return;
   cfg.wifiMode = mode;
@@ -1236,6 +1241,7 @@ bool ConfigManager::load(LoggerConfig& cfg) {
 }
 
 bool ConfigManager::reload() {
+  if (LoggingManager::configurationLocked()) return false;
   LoggerConfig loaded = s_cfg;
   if (!load(loaded)) return false;
   s_cfg = loaded;
@@ -1244,6 +1250,9 @@ bool ConfigManager::reload() {
 }
 
 bool ConfigManager::save(const LoggerConfig& cfg) {
+#if BODAQS_PRODUCTION_RECORDING
+  if (LoggingManager::configurationLocked()) return false;
+#endif
   CFG_LOGI("save: starting\n");
 
   String out;
@@ -1626,6 +1635,7 @@ bool ConfigManager::saveSensorParamByName(const char* sensorName, const char* ke
 
 
 bool ConfigManager::saveSensorParamByIndex(uint8_t index, const char* key, const String& value) {
+  if (LoggingManager::configurationLocked()) return false;
   if (!key || !*key) return false;
   if (index >= g_specCount) return false;
 
@@ -1654,6 +1664,7 @@ bool ConfigManager::saveSensorParamByIndex(uint8_t index, const char* key, const
 
 
 bool ConfigManager::saveCalibration(const char* sensorName, const Calibration& cal) {
+  if (LoggingManager::configurationLocked()) return false;
   if (!sensorName || !*sensorName) return false;
 
   // Locate index by name so we can write keys as "sensorN.xxx"
@@ -1795,6 +1806,7 @@ CalMode ConfigManager::loadCalModeByIndex(uint8_t index) {
   return g_cals[index].mode;
 }
 void ConfigManager::setCalAllowedByIndex(uint8_t index, CalModeMask m) {
+  if (LoggingManager::configurationLocked()) return;
   if (index >= MAX_SENSORS) return;
   g_calAllowed[index] = m;
   // Optionally write-through to file here by upserting sensorN.cal_allowed line
@@ -1802,6 +1814,7 @@ void ConfigManager::setCalAllowedByIndex(uint8_t index, CalModeMask m) {
 }
 
 bool ConfigManager::setSensorHeaderByIndex(uint8_t index, const SensorSpec& sp) {
+  if (LoggingManager::configurationLocked()) return false;
   if (index >= g_specCount) return false;
   g_specs[index].type = sp.type;
   // copy name safely
@@ -1811,6 +1824,7 @@ bool ConfigManager::setSensorHeaderByIndex(uint8_t index, const SensorSpec& sp) 
 }
 
 bool ConfigManager::appendSensor(SensorType type, const char* name) {
+  if (LoggingManager::configurationLocked()) return false;
   if (g_specCount >= MAX_SENSORS) return false;
   if (!SensorRegistry::lookup(type)) return false;
 
@@ -1830,6 +1844,7 @@ bool ConfigManager::appendSensor(SensorType type, const char* name) {
 }
 
 bool ConfigManager::deleteSensorByIndex(uint8_t index) {
+  if (LoggingManager::configurationLocked()) return false;
   if (index >= g_specCount) return false;
 
   for (uint8_t i = index; i + 1 < g_specCount; ++i) {

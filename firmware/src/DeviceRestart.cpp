@@ -6,7 +6,7 @@
 #include <esp_system.h>
 
 void DeviceRestart::restart() {
-  if (LoggingManager::isRunning()) {
+  if (LoggingManager::configurationLocked()) {
     UI::toast("Stop logging first", 1200, 1);
     return;
   }

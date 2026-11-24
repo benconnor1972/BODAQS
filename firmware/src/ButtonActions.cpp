@@ -312,7 +312,12 @@ void ButtonActions::invoke(ActionId action, ButtonEvent ev) {
 void ButtonActions::onToggleLogging(ButtonEvent event) {
   (void)event; // if unused
 
-  if (!LoggingManager::isRunning()) {
+  if (LoggingManager::isStarting()) {
+    LoggingManager::stop(LoggingManager::StopReason::UserRequest, evName(event));
+    UI::status("Cancelling recording");
+  } else if (LoggingManager::configurationLocked() && !LoggingManager::isRunning()) {
+    UI::status("Finalizing recording");
+  } else if (!LoggingManager::isRunning()) {
     const auto result = LoggingManager::requestStart();
     if (result == LoggingManager::StartResult::Started) {
       ButtonManager_setPollingEnabled(false);   // suspend nav polling
@@ -324,9 +329,9 @@ void ButtonActions::onToggleLogging(ButtonEvent event) {
       // prompts must survive; do not replace them with a generic failure toast.
     }
   } else {
-    UI::println("Logging stopped.", "", UI::TARGET_SERIAL, UI::LVL_INFO);
+    UI::println("Logging stop requested.", "", UI::TARGET_SERIAL, UI::LVL_INFO);
     UI::toast("Log stop", 1500, 2);
-    UI::status("Ready");
+    UI::status("Stopping recording");
     UI::loop();  // Paint the stop message before queue drain / file close / metadata write.
     LoggingManager::stop(
         LoggingManager::StopReason::UserRequest,

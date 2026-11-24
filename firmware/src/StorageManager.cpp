@@ -1,5 +1,6 @@
 #include "CpuOccupancy.h"
 #include "StoragePathProbe.h"
+#include "RecordingStoragePath.h"
 #include "StorageManager.h"
 #include "RemoteImuRecording.h"
 #include "AcquisitionControl.h"
@@ -3503,9 +3504,14 @@ class LoggerStorageSink final : public RecordingStorageSink {
     return SD_MMC.remove(path) && ok;
   }
   bool start() override {
+    if (!RecordingStoragePath::begin()) {
+      setStatus_("Storage DMA buffer unavailable");
+      STOR_LOGE("START refused: storage DMA reservation unavailable; retry after restart\n");
+      return false;
+    }
     StoragePathProbe::begin(AcquisitionControl::startupDiagnostics().context);
     ::startLog();
-    if (!loggingActive) StoragePathProbe::finish(false);
+    if (!loggingActive) { StoragePathProbe::finish(false); RecordingStoragePath::finish(); }
     return loggingActive;
   }
   bool service() override {
@@ -3521,6 +3527,7 @@ class LoggerStorageSink final : public RecordingStorageSink {
       releaseLogSessionBuffers_();
     }
     StoragePathProbe::finish(clean && !s_storageWriteFailures && !StorageManager_storageFault());
+    RecordingStoragePath::finish();
     return clean && !s_storageWriteFailures;
   }
 };

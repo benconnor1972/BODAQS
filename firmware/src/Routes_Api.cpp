@@ -233,6 +233,9 @@ static void handleStatus_(WebServer& srv) {
   addLoggerIdentity_(doc);
   doc["upload_mode"] = UploadModeManager::isActive();
   doc["logging_active"] = LoggingManager::isRunning();
+  doc["recording_phase"] = LoggingManager::lifecycleStateName();
+  doc["recording_ownership_retained"] = LoggingManager::configurationLocked();
+  doc["stop_reason"] = LoggingManager::stopReasonName(LoggingManager::stopContext().reason);
   doc["storage_available"] = scanSummary.storageAvailable;
   doc["storage_directory_opened"] = scanSummary.directoryOpened;
   JsonObject storage = doc["storage"].to<JsonObject>();

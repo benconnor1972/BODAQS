@@ -50,7 +50,7 @@ namespace AnalogInputManager {
   bool scanRowCaptureEligible();
   bool setScanRowCapture(bool (*capture)());
   // STOP: retire the producer but retain cache/snapshot session until rows drain.
-  void retireScanRowCapture();
+  bool retireScanRowCapture();
 #endif
 #if BODAQS_ADC_ROW_HANDOFF
   bool rowHandoffActive();

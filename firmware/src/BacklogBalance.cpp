@@ -12,7 +12,11 @@
 #include <freertos/task.h>
 namespace BacklogBalance {
 namespace {
-bool adaptive=false;
+#if BODAQS_PRODUCTION_RECORDING
+bool adaptive = true;
+#else
+bool adaptive = false;
+#endif
 Pressure pressure(){
  Pressure q;q.running=LoggingManager::isRunning();if(!q.running)return q;
  const auto cap=StorageManager_primaryCapacityForBalance();

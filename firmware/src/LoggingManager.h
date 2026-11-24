@@ -3,6 +3,7 @@
 #include "ConfigManager.h"
 #include "TimingStats.h"
 #include "LoggingStartStatus.h"
+#include "RecordingLifecycle.h"
 
 class AnalogPotSensor; // fwd
 
@@ -54,6 +55,9 @@ namespace LoggingManager {
   StartResult requestStart();
   bool isStarting();
   void cancelStart();
+  using LifecycleState = RecordingLifecycle::State;
+  LifecycleState lifecycleState();
+  const char* lifecycleStateName();
   bool configurationLocked();
   void refreshConfigurationStatus();
   LoggingConfigIssue configurationIssue();

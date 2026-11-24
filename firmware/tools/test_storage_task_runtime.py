@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+from runtime_test_helpers import definition
 
 
 def main():
@@ -23,6 +24,7 @@ constexpr int configMAX_PRIORITIES=25, pdPASS=1;
 void* s_storageTask=nullptr;
 void storageTaskFn_(void*) {}
 unsigned creates=0, requests=0;
+#define STOR_LOGE(...) do {} while (0)
 bool failCreate=true, acceptStart=true;
 const char* status="";
 void setStatus_(const char* text) { status=text; }
@@ -51,7 +53,7 @@ int main() {
   assert(!StorageManager_startLog());
   assert(creates==2 && requests==3);
 }
-'''.replace("// PRODUCTION", default + "\n" + source[start:end])
+'''.replace("// PRODUCTION", default + "\n" + definition(source, "bool StorageManager_prepareTask() {") + "\n" + source[start:end])
     with tempfile.TemporaryDirectory(prefix="bodaqs-storage-task-") as directory:
         cpp = Path(directory)/"task.cpp"
         cpp.write_text(fixture, encoding="utf-8")

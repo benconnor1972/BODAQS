@@ -372,7 +372,7 @@ static bool preSleep_() {
         "pre_sleep");
   }
 
-  if (StorageManager_recordingIoPending()) {
+  if (LoggingManager::configurationLocked() || StorageManager_recordingIoPending()) {
     UI::status("Storage busy");
     return false;
   }
@@ -436,7 +436,7 @@ void PowerManager::loop() {
     g_lastActivityMs = now;
   }
 
-  if (LoggingManager::isRunning()) {
+  if (LoggingManager::configurationLocked()) {
     g_lastActivityMs = now;
     return;
   }

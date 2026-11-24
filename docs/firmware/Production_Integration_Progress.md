@@ -7,8 +7,8 @@ ledger records code dependencies without implicitly closing tracker items.
 | Issue | State | Evidence / remaining work |
 |---|---|---|
 | #214 | Complete | Source-pinned r133 baseline and selected RTC release port; both A8 target builds pass. START harness: 133 checks; remote lifecycle/fault scenarios and RTC runtime tests pass. |
-| #215 | Pending | Lifecycle owner and user-visible guards. |
-| #216 | Pending | Unattended boot and operational storage policy. |
+| #215 | Implemented; qualification pending | Atomic phase, control-task transitions and producer fault requests; nonblocking ADC/row retirement, retained-resource mutation/restart/sleep guards, phase API/UI. START/preflight 133 checks; asynchronous controller 36 checks; target candidate builds. Final fault/outcome checks continue in #226. |
+| #216 | Implemented; qualification pending | Explicit adaptive drain; production ROM CRC and owner-only DMA batches; observers and mandatory console/benchmark gates disabled. Adapter, storage owner/recovery fixtures and candidate target build pass. Physical no-console/mixed-load gate remains. |
 | #217 | Pending | Counts/calibration snapshots and normal analog import. |
 | #218 | Pending | Unified timer and flexible per-ADC plans. |
 | #219 | Pending | Native CAN profiles and normal import. |
@@ -53,3 +53,28 @@ General admission-policy development and deferred physical qualification remain
 release gates. No hardware flashing or new bench measurement occurs merely as
 part of software integration. Finalization faults must preserve uncertainty rather
 than fabricate complete recordings or reuse resources still owned by I/O.
+
+## Lifecycle and operational boot slices (#215 / #216)
+
+The control-loop task owns lifecycle transitions. Producer STOP calls publish
+bounded fault requests, rather than retiring themselves. State is published as
+one atomic phase; configuration/restart/sleep guards include retained CAN and
+storage ownership. ADC row-producer retirement now reports progress without
+waiting in the UI/control loop. The status API adds `recording_phase`,
+`recording_ownership_retained` and `stop_reason`; existing fields remain.
+
+Candidate environment: `bodaqs_a8_production`. It explicitly selects the tested
+adaptive drain policy, ROM file-payload CRC and synchronous 4096-byte owner-only
+DMA staging, with optional CPU/cost observers disabled. Ordinary boot requires
+no serial selection or calibration benchmark. Required storage reservations may
+fail and be retried at an explicit START; they no longer stop boot indefinitely.
+The benchmark environment exceeded static DRAM by 8 bytes after lifecycle
+integration; removing its observers in the candidate restores a successful
+285964-byte static-RAM build (target report). This is not a free-heap estimate.
+
+Runtime fixtures verify blocked open/write/close, cancellation, producer faults,
+allocation recovery, CRC known vectors, exclusive staging ownership, ordered
+8-sector batching and immediate write-error propagation. Real remote lifecycle
+and four-node failure fixtures pass. No new physical timing or throughput
+qualification is claimed. The initial candidate still has fixed ADC geometry;
+that is the next acquisition-plan work, not a production admission envelope.

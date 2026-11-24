@@ -29,12 +29,13 @@ def main():
             "const SensorDiagnosticList& configurationDiagnostics(",
             "LoggingConfigIssue configurationIssue(",
             "bool requiresBdqV2(")))
+    fixture = fixture.replace("// PRODUCTION_LIFECYCLE", definition(logging, "  bool phaseIs_("))
     fixture = fixture.replace("// PRODUCTION_START", "\n".join(
         definition(logging, sig) for sig in (
-            "void LoggingManager::refreshConfigurationStatus(",
+            "bool retireLocalAcquisition_() {", "void LoggingManager::refreshConfigurationStatus(",
             "LoggingConfigIssue LoggingManager::configurationIssue(",
             "const char* LoggingManager::configurationDetail(", "bool LoggingManager::isStarting(",
-            "void LoggingManager::cancelStart(", "bool LoggingManager::configurationLocked(", "LoggingManager::StartResult LoggingManager::requestStart(",
+            "void LoggingManager::cancelStart(", "LoggingManager::LifecycleState LoggingManager::lifecycleState(", "const char* LoggingManager::lifecycleStateName(", "bool LoggingManager::configurationLocked(", "LoggingManager::StartResult LoggingManager::requestStart(",
             "void LoggingManager::loop(", "void LoggingManager::stop(", "void LoggingManager::completeStorageStart(", "void LoggingManager::finishStorageStop(", "bool LoggingManager::start(")))
     fixture = fixture.replace("// PRODUCTION_FORMAT", definition(config, "bool ConfigManager::setLogFormat("))
     fixture = fixture.replace("// PRODUCTION_TOGGLE", definition(buttons, "void ButtonActions::onToggleLogging(").replace("void ButtonActions::onToggleLogging(", "void onToggleLogging("))
@@ -78,12 +79,12 @@ bool StorageManager_storageUnresponsive() { return storageWorker.fault() == Reco
 """)
         fixture = fixture.replace('void StorageManager_stopLog() { events.push_back("close"); }',
                                   'void StorageManager_stopLog() { storageWorker.requestStop(); }')
-        fixture = fixture.replace('extern bool s_stopping;', 'size_t finalRows = 0;\nextern bool s_stopping;')
+        fixture = fixture.replace('extern RecordingLifecycle s_lifecycle;', 'size_t finalRows = 0;\nextern RecordingLifecycle s_lifecycle;')
         fixture = fixture.replace('size_t pendingLoggingRows() { return 0; }',
                                   'size_t pendingLoggingRows() { return finalRows; }')
         fixture = fixture.replace('bool sampleOnce_(bool) { return false; }',
                                   'bool sampleOnce_(bool) { if (!finalRows) return false; --finalRows; events.push_back("tail_row"); return true; }')
-        fixture = fixture.replace('void LoggingManager::refreshConfigurationStatus() {', r"""
+        fixture = fixture.replace('bool retireLocalAcquisition_() {', r"""
 #define ESP32 1
 void* s_sampleTask = reinterpret_cast<void*>(1);
 std::atomic<bool> s_sampleInProgress{false};
@@ -93,7 +94,7 @@ void resetLateStats_() {}
 void sampleTaskFn_(void*) {}
 void vTaskDelay(int) {}
 #define xTaskCreatePinnedToCore(...) do {} while (0)
-void LoggingManager::refreshConfigurationStatus() {
+bool retireLocalAcquisition_() {
 """)
         fixture = fixture.replace(definition(fixture, 'int main()'), r"""
 int main() {
@@ -103,7 +104,7 @@ int main() {
   storageWorker.step(100); LoggingManager::loop();
   check(s_running && has("acquire") && CanMasterManager::fenced);
   LoggingManager::stop(LoggingManager::StopReason::UserRequest, "operator");
-  check(!s_running && s_stopping && has("sensor_stop") && !has("wifi_resume"));
+  check(!s_running && s_stopping && !has("sensor_stop") && !has("wifi_resume"));
   LoggingManager::loop(); check(s_stopping && !has("close"));
   storageWorker.step(200); LoggingManager::loop();
   check(!s_stopping && has("close") && has("wifi_resume") && !CanMasterManager::fenced);
@@ -159,15 +160,47 @@ int main() {
   serviceFails = true; storageWorker.step(11100);
   check(StorageManager_storageFault());
   LoggingManager::stop(LoggingManager::StopReason::StorageFailure,"storage_failure");
-  check(!s_running && has("sensor_stop") && !has("wifi_resume"));
+  check(!s_running && !has("sensor_stop") && !has("wifi_resume"));
   LoggingManager::loop(); storageWorker.step(11200); LoggingManager::loop();
   check(!s_stopping && has("failed_close") && has("wifi_resume"));
   printf("Async storage/controller: %d checks passed\n",checks);
 }
 """)
+    if args.async_storage:
+        fixture = fixture.replace('  // A returned sink failure shuts down acquisition', r"""
+  // Concurrent producer faults are requests, never synchronous self-retirement.
+  reset(); add(SensorType::BMI270ImuI2C,"a",1,104); blockedOperation=0;
+  check(LoggingManager::requestStart() == LoggingManager::StartResult::Pending);
+  storageWorker.step(11000); LoggingManager::loop(); check(s_running);
+  s_sampleInProgress = true;
+  std::thread producer([] {
+    lifecycleOwner = false;
+    LoggingManager::stop(LoggingManager::StopReason::StartFailure,"temporary_producer_context");
+    LoggingManager::stop(LoggingManager::StopReason::StorageFailure,"second_fault");
+  });
+  producer.join();
+  check(s_running && !has("sensor_stop") && LoggingManager::configurationLocked());
+  LoggingManager::loop();
+  check(!s_running && s_stopping && !has("sensor_stop"));
+  check(LoggingManager::requestStart() == LoggingManager::StartResult::Failed);
+  LoggingManager::stop(LoggingManager::StopReason::UserRequest,"repeat");
+  s_sampleInProgress = false;
+  LoggingManager::loop();
+  check(!s_running && s_stopping && s_stopContext.reason == LoggingManager::StopReason::StorageFailure);
+  LoggingManager::loop(); storageWorker.step(11001); LoggingManager::loop();
+  check(!s_stopping && !LoggingManager::configurationLocked());
+  // A returned sink failure shuts down acquisition""")
+    for old, value in {
+        "s_running": "phaseIs_(LifecycleState::Recording)",
+        "s_starting": "phaseIs_(LifecycleState::Preparing)",
+        "s_stopping": "(phaseIs_(LifecycleState::Stopping) || phaseIs_(LifecycleState::Finalizing))",
+    }.items():
+        import re
+        fixture = re.sub(r"\b" + old + r"\b", value, fixture)
     with tempfile.TemporaryDirectory(prefix="bodaqs-log-start-") as temp:
         cpp, exe = Path(temp) / "runtime.cpp", Path(temp) / "runtime.exe"
         cpp.write_text(fixture, encoding="utf-8")
+        (root.parent / ".scratch/logger-production-integration/lifecycle-generated.cpp").write_text(fixture, encoding="utf-8")
         subprocess.run([args.compiler, "-std=gnu++2a", "-Wall", "-Wextra", "-Wno-unused-variable",
                         "-pthread", "-I", str(root / "test/stubs"), "-I", str(root / "src"),
                         str(cpp), str(root / "src/SensorAssignment.cpp"),
