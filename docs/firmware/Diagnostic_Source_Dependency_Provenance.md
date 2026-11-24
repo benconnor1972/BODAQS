@@ -1,10 +1,16 @@
 # Retained diagnostic dependencies
 
 The source seed `e1c63523` retained the firmware bench CLI and host tests but
-omitted five analysis files they require. These files are restored verbatim
+omitted five analysis files they require. These files originate verbatim
 from commit `07aac3619d7416d179ca62f35a8749da7f7a58c3`, the `source_commit`
 recorded by the sealed r133 `BUILD_MANIFEST.json`. No importer or assessment
 behavior is changed by this restoration.
+
+The restored first-recording test fixture subsequently gains the explicit
+native-3333 profile ID/version required by the integrated multi-profile validator.
+Its old all-zero profile bytes no longer constituted a valid effective
+configuration. Production validation is not relaxed to satisfy the old fixture.
+The table below identifies the original LF bytes before this fixture amendment.
 
 The two package modules also match r133's `assessor-source/bodaqs_analysis/`
 copies after normalizing CRLF to LF. Its `SHA256SUMS.txt` records the sealed

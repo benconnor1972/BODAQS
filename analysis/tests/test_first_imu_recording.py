@@ -15,6 +15,7 @@ def recording(tmp_path, *, gap=False, footer=True, confirmed=True, discarded=Fal
         node_address=0, master_boot="99", recording_id="77", control_session="1", measurement_context="9",
         effective_descriptor_hex="00"*192)
     effective=bytearray(192);effective[0]=3;effective[2]=1;effective[4]=2;effective[5]=3
+    struct.pack_into("<HH",effective,40,1,1)  # explicit native-3333 profile identity/version
     struct.pack_into("<6I",effective,48,3333,1,3333,1,32000,2000000)
     sample["acquisition"]["effective_descriptor_hex"]=effective.hex()
     sample["acquisition"].update(source_overrides or {})
