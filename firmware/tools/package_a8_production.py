@@ -37,7 +37,7 @@ def public_source_path(name: str) -> bool:
     if name in PUBLIC_SOURCE_FILES:
         return True
     return (name.startswith(PUBLIC_SOURCE_ROOTS) and Path(name).suffix.lower() in
-            ('.c', '.h', '.cpp', '.s', '.ld', '.cmd', '.py', '.md', '.json', '.syscfg', '.js', '.toml', '.ini')
+            ('.c', '.h', '.cpp', '.inc', '.s', '.ld', '.cmd', '.py', '.md', '.json', '.syscfg', '.js', '.toml', '.ini')
             or name.startswith(('firmware/test/', 'firmware/can-fd/')) and Path(name).name.lower() == 'makefile')
 
 

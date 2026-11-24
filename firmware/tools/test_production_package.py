@@ -18,7 +18,10 @@ def canonical_partitions():
 class PackageAuditTests(unittest.TestCase):
     def test_public_source_archive_excludes_configurations_and_unrelated_files(self):
         for name in ('firmware/src/main.cpp', 'firmware/tools/package_a8_production.py',
-                     'firmware/can-fd/node/src/imu_acquisition.c', 'analysis/bodaqs_analysis/__init__.py',
+                     'firmware/can-fd/node/src/imu_acquisition.c',
+                     'firmware/can-fd/common/protocol/packed_master.inc',
+                     'firmware/can-fd/master/src/packed_handoff_trace.inc',
+                     'analysis/bodaqs_analysis/__init__.py',
                      'firmware/bodaqs_4mb.csv', 'AGENTS.md'):
             self.assertTrue(public_source_path(name), name)
         for name in ('Configs/wifi.json', 'firmware/Configs/bodaqs-a8/loggercfg.txt',
