@@ -51,6 +51,19 @@ static void startupFailureChecks() {
 #if defined(ESP32) && BODAQS_PRODUCTION_RECORDING
   const auto allocated=GpsRuntime::liveAllocations;
   {
+    DANF10NGpsSensor::Params params;params.name="gps_retiring";
+    DANF10NGpsSensor sensor(params);char error[120]{};sensor.begin();
+    assert(sensor.startLoggingSession(error,sizeof error));
+    sensor.onLoggingStop();sensor.onLoggingFinalized();
+    // Worker has observed/requested STOP but its exit callback is still parked.
+    // START must not re-arm that old task and claim a reserved acquisition owner.
+    assert(!sensor.startLoggingSession(error,sizeof error));
+    sensor.onLoggingStop();sensor.onLoggingFinalized();
+    vTaskDelay(1); // deliver the old worker's exit at the scheduler boundary
+    assert(sensor.startLoggingSession(error,sizeof error));
+    sensor.onLoggingStop();sensor.onLoggingFinalized();assert(sensor.shutdown());
+  }
+  {
     DANF10NGpsSensor::Params params;params.name="gps_failure";
     DANF10NGpsSensor sensor(params);char error[120]{};
     GpsRuntime::failTask=true;
@@ -141,7 +154,11 @@ int main(int argc,char** argv) {
   std::ofstream(std::string(argv[1])+".catalog.json")<<catalog.data();
   std::ofstream output(std::string(argv[1])+".records",std::ios::binary);output.write(reinterpret_cast<const char*>(records.data()),records.size());
   assert(!sensor.startLoggingSession(error,sizeof error));
-  sensor.onLoggingFinalized();assert(sensor.startLoggingSession(error,sizeof error));
+  sensor.onLoggingFinalized();
+#if defined(ESP32)
+  vTaskDelay(1); // previous acquisition worker must retire before a new START
+#endif
+  assert(sensor.startLoggingSession(error,sizeof error));
   assert(sensor.pendingLoggingRows()==0);sensor.sampleValues(values,16);assert(std::isnan(values[0]));
   sensor.updateSnapshotFromGnss_(sensor.m_sessionGeneration.load());assert(sensor.pendingLoggingRows()==1);
   sensor.onLoggingStop();sensor.onLoggingFinalized();assert(sensor.pendingLoggingRows()==0);

@@ -402,30 +402,40 @@ bool DANF10NGpsSensor::startSerial_() {
 
 bool DANF10NGpsSensor::startTask_() {
 #if defined(ESP32)
+  if (!m_mutex || xSemaphoreTake(m_mutex, portMAX_DELAY) != pdTRUE) return false;
   if (m_task) {
-    // A previous stop request may still be waiting for the task to observe it.
-    // Re-arm it when a new session starts instead of reporting a task that is
-    // about to exit as successfully started.
-    m_taskRun = true;
-    return true;
+    // A retiring worker still owns its exit publication. Never re-arm it.
+    const bool running = m_taskRun.load(std::memory_order_acquire);
+    xSemaphoreGive(m_mutex);
+    return running;
   }
-  if (webOrUploadActive_()) return false;
+  if (webOrUploadActive_()) {
+    xSemaphoreGive(m_mutex);
+    return false;
+  }
   m_taskRun = true;
+  TaskHandle_t task = nullptr;
   const BaseType_t ok = xTaskCreatePinnedToCore(
     &DANF10NGpsSensor::taskThunk_,
     "GpsTask",
     kGpsTaskStackBytes,
     this,
     1,
-    &m_task,
+    &task,
     kGpsTaskCore);
   if (ok != pdPASS) {
     GPS_LOGW("sensor '%s': failed to start GPS task\n", name());
     m_task = nullptr;
     m_taskRun = false;
+    xSemaphoreGive(m_mutex);
     return false;
   }
-  return true;
+  // The exit callback takes the same mutex before clearing this handle, even
+  // if the new task runs and returns before xTaskCreate itself returns.
+  m_task.store(task, std::memory_order_release);
+  const bool running = m_taskRun.load(std::memory_order_acquire);
+  xSemaphoreGive(m_mutex);
+  return running;
 #else
   return false;
 #endif
@@ -442,8 +452,12 @@ void DANF10NGpsSensor::taskThunk_(void* arg) {
   if (self) self->taskLoop_();
 #if defined(ESP32)
   if (self) {
-    self->m_task = nullptr;
-    self->m_taskRun = false;
+    self->m_taskRun.store(false, std::memory_order_release);
+    // Synchronize with the creator's handle publication. Handle-null is the
+    // final access to self, so shutdown/new START can safely take ownership.
+    xSemaphoreTake(self->m_mutex, portMAX_DELAY);
+    xSemaphoreGive(self->m_mutex);
+    self->m_task.store(nullptr, std::memory_order_release);
   }
   vTaskDelete(nullptr);
 #endif

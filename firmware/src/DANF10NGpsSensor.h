@@ -172,7 +172,7 @@ private:
   bool m_initialized = false;
   bool m_warnedNoUart = false;
   bool m_warnedInit = false;
-  volatile bool m_taskRun = false;
+  std::atomic<bool> m_taskRun{false};
 
   GpsNativeStream m_nativeStream;
   bool m_sessionFrozen = false;
@@ -183,7 +183,7 @@ private:
   uint32_t m_lastLoggedSeq = 0;
 
 #if defined(ESP32)
-  TaskHandle_t m_task = nullptr;
+  std::atomic<TaskHandle_t> m_task{nullptr};
   SemaphoreHandle_t m_mutex = nullptr;
 #endif
 };
