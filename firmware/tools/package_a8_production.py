@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,11 @@ ENVIRONMENTS = ('bodaqs_a8_production', 'bodaqs_a8_integration_candidate')
 OFFSETS = {'bootloader.bin': 0, 'partitions.bin': 0x8000,
            'boot_app0.bin': 0xE000, 'firmware.bin': 0x10000}
 FLASH_BYTES = 0x400000
+PUBLIC_SOURCE_ROOTS = ('firmware/src/', 'firmware/boards/', 'firmware/variants/',
+    'firmware/tools/', 'firmware/test/', 'firmware/can-fd/', 'analysis/bodaqs_analysis/',
+    'analysis/tests/', 'docs/firmware/', 'docs/analysis/', 'docs/agents/', 'docs/adr/')
+PUBLIC_SOURCE_FILES = ('AGENTS.md', 'GLOSSARY.md', 'requirements.txt', 'firmware/platformio.ini',
+    'firmware/bodaqs_4mb.csv', 'firmware/build.sh', 'analysis/pyproject.toml', 'analysis/pytest.ini')
 
 
 def digest(path: Path) -> str:
@@ -25,6 +31,25 @@ def digest(path: Path) -> str:
 
 def record(path: Path) -> dict:
     return {'bytes': path.stat().st_size, 'sha256': digest(path)}
+
+
+def public_source_path(name: str) -> bool:
+    if name in PUBLIC_SOURCE_FILES:
+        return True
+    return (name.startswith(PUBLIC_SOURCE_ROOTS) and Path(name).suffix.lower() in
+            ('.c', '.h', '.cpp', '.s', '.ld', '.cmd', '.py', '.md', '.json', '.syscfg', '.js', '.toml', '.ini')
+            or name.startswith(('firmware/test/', 'firmware/can-fd/')) and Path(name).name.lower() == 'makefile')
+
+
+def audit_merged(image: bytes, folder: Path, segments: dict) -> None:
+    if len(image) != max(s['end'] for s in segments.values()):
+        raise ValueError('merged image length mismatch')
+    cursor = 0
+    for name, segment in sorted(segments.items(), key=lambda item: item[1]['offset']):
+        start, end = segment['offset'], segment['end']
+        if image[start:end] != (folder / name).read_bytes() or image[cursor:start] != b'\xff' * (start - cursor):
+            raise ValueError(f'merged image component or erased gap mismatch: {name}')
+        cursor = end
 
 
 def audit_build_timestamp(image: bytes, epoch: int) -> str:
@@ -70,6 +95,11 @@ def audit_images(folder: Path) -> dict:
     app = next((p for p in partitions if p['type'] == 0 and p['offset'] == 0x10000), None)
     if app is None or segments['firmware.bin']['end'] > app['end']:
         raise ValueError('application exceeds app partition at 0x10000')
+    expected = [(1, 2, 0x9000, 0x5000, 'nvs', 0), (1, 0, 0xe000, 0x2000, 'otadata', 0),
+                (0, 0x10, 0x10000, 0x3e0000, 'app0', 0), (1, 3, 0x3f0000, 0x10000, 'coredump', 0)]
+    actual = [(p['type'], p['subtype'], p['offset'], p['bytes'], p['label'], p['flags']) for p in partitions]
+    if actual != expected:
+        raise ValueError('partition profile does not match canonical unencrypted A8 4MB layout')
     return {'flash_bytes': FLASH_BYTES, 'chip': 'esp32s3', 'segments': segments, 'partitions': partitions}
 
 
@@ -155,6 +185,7 @@ def main() -> int:
             for name, entry in audit['segments'].items():
                 merged[entry['offset']:entry['end']] = (first / name).read_bytes()
             (first / 'recovery-merged.bin').write_bytes(merged)
+            audit_merged((first / 'recovery-merged.bin').read_bytes(), first, audit['segments'])
             manifest['logger'][environment] = {**audit, 'recipe_id': recipe['id'], 'compiler_timestamp': stamp,
                                                'clean_rebuild_equal': True, 'build_artifacts': hashes[0],
                                                'merged': record(first / 'recovery-merged.bin')}
@@ -212,8 +243,23 @@ def main() -> int:
         clean_source()
         if git('rev-parse', 'HEAD') != commit:
             raise ValueError('source changed during build')
-        subprocess.run(['git', 'archive', '--format=zip', '--output', str(output / 'SOURCE.zip'), commit], cwd=root, check=True)
+        # Filter Git's deterministic archive to an explicit public build/test source set.
+        archive_bytes = subprocess.check_output(['git', 'archive', '--format=zip', commit], cwd=root)
+        selected = []
+        excluded = []
+        with zipfile.ZipFile(io.BytesIO(archive_bytes)) as full, zipfile.ZipFile(output / 'SOURCE.zip', 'w') as public:
+            for info in full.infolist():
+                if info.is_dir():
+                    continue
+                if public_source_path(info.filename):
+                    public.writestr(info, full.read(info.filename))
+                    selected.append(info.filename)
+                else:
+                    excluded.append(info.filename)
         manifest['source_archive'] = record(output / 'SOURCE.zip')
+        manifest['source_archive'].update({'included_paths': selected, 'excluded_paths': excluded,
+            'policy': 'public build/test sources and canonical reference docs; no settings/data/media/other apps',
+            'rebuild': 'extract and run PlatformIO; packaging again requires original git commit checkout'})
         manifest['build_hooks'] = {p.relative_to(root).as_posix(): record(p)
                                    for p in (root / 'firmware/tools').glob('configure_*.py')}
         manifest['tool_packages'] = {}

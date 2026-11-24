@@ -40,9 +40,15 @@ Recipe IDs describe source/options and remain separate from actual SHA256 hashes
 
 The package retains resolved PlatformIO dependencies, installed tool package
 versions, hook hashes, command logs, ELF/map/recipe, `SOURCE.zip`, peer provenance
-and `SHA256SUMS.txt`. The source archive contains committed repository files;
-private reference configurations, card recovery archives and full device-flash
-backups are not copied from the historical bundles. Check
+and `SHA256SUMS.txt`. The source archive selects public firmware/analysis build
+and test sources, canonical firmware/analysis/agent/ADR documentation and build
+entry files from the pinned commit. Its manifest lists exact included/excluded
+paths. It excludes configuration settings, personal notes, media, datasets,
+prebuilt archives/images and unrelated applications. Private reference
+configurations, card recovery archives and full device-flash backups are not copied.
+Extracted source can build directly through PlatformIO because recipe identity
+uses file contents and options, without Git. Running the package driver again
+requires a clean checkout of the recorded Git commit. Check
 `BUILD_MANIFEST.json` for `status: passed` before considering installation. A
 failed directory contains diagnostics and must not be used as a release package.
 
@@ -55,11 +61,13 @@ failed directory contains diagnostics and must not be used as a release package.
 | `boot_app0.bin` | `0xE000` | Before application |
 | `firmware.bin` | `0x10000` | Within actual app partition and 4MB flash |
 
-The tool checks ESP32-S3 chip ID 9 and 4MB image headers, parses real partition
-bounds, runs the partition verifier and esptool image checksum/hash inspection,
+The tool checks ESP32-S3 chip ID 9 and 4MB image headers, requires the canonical
+unencrypted A8 nvs/otadata/app0/coredump table, parses real partition bounds,
+runs the partition verifier and esptool image checksum/hash inspection,
 and records actual offsets, ends, sizes and hashes. Each
 `recovery-merged.bin` begins at offset zero and contains the same component bytes
-with erased `0xFF` gaps. Flashing it overwrites the NVS gap; preserve required
+with erased `0xFF` gaps; a readback audit verifies every component and gap at
+its expected offset. Flashing it overwrites the NVS gap; preserve required
 settings separately before choosing that recovery operation. An app-only update
 uses `firmware.bin` at `0x10000` with an already matching partition layout.
 Use components and merged image from the same environment/package. Peer `.out`
