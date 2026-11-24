@@ -24,6 +24,20 @@ ledger records code dependencies without implicitly closing tracker items.
 | #229 | Implemented | Final `a8-production-integration-package-03` passes two clean builds per environment, image/partition/merged checks and peer provenance audit. All 41 checksums and archived recipe source inputs independently verified. Strict/candidate and retained diagnostic ELF audits pass; no installation performed. |
 | #230 | Software verification complete; hardware gates pending | Full analysis suite: 615 passed, 1 skipped, followed by affected/import and restored diagnostic checks. Logger and CAN regression sweeps pass after documented fixture/dependency fixes; independent reviews rechecked resolved findings. Representative device checks remain before destination integration. See software evidence and qualification checklist. |
 
+## Subsequent USB firmware integration
+
+The user authorized a selective firmware port from USB branch commit `da69dfb7`.
+Combined ownership, upload, restart and filesystem coordination are reviewed;
+Import Manager and analysis feature changes remain separate. See
+`Production_Integration_USB.md` for behavior, provenance and verification.
+
+The package `a8-production-usb-package-01`, built from `a15fbeae`, passed clean-build
+reproducibility and image/source audits. All 113 firmware test recipes and 660
+analysis tests passed (one analysis skip), alongside the operational and retained
+board builds. No installation was performed. Combined USB and sustained mixed-load
+physical qualification remain part of the #230 gate before integration onto
+`feat-CAN-firmware`.
+
 ## Baseline provenance
 
 Mechanical firmware/ADR import from the sealed r133 source archive, SHA256

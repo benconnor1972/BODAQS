@@ -31,6 +31,7 @@ required. Keep private network settings out of shareable evidence/packages.
 | Unattended boot | Boot with no serial console; repeat after using Wi-Fi. | Controls become responsive without benchmark prompts. START reservation failure is visible and retryable; no unexplained boot wait. |
 | Migration | Load a retained old configuration, inspect web and physical review, accept once, reboot. Also inspect an unsupported source. | Exact proposed changes and preserved original; acceptance persists. Unsupported settings stay visible and block START. Rejected/failed saves do not claim application. |
 | Lifecycle | START, STOP, repeat STOP, then START a second session without power cycling; exercise read-only navigation while stopping. | Visible preparation/running/retirement/finalization; no mutations or new START while ownership remains. Successful finalization restores controls and releases resources. |
+| Optional USB firmware | Use the combined USB candidate. Attempt UPLOAD during preparation, recording and finalization; enter after retirement. Exercise read/write, reconnect/eject, cancel/reclaim, software restart while exported and another recording after reclaim. | No shared card ownership or local SD I/O while exported; truthful pending exit; byte-verified copies; software restart refused until reclaim. Check composite serial, updating/recovery and normal import of local copies. See `Production_Integration_USB.md`. |
 | ADC layouts | Exact and fractional common row rates; unequal channel counts, sparse subsets and one idle ADC. | Source/count order matches configuration, no dummy participants or silently changed rates. Missed appointments and reused/unavailable readings remain explicit. No simultaneous-sampling claim. |
 | Native sensor smoke | Available analog/string-pot, rotary, local BMI270, GPS and CAN sources, with preview closed and open. | Supported paths record typed counts/native observations and settings. Preview does not consume FIFO data, trigger extra reads or advance wrap tracking. Unavailable hardware is recorded as untested. |
 | Membership | Strict missing source; explicit best effort with one unavailable source; no eligible sources. | Strict refuses; best effort identifies each exclusion; no empty ghost session. Requested/selected/final membership and reservation status agree across UI, API and file. |
@@ -49,6 +50,12 @@ the candidate. Preserve the r133 reference assessment rather than treating its
 short run as a sustained guarantee. Run the agreed representative sustained
 duration (ten minutes is the existing practical reference), and perform normal
 STOP plus a second START afterward.
+
+Compare USB-enabled and USB-disabled images on this same load, with a connected
+cable but no exported media during recording. The USB stack can still consume
+CPU, interrupts and RAM; equal delivery/freshness must be measured. Transfer and
+reclaim the card between two recordings. Desktop USB discovery/pairing integration
+is separate from this firmware comparison.
 
 Assess useful retained ADC row rate, missed rows, reused/unavailable values and
 freshness; source-bounded IMU delivery and explicit gaps; storage/receiver/master

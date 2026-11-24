@@ -91,3 +91,37 @@ are intentionally outside this port; the versioned marker contract is preserved
 for compatible clients. Windows, macOS/Linux, runtime headroom, composite serial,
 updating and recovery coverage must be reported explicitly rather than inferred
 from host tests or successful compilation.
+
+Copy recordings to a local folder before normal import. Do not use the older
+moving folder-source workflow directly on the mounted logger card; the desktop
+USB discovery/pairing adapter is outside this firmware port.
+
+## Software verification and package
+
+The audited package is
+`C:/Users/benco/dev/BODAQS-worktrees/a8-production-usb-package-01`, built from
+`a15fbeae`. Its manifest reports `passed`; installation was not performed and
+physical qualification remains pending.
+
+Both strict and candidate USB images passed two clean builds with identical app,
+bootloader, partitions, ELF, map and recipe artifacts. Independent checks verified
+the compiler timestamp, ESP32-S3 image checksums/digest, canonical 4MB partitions,
+merged-image contents, all 41 package checksums and recipe inputs against the
+914-file public source archive. Selected master/node images remain unchanged.
+
+| Image | App SHA-256 |
+|---|---|
+| `bodaqs_a8_production_usb` | `7155f88333243135e07fcb59466babf11d6c27fa9c82a61a8596645b0da44e7e` |
+| `bodaqs_a8_integration_candidate_usb` | `1208cd69d7a390f6c9d427f686d80f26769d5878b7194887b8e00d4746fff0af` |
+
+All 113 firmware test recipes passed. The analysis suite passed 660 tests with one
+skip. The USB pair, USB-disabled candidate, retained IMU smoke and Thing Plus
+compatibility targets built successfully. ELF audits confirmed retired production
+paths remain absent. Independent standards and specification reviews completed;
+the follow-up restart ownership guard was independently rechecked.
+
+The USB candidate uses 249,932 bytes of static DRAM versus 237,116 for the updated
+USB-disabled control: an increase of 12,816 bytes. Loadable flash increases from
+2,041,605 to 2,081,361 bytes. These are ELF measurements, not runtime heap or CPU
+measurements. Runtime headroom, acquisition performance and USB behavior require
+the hardware comparisons above; no firmware was flashed during this port.
