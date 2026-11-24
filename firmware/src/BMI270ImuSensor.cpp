@@ -490,7 +490,7 @@ void BMI270ImuSensor::sampleValues(float* out, uint8_t maximum) {
   float values[kMaximumColumnCount] {};
   float baseValues[BMI270SparseRow::kColumnCount];
   BMI270ImuSample sample;
-  const bool haveSample = acquisition_.pop(sample);
+  const bool haveSample = acquisition_.latestSample(sample);
   uint32_t ageUs = 0;
   bool ageValid = false;
   BMI270SparseRow::encode(
@@ -503,7 +503,7 @@ void BMI270ImuSensor::sampleValues(float* out, uint8_t maximum) {
 
   if (params_.iocDiagnostics) {
     BMI270IocOffsetSnapshot snapshot;
-    if (acquisition_.popIocOffsetSnapshot(snapshot)) {
+    if (acquisition_.latestIocOffsetSnapshot(snapshot)) {
       values[12] = static_cast<float>(snapshot.x);
       values[13] = static_cast<float>(snapshot.y);
       values[14] = static_cast<float>(snapshot.z);
@@ -514,8 +514,7 @@ void BMI270ImuSensor::sampleValues(float* out, uint8_t maximum) {
   const uint8_t configuredCount = columnCount();
   const uint8_t count = maximum < configuredCount ? maximum : configuredCount;
   memcpy(out, values, count * sizeof(float));
-  I2CBusScheduler::recordRowUse(&acquisition_, ageUs, ageValid, haveSample);
-  if (haveSample) acquisition_.recordRowEmission(ageUs, ageValid);
+  // Observation never advances recording queues or acquisition diagnostics.
 }
 
 bool BMI270ImuSensor::describeColumn(uint8_t index, SensorColumnDescriptor& out) const {

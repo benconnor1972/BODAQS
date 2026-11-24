@@ -1050,7 +1050,7 @@ def load_bdq_session(
         session.setdefault("meta", {})["bdq_timing_observations"] = timing_observations
         parse["bdq_stream_count"] = info.stream_count
         parse["bdq_event_count"] = len(info.events)
-        return session
+        return build_imu_streams(session, strict=False)
     return build_imu_streams(session, strict=False)
 
 
