@@ -552,6 +552,7 @@ void taskFn_(void* arg) {
     }
     if (periodUs > 0 && nextDue <= afterUs) {
       const uint64_t missed = ((afterUs - nextDue) / periodUs) + 1ULL;
+      client->asyncMissedServiceSlots(missed);
       if (bus < kMaxBuses) {
         s_lastServiceMissUs[bus].store(micros(), std::memory_order_release);
       }

@@ -27,7 +27,8 @@ SensorAssignment sensorAssignment(const SensorSpec&, const board::BoardProfile*)
   result.bus = 1; result.input = 2;
   return result;
 }
-namespace SensorRegistry { const char* typeKey(SensorType) { return "analog_pot"; } }
+static bool stringMode=false;
+namespace SensorRegistry { const char* typeKey(SensorType type) { return type==SensorType::AS5600StringPotAnalog?"as5600_string_pot_analog":"analog_pot"; } }
 struct ConfigManager {
   static bool loadCalibrationByIndex(uint8_t, Calibration& out) {
     out.ts_epoch_ms = 123456789;
@@ -45,7 +46,7 @@ bool describeSensorAt(uint16_t i, SensorMetadataDescriptor& out) {
   out.sensorZeroCount = 100; out.sensorFullCount = 1100; out.sensorFullTravel = 100;
   return true;
 }
-uint16_t describeSensorColumns(SensorColumnDescriptor*, uint16_t, bool) { return 1; }
+uint16_t describeSensorColumns(SensorColumnDescriptor*, uint16_t, bool) { return stringMode?0:1; }
 bool describeSensorColumnAt(uint16_t, SensorColumnDescriptor& out, bool) {
   snprintf(out.sensorName, sizeof(out.sensorName), "pot\"one");
   snprintf(out.columnId, sizeof(out.columnId), "pot_raw");
@@ -54,7 +55,8 @@ bool describeSensorColumnAt(uint16_t, SensorColumnDescriptor& out, bool) {
 }
 }
 // PRODUCTION_JSON
-int main() {
+int main(int argc,char**) {
+  stringMode=argc>1;
   uint16_t status = 0;
   assert(RawAdcRecording::count(-1, status) == 0 && (status & 0x20));
   status = 0;
@@ -66,6 +68,7 @@ int main() {
   snprintf(config.sensors[0].name, sizeof(config.sensors[0].name), "pot\"one");
   snprintf(config.sensors[1].name, sizeof(config.sensors[1].name), "uncalibrated");
   config.sensors[0].type = config.sensors[1].type = SensorType::AnalogPot;
+  if(stringMode) config.sensors[0].type=SensorType::AS5600StringPotAnalog;
   config.sensors[0].params.bind(&parameters);
   JsonOutput output;
   output += '{';

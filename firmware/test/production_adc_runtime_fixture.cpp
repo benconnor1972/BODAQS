@@ -5,7 +5,7 @@ unsigned targetRows = 16;
 LocalAnalogRecordingPlan expectedPlan;
 struct Publication {uint8_t sensor;int32_t count;uint32_t tick;uint16_t status;};
 std::vector<Publication> publications;
-void publishCount(uint8_t sensor,int32_t count,uint32_t tick,uint16_t status) {
+void publishCount(uint8_t sensor,int32_t count,uint32_t tick,uint16_t status,uint32_t) {
   publications.push_back({sensor,count,tick,status});
 }
 bool captureProductionRow() {
@@ -16,14 +16,15 @@ bool captureProductionRow() {
   assert(uint64_t(nowUs) >= deadline);
   publications.clear();
   assert(AnalogInputManager::captureRawPair(record, observed));
-  assert(publications.size()==expectedPlan.columns());
+  assert(publications.size()==expectedPlan.inputs());
   assert(observed >= deadline);
-  for (unsigned field = 0; field < expectedPlan.columns(); ++field) {
+  unsigned primaryField=0;
+  for (unsigned field = 0; field < expectedPlan.inputs(); ++field) {
     const auto& input = expectedPlan.column(field);
     const auto conversion = input.external ? delivered[input.adc][input.channel] : 0;
     const uint16_t expected = input.external
         ? (conversion < 0 ? 0 : uint16_t(double(conversion) * 4095.0 / 8388607.0 + 0.5)) : 123;
-    assert(record.counts[field] == expected);
+    if(input.primary) assert(record.counts[primaryField++] == expected);
     assert(publications[field].sensor==input.sensorIndex && publications[field].count==expected);
     assert(publications[field].tick==record.tick);
   }
@@ -97,6 +98,12 @@ int main() {
   assert(plan.configure(1000) && plan.addExternal(0, 0, 2));
   run(plan, false, true); // full register proof rejects a wrong channel image
   run(plan); // retired failure must not poison the next explicit session
+  assert(plan.configure(500) && plan.addExternal(7,0,3,false) && plan.addGpio(2,12));
+  assert(plan.inputs()==2 && plan.columns()==1);
+  run(plan); // Native string-pot input publishes without a duplicate primary field.
+  assert(plan.configure(500) && plan.addExternal(7,0,3,false));
+  assert(plan.inputs()==1 && plan.columns()==0);
+  run(plan); // Native-only analog input still gets real conversion appointments.
   auto board = profile();
   AnalogInputManager::begin(board);
   assert(AnalogInputManager::setRecordingPlan(plan));

@@ -2371,10 +2371,13 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
         continue;
       }
       if (diagnostics.hasBdqV2Stream) {
+        stream["loss_count_known"] = diagnostics.bdqV2RecordsDropped != UINT32_MAX &&
+            diagnostics.bdqV2RecordsEnqueued != UINT32_MAX && diagnostics.bdqV2RecordsDequeued != UINT32_MAX;
         stream["producer_drop_count"] = diagnostics.bdqV2RecordsDropped;
         stream["producer_rejected_count"] = diagnostics.bdqV2RecordsRejected;
         stream["producer_queue_capacity"] = diagnostics.bdqV2QueueCapacity;
         stream["producer_queue_high_water"] = diagnostics.bdqV2QueueHighWater;
+        stream["producer_final_queue_depth"] = diagnostics.bdqV2FinalQueueDepth;
         stream["native_rate_hz"] = diagnostics.bdqV2NominalRateHz;
       } else {
         stream["producer_drop_count"] = diagnostics.imuQueueDrops;

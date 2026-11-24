@@ -468,6 +468,7 @@ void AS5600StringPotI2C::onLoggingStop() {
 }
 
 void AS5600StringPotI2C::onLoggingFinalized() {
+  AS5600StringPotSensorBase::onLoggingFinalized();
   if (!m_deferredRecoveryPending) return;
 
   m_deferredRecoveryPending = false;
@@ -502,6 +503,16 @@ uint16_t AS5600StringPotI2C::asyncTargetRateHz() const {
 
 bool AS5600StringPotI2C::asyncAcquire() {
   return acquireAsyncSample_();
+}
+
+void AS5600StringPotI2C::asyncMissedServiceSlots(uint64_t missed) {
+#if BODAQS_PRODUCTION_RECORDING
+  if(!missed) return;
+  m_asyncNextSeq+=static_cast<uint32_t>(missed);
+  markCountObservationGap();
+#else
+  (void)missed;
+#endif
 }
 
 void AS5600StringPotI2C::asyncSchedulerStarting() {
@@ -985,6 +996,11 @@ int AS5600StringPotI2C::readWrappedCountsOnce() const {
   return wrapped;
 }
 
+bool AS5600StringPotI2C::readWrappedObservation(int32_t& counts) const {
+  int wrapped=0;const bool valid=readWrappedCountsDirectOnce_(wrapped);
+  counts=wrapped;return valid;
+}
+
 bool AS5600StringPotI2C::readWrappedCountsDirectOnce_(int& wrapped) const {
   wrapped = m_haveLastGoodWrapped ? m_lastGoodWrapped : 0;
 
@@ -1092,7 +1108,11 @@ bool AS5600StringPotI2C::acquireAsyncSample_() const {
   snapshot.magnitude = m_lastMagnitude;
   snapshot.readFailures = m_readFailures;
   snapshot.diagnosticReadFailures = m_diagnosticReadFailures;
+#if BODAQS_PRODUCTION_RECORDING
+  snapshot.seq = m_asyncNextSeq++;
+#else
   snapshot.seq = ++m_asyncNextSeq;
+#endif
   snapshot.acquiredUs = m_lastRawAcquiredUs != 0
       ? m_lastRawAcquiredUs
       : (uint64_t)esp_timer_get_time();
@@ -1108,6 +1128,15 @@ bool AS5600StringPotI2C::acquireAsyncSample_() const {
   }
 
   publishAsyncSnapshot_(snapshot);
+#if BODAQS_PRODUCTION_RECORDING
+  StringPotCountStream::Auxiliary auxiliary;
+  auxiliary.angle=snapshot.angle;auxiliary.deviceStatus=snapshot.status;auxiliary.agc=snapshot.agc;
+  auxiliary.magnitude=snapshot.magnitude;auxiliary.readFailures=snapshot.readFailures;
+  auxiliary.diagnosticFailures=snapshot.diagnosticReadFailures;
+  auxiliary.validity=(snapshot.readOk?1:0)|(snapshot.haveAngle?2:0)|(snapshot.haveDiagnostics?4:0)|(snapshot.reused?8:0);
+  publishI2CCountObservation(snapshot.wrapped,static_cast<uint32_t>(snapshot.readOk?snapshot.acquiredUs:esp_timer_get_time()),
+      snapshot.readOk?0:0x20,snapshot.seq,auxiliary);
+#endif
   return snapshot.readOk;
 }
 
@@ -1163,16 +1192,22 @@ void AS5600StringPotI2C::sampleValues(float* out, uint8_t max) {
   AsyncSnapshot snapshot;
   const bool haveAsync = m_asyncLoggingActive && copyAsyncSnapshot_(snapshot);
   if (m_includeAngleColumn && w < max) {
+#if BODAQS_PRODUCTION_RECORDING
+    out[w++] = (haveAsync && snapshot.haveAngle) ? float(snapshot.angle) : NAN;
+#else
     if (m_asyncLoggingActive) {
       out[w++] = (haveAsync && snapshot.haveAngle) ? float(snapshot.angle) : NAN;
     } else {
       uint16_t angle = 0;
       out[w++] = readAngleRegister_(angle) ? float(angle) : NAN;
     }
+#endif
   }
 
   if (!m_includeDiagColumns) return;
+#if !BODAQS_PRODUCTION_RECORDING
   if (!m_asyncLoggingActive) refreshDiagnostics_(false);
+#endif
   const bool haveDiagnostics = m_asyncLoggingActive
     ? (haveAsync && snapshot.haveDiagnostics)
     : m_haveDiagnostics;
@@ -1315,6 +1350,7 @@ bool AS5600StringPotI2C::describeRuntimeDiagnostics(SensorRuntimeDiagnostics& ou
     (out.rawReadFailures > 0 || !m_lastReadOk)
       ? m_lastRawRuntimeFailure
       : SensorRuntimeFailure{};
+  appendCountRecordingDiagnostics(out);
   return true;
 }
 

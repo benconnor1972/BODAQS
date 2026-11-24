@@ -20,6 +20,7 @@ public:
 
 protected:
   int readWrappedCountsOnce() const override;
+  bool readWrappedObservation(int32_t&) const override;
   bool hasAnalogWrapSettling() const override { return true; }
 
 private:

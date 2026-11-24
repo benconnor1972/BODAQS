@@ -45,7 +45,7 @@ struct LoggerConfig;
 #endif
 namespace AnalogInputManager {
 #if BODAQS_PRODUCTION_RECORDING
-  using CountPublisher = void (*)(uint8_t sensorIndex, int32_t counts, uint32_t tickUs, uint16_t status);
+  using CountPublisher = void (*)(uint8_t sensorIndex, int32_t counts, uint32_t tickUs, uint16_t status, uint32_t sequence);
   bool setRecordingPlan(const LocalAnalogRecordingPlan& plan, CountPublisher publisher=nullptr);
   // Publish/unpark only after the lifecycle owner has entered Recording.
   bool activateRecordingPlan();

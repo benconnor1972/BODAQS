@@ -266,6 +266,9 @@ public:
   virtual bool usesBdqV2NativeStream() const { return false; }
   // Acquisition-owner publication; observers must not trigger another read.
   virtual void publishAcquiredCounts(int32_t, uint32_t, uint16_t) {}
+  virtual void publishAcquisitionCounts(int32_t counts,uint32_t tick,uint16_t status,uint32_t) {
+    publishAcquiredCounts(counts,tick,status);
+  }
 
   // ----- Runtime muting -----
   virtual bool muted() const = 0;

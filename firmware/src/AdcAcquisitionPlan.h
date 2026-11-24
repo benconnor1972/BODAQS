@@ -10,7 +10,7 @@ public:
   struct Column {
     uint8_t sensorIndex = 0, adc = 0, channel = 0;
     int16_t pin = -1;
-    bool external = false;
+    bool external = false, primary = true;
   };
   bool configure(uint16_t rowHz) {
     *this = LocalAnalogRecordingPlan{};
@@ -18,22 +18,25 @@ public:
     rowHz_ = rowHz;
     return true;
   }
-  bool addExternal(uint8_t sensorIndex, uint8_t adc, uint8_t channel) {
+  bool addExternal(uint8_t sensorIndex, uint8_t adc, uint8_t channel, bool primary=true) {
     if (!rowHz_ || columns_ >= kMaximumColumns || adc >= 2 || channel >= 4 ||
         (masks_[adc] & (1u << channel)) || uint32_t(rowHz_) * (channels(adc) + 1) > 2000)
       return false;
-    fields_[columns_++] = {sensorIndex, adc, channel, -1, true};
+    fields_[columns_++] = {sensorIndex, adc, channel, -1, true, primary};
+    if(primary) ++primaryColumns_;
     masks_[adc] |= 1u << channel;
     return true;
   }
-  bool addGpio(uint8_t sensorIndex, int16_t pin) {
+  bool addGpio(uint8_t sensorIndex, int16_t pin, bool primary=true) {
     if (!rowHz_ || columns_ >= kMaximumColumns || pin < 0 || pin > 255) return false;
     for (unsigned i = 0; i < columns_; ++i)
       if (!fields_[i].external && fields_[i].pin == pin) return false;
-    fields_[columns_++] = {sensorIndex, 0, 0, pin, false};
+    fields_[columns_++] = {sensorIndex, 0, 0, pin, false, primary};
+    if(primary) ++primaryColumns_;
     return true;
   }
-  unsigned columns() const { return columns_; }
+  unsigned inputs() const { return columns_; }
+  unsigned columns() const { return primaryColumns_; }
   uint16_t rateHz() const { return rowHz_; }
   const Column& column(unsigned index) const { return fields_[index]; }
   uint8_t mask(unsigned adc) const { return adc < 2 ? masks_[adc] : 0; }
@@ -57,7 +60,7 @@ public:
 private:
   Column fields_[kMaximumColumns];
   uint16_t rowHz_ = 0;
-  uint8_t columns_ = 0, masks_[2] = {};
+  uint8_t columns_ = 0, primaryColumns_=0, masks_[2] = {};
 };
 
 // Absolute rational deadlines, rounded upward so a wake hint never authorizes

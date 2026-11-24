@@ -1248,7 +1248,7 @@ namespace AnalogInputManager {
 #if BODAQS_PRODUCTION_RECORDING
 bool setRecordingPlan(const LocalAnalogRecordingPlan& plan, CountPublisher publisher) {
   if (!plan.rateHz() || s_scanSession || s_timingWorkers.load(std::memory_order_acquire)) return false;
-  for (unsigned field = 0; field < plan.columns(); ++field)
+  for (unsigned field = 0; field < plan.inputs(); ++field)
     if (!plan.column(field).external && digitalPinToAnalogChannel(uint8_t(plan.column(field).pin)) < 0) return false;
   for (unsigned adc = 0; adc < 2; ++adc) {
     if (plan.mask(adc) && (!s_ads[adc].present || !s_ads[adc].initialized || s_ads[adc].cfg.drdy_pin < 0)) return false;
@@ -1332,7 +1332,8 @@ bool captureRawPair(RawAdcRecord& record,uint64_t& capturedUs) {
   const uint64_t now = static_cast<uint64_t>(esp_timer_get_time());
   capturedUs = now;
   record.tick = static_cast<uint32_t>(now); record.status = 0; record.reserved = 0;
-  for (unsigned index = 0; index < s_recordingScan->plan.columns(); ++index) {
+  unsigned output=0;
+  for (unsigned index = 0; index < s_recordingScan->plan.inputs(); ++index) {
     const auto& source = s_recordingScan->plan.column(index);
     int32_t value = 0;
     uint16_t fieldStatus=0;
@@ -1346,10 +1347,10 @@ bool captureRawPair(RawAdcRecord& record,uint64_t& capturedUs) {
       const uint32_t age = now >= dev.cachedAcquiredUs[source.channel] ? uint32_t(now - dev.cachedAcquiredUs[source.channel]) : 0;
       recordCachedRowUse_(source.adc, source.channel, dev.cachedValid[source.channel], fresh, age);
     } else value = analogRead(uint8_t(source.pin));
-    record.counts[index] = RawAdcRecording::count(value, fieldStatus);
-    record.status |= fieldStatus;
+    const auto counts=RawAdcRecording::count(value, fieldStatus);
+    if(source.primary) {record.counts[output++]=counts;record.status|=fieldStatus;}
     if(s_recordingScan->publisher)
-      s_recordingScan->publisher(source.sensorIndex,record.counts[index],record.tick,fieldStatus);
+      s_recordingScan->publisher(source.sensorIndex,counts,record.tick,fieldStatus,record.sequence);
   }
   return true;
 #else

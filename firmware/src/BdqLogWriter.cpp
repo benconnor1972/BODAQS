@@ -1627,7 +1627,14 @@ void appendRecordingConfiguration_(JsonOutput& out, const LoggerConfig& cfg, boo
     appendKeyString_(out, 3, "sensor_id", spec.name);
     appendKeyString_(out, 3, "sensor_type", SensorRegistry::typeKey(spec.type));
     appendKeyBool_(out, 3, "configured_muted", spec.mutedDefault);
-    appendKeyString_(out, 3, "stream_key", spec.type == SensorType::AnalogPot ? "primary" : "");
+#if BODAQS_PRODUCTION_RECORDING
+    const bool stringPot=spec.type==SensorType::AS5600StringPotAnalog || spec.type==SensorType::AS5600StringPotI2C;
+#else
+    const bool stringPot=false;
+#endif
+    char countStream[40]{};
+    if(stringPot) snprintf(countStream,sizeof countStream,"%s_counts",spec.name);
+    appendKeyString_(out, 3, "stream_key", spec.type == SensorType::AnalogPot ? "primary" : countStream);
     const auto assignment = sensorAssignment(spec, board::gBoard);
     const char* kind = "unknown";
     switch (assignment.kind) {
@@ -1656,7 +1663,8 @@ void appendRecordingConfiguration_(JsonOutput& out, const LoggerConfig& cfg, boo
     }
     out += F("},\n");
     appendKey_(out, 3, "raw_fields"); out += '[';
-    bool fieldSeparated = false;
+    if(stringPot) out+=F("\"wrapped_count\",\"unwrapped_count\"");
+    bool fieldSeparated = stringPot;
     const auto columns = SensorManager::describeSensorColumns(nullptr, 0, true);
     for (uint16_t column = 0; column < columns; ++column) {
       SensorColumnDescriptor descriptor;
@@ -1671,7 +1679,7 @@ void appendRecordingConfiguration_(JsonOutput& out, const LoggerConfig& cfg, boo
         assignment.provider.kind == SensorProviderKind::Local &&
         (assignment.kind == SensorAssignment::Kind::ExternalAdc || assignment.kind == SensorAssignment::Kind::Gpio);
     appendKey_(out, 3, "count_domain"); out += '{';
-    appendKeyString_(out, 4, "id", analog ? "adc_u12_clamped_v1" : "sensor_native_v1", analog);
+    appendKeyString_(out, 4, "id", analog ? "adc_u12_clamped_v1" : stringPot?"string_pot_counts_v1":"sensor_native_v1", analog);
     if (analog) {
       appendKeyUInt_(out, 4, "minimum", 0);
       appendKeyUInt_(out, 4, "maximum", 4095, false);
@@ -1686,14 +1694,14 @@ void appendRecordingConfiguration_(JsonOutput& out, const LoggerConfig& cfg, boo
       }
     }
     if (!described) description = SensorMetadataDescriptor{};
-    const bool calibrated = analog && described && description.hasCalibration &&
+    const bool calibrated = (analog || stringPot) && described && description.hasCalibration &&
         description.sensorFullCount != description.sensorZeroCount &&
         isfinite(description.sensorFullTravel) && description.sensorFullTravel > 0 &&
         description.calibrationOutputUnit[0];
     Calibration capture;
     const bool haveCapture = ConfigManager::loadCalibrationByIndex(index, capture);
     appendKey_(out, 3, "calibration"); out += '{';
-    appendKeyString_(out, 4, "model", analog ? "analog_geometry_v1" : "sensor_native_v1");
+    appendKeyString_(out, 4, "model", analog ? "analog_geometry_v1" : stringPot?"string_pot_geometry_v1":"sensor_native_v1");
     appendKeyBool_(out, 4, "available", calibrated);
     appendKeyUInt_(out, 4, "capture_epoch_ms", haveCapture ? capture.ts_epoch_ms : 0);
     appendKey_(out, 4, "captured_anchors"); out += '{';

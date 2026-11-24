@@ -4,6 +4,9 @@
 #include "SensorParams.h"
 #include "StringPotWrapTracker.h"
 #include <limits.h>
+#if BODAQS_PRODUCTION_RECORDING
+#include "StringPotCountStream.h"
+#endif
 
 class AS5600StringPotSensorBase : public Sensor {
 public:
@@ -25,10 +28,18 @@ public:
 
   explicit AS5600StringPotSensorBase(const BaseParams& p);
 
-  void loop() override {}
+  void loop() override;
   void applyConfig(const LoggerConfig&) override {}
   void onLoggingStart() override;
   void onLoggingStop() override;
+  void onLoggingFinalized() override;
+  bool prepareLoggingStart(const LoggerConfig&,uint16_t,char*,size_t) override;
+  bool startLoggingSession(char*,size_t) override;
+  bool usesBdqV2NativeStream() const override;
+  bool describeBdqV2Stream(uint16_t,BdqV2StreamDescriptor&) override;
+  size_t pendingLoggingRows() const override;
+  bool describeRuntimeDiagnostics(SensorRuntimeDiagnostics&) const override;
+  void publishAcquisitionCounts(int32_t,uint32_t,uint16_t,uint32_t) override;
 
   bool muted() const override { return m_muted; }
   void setMuted(bool m) override { m_muted = m; }
@@ -55,7 +66,7 @@ public:
   CalPhase currentCalPhase() const override { return cal_.phase; }
 
   bool supportsCalibration() const override { return true; }
-  bool hasRawCounts() const override { return true; }
+  bool hasRawCounts() const override;
   int32_t currentRawCounts() const override;
   bool readPreviewValue(OutputMode mode, float& value, char* unit, size_t unitCap) override;
   float installedRange() const override { return m_installedRange; }
@@ -68,13 +79,25 @@ public:
 
 protected:
   virtual int readWrappedCountsOnce() const = 0;
+  virtual bool readWrappedObservation(int32_t& counts) const {counts=readWrappedCountsOnce();return true;}
   virtual bool hasAnalogWrapSettling() const { return false; }
+  virtual uint16_t countRecordingRateHz(uint16_t rowRate) const {return rowRate;}
+  virtual bool hasCountAuxiliary() const {return false;}
+  void publishCountObservation(int32_t,uint32_t,uint16_t,uint32_t) const;
+  void appendCountRecordingDiagnostics(SensorRuntimeDiagnostics&) const;
+  void markCountObservationGap();
+#if BODAQS_PRODUCTION_RECORDING
+  void publishI2CCountObservation(int32_t,uint32_t,uint16_t,uint32_t,const StringPotCountStream::Auxiliary&) const;
+#endif
 
   void applyBaseParams(const BaseParams& p);
   void resetTrackingState(bool assumeTurnZero);
   void recomputeScale();
 
 private:
+#if BODAQS_PRODUCTION_RECORDING
+  StringPotCountStream::Configuration countConfiguration_() const;
+#endif
   struct SampleState {
     int wrappedRaw = 0;
     int32_t unwrappedRaw = 0;
@@ -125,4 +148,11 @@ private:
 
   mutable bool    m_trackingInit = false;
   mutable StringPotWrapTracker m_wrapTracker;
+#if BODAQS_PRODUCTION_RECORDING
+  mutable StringPotCountStream m_countStream;
+  uint16_t m_nativeRateHz=0;
+  uint32_t m_idleSequence=0,m_nextIdleSampleMs=0;
+  bool m_sessionFrozen=false;
+  char m_countProvenance[512]{};
+#endif
 };

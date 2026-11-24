@@ -1009,23 +1009,25 @@ bool onLoggingStart(char* error, size_t errorCapacity) {
   LocalAnalogRecordingPlan plan;
   if (!s_cfg || !plan.configure(s_cfg->sampleRateHz)) return false;
   for (uint8_t index = 0; index < MAX_SENSORS; ++index) {
-    if (!participates_(index) || s_list[index]->usesBdqV2NativeStream()) continue;
-    if (s_liveType[index] != SensorType::AnalogPot) {
+    if (!participates_(index)) continue;
+    const bool stringAnalog=s_liveType[index]==SensorType::AS5600StringPotAnalog;
+    if(s_list[index]->usesBdqV2NativeStream() && !stringAnalog) continue;
+    if (s_liveType[index] != SensorType::AnalogPot && !stringAnalog) {
       if (error && errorCapacity) snprintf(error, errorCapacity, "count-first adapter unavailable for %s", s_list[index]->name());
       return false;
     }
     const auto& input = s_liveAssignment[index];
     const bool added = input.provider.kind == SensorProviderKind::Local &&
         (input.kind == SensorAssignment::Kind::ExternalAdc
-          ? (input.negativeInput == -1 && plan.addExternal(index, input.bus, input.input))
-          : input.kind == SensorAssignment::Kind::Gpio && plan.addGpio(index, input.input));
+          ? (input.negativeInput == -1 && plan.addExternal(index, input.bus, input.input,!stringAnalog))
+          : input.kind == SensorAssignment::Kind::Gpio && plan.addGpio(index, input.input,!stringAnalog));
     if (!added) {
       if (error && errorCapacity) snprintf(error, errorCapacity, "invalid analog acquisition plan for %s", s_list[index]->name());
       return false;
     }
   }
-  const auto publish=[](uint8_t index,int32_t counts,uint32_t tick,uint16_t status) {
-    if(index<MAX_SENSORS && s_list[index]) s_list[index]->publishAcquiredCounts(counts,tick,status);
+  const auto publish=[](uint8_t index,int32_t counts,uint32_t tick,uint16_t status,uint32_t sequence) {
+    if(index<MAX_SENSORS && s_list[index]) s_list[index]->publishAcquisitionCounts(counts,tick,status,sequence);
   };
   if (!AnalogInputManager::setRecordingPlan(plan,publish)) {
     if (error && errorCapacity) snprintf(error, errorCapacity, "analog acquisition plan unavailable");

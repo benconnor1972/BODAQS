@@ -9,11 +9,11 @@ ledger records code dependencies without implicitly closing tracker items.
 | #214 | Complete | Source-pinned r133 baseline and selected RTC release port; both A8 target builds pass. START harness: 133 checks; remote lifecycle/fault scenarios and RTC runtime tests pass. |
 | #215 | Implemented; qualification pending | Atomic phase, control-task transitions and producer fault requests; nonblocking ADC/row retirement, retained-resource mutation/restart/sleep guards, phase API/UI. START/preflight 133 checks; asynchronous controller 39 checks; target candidate builds. Final fault/outcome checks continue in #226. |
 | #216 | Implemented; qualification pending | Explicit adaptive drain; production ROM CRC and owner-only DMA batches; observers and mandatory console/benchmark gates disabled. Adapter, storage owner/recovery fixtures and candidate target build pass. Physical no-console/mixed-load gate remains. |
-| #217 | In progress | Embedded sensor/config/calibration snapshot and normal raw/basic-engineering import implemented; 21 BDQ v2 import tests and production serializer fixture pass; target build passes. Flexible/direct acquisition is implemented in #218; read-only previews remain in #221. |
+| #217 | Implemented; qualification pending | Embedded sensor/config/calibration snapshot, typed raw/basic-engineering normal import and read-only analog preview/calibration publication implemented. Flexible/direct acquisition is in #218; serializer, normal-import and adapter checks pass; target builds. Physical qualification remains. |
 | #218 | Implemented; qualification pending | START plan binds sensor identities, sparse/unequal/idle external ADCs and direct GPIOs to typed count fields. One rational absolute timer; independent device appointments, skipped-row evidence, no dummy conversions. Actual ADC-manager/SPI/DRDY/timer model and dynamic queue tests pass; candidate build passes. Focused physical comparison remains. |
 | #219 | Implemented; qualification pending | Existing native 833/1667/3333 node profiles retained and exercised; normal import exposes independently verified six-axis counts/scaling while preserving unit/timing streams. Source-bounded completeness, uncertain timing and corrupt-source isolation tested. Four-node real recording composition imports normally. Physical profile/UI qualification remains. |
 | #220 | Implemented core; qualification/UI pending | Bounded 5ms idle control progress while configured nodes are unreconciled; priority/fair cursors, faster inventory discovery, scoped snapshot reuse and explicit invalidation. API preparation/blockers added. Actual manager/model cold/change/late/failing-peer checks and target build pass; broader migration/UI #225 and physical before/after remain. |
-| #221 | In progress | Analog-pot preview/calibration now reads owner-published count snapshots; concurrent coherence and actual preview-adapter tests pass. ADC owner publishes without extra reads. String-pot native count/tracking adaptation and other-family preview conversion remain. |
+| #221 | Implemented; qualification pending | Analog/I2C string-pot typed native counts, signed tracking estimate, quality/reset/epoch and auxiliary I2C evidence; owner-only acquisition and snapshot previews. Normal calibrated/raw-only import, direction/hold/timeout/gap/loss/overflow/restart and preview-equivalence checks pass. Reviewed A8 build and 69 focused import tests pass; physical qualification remains. |
 | #222 | Pending | I2C rotary sensor preservation. |
 | #223 | Pending | Local BMI270 native preservation. |
 | #224 | Pending | UART GPS preservation. |
@@ -186,3 +186,34 @@ starting at 3 does not invent losses 0..2. Missing STOP retains an uncertain tai
 The old assessment helper no longer duplicates terminal-gap construction.
 The reviewer rechecked and confirmed the finding resolved. This interim review
 does not replace the final review/qualification of the complete integration.
+
+## String-pot integration (#221)
+
+Analog string-pot inputs participate in the same per-ADC appointment plan, while
+their typed native stream retains signed tracking and quality. Capture-only
+inputs do not create duplicate primary fields. I2C string-pots keep their existing
+worker/bus policy and retain raw, ANGLE and diagnostic observations with validity.
+Engineering displacement is reconstructed offline from the embedded geometry.
+See [the count-stream contract](../analysis/String_Pot_Count_Recording_Contract.md).
+
+Preview/no-preview runs of the real sensor adapter produce identical records;
+the actual I2C acquire/sampling adapters perform no extra reads for previews.
+The independent ADC model covers native-only and mixed primary/native plans.
+Queue loss and nonempty final depth are available to the existing BDQ footer;
+failed-session rows can be cleared only after finalization has retired I/O.
+The normal importer preserves raw values and suppresses unsupported derived
+values, including uncertainty after an observation gap or settling timeout.
+
+Independent review identified those last two uncertainty cases; both were fixed
+and the reviewer confirmed them resolved. The standards review reported no
+documented breach and one repeated configuration-builder heuristic, now factored
+into one helper. Host checks include directions, settling timeout, ambiguous
+tracking, queue loss, integer overflow, actual I2C diagnostics, missing calibration
+and restart. No physical sensor/mixed-load qualification is claimed.
+
+The I2C scheduler now has an optional owner-side missed-slot notification. Its
+default is a no-op; only the string-pot adapter consumes it in this slice, so
+task priorities, placements and dispatch choices remain unchanged. Native
+sequence semantics are scheduled acquisition slots. Missing appointments are
+visible even when every executed bus read succeeds. Saturating queue counters
+and nonempty final depth retain loss evidence through the existing footer path.

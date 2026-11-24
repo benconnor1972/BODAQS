@@ -88,6 +88,11 @@ int AS5600StringPotAnalog::readWrappedCountsOnce() const {
   return analogRead(m_pin);
 }
 
+bool AS5600StringPotAnalog::readWrappedObservation(int32_t& counts) const {
+  if(m_ain>=0) return AnalogInputManager::readCounts(uint8_t(m_ain),counts);
+  counts=analogRead(m_pin);return true;
+}
+
 const ParamDef* AS5600StringPotAnalog::paramDefs(size_t& count) {
   static const ParamDef defs[] = {
     {"ain",                   ParamType::Int,   "-1",    "-1",   "7",    nullptr, "Analog input ordinal (AIN0..). -1=use pin"},

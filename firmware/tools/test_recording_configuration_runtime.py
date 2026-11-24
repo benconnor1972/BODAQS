@@ -23,9 +23,10 @@ def main():
     with tempfile.TemporaryDirectory(prefix="bodaqs-recording-config-") as tmp:
         cpp, exe = Path(tmp) / "snapshot.cpp", Path(tmp) / "snapshot.exe"
         cpp.write_text(fixture, encoding="utf-8")
-        subprocess.run([args.compiler, "-std=c++17", "-Wall", "-Wextra", "-I", str(root / "test/stubs"),
+        subprocess.run([args.compiler, "-std=c++17", "-Wall", "-Wextra", "-DBODAQS_PRODUCTION_RECORDING=1", "-I", str(root / "test/stubs"),
                         "-I", str(root / "src"), str(cpp), str(root / "src/SensorParams.cpp"), "-o", str(exe)], check=True)
         document = json.loads(subprocess.check_output([str(exe)], text=True))
+        string_document=json.loads(subprocess.check_output([str(exe),'string'],text=True))
     snapshot = document["recording_configuration"]
     assert snapshot["schema"] == "bodaqs.recording_configuration.v1"
     assert snapshot["local_row_rate_hz"] == 1000
@@ -41,6 +42,11 @@ def main():
     assert sensor["calibration"]["capture_epoch_ms"] == 123456789
     assert sensor["calibration"]["captured_anchors"]["r0_raw"] is None
     assert snapshot["sensors"][1]["calibration"]["available"] is False
+    string=string_document['recording_configuration']['sensors'][0]
+    assert string['stream_key']=='pot"one_counts'
+    assert string['raw_fields']==['wrapped_count','unwrapped_count']
+    assert string['count_domain']['id']=='string_pot_counts_v1'
+    assert string['calibration']['model']=='string_pot_geometry_v1' and string['calibration']['available']
     print("Embedded recording snapshot: identity, assignment, count domain, calibration and escaping passed")
 
 
