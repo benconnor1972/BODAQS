@@ -16,21 +16,23 @@ public:
       const size_t end = original.find('\n', start);
       const size_t length = end == std::string::npos ? original.size()-start : end-start+1;
       const std::string line = original.substr(start,length);
-      const auto eq = line.find('=');
-      const std::string key = eq == std::string::npos ? "" : trim(line.substr(0,eq));
-      std::string value = eq == std::string::npos ? "" : trim(line.substr(eq+1));
+      const std::string content=line.substr(0,line.find('#'));
+      const auto eq = content.find('=');
+      const std::string key = eq == std::string::npos ? "" : trim(content.substr(0,eq));
+      const std::string recognizedKey=canonicalKey(key);
+      std::string value = eq == std::string::npos ? "" : trim(content.substr(eq+1));
       const auto comment = value.find('#');
       if (comment != std::string::npos) value = trim(value.substr(0,comment));
       std::string replacement = value;
       std::string canonical=value;
       for(char& letter:canonical)letter=static_cast<char>(toupper(static_cast<unsigned char>(letter)));
-      if (key == "log_format") { formatSeen=true; replacement="bodaqs_multi_stream_binary"; }
-      if (key == "production_config_revision") {
+      if (recognizedKey == "log_format") { formatSeen=true; replacement="bodaqs_multi_stream_binary"; }
+      if (recognizedKey == "production_config_revision") {
         versionSeen=true; accepted = value == "1"; replacement="1";
       }
-      if (endsWith(key,".output_mode") &&
+      if (endsWith(recognizedKey,".output_mode") &&
           (canonical=="POLY" || canonical=="LUT" || value=="2" || value=="3")) replacement="1";
-      if (endsWith(key,".output_id") && value != "identity") replacement="identity";
+      if (endsWith(recognizedKey,".output_id") && value != "identity") replacement="identity";
       if (!key.empty() && replacement != value) {
         proposed_ += key + "=" + replacement + "\n";
         changes_ += key + ": " + value + " -> " + replacement + "\n";
@@ -62,9 +64,10 @@ public:
     for (size_t start=0; start<original_.size();) {
       const auto end=original_.find('\n',start);
       const auto line=original_.substr(start,end==std::string::npos?std::string::npos:end-start);
-      const auto eq=line.find('=');
-      if(eq!=std::string::npos && trim(line.substr(0,eq))==key) {
-        auto value=line.substr(eq+1); const auto comment=value.find('#');
+      const auto content=line.substr(0,line.find('#'));
+      const auto eq=content.find('=');
+      if(eq!=std::string::npos && canonicalKey(content.substr(0,eq))==canonicalKey(key)) {
+        auto value=content.substr(eq+1); const auto comment=value.find('#');
         result=trim(value.substr(0,comment));
       }
       if(end==std::string::npos) break;
@@ -73,6 +76,11 @@ public:
     return result;
   }
 private:
+  static std::string canonicalKey(const std::string& value) {
+    std::string result=trim(value);
+    for(char& letter:result) letter=static_cast<char>(tolower(static_cast<unsigned char>(letter)));
+    return result;
+  }
   static std::string trim(const std::string& value) {
     const auto start=value.find_first_not_of(" \r\n\t");
     if(start==std::string::npos)return {};

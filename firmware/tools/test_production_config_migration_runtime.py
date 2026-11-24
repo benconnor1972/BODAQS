@@ -138,6 +138,25 @@ int main() {
   assert(ConfigManager::deleteSensorByIndex(0) && ConfigManager::save(ConfigManager::get()));
   assert(ConfigManager::sensorTypeKey(0)=="future_other_sensor");
   assert(std::string(files["loggercfg"].c_str()).find("sensor0.type=future_other_sensor")!=std::string::npos);
+  // Recognition is case-insensitive, just like the real loader. Last duplicate wins.
+  const String mixed="recording_best_effort=false\\r\\nRECORDING_BEST_EFFORT=true # explicit final choice\\r\\nLoG_FoRmAt=csv\\r\\nsensor_count=1\\r\\nSENSOR0.TYPE=analog_pot\\r\\nsensor0.type=future_mixed_sensor\\r\\nSensor0.Name=mixed\\r\\nsensor0.output_mode=RAW\\r\\nSENSOR0.OUTPUT_MODE=pOlY\\r\\nSENSOR0.OUTPUT_ID=legacy_curve\\r\\n# sensor9.OUTPUT_MODE=LUT\\r\\n";
+  files["loggercfg"]=mixed;ConfigManager::begin("loggercfg");assert(ConfigManager::load(cfg));
+  assert(cfg.recordingBestEffort && ConfigManager::sensorTypeKey(0)=="future_mixed_sensor");
+  ProductionConfigMigration proposal;proposal.inspect(mixed.c_str(),true);
+  assert(proposal.originalValue("ReCoRdInG_bEsT_eFfOrT")=="true");
+  assert(proposal.originalValue("SENSOR0.TYPE")=="future_mixed_sensor");
+  const std::string expected="recording_best_effort=false\\r\\nRECORDING_BEST_EFFORT=true # explicit final choice\\r\\nLoG_FoRmAt=bodaqs_multi_stream_binary\\nsensor_count=1\\r\\nSENSOR0.TYPE=analog_pot\\r\\nsensor0.type=future_mixed_sensor\\r\\nSensor0.Name=mixed\\r\\nsensor0.output_mode=RAW\\r\\nSENSOR0.OUTPUT_MODE=1\\nSENSOR0.OUTPUT_ID=identity\\n# sensor9.OUTPUT_MODE=LUT\\r\\nproduction_config_revision=1\\n";
+  assert(proposal.proposed()==expected);
+  assert(ConfigManager::acceptMigration(ConfigManager::migrationRevision().c_str(),error,sizeof(error)));
+  assert(ConfigManager::get().recordingBestEffort && !ConfigManager::migrationPending());
+  assert(ConfigManager::getParam(0,"output_mode",value) && value=="1");
+  assert(ConfigManager::getParam(0,"output_id",value) && value=="identity");
+  // Reversing differently cased duplicates also keeps the final explicit false.
+  files["loggercfg"]="RECORDING_BEST_EFFORT=true\\nrecording_best_effort=false\\nLOG_FORMAT=csv\\n";
+  assert(ConfigManager::reload());
+  assert(ConfigManager::acceptMigration(ConfigManager::migrationRevision().c_str(),error,sizeof(error)));
+  assert(!ConfigManager::get().recordingBestEffort);
+
 }
 '''
     with tempfile.TemporaryDirectory(prefix='bodaqs-migration-') as temp:
