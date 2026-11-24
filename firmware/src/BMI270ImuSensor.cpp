@@ -490,7 +490,11 @@ void BMI270ImuSensor::sampleValues(float* out, uint8_t maximum) {
   float values[kMaximumColumnCount] {};
   float baseValues[BMI270SparseRow::kColumnCount];
   BMI270ImuSample sample;
+#if BODAQS_PRODUCTION_RECORDING
   const bool haveSample = acquisition_.latestSample(sample);
+#else
+  const bool haveSample = acquisition_.pop(sample);
+#endif
   uint32_t ageUs = 0;
   bool ageValid = false;
   BMI270SparseRow::encode(
@@ -503,7 +507,12 @@ void BMI270ImuSensor::sampleValues(float* out, uint8_t maximum) {
 
   if (params_.iocDiagnostics) {
     BMI270IocOffsetSnapshot snapshot;
-    if (acquisition_.latestIocOffsetSnapshot(snapshot)) {
+#if BODAQS_PRODUCTION_RECORDING
+    const bool haveIoc=acquisition_.latestIocOffsetSnapshot(snapshot);
+#else
+    const bool haveIoc=acquisition_.popIocOffsetSnapshot(snapshot);
+#endif
+    if(haveIoc) {
       values[12] = static_cast<float>(snapshot.x);
       values[13] = static_cast<float>(snapshot.y);
       values[14] = static_cast<float>(snapshot.z);
@@ -514,7 +523,11 @@ void BMI270ImuSensor::sampleValues(float* out, uint8_t maximum) {
   const uint8_t configuredCount = columnCount();
   const uint8_t count = maximum < configuredCount ? maximum : configuredCount;
   memcpy(out, values, count * sizeof(float));
-  // Observation never advances recording queues or acquisition diagnostics.
+#if !BODAQS_PRODUCTION_RECORDING
+  I2CBusScheduler::recordRowUse(&acquisition_,ageUs,ageValid,haveSample);
+  if(haveSample) acquisition_.recordRowEmission(ageUs,ageValid);
+#endif
+  // Production inspection never advances native recording queues or diagnostics.
 }
 
 bool BMI270ImuSensor::describeColumn(uint8_t index, SensorColumnDescriptor& out) const {

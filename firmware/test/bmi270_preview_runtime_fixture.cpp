@@ -23,7 +23,14 @@ struct Acquisition {
     offsets.pop_front();
     return true;
   }
-  void recordRowEmission(uint32_t,bool) { assert(false && "preview changes recording diagnostics"); }
+  unsigned rowEmissions=0;
+  void recordRowEmission(uint32_t,bool) {
+#if BODAQS_PRODUCTION_RECORDING
+    assert(false && "preview changes recording diagnostics");
+#else
+    ++rowEmissions;
+#endif
+  }
 };
 struct I2CBusScheduler { static void recordRowUse(Acquisition*,uint32_t,bool,bool) {} };
 class BMI270ImuSensor {
@@ -101,6 +108,7 @@ int main() {
   BMI270IocOffsetSnapshot ioc; ioc.x=-17; ioc.y=25; ioc.z=-31;
   sensor.acquisition_.publishedIoc.publish(ioc);
   sensor.acquisition_.offsets.push_back(ioc);
+#if BODAQS_PRODUCTION_RECORDING
   for(int i=0;i<3;++i) {
     sensor.sampleValues(out,16);
     assert(out[0]==-32768 && out[5]==-1024 && out[8]==-512);
@@ -111,6 +119,14 @@ int main() {
   assert(sensor.acquisition_.offsets.size()==1);
   BMI270ImuSample recorded;
   assert(sensor.acquisition_.pop(recorded));
+#else
+  sensor.sampleValues(out,16);
+  assert(out[7]==19 && out[11]==1 && out[12]==-17 && out[15]==1);
+  assert(sensor.acquisition_.recording.empty() && sensor.acquisition_.offsets.empty());
+  sensor.sampleValues(out,16);assert(out[11]==0 && out[15]==0);
+  assert(sensor.acquisition_.rowEmissions==1);
+  BMI270ImuSample recorded=evidence;
+#endif
   uint8_t bytes[28]; assert(BMI270BdqV2::encodeRecord(recorded,bytes,sizeof(bytes)));
   assert(BdqV2Format::getU16(bytes+12)==0x8000 && BdqV2Format::getU16(bytes+24)==0xfe00);
   sensor.acquisition_.published.invalidate(); // restart invalidates the published epoch

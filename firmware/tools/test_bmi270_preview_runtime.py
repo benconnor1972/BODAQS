@@ -20,9 +20,12 @@ def main():
     with tempfile.TemporaryDirectory(prefix='bodaqs-bmi-preview-') as temp:
         cpp, exe = Path(temp) / 'test.cpp', Path(temp) / 'test.exe'
         cpp.write_text(fixture.replace('// PRODUCTION_PREVIEW', adapter))
-        subprocess.run([args.compiler, '-std=gnu++2a', '-Wall', '-Wextra',
-                        '-I', str(root / 'src'), str(cpp), '-o', str(exe)], check=True)
-        subprocess.run([str(exe)], check=True)
+        for production in (0, 1):
+            subprocess.run([args.compiler, '-std=gnu++2a', '-Wall', '-Wextra',
+                            f'-DBODAQS_PRODUCTION_RECORDING={production}',
+                            '-I', str(root / 'src'), str(cpp), '-o', str(exe)], check=True)
+            subprocess.run([str(exe)], check=True)
+    print('BMI native previews and legacy queued-row consumption both passed')
 
 
 if __name__ == '__main__':
