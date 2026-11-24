@@ -687,6 +687,12 @@ def test_incomplete_counts_recording_retains_raw_and_reconstruction(tmp_path):
     assert len(session["df_raw"]) == 2
     assert session["stream_dfs"]["analog_engineering"]["fork_pot_engineering [mm]"].tolist() == pytest.approx([10, 20])
     assert read_bdq(path).final_summary == {}
+    stats = bdq_to_log_metadata(read_bdq(path))["qc"]["run_stats"]
+    assert stats["bdq_finalization"] == {
+        "footer_present": False, "file_status": "recoverable_prefix",
+        "tail_status": "unknown", "delivery_scope": "retained_records_only",
+    }
+    assert "bdq_missing_final_summary:tail_unknown" in bdq_to_log_metadata(read_bdq(path))["qc"]["warnings"]
 
 
 def test_unknown_count_domain_cannot_be_calibrated_as_u12(tmp_path):

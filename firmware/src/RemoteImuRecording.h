@@ -50,6 +50,8 @@ bool recording();
 // Acquisition owner only. Atomic queue indices; stream allocation survives owner retirement.
 void queuePressureForBalance(unsigned& samplePermille,unsigned& evidencePermille,bool& available);
 #endif
+// Shared transport/timing integrity cannot be isolated to one participant.
+bool sharedIntegrityFault();
 bool failed();
 const char* failureReason();
 void start();

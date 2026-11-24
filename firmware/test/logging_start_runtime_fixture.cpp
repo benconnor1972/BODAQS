@@ -147,9 +147,12 @@ const char* failureReason() {return "fixture remote unavailable";}
 bool resourcesReady(size_t=0) {return true;}
 bool configure(const LoggerConfig&) { return true; }
 bool configured() {return false;} bool prepared() {return true;}
+bool sharedFault=false;
+bool sharedIntegrityFault() {return sharedFault;}
 bool recording() {return true;} bool failed() {return false;}
 void start() {} void stop() {} void service() {} void release() {}
-bool stopped() {return true;}
+bool remoteStopped=true;
+bool stopped() {return remoteStopped;}
 bool tailDrained() {return true;}
 bool readyForFileFinalization() {return true;}
 }
@@ -160,6 +163,11 @@ namespace CanMasterManager {
   bool handoffActive = false;
   bool recordingHandoffActive() { return handoffActive; }
   void endRecordingHandoff() { fenced = false; }
+}
+namespace I2CBusScheduler {
+ bool held=false,stopRequested=false;
+ void requestStop() {stopRequested=true;}
+ bool stopped() {return !held;}
 }
 namespace ButtonManager { }
 void ButtonManager_setPollingEnabled(bool) {}
@@ -278,6 +286,17 @@ int main() {
   CanMasterManager::handoffActive = true;
   assert(LoggingManager::configurationLocked());
   CanMasterManager::handoffActive = false;
+
+  // A completed file can retain the control handoff while cleanup is pending.
+  // Late retirement must unlock without finalizing sensors a second time.
+  s_lifecycle.publish(LifecycleState::Uncertain);
+  CanMasterManager::handoffActive = true;
+  LoggingManager::loop();
+  check(LoggingManager::configurationLocked());
+  CanMasterManager::handoffActive = false;
+  LoggingManager::loop();
+  check(!LoggingManager::configurationLocked());
+  check(LoggingManager::lifecycleState() == LifecycleState::Completed);
 
   using T = SensorType; using I = LoggingConfigIssue;
   reset();

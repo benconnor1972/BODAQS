@@ -15,6 +15,7 @@
 #include "AnalogPotSensor.h"
 #include "SensorManager.h"
 #include "I2CManager.h"
+#include "I2CBusScheduler.h"
 #include "Rates.h"
 #include "PowerManager.h"
 #include "IndicatorManager.h"
@@ -683,7 +684,7 @@ void LoggingManager::cancelStart() {
   if(phaseIs_(LifecycleState::Preparing) && RemoteImuRecording::configured()) {
     s_lifecycle.publish(LifecycleState::Stopping);s_remotePreparing=false;
     RemoteImuRecording::stop();
-    AnalogInputManager::onLoggingStop();SensorManager::onLoggingStop();
+    s_localStopPending = true;
     UI::status("Finalizing recording");
     return;
   }
@@ -691,10 +692,10 @@ void LoggingManager::cancelStart() {
   if (phaseIs_(LifecycleState::Preparing) && (s_storageStartPending || StorageManager_recordingIoPending())) {
     s_storageStartPending = false;
     s_lifecycle.publish(LifecycleState::Stopping);
-    AnalogInputManager::onLoggingStop();
-    SensorManager::onLoggingStop();
-    s_storageStopRequested = true;
-    StorageManager_stopLog();
+    s_localStopPending = true;
+    // The initialized native sensors may produce a final FIFO tail at STOP.
+    // Retire them before allowing the worker to freeze footer diagnostics.
+    s_storageStopRequested = false;
     return;
   }
 #endif
@@ -749,11 +750,35 @@ void LoggingManager::loop() {
     stop(StopReason::Unspecified,"combined_adc_capture_fault");
   }
 #endif
+  // Remote STOP/lease cleanup must progress even when a local callback has
+  // not yet retired; neither owner may wait on the other's I/O.
+  RemoteImuRecording::service();
   if (s_localStopPending) {
     if (!retireLocalAcquisition_()) return;
     s_localStopPending = false;
   }
-  RemoteImuRecording::service();
+  if ((phaseIs_(LifecycleState::Recording) || phaseIs_(LifecycleState::Preparing)) &&
+      RemoteImuRecording::sharedIntegrityFault()) {
+    stop(StopReason::Unspecified, "shared_recording_integrity_fault");
+    return; // Local retirement precedes all footer/finalization work.
+  }
+  if (phaseIs_(LifecycleState::Uncertain)) {
+    // The file and native diagnostics have already retired. Continue only the
+    // retained control handoff; repeating finishStorageStop() would finalize
+    // sensor queues and restore peripherals twice.
+#if defined(ESP32)
+    if (StorageManager_recordingIoPending()) return;
+#endif
+    if (!RemoteImuRecording::stopped()) return;
+    RemoteImuRecording::release();
+    CanMasterManager::endRecordingHandoff();
+    if (CanMasterManager::recordingHandoffActive()) return;
+    const auto reason = s_stopContext.reason;
+    s_lifecycle.publish(reason == StopReason::UserRequest || reason == StopReason::SleepRequest || reason == StopReason::None
+        ? LifecycleState::Completed : LifecycleState::Failed);
+    UI::status(phaseIs_(LifecycleState::Failed) ? "Recording failed; cleanup complete" : "Recording finalized");
+    return;
+  }
   if(phaseIs_(LifecycleState::Recording) && RemoteImuRecording::failed() && !s_remoteFaultShown) {
     s_remoteFaultShown=true;UI::toast(RemoteImuRecording::failureReason(),1800,1);
   }
@@ -789,7 +814,6 @@ void LoggingManager::loop() {
   if ((phaseIs_(LifecycleState::Stopping) || phaseIs_(LifecycleState::Finalizing))) {
     if(!RemoteImuRecording::tailDrained()) return;
     if(!RemoteImuRecording::readyForFileFinalization()) return;
-    if(!StorageManager_recordingIoPending() && !RemoteImuRecording::stopped()) return;
     if (!StorageManager_recordingIoPending()) { finishStorageStop(); return; }
     if (s_storageStopRequested) return;
     s_lifecycle.publish(LifecycleState::Finalizing);
@@ -1236,6 +1260,10 @@ bool retireLocalAcquisition_() {
   // return without touching either subsystem.
   if (s_sampleInProgress.load(std::memory_order_acquire)) return false;
 #endif
+  // A bounded scheduler stop timeout is not producer retirement. Keep native
+  // queues and session diagnostics owned until the final callback has returned.
+  I2CBusScheduler::requestStop();
+  if (!I2CBusScheduler::stopped()) return false;
 #if BODAQS_ADC_ROW_HANDOFF
 #if BODAQS_ADC_COMBINED_CAPTURE
   if (!AnalogInputManager::retireScanRowCapture()) return false;

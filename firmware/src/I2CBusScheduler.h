@@ -57,6 +57,9 @@ namespace I2CBusScheduler {
 
   void start();
   void stop();
+  // Nonblocking control-owner retirement. No sensor/queue cleanup until stopped().
+  void requestStop();
+  bool stopped();
   bool isRunning();
   // Transfer boosts apply only to acquisition workers.
   bool isCurrentTask();

@@ -122,6 +122,7 @@ static void captureFlowLog(const char* tag,const char*,...) {if(!std::strcmp(tag
                 subprocess.run([str(exe),case],check=True)
         if args.flow_diagnostics:
             subprocess.run([str(exe), "flow-cancel-scope"], check=True)
+        subprocess.run([str(exe), "shared-integrity"], check=True)
         subprocess.run([str(exe), "start-clock-boundary"], check=True)
         subprocess.run([str(exe), "lost-control-ack"], check=True)
         subprocess.run([str(exe), "rx-overrun"], check=True)

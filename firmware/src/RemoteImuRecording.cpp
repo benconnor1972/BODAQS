@@ -21,6 +21,9 @@
 
 namespace RemoteImuRecording {
 namespace {
+std::atomic<bool> sharedIntegrityFault_{false};
+uint64_t scopeSession_=0,scopeMasterUid_=0;
+uint32_t scopeMasterBoot_=0;
 enum Phase { Idle, Allocated, Prepare, PreparedSnapshot, Ready, Starting, Recording, Stop, Tail, Fence, Release, Exit, Done };
 struct Participant {
 RemoteImuStream stream;
@@ -65,20 +68,23 @@ bool consume(uint8_t cls,uint8_t address,uint32_t identity,const uint8_t* p,uint
   }
 
   if(address==255 && cls==6) {
-    if(total!=32) {fault=true;return true;}
+    if(total!=32) {sharedIntegrityFault_=true;fault=true;return true;}
     if(p[12]==2) return stream.acceptMissingBridge(BdqV2Format::getU32(p),
       static_cast<uint32_t>(esp_timer_get_time()))!=RemoteImuStream::Blocked;
     auto accepted=stream.acceptBridge(BdqV2Format::getU32(p),BdqV2Format::getU32(p+4),
       BdqV2Format::getU32(p+8),BdqV2Format::getU64(p+16),BdqV2Format::getU64(p+24),
       static_cast<uint32_t>(esp_timer_get_time()));
+    if(accepted==RemoteImuStream::Invalid) sharedIntegrityFault_=true;
     return accepted!=RemoteImuStream::Blocked;
   }
   if(address==255 && cls==5) {
-    if(total<12 || p[0]!=1 || p[1] || p[3] || p[6] || p[7]) {fault=true;return true;}
+    if(total<12 || p[0]!=1 || p[1] || p[3] || p[6] || p[7]) {sharedIntegrityFault_=true;fault=true;return true;}
     const uint16_t count=BdqV2Format::getU16(p+4);
-    if(p[2]!=1 || total!=12+16*count || count!=1 || p[8]!=1 || p[9] || p[10] || p[11]) {fault=true;return true;}
-    return stream.acceptSharedSync(BdqV2Format::getU32(p+12),BdqV2Format::getU32(p+16),
-      BdqV2Format::getU32(p+20),static_cast<uint32_t>(esp_timer_get_time()))!=RemoteImuStream::Blocked;
+    if(p[2]!=1 || total!=12+16*count || count!=1 || p[8]!=1 || p[9] || p[10] || p[11]) {sharedIntegrityFault_=true;fault=true;return true;}
+    const auto accepted=stream.acceptSharedSync(BdqV2Format::getU32(p+12),BdqV2Format::getU32(p+16),
+      BdqV2Format::getU32(p+20),static_cast<uint32_t>(esp_timer_get_time()));
+    if(accepted==RemoteImuStream::Invalid) sharedIntegrityFault_=true;
+    return accepted!=RemoteImuStream::Blocked;
   }
 #if BODAQS_MEASUREMENT_VERSION >= 3
   if(cls==1 && address==node) {
@@ -465,6 +471,7 @@ bool setAdmissionProfile(const ImuAdmission::Profile& p) {
 }
 bool configure(const LoggerConfig& cfg) {
  if(selected) return false;
+ sharedIntegrityFault_=false;
 #if defined(BODAQS_PACKED_STARTUP_DIAGNOSTICS) && BODAQS_PACKED_STARTUP_DIAGNOSTICS
  startupSamples.store(0,std::memory_order_relaxed);startupSamplesReported=false;
  AcquisitionControl::resetStartupDiagnostics(0,0);
@@ -555,6 +562,8 @@ bool configure(const LoggerConfig& cfg) {
  }
  report.loggerBytes=sizeof(peers)+demand.nodes*RemoteImuStream::allocatedBufferBytes(ImuAdmission::singleNodeSmokeBuild(),ImuAdmission::sampleUnitBenchBuild())+
     AcquisitionControl::reservedBytes()+sizeof(CanMasterManager::Diagnostics);
+ scopeSession_=session;scopeMasterUid_=CanMasterManager::diagnostics().hardwareUid;
+ scopeMasterBoot_=CanMasterManager::diagnostics().control.master_boot_id;
  selected=mask;for(auto& progress:sharedProgress) progress={};
  return true;
 }
@@ -587,6 +596,7 @@ bool configured() {return selected!=0;}
 uint8_t startupSampleMask() {return startupSamples.load(std::memory_order_relaxed);}
 #endif
 const char* failureReason() {return report.reason==ImuAdmission::Reason::None?"Remote IMU excluded":ImuAdmission::reasonText(report.reason);}
+bool sharedIntegrityFault() {return sharedIntegrityFault_.load();}
 bool failed() {if(report.reason!=ImuAdmission::Reason::None) return true;for(uint8_t n=0;n<4;++n) if((selected&(1u<<n)) && peers[n].failed()) return true;return false;}
 bool prepared() {for(uint8_t n=0;n<4;++n) if((selected&(1u<<n)) && !peers[n].prepared()) return false;return true;}
 bool recording() {for(uint8_t n=0;n<4;++n) if((selected&(1u<<n)) && !peers[n].recording()) return false;return true;}
@@ -678,6 +688,13 @@ uint16_t describe(BdqV2StreamDescriptor* out,uint16_t capacity,uint16_t firstId)
  }return count;
 }
 void service() {
+ // A source reboot remains participant-local. Loss of the shared master scope
+ // or measurement transport invalidates every participant's timing/custody.
+ for(uint8_t n=0;n<4;++n) if((selected&(1u<<n)) && peers[n].phase==Recording) {
+  const auto& d=CanMasterManager::diagnostics();
+  if(d.measurementUnavailable || d.authority.session!=scopeSession_ ||
+     d.hardwareUid!=scopeMasterUid_ || d.control.master_boot_id!=scopeMasterBoot_) sharedIntegrityFault_=true;
+ }
  bool exit=true;
  for(uint8_t n=0;n<4;++n) if(selected&(1u<<n)) {peers[n].service();if(peers[n].phase!=Exit && peers[n].phase!=Done) exit=false;}
  if(selected && exit && AcquisitionControl::active()) AcquisitionControl::requestExit();

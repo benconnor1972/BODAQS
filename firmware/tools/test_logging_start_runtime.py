@@ -112,7 +112,7 @@ int main() {
   check(LoggingManager::requestStart() == LoggingManager::StartResult::Pending);
   LoggingManager::stop(LoggingManager::StopReason::UserRequest,"cancel");
   check(s_stopping && !has("acquire"));
-  storageWorker.step(300); LoggingManager::loop();
+  LoggingManager::loop(); storageWorker.step(300); LoggingManager::loop();
   check(!s_stopping && !has("file") && has("wifi_resume"));
   reset(); add(SensorType::BMI270ImuI2C,"a",1,104); openOk = false;
   check(LoggingManager::requestStart() == LoggingManager::StartResult::Pending);
@@ -134,6 +134,7 @@ int main() {
   LoggingManager::stop(LoggingManager::StopReason::StorageUnresponsive,"storage_timeout");
   check(s_stopping && !s_running && !has("acquire") && !has("close"));
   check(LoggingManager::requestStart() == LoggingManager::StartResult::Failed);
+  LoggingManager::loop();
   blocked = false; opening.join(); storageWorker.step(5700); LoggingManager::loop();
   check(!s_stopping && !has("acquire") && has("failed_close") && has("wifi_resume"));
   // A new operator start performs health recovery and retains final sensor rows
@@ -142,8 +143,13 @@ int main() {
   check(LoggingManager::requestStart() == LoggingManager::StartResult::Pending);
   storageWorker.step(5800); LoggingManager::loop(); check(s_running);
   finalRows = 3; queueRoom = false;
+  I2CBusScheduler::held=true;I2CBusScheduler::stopRequested=false;
   LoggingManager::stop(LoggingManager::StopReason::UserRequest,"operator");
-  LoggingManager::loop(); check(s_stopping && finalRows == 3 && !has("tail_row"));
+  LoggingManager::loop();
+  check(I2CBusScheduler::stopRequested && !has("sensor_stop") && !has("finalize_locked"));
+  check(s_stopping && finalRows == 3 && !has("tail_row"));
+  I2CBusScheduler::held=false;
+  LoggingManager::loop(); check(has("sensor_stop"));
   queueRoom = true; LoggingManager::loop(); check(finalRows == 0 && has("tail_row"));
   // Close stalls retain membership/configuration fences and block recovery.
   blockedOperation = 4; blocked = true; entered = false;
@@ -177,6 +183,32 @@ int main() {
   check(!s_running && !has("sensor_stop") && !has("wifi_resume"));
   LoggingManager::loop(); storageWorker.step(11200); LoggingManager::loop();
   check(!s_stopping && has("failed_close") && has("wifi_resume"));
+  // A closed file need not wait forever for uncertain administrative cleanup.
+  // Native diagnostics finalize once, while remote ownership remains fenced.
+  reset(); add(SensorType::BMI270ImuI2C,"a",1,104); blockedOperation=0;
+  check(LoggingManager::requestStart() == LoggingManager::StartResult::Pending);
+  storageWorker.step(11500); LoggingManager::loop();
+  RemoteImuRecording::remoteStopped=false;CanMasterManager::handoffActive=true;
+  LoggingManager::stop(LoggingManager::StopReason::UserRequest,"operator");
+  LoggingManager::loop();storageWorker.step(11501);LoggingManager::loop();
+  check(LoggingManager::lifecycleState()==LifecycleState::Uncertain && has("finalize_locked"));
+  const auto finalizations=std::count(events.begin(),events.end(),"finalize_locked");
+  LoggingManager::loop();check(LoggingManager::configurationLocked());
+  check(std::count(events.begin(),events.end(),"finalize_locked")==finalizations);
+  RemoteImuRecording::remoteStopped=true;CanMasterManager::handoffActive=false;
+  LoggingManager::loop();check(!LoggingManager::configurationLocked());
+  check(std::count(events.begin(),events.end(),"finalize_locked")==finalizations);
+  // Shared clock/identity corruption requests STOP while independent source
+  // faults remain source-local in the real remote lifecycle fixture.
+  reset(); add(SensorType::BMI270ImuI2C,"a",1,104); blockedOperation=0;
+  check(LoggingManager::requestStart() == LoggingManager::StartResult::Pending);
+  storageWorker.step(12000); LoggingManager::loop(); check(s_running);
+  RemoteImuRecording::sharedFault=true; LoggingManager::loop();
+  check(s_stopping && !s_running);
+  check(s_stopContext.reason == LoggingManager::StopReason::Unspecified);
+  RemoteImuRecording::sharedFault=false;LoggingManager::loop();
+  storageWorker.step(12001); LoggingManager::loop();
+  check(!LoggingManager::configurationLocked());
   printf("Async storage/controller: %d checks passed\n",checks);
 }
 """)

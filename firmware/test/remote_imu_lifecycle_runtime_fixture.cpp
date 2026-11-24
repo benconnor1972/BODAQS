@@ -236,6 +236,14 @@ int main(int argc,char** argv) {
     assert(RemoteImuRecording::admission().benchOnly);
     assert(!RemoteImuRecording::admission().qualified);
   }
+  if(argc>1 && !std::strcmp(argv[1],"shared-integrity")) {
+    assert(!RemoteImuRecording::sharedIntegrityFault());
+    const uint8_t malformed[12]={};
+    assert(RemoteImuRecording::consume(5,255,1,malformed,sizeof malformed));
+    assert(RemoteImuRecording::sharedIntegrityFault());
+    RemoteImuRecording::stop();RemoteImuRecording::release();
+    puts("malformed shared clock evidence requests session STOP: PASS");return 0;
+  }
   assert(!RemoteImuRecording::prepared());
   recordingSteps(100);
   for(unsigned n=0;n<remoteNodes;++n) assert(!acquisitions[n].recording && !acquisitions[n].phase);
@@ -528,7 +536,10 @@ int main(int argc,char** argv) {
     recordingSteps(1800);
     AcquisitionControl::Outcome result;AcquisitionControl::outcome(0,result);
     assert(result.excluded && !result.leaseAcknowledged && RemoteImuRecording::failed());
-    assert(recording); // Remote fault cannot stop healthy local sampling.
+    assert(recording); // The control owner decides session STOP from the shared fault signal.
+    if(!std::strcmp(argv[1],"master-reboot")) assert(RemoteImuRecording::sharedIntegrityFault());
+    if(!std::strcmp(argv[1],"node-reboot") || !std::strcmp(argv[1],"four-bus-off"))
+      assert(!RemoteImuRecording::sharedIntegrityFault()); // Healthy independent participants continue.
     AcquisitionControl::Request rejoin;rejoin.node=0;rejoin.action=AcquisitionControl::Action::Prepare;rejoin.recording=1;
     assert(!AcquisitionControl::enqueue(rejoin));
     recordingSteps(11000);

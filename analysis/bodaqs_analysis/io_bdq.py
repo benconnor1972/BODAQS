@@ -1805,6 +1805,15 @@ def _bdq_v2_to_log_metadata(info: BdqReadResult) -> dict[str, Any]:
             columns[dataframe_column] = entry
 
     run_stats = dict(info.final_summary) if isinstance(info.final_summary, Mapping) else {}
+    # Retained rows are recoverable evidence, never a session delivery proof.
+    # A valid CRC prefix can end exactly at a chunk boundary without parser errors.
+    footer_present = bool(info.final_summary)
+    run_stats["bdq_finalization"] = {
+        "footer_present": footer_present,
+        "file_status": "finalized" if footer_present and info.final_summary.get("clean_shutdown") is True and not info.detected_errors else "recoverable_prefix",
+        "tail_status": info.final_summary.get("remote_tail_status", "unknown") if footer_present else "unknown",
+        "delivery_scope": "retained_records_only",
+    }
     if info.detected_errors:
         run_stats["bdq_parser_errors"] = list(info.detected_errors)
 
@@ -1814,6 +1823,8 @@ def _bdq_v2_to_log_metadata(info: BdqReadResult) -> dict[str, Any]:
         warnings = embedded_qc.get("warnings")
         if isinstance(warnings, list):
             qc["warnings"] = copy.deepcopy(warnings)
+    if not footer_present:
+        qc.setdefault("warnings", []).append("bdq_missing_final_summary:tail_unknown")
 
     log_metadata: dict[str, Any] = {
         "contract": {

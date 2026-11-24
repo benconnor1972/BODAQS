@@ -1,3 +1,4 @@
+#include "BoundedJsonAllocator.h"
 #include "CpuOccupancy.h"
 #include "StoragePathProbe.h"
 #include "RecordingStoragePath.h"
@@ -2920,6 +2921,127 @@ static __attribute__((noinline)) void finalizeBdqV1_() {
   }
 }
 
+#if BODAQS_PRODUCTION_RECORDING
+// I/O owner only, after every producer has retired and all data is drained.
+// Build one bounded object at a time into the existing chunk workspace. This
+// avoids a whole-session profiling tree plus a second large String allocation.
+static size_t buildOperationalSummary_(const BdqLogEndInfo& endInfo) {
+  if (s_bdqV2Writer.hasPendingData() || !s_bdqV2Workspace) return 0;
+  BoundedJsonAllocator allocator(8192);
+  JsonDocument document(&allocator);
+  size_t length = 0;
+  auto append = [&]() {
+    const size_t bytes = measureJson(document);
+    if (document.overflowed() || bytes >= s_bdqV2WorkspaceBytes - length) return false;
+    if (serializeJson(document, s_bdqV2Workspace + length, s_bdqV2WorkspaceBytes - length) != bytes) return false;
+    length += bytes;
+    return true;
+  };
+  document["summary_format"] = "bdq.final_summary.v2";
+  document["clean_shutdown"] = true;
+  document["diagnostics_scope"] = "bounded_operational";
+  document["session_id"] = s_currentSessionId;
+  document["primary_samples_dropped"] = endInfo.samplesDropped;
+  document["user_mark_events_dropped"] = s_bdqV2MarkEventsDropped;
+  document["missed_sample_slots"] = endInfo.missedSampleSlots;
+  auto stop = document["stop"].to<JsonObject>();
+  stop["reason"] = endInfo.stopReason;
+  stop["trigger_event"] = endInfo.stopTriggerEvent;
+  stop["uptime_ms"] = endInfo.stopUptimeMs;
+  document["remote_cleanup_complete"] = RemoteImuRecording::stopped();
+  document["remote_tail_objects_discarded"] = RemoteImuRecording::discardedTailObjects();
+  document["remote_tail_discard_count_scope"] = "known_local_unaccepted_objects_only";
+  auto windows = document["remote_tail_windows"].to<JsonArray>();
+  auto failures = document["remote_failures"].to<JsonArray>();
+  bool boundaries = true, discarded = false;
+  unsigned completions = 0, expected = 0;
+  for (uint16_t i = 0; i < s_bdqV2DescriptorCount; ++i) {
+    const char* schema = s_bdqV2Descriptors[i].payloadSchema;
+    if (schema && (!strcmp(schema,"bodaqs.can_imu6.v1") || !strcmp(schema,"bodaqs.can_imu_packets.v1") ||
+        !strcmp(schema,"bodaqs.can_imu_units.v1") || !strcmp(schema,"bodaqs.can_imu_units.v2"))) ++expected;
+  }
+  for (uint8_t node = 0; node < 4; ++node) {
+    RemoteImuRecording::Completion completion;
+    if (RemoteImuRecording::completion(node, completion)) {
+      ++completions;
+      boundaries &= completion.stopConfirmed && completion.sourceFinalObserved;
+      auto window = windows.add<JsonObject>();
+      window["node"] = node;
+      window["cessation_status"] = completion.stopConfirmed ? "confirmed_stop" : "unconfirmed";
+      window["source_final_observed"] = completion.sourceFinalObserved;
+      window["drain_basis"] = completion.uncertain ? "bounded_uncertain_prefix" : "stop_confirmation_observed_plus_5s";
+      window["stop_requested_ms"] = completion.stopRequestedMs;
+      window["stop_confirmed_ms"] = completion.stopConfirmedMs;
+      window["drain_closed_ms"] = completion.drainClosedMs;
+      if (completion.sourceFinalObserved) {
+        window["final_sequence"] = completion.finalSequence;
+        window["stream_epoch"] = completion.streamEpoch;
+      }
+    }
+    AcquisitionControl::Outcome outcome;
+    if (AcquisitionControl::outcome(node, outcome)) discarded |= outcome.sampleTailDiscarded;
+    RemoteImuRecording::Failure failure;
+    if (RemoteImuRecording::failure(node, failure)) {
+      auto entry = failures.add<JsonObject>();
+      entry["node"] = node; entry["observed_ms"] = failure.observedMs;
+      entry["cause"] = failure.cause; entry["phase"] = failure.phase;
+      entry["reason"] = failure.reason; entry["stream_failure_site"] = failure.streamFailureSite;
+    }
+  }
+  document["remote_sample_tail_discarded"] = discarded;
+  document["remote_tail_status"] = !RemoteImuRecording::configured() ? "not_participating" : discarded ? "incomplete" :
+      completions && completions == expected && boundaries ? "observed_terminal_boundary" : "unknown";
+  if (!append() || length < 2) return 0;
+  // Replace only the final object terminator, then append small stream objects.
+  --length;
+  const char streams[] = ",\"streams\":[";
+  if (sizeof(streams) >= s_bdqV2WorkspaceBytes - length) return 0;
+  memcpy(s_bdqV2Workspace + length, streams, sizeof(streams) - 1);
+  length += sizeof(streams) - 1;
+  static SensorRuntimeDiagnostics diagnostics;
+  for (uint16_t i = 0; i < s_bdqV2DescriptorCount; ++i) {
+    document.clear();
+    const auto& descriptor = s_bdqV2Descriptors[i];
+    const auto* stats = s_bdqV2Writer.streamStats(descriptor.source.streamId);
+    document["stream_id"] = descriptor.source.streamId;
+    document["records_written"] = stats ? stats->recordsWritten : 0;
+    document["has_sequence"] = stats && stats->hasSequence;
+    if (stats && stats->hasSequence) {
+      document["first_sequence"] = stats->firstSequence;
+      document["last_sequence"] = stats->lastSequence;
+    }
+    document["loss_count_known"] = false;
+    if (descriptor.source.streamId == BdqV2PrimaryStreamSchema::kStreamId) {
+      document["loss_count_known"] = true;
+      document["producer_drop_count"] = endInfo.samplesDropped;
+    } else for (uint8_t index = 0; index < MAX_SENSORS; ++index) {
+      if (!SensorManager::describeRuntimeDiagnosticsAt(index, diagnostics) ||
+          strcasecmp(diagnostics.sensorName, descriptor.sensorId) != 0) continue;
+      if (diagnostics.hasBdqV2Stream) {
+        document["loss_count_known"] = diagnostics.bdqV2RecordsDropped != UINT32_MAX &&
+            diagnostics.bdqV2RecordsEnqueued != UINT32_MAX && diagnostics.bdqV2RecordsDequeued != UINT32_MAX;
+        document["producer_drop_count"] = diagnostics.bdqV2RecordsDropped;
+        document["producer_rejected_count"] = diagnostics.bdqV2RecordsRejected;
+        document["producer_final_queue_depth"] = diagnostics.bdqV2FinalQueueDepth;
+      } else if (diagnostics.hasImuSession) {
+        document["producer_drop_count"] = diagnostics.imuQueueDrops;
+        document["fifo_overflow_events"] = diagnostics.imuFifoOverflowEvents;
+        document["hardware_skipped_frames"] = diagnostics.imuHardwareSkippedFrames;
+      }
+      break;
+    }
+    if (i) {
+      if (length + 1 >= s_bdqV2WorkspaceBytes) return 0;
+      s_bdqV2Workspace[length++] = ',';
+    }
+    if (!append()) return 0;
+  }
+  if (length + 2 >= s_bdqV2WorkspaceBytes) return 0;
+  s_bdqV2Workspace[length++] = ']'; s_bdqV2Workspace[length++] = '}';
+  return length;
+}
+#endif
+
 static __attribute__((noinline)) void finalizeBdqV2_() {
   const LoggingManager::RuntimeStats stats = LoggingManager::runtimeStats();
   const LoggingManager::StopContext stop = LoggingManager::stopContext();
@@ -2962,9 +3084,14 @@ static __attribute__((noinline)) void finalizeBdqV2_() {
     ++s_storageWriteFailures;
   }
   if (StorageManager_storageFault()) return;
+#if BODAQS_PRODUCTION_RECORDING
+  const size_t summaryBytes = buildOperationalSummary_(endInfo);
+  const bool ended = summaryBytes && s_bdqV2Writer.end(reinterpret_cast<const char*>(s_bdqV2Workspace), summaryBytes);
+#else
   const String summary = buildBdqV2FinalSummary_(endInfo);
-  if (!summary.length() ||
-      !s_bdqV2Writer.end(summary.c_str(), summary.length())) {
+  const bool ended = summary.length() && s_bdqV2Writer.end(summary.c_str(), summary.length());
+#endif
+  if (!ended) {
     ++s_storageWriteFailures;
     STOR_LOGW("BDQ v2 writer end failed for %s\n", s_currentLogPath.c_str());
   }
