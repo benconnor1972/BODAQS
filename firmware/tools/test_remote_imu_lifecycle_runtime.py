@@ -115,6 +115,7 @@ static void captureFlowLog(const char* tag,const char*,...) {if(!std::strcmp(tag
             subprocess.run([str(exe), "readiness-failing"], check=True)
             return
         subprocess.run([str(exe)], check=True)
+        subprocess.run([str(exe), "wide-master-boot"], check=True)
         if args.multi_node:
             for case in ("multi-1-none","multi-2-none","multi-4-none","multi-2-200","multi-4-200","multi-4-500","multi-4-fault"):
                 subprocess.run([str(exe),case],check=True)

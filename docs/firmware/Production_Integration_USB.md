@@ -125,3 +125,28 @@ USB-disabled control: an increase of 12,816 bytes. Loadable flash increases from
 2,041,605 to 2,081,361 bytes. These are ELF measurements, not runtime heap or CPU
 measurements. Runtime headroom, acquisition performance and USB behavior require
 the hardware comparisons above; no firmware was flashed during this port.
+
+## First combined-device checks and START correction
+
+The user subsequently requested installation of the combined candidate. All four
+flash segments verified. Windows enumerated CDC on COM15 and MSC; a later lost
+enumeration recovered after complete removal of USB and battery/external power.
+The application controls remained responsive during the USB failure. Its root
+cause remains unresolved; cold-start recovery is not a USB reliability fix.
+
+After recovery, the logger identity matched `esp32s3-68ee8fe027c8`. Read-only USB
+checks read the complete 11,591,310-byte `LOG0020.bdq` with SHA-256
+`493b3897e9e2f0ffe3496a77744ca65e17a7465314ee7eace9f803d0d8ff5e7a`.
+Write integrity remains untested.
+
+The first supplied START failure, `LOG0038.bdq`, followed successful USB reclaim,
+storage open and four-node preparation. It finalized with valid CRCs, confirmed
+remote STOP boundaries and zero ADC rows, triggered by
+`shared_recording_integrity_fault`. Its master boot identity was
+`0x5f1afad1c7ff51d2`. The shared-scope guard stored that protocol-defined 64-bit
+identity in a 32-bit variable, falsely detecting a change once a participant
+started. Preserve all 64 bits; do not weaken the comparison. The real
+coordinator/master lifecycle fixture reproduces the false alarm before this
+correction and additionally checks a reboot changing only the upper half.
+The original package remains immutable; this source correction needs a new image
+and a repeated physical START/STOP check.

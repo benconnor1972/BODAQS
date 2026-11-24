@@ -50,6 +50,8 @@ int main(int argc,char** argv) {
     assert(extraParams[n-1].set("provider",provider));extra[n-1].params.bind(&extraParams[n-1]);
   }
   reset();lifecycleEnabled=true;fastMeasurementClock=true;
+  const bool wideMasterBoot=argc>1 && !std::strcmp(argv[1],"wide-master-boot");
+  if(wideMasterBoot) bodaqs_control_exchange_init(&master.control,UINT64_C(0x5f1afad1c7ff51d2));
   BodaqsMasterDiscoveryRecord records[4]={};
   for(uint8_t n=0;n<4;++n) {
     auto& f=peerFixture(n);f.view.active_session=0;f.authority={};f.view.flags=0;
@@ -362,6 +364,18 @@ int main(int argc,char** argv) {
   RemoteImuRecording::start();recordingSteps(2000);
   assert(RemoteImuRecording::recording());
   assert(!RemoteImuRecording::failed());
+  if(wideMasterBoot) {
+    assert(!RemoteImuRecording::sharedIntegrityFault());
+    // A change confined to the upper half must still invalidate shared scope.
+    const auto identity=master.identity;
+    bodaqs_master_service_init(&master,&identity);
+    bodaqs_control_exchange_init(&master.control,UINT64_C(0x5f1afad2c7ff51d2));
+    inventory();allowMalformedMeasurement=true;
+    recordingSteps(1800);
+    assert(RemoteImuRecording::sharedIntegrityFault());
+    puts("full-width master boot identity remains valid; upper-half reboot detected: PASS");
+    return 0;
+  }
 #if defined(BODAQS_MEASUREMENT_REPLY_CAPTURE) && BODAQS_MEASUREMENT_REPLY_CAPTURE
   assert(!RemoteImuRecording::finalRejectedMeasurementReplies()); // Owner is still live.
   uint8_t capturedWire[256];memcpy(capturedWire,preloaded,256);capturedWire[0]='X';

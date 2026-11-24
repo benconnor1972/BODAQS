@@ -24,8 +24,7 @@
 namespace RemoteImuRecording {
 namespace {
 std::atomic<bool> sharedIntegrityFault_{false};
-uint64_t scopeSession_=0,scopeMasterUid_=0;
-uint32_t scopeMasterBoot_=0;
+uint64_t scopeSession_=0,scopeMasterUid_=0,scopeMasterBoot_=0;
 enum Phase { Idle, Allocated, Prepare, PreparedSnapshot, Ready, Starting, Recording, Stop, Tail, Fence, Release, Exit, Done };
 struct Participant {
 RemoteImuStream stream;
