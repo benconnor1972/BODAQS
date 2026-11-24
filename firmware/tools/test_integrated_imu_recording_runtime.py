@@ -244,7 +244,8 @@ namespace SharedSpiBus {''',1)
                         'RecordingTimelineJson::append(summaryDocument,timelineFinished!=nullptr,timelineFinished?timelineFinished->context:0);\n'
                         'ControlPollingJson::append(summaryDocument,timelineFinished!=nullptr,timelineFinished?timelineFinished->context:0);')
         logging = (firmware / "src/LoggingManager.cpp").read_text(encoding="utf-8")
-        functions = ("bool LoggingManager::isStarting(", "void LoggingManager::cancelStart(",
+        functions = ("  unsigned stopPriority_(", "bool retireLocalAcquisition_() {",
+                     "bool LoggingManager::isStarting(", "void LoggingManager::cancelStart(",
                      "bool LoggingManager::configurationLocked(", "LoggingManager::StartResult LoggingManager::requestStart(",
                      "void LoggingManager::loop(", "bool LoggingManager::start(", "void LoggingManager::completeStorageStart(",
                      "void LoggingManager::stop(", "void LoggingManager::finishStorageStop(")

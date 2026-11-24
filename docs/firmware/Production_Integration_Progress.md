@@ -11,7 +11,7 @@ ledger records code dependencies without implicitly closing tracker items.
 | #216 | Implemented; qualification pending | Explicit adaptive drain; production ROM CRC and owner-only DMA batches; observers and mandatory console/benchmark gates disabled. Adapter, storage owner/recovery fixtures and candidate target build pass. Physical no-console/mixed-load gate remains. |
 | #217 | In progress | Embedded sensor/config/calibration snapshot and normal raw/basic-engineering import implemented; 21 BDQ v2 import tests and production serializer fixture pass; target build passes. Flexible/direct acquisition is implemented in #218; read-only previews remain in #221. |
 | #218 | Implemented; qualification pending | START plan binds sensor identities, sparse/unequal/idle external ADCs and direct GPIOs to typed count fields. One rational absolute timer; independent device appointments, skipped-row evidence, no dummy conversions. Actual ADC-manager/SPI/DRDY/timer model and dynamic queue tests pass; candidate build passes. Focused physical comparison remains. |
-| #219 | Pending | Native CAN profiles and normal import. |
+| #219 | Implemented; qualification pending | Existing native 833/1667/3333 node profiles retained and exercised; normal import exposes independently verified six-axis counts/scaling while preserving unit/timing streams. Source-bounded completeness, uncertain timing and corrupt-source isolation tested. Four-node real recording composition imports normally. Physical profile/UI qualification remains. |
 | #220 | Pending | Fast, fair, safely cached reconciliation. |
 | #221 | Pending | String-pot evidence and snapshot previews. |
 | #222 | Pending | I2C rotary sensor preservation. |
@@ -103,3 +103,28 @@ queue-adapter fixture covers zero through 32 fields, exact byte boundaries,
 marks, overflow gap flags and malformed records. Legacy ADC setup and async
 lifecycle fixtures still pass. These are correctness checks, not measured
 physical settling, CPU capacity or an expanded admission envelope.
+
+## Native CAN recording/import (#219)
+
+Normal import expands retained units into `<source_stream>_samples`, preserving
+original units and timing evidence. Upstream unit CRC, immutable identity, boot,
+epoch, geometry, source-sequence constraints and duplicate consistency precede
+sample exposure. A corrupt source is left as raw evidence with an explicit QC
+warning; it does not discard independently valid local/other-source data.
+Signed native six-axis counts remain available when scaling/profile evidence is
+unknown. Engineering axes require matching recorded profile, rate and rational
+sensitivity evidence. Observation timestamps are not acquisition timestamps;
+sample time and inter-node alignment remain unknown until reconstructed.
+
+Completeness is distinct from retained row count and successful file finalization:
+an expected denominator requires source identities, consistent START/STOP bounds
+for every observed segment, unambiguous sequences and no file decode errors.
+Terminal missing samples are included. This is not a load admission policy.
+
+Focused import regression: 60 tests pass. Independent fixtures cover all three
+profiles, missing STOP, tail loss, mismatched profiles, epoch/boot mismatch and
+upstream corruption behind a valid BDQ chunk CRC. Real node/master/coordinator/
+storage/writer composition passes four-node custody, pressure, selective loss,
+partial STOP and corruption cases; its good recording imports four 64-sample
+streams through the normal pipeline. Node SPI/capture/acquisition tests and
+native 1667/833 acquisition variants pass. No new physical qualification claimed.

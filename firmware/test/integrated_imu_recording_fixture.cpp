@@ -14,7 +14,15 @@
 #define LOGGING_LOGW(...) do {} while(0)
 #define RTC_LOGW(...) do {} while(0)
 #define xTaskCreatePinnedToCore(...) do {} while(0)
-static bool s_running=false,s_starting=false,s_stopping=false,s_remotePreparing=false,s_remoteFaultShown=false;
+#include "RecordingLifecycle.h"
+using LifecycleState = RecordingLifecycle::State;
+static RecordingLifecycle s_lifecycle;
+static bool phaseIs_(LifecycleState state) {return s_lifecycle.state()==state;}
+static bool isLifecycleOwner_() {return true;} // This fixture has one control-loop owner.
+static bool s_localStopPending=false,s_remotePreparing=false,s_remoteFaultShown=false;
+#define s_running phaseIs_(LifecycleState::Recording)
+#define s_starting phaseIs_(LifecycleState::Preparing)
+#define s_stopping (phaseIs_(LifecycleState::Stopping) || phaseIs_(LifecycleState::Finalizing))
 static bool s_storageStartPending=false,s_storageStopRequested=false;
 static const LoggerConfig* s_cfg=&config;
 static LoggingManager::StartFailureHint s_startFailureHint;

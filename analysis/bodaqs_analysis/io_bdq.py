@@ -326,6 +326,49 @@ def _validate_v2_metadata(metadata: Mapping[str, Any]) -> None:
         raise ValueError("BDQ v2 metadata has an invalid logger_monotonic_clock")
 
 
+def _payload_schema(descriptor: Mapping[str, Any]) -> Any:
+    acquisition = descriptor.get("acquisition")
+    return acquisition.get("payload_schema") if isinstance(acquisition, Mapping) else None
+
+
+def _validate_can_payload_schema(descriptor: Mapping[str, Any]) -> None:
+    schema = _payload_schema(descriptor)
+    if schema not in {"bodaqs.can_imu6.v1", "bodaqs.can_timing_evidence.v1", "bodaqs.can_imu_packets.v1", "bodaqs.can_imu_units.v1", "bodaqs.can_imu_units.v2"}:
+        return
+    layout = {0: "uint32", 4: "uint32", 8: "uint16"}
+    if schema in ("bodaqs.can_imu_units.v1", "bodaqs.can_imu_units.v2"):
+        size = 260 if schema.endswith('.v1') else descriptor.get("record_size_bytes")
+        if size not in ((260,) if schema.endswith('.v1') else (516, 1028)):
+            raise ValueError("invalid bulk sample-unit recording geometry")
+        layout.update({offset: "uint32" for offset in (12, 16, 24, 28, 32)})
+        layout.update({36: "uint8", 37: "uint8", 38: "uint8", 40: "uint16"})
+        layout.update({offset: "uint32" for offset in range(44, size, 4)})
+    elif schema == "bodaqs.can_imu_packets.v1":
+        size = 100
+        layout.update({offset: "uint32" for offset in range(12, 32, 4)})
+        layout.update({32: "uint16", 34: "uint8", 35: "uint8", 36: "uint16", 38: "uint8"})
+        layout.update({offset: "int16" for offset in range(40, 100, 2)})
+    elif schema == "bodaqs.can_imu6.v1":
+        size = 28
+        layout.update({12: "uint32", **{offset: "int16" for offset in range(16, 28, 2)}})
+    else:
+        size = 224
+        layout.update({offset: "uint32" for offset in range(16, 84, 4)})
+        layout.update({offset: "uint32" for offset in range(88, 140, 4)})
+        layout.update({offset: "uint32" for offset in range(144, 168, 4)})
+        layout.update({offset: "uint32" for offset in (172, 176, 180, 188, 192, 196)})
+        layout.update({offset: "uint8" for offset in (12, 13, 14, 84, 85, 86, 87, 168, 184, 185, 186, 200, 201, 202)})
+        layout.update({offset: "uint16" for offset in (140, 142, 170, 204, 206, 208)})
+    declared = [(channel["byte_offset"], channel["storage_type"].lower())
+                for channel in _schema_channels(dict(descriptor))]
+    if (descriptor.get("record_size_bytes") != size
+            or len(declared) != len(layout) or dict(declared) != layout):
+        raise ValueError(f"BDQ v2 stream {descriptor['stream_id']} has an invalid {schema} payload schema")
+    timebase = descriptor["timebase"]
+    if timebase.get("native_tick_modulus") != 1 << 32:
+        raise ValueError(f"BDQ v2 stream {descriptor['stream_id']} payload schema requires uint32 ticks")
+
+
 def _validate_stream_catalog(catalog: Mapping[str, Any]) -> dict[int, dict[str, Any]]:
     if catalog.get("schema_format") != "bdq.stream_catalog.v1":
         raise ValueError("BDQ v2 stream catalog has an unsupported schema_format")
@@ -407,6 +450,7 @@ def _validate_stream_catalog(catalog: Mapping[str, Any]) -> dict[int, dict[str, 
                     f"BDQ v2 stream {stream_id} has an invalid {field_name} prefix field"
                 )
 
+        _validate_can_payload_schema(descriptor)
         by_id[stream_id] = descriptor
         keys.add(stream_key)
     return by_id
@@ -497,6 +541,7 @@ def _summarize_stream_data_chunk(
         )
     tick_modulus = int(descriptor["timebase"]["native_tick_modulus"])
     last_record_sequence: int | None = None
+    last_source_segment: int | None = None
     for index in range(count):
         record_offset = STREAM_DATA_HEADER_STRUCT.size + index * record_size
         sequence, native_tick, _status, prefix_reserved = STREAM_RECORD_PREFIX_STRUCT.unpack_from(
@@ -506,7 +551,16 @@ def _summarize_stream_data_chunk(
             raise ValueError(
                 f"stream-data chunk {chunk.sequence_number} first sequence does not match first record"
             )
-        if last_record_sequence is not None:
+        source_segment = None
+        if _payload_schema(descriptor) == "bodaqs.can_imu6.v1":
+            source_segment = struct.unpack_from("<I", chunk.payload, record_offset + 12)[0]
+            if source_segment == 0:
+                raise ValueError(f"stream-data chunk {chunk.sequence_number} has zero source segment")
+        elif _payload_schema(descriptor) == "bodaqs.can_timing_evidence.v1":
+            reserved_offsets = (15, 169, 187, 203, *range(210, 224))
+            if any(chunk.payload[record_offset + offset] for offset in reserved_offsets):
+                raise ValueError(f"stream-data chunk {chunk.sequence_number} has nonzero evidence reserved byte")
+        if last_record_sequence is not None and source_segment == last_source_segment:
             sequence_delta = (sequence - last_record_sequence) & 0xFFFFFFFF
             if sequence_delta == 0 or sequence_delta >= 0x80000000:
                 raise ValueError(
@@ -521,6 +575,7 @@ def _summarize_stream_data_chunk(
                 f"stream-data chunk {chunk.sequence_number} record {index} has nonzero record-prefix reserved field"
             )
         last_record_sequence = sequence
+        last_source_segment = source_segment
 
     observations = _decode_time_observations(
         chunk,
@@ -1262,6 +1317,10 @@ def _trim_imu_streams_to_primary_interval(
             continue
         time_s = pd.to_numeric(frame["time_s"], errors="coerce")
         keep = np.isfinite(time_s) & (time_s >= start_s) & (time_s <= end_s)
+        if _payload_schema(descriptor) == "bodaqs.can_imu6.v1":
+            # Unknown alignment cannot prove that a valid sample is outside
+            # the recording's primary interval.
+            keep |= ~np.isfinite(time_s)
         original_count = len(frame.index)
         attrs = dict(frame.attrs)
         trimmed = frame.loc[keep].reset_index(drop=True)
@@ -1309,7 +1368,25 @@ def bdq_to_stream_dataframes(
         stream_key = str(descriptor["stream_key"])
         df = pd.DataFrame.from_records(records_by_id[stream_id])
         if not df.empty:
-            df = _decorate_native_time(df, descriptor)
+            if _payload_schema(descriptor) in {"bodaqs.can_imu6.v1", "bodaqs.can_timing_evidence.v1"}:
+                # Raw CAN evidence is not a clock mapping. In particular a
+                # segment change does not prove a clock reset, and receipt
+                # time cannot stand in for acquisition time. Mapping these
+                # explicit domains is a separate analysis operation.
+                if _payload_schema(descriptor) == "bodaqs.can_imu6.v1":
+                    segment_field = next(channel["field"] for channel in _schema_channels(descriptor)
+                                         if channel["byte_offset"] == 12)
+                    df["continuity_segment"] = df[segment_field]
+                df["clock_epoch"] = pd.array([pd.NA] * len(df), dtype="UInt32")
+                df["native_tick_unwrapped"] = pd.array([pd.NA] * len(df), dtype="UInt64")
+                df["native_time_s"] = float("nan")
+                df.attrs["bdq_clock_alignment"] = {
+                    "status": "unknown", "clock_id": descriptor.get("clock_id"),
+                    "reason": "raw evidence retained; clock mapping not established",
+                }
+                df.attrs["bdq_stream_descriptor"] = copy.deepcopy(descriptor)
+            else:
+                df = _decorate_native_time(df, descriptor)
         frames[stream_key] = df
 
     primary_descriptor = next(
@@ -1333,6 +1410,8 @@ def bdq_to_stream_dataframes(
             frame = frames[stream_key]
             if frame.empty:
                 continue
+            if _payload_schema(descriptor) in {"bodaqs.can_imu6.v1", "bodaqs.can_timing_evidence.v1"}:
+                continue
             if descriptor.get("clock_id") == "logger_monotonic":
                 frames[stream_key] = _align_logger_clock_stream(
                     frame, descriptor, logger_origin_us
@@ -1344,8 +1423,13 @@ def bdq_to_stream_dataframes(
                     observations[stream_id],
                     logger_origin_us,
                 )
+        from .can_timing import map_can_timing
+        map_can_timing(frames, descriptors_by_id, logger_origin_us)
         if trim_imu_to_primary_interval:
             _trim_imu_streams_to_primary_interval(frames, descriptors_by_id)
+    else:
+        from .can_timing import map_can_timing
+        map_can_timing(frames, descriptors_by_id)
     return frames
 
 
@@ -1614,6 +1698,8 @@ def _bdq_v2_to_log_metadata(info: BdqReadResult) -> dict[str, Any]:
             or descriptor.get("clock_id") == "logger_monotonic"
             or descriptor.get("stream_id") in observed_stream_ids
         )
+        if _payload_schema(descriptor) in {"bodaqs.can_imu6.v1", "bodaqs.can_timing_evidence.v1"}:
+            has_logger_time = False
         if is_primary:
             primary_descriptor = descriptor
         declared_streams[stream_key] = {
@@ -1665,6 +1751,7 @@ def _bdq_v2_to_log_metadata(info: BdqReadResult) -> dict[str, Any]:
                     "native_nominal": "native_time_s",
                 },
                 "signals": signals,
+                "descriptor": copy.deepcopy(descriptor),
             }
 
     columns: dict[str, Any] = {}
