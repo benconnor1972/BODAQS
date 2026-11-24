@@ -14,15 +14,15 @@ ledger records code dependencies without implicitly closing tracker items.
 | #219 | Implemented; qualification pending | Existing native 833/1667/3333 node profiles retained and exercised; normal import exposes independently verified six-axis counts/scaling while preserving unit/timing streams. Source-bounded completeness, uncertain timing and corrupt-source isolation tested. Four-node real recording composition imports normally. Physical profile/UI qualification remains. |
 | #220 | Implemented core; qualification/UI pending | Bounded 5ms idle control progress while configured nodes are unreconciled; priority/fair cursors, faster inventory discovery, scoped snapshot reuse and explicit invalidation. API preparation/blockers added. Actual manager/model cold/change/late/failing-peer checks and target build pass; broader migration/UI #225 and physical before/after remain. |
 | #221 | Implemented; qualification pending | Analog/I2C string-pot typed native counts, signed tracking estimate, quality/reset/epoch and auxiliary I2C evidence; owner-only acquisition and snapshot previews. Normal calibrated/raw-only import, direction/hold/timeout/gap/loss/overflow/restart and preview-equivalence checks pass. Reviewed A8 build and 69 focused import tests pass; physical qualification remains. |
-| #222 | Implemented; final checks / qualification pending | Both rotary families record native counts, optional register evidence, validity and configured zero/polarity; bounded PSRAM-first queues and snapshot-only previews. Normal import and queue/calibration fault fixtures pass; final adapter checks in progress. |
+| #222 | Implemented; qualification pending | Both rotary families record native counts, optional register evidence, validity and configured zero/polarity; bounded PSRAM-first queues and snapshot-only previews. Actual adapters, atomic calibration persistence/epoch fencing, normal import and queue fault fixtures pass. |
 | #223 | Implemented; qualification pending | Native FIFO recording and scale/orientation import preserved; previews now read coherent published snapshots without consuming sample/evidence queues. Actual adapter/retirement checks, focused imports and A8 target build pass. |
 | #224 | Implemented; qualification pending | Native fixed-point UART observations, fix/time/accuracy evidence and embedded settings; bounded queue, lifecycle fencing and normal derived import. Actual sensor/catalog/import fixture and A8 build pass. Physical receiver/mixed-load qualification remains. |
 | #225 | Implemented; qualification pending | One-time exact migration review, byte-preserved original, persistent acceptance, supported raw/native UI and canonical mutation guards. Calibration anchors and unknown source tokens survive save/reload. Mixed-case preference and shared-application review fixes tested; A8 build passes. Physical migration/UI gate remains. |
 | #226 | Implemented; qualification pending | Bounded operational footer, I2C producer retirement barrier, cancellation ordering, shared-fault containment and late ownership recovery. Actual lifecycle/fault/allocator and normal-prefix import checks pass; A8 build passes. Physical fault gates remain. |
-| #227 | Implemented; review/qualification pending | Shared strict/best-effort membership, supplied qualification and actual reservations drive START/API/UI and bounded metadata. No invented thresholds or legacy bench qualification. Actual lifecycle 100/106 production checks, native serializers/normal import, 96 focused imports and A8 build pass. Independent review and physical gates remain. |
-| #228 | Pending | Retire superseded production paths. |
-| #229 | Pending | Reproducible board-specific package. |
-| #230 | Pending | Final verification and destination integration. |
+| #227 | Implemented; qualification pending | Shared strict/best-effort membership, supplied qualification and actual reservations drive START/API/UI and bounded metadata. Independent review fixes enforce admission before local preparation and use observational BMI readiness. Worker-allocation failure aborts admission. Focused lifecycle and normal-import checks pass; no general admission thresholds invented. |
+| #228 | Implemented; physical impact pending | Explicit ordinary-board production and separately named candidate environments; legacy writer/transform/profile roots removed while functional DMA batching, adaptive policy and native families remain. Three target builds and independent two-axis review pass. Static DRAM falls by 49,392 bytes against the recorded intermediate baseline; runtime heap/timing qualification remains. |
+| #229 | In progress | Source-pinned board-specific package/audit tooling implemented; fixed compiler timestamp and two clean strict builds produce identical image/ELF/map/recipe artifacts. Final integrated candidate package and peer provenance checks remain. |
+| #230 | In progress; hardware gates pending | Full analysis suite: 615 passed, 1 skipped. Full firmware regression sweep and final review underway; review fixes and representative device checks remain before destination integration. See the qualification checklist. |
 
 ## Baseline provenance
 
@@ -63,7 +63,10 @@ storage ownership. ADC row-producer retirement now reports progress without
 waiting in the UI/control loop. The status API adds `recording_phase`,
 `recording_ownership_retained` and `stop_reason`; existing fields remain.
 
-Candidate environment: `bodaqs_a8_production`. It explicitly selects the tested
+The initial candidate environment was `bodaqs_a8_production`. After #228,
+`bodaqs_a8_integration_candidate` is the explicit unqualified measurement build;
+ordinary `bodaqs_a8_production` requires separately supplied qualification coverage.
+Both explicitly select the tested
 adaptive drain policy, ROM file-payload CRC and synchronous 4096-byte owner-only
 DMA staging, with optional CPU/cost observers disabled. Ordinary boot requires
 no serial selection or calibration benchmark. Required storage reservations may
