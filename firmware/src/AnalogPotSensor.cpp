@@ -476,7 +476,8 @@ bool AnalogPotSensor::describeSensorMetadata(SensorMetadataDescriptor& out) cons
   out.sensorFullCount = sensor_full_count_;
   out.sensorFullTravel = sensor_full_travel_mm_;
   out.invert = m_invert;
-  out.hasCalibration = true;
+  out.hasCalibration = sensor_full_count_ != sensor_zero_count_ &&
+      isfinite(sensor_full_travel_mm_) && sensor_full_travel_mm_ > 0;
   return true;
 }
 

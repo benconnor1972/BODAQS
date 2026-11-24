@@ -56,6 +56,7 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_logging_start_runtime.py --async-storage --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_storage_worker_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_recording_storage_path_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_recording_configuration_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_storage_task_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_sensor_config_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_control_recovery_runtime.py --compiler "$(CXX)"

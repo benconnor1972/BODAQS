@@ -11,6 +11,7 @@ import re
 import time
 
 from .io_logger import load_logger_csv_with_log_metadata, parse_run_stats_footer
+from .analog_counts import reconstruct_recorded_analog
 from .io_bdq import (
     bdq_primary_dataframe_from_streams,
     bdq_to_dataframe,
@@ -976,6 +977,9 @@ def load_bdq_session(
         for error in info.detected_errors:
             _append_qc_warning(session, f"bdq_parser_warning:{error}")
     if info.header.format_major == 2:
+        analog = reconstruct_recorded_analog(info.metadata, info.stream_catalog, native_frames)
+        if analog.frame is not None:
+            native_frames["analog_engineering"] = analog.frame
         native_frames.pop("primary", None)
         session["stream_dfs"] = native_frames
         secondary = log_metadata.get("secondary_streams")
@@ -992,6 +996,17 @@ def load_bdq_session(
                     stream_metadata["primary_interval_trim"] = copy.deepcopy(
                         dict(interval_trim)
                     )
+        if analog.frame is not None:
+            session.setdefault("meta", {}).setdefault("secondary_streams", {})["analog_engineering"] = {
+                "derived": True, "source_stream": "primary",
+                "calibration_source": "embedded_recording_configuration",
+                "channels": copy.deepcopy(analog.channels),
+            }
+        snapshot = info.metadata.get("recording_configuration")
+        if isinstance(snapshot, Mapping):
+            session.setdefault("meta", {})["recording_configuration"] = copy.deepcopy(dict(snapshot))
+        for warning in analog.warnings:
+            _append_qc_warning(session, warning)
         session.setdefault("meta", {})["bdq_events"] = [dict(event) for event in info.events]
         timing_observations: Dict[str, Any] = {}
         catalog_streams = info.stream_catalog.get("streams")

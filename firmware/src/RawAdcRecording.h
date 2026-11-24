@@ -40,7 +40,7 @@ namespace RawAdcRecording {
 constexpr uint16_t kSensorError=0x0020;
 inline uint16_t count(int32_t value,uint16_t& status) {
   if(value<0){status|=kSensorError;return 0;}
-  if(value>UINT16_MAX){status|=kSensorError;return UINT16_MAX;}
+  if(value>4095){status|=kSensorError;return 4095;}
   return static_cast<uint16_t>(value);
 }
 inline bool encode(const RawAdcRecord& record,uint8_t* out,size_t capacity) {

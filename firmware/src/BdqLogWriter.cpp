@@ -12,6 +12,8 @@
 #include "LoggerLimits.h"
 #include "BMI270Profile.h"
 #include "ImuAdmission.h"
+#include "SensorAssignment.h"
+#include "SensorRegistry.h"
 
 #define BDQ_LOGE(...) LOGE_TAG("BDQ", __VA_ARGS__)
 #define BDQ_LOGW(...) LOGW_TAG("BDQ", __VA_ARGS__)
@@ -441,9 +443,13 @@ const I2CBusSchedulerTimingStats& emptyI2CSchedulerTiming_() {
 
 void appendKeyFloat_(JsonOutput& out, uint8_t depth, const char* key, float value, bool comma = true) {
   appendKey_(out, depth, key);
-  char buf[32];
-  snprintf(buf, sizeof(buf), "%.6f", (double)value);
-  out += buf;
+  if (!isfinite(value)) {
+    out += F("null");
+  } else {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.6f", (double)value);
+    out += buf;
+  }
   out += comma ? F(",\n") : F("\n");
 }
 
@@ -1599,6 +1605,119 @@ bool buildColumnLayout_() {
   return s_frameSize > 6;
 }
 
+
+// Snapshot sensor configuration only; Wi-Fi credentials and unrelated settings
+// are deliberately outside the recording contract. Called before acquisition.
+void appendRecordingConfiguration_(JsonOutput& out, const LoggerConfig& cfg, bool comma = true) {
+  appendKey_(out, 1, "recording_configuration");
+  out += F("{\n");
+  appendKeyString_(out, 2, "schema", "bodaqs.recording_configuration.v1");
+  appendKeyUInt_(out, 2, "local_row_rate_hz", cfg.sampleRateHz);
+  appendKeyUInt_(out, 2, "calibration_snapshot_version", 1);
+  appendKey_(out, 2, "sensors");
+  out += '[';
+  bool separated = false;
+  for (uint8_t index = 0; index < cfg.sensorCount(); ++index) {
+    SensorSpec spec;
+    if (!cfg.getSensorSpec(index, spec)) continue;
+    if (separated) out += ',';
+    separated = true;
+    out += F("{\n");
+    appendKeyUInt_(out, 3, "configured_index", index);
+    appendKeyString_(out, 3, "sensor_id", spec.name);
+    appendKeyString_(out, 3, "sensor_type", SensorRegistry::typeKey(spec.type));
+    appendKeyBool_(out, 3, "configured_muted", spec.mutedDefault);
+    appendKeyString_(out, 3, "stream_key", spec.type == SensorType::AnalogPot ? "primary" : "");
+    const auto assignment = sensorAssignment(spec, board::gBoard);
+    const char* kind = "unknown";
+    switch (assignment.kind) {
+      case SensorAssignment::Kind::ExternalAdc: kind = "external_adc"; break;
+      case SensorAssignment::Kind::Gpio: kind = "gpio"; break;
+      case SensorAssignment::Kind::I2C: kind = "i2c"; break;
+      case SensorAssignment::Kind::Uart: kind = "uart"; break;
+      case SensorAssignment::Kind::NodeImu: kind = "can_imu"; break;
+      case SensorAssignment::Kind::NodeAnalog: kind = "can_analog"; break;
+      case SensorAssignment::Kind::NodeI2C: kind = "can_i2c"; break;
+      default: break;
+    }
+    appendKey_(out, 3, "assignment"); out += '{';
+    appendKeyString_(out, 4, "kind", kind);
+    appendKeyUInt_(out, 4, "provider_kind", static_cast<unsigned>(assignment.provider.kind));
+    appendKeyUInt_(out, 4, "provider_index", assignment.provider.index);
+    appendKeyInt_(out, 4, "bus", assignment.bus);
+    appendKeyInt_(out, 4, "input", assignment.input);
+    appendKeyInt_(out, 4, "negative_input", assignment.negativeInput, false);
+    out += F("},\n");
+    appendKey_(out, 3, "parameters"); out += '{';
+    for (uint16_t parameter = 0; parameter < spec.params.size(); ++parameter) {
+      if (parameter) out += ',';
+      appendJsonEscaped_(out, spec.params.keyAt(parameter)); out += ':';
+      appendJsonEscaped_(out, spec.params.valueAt(parameter));
+    }
+    out += F("},\n");
+    appendKey_(out, 3, "raw_fields"); out += '[';
+    bool fieldSeparated = false;
+    const auto columns = SensorManager::describeSensorColumns(nullptr, 0, true);
+    for (uint16_t column = 0; column < columns; ++column) {
+      SensorColumnDescriptor descriptor;
+      if (!SensorManager::describeSensorColumnAt(column, descriptor, true) ||
+          !descriptor.raw || strcmp(descriptor.sensorName, spec.name)) continue;
+      if (fieldSeparated) out += ',';
+      fieldSeparated = true;
+      appendJsonEscaped_(out, descriptor.columnId[0] ? descriptor.columnId : descriptor.csvHeader);
+    }
+    out += F("],\n");
+    const bool analog = spec.type == SensorType::AnalogPot &&
+        assignment.provider.kind == SensorProviderKind::Local &&
+        (assignment.kind == SensorAssignment::Kind::ExternalAdc || assignment.kind == SensorAssignment::Kind::Gpio);
+    appendKey_(out, 3, "count_domain"); out += '{';
+    appendKeyString_(out, 4, "id", analog ? "adc_u12_clamped_v1" : "sensor_native_v1", analog);
+    if (analog) {
+      appendKeyUInt_(out, 4, "minimum", 0);
+      appendKeyUInt_(out, 4, "maximum", 4095, false);
+    }
+    out += F("},\n");
+    SensorMetadataDescriptor description;
+    bool described = false;
+    const auto sensorCount = SensorManager::describeSensors(nullptr, 0);
+    for (uint16_t sensor = 0; sensor < sensorCount; ++sensor) {
+      if (SensorManager::describeSensorAt(sensor, description) && !strcmp(description.name, spec.name)) {
+        described = true; break;
+      }
+    }
+    if (!described) description = SensorMetadataDescriptor{};
+    const bool calibrated = analog && described && description.hasCalibration &&
+        description.sensorFullCount != description.sensorZeroCount &&
+        isfinite(description.sensorFullTravel) && description.sensorFullTravel > 0 &&
+        description.calibrationOutputUnit[0];
+    Calibration capture;
+    const bool haveCapture = ConfigManager::loadCalibrationByIndex(index, capture);
+    appendKey_(out, 3, "calibration"); out += '{';
+    appendKeyString_(out, 4, "model", analog ? "analog_geometry_v1" : "sensor_native_v1");
+    appendKeyBool_(out, 4, "available", calibrated);
+    appendKeyUInt_(out, 4, "capture_epoch_ms", haveCapture ? capture.ts_epoch_ms : 0);
+    appendKey_(out, 4, "captured_anchors"); out += '{';
+    appendKeyBool_(out, 5, "available", haveCapture);
+    appendKeyBool_(out, 5, "enabled", haveCapture && capture.enabled);
+    appendKeyUInt_(out, 5, "mode", static_cast<unsigned>(capture.mode));
+    appendKeyFloat_(out, 5, "r0_raw", capture.r0_raw);
+    appendKeyFloat_(out, 5, "r1_raw", capture.r1_raw);
+    appendKeyUInt_(out, 5, "capture_n", capture.capture_n);
+    appendKeyUInt_(out, 5, "capture_avg_ms", capture.capture_avg_ms, false);
+    out += F("},\n");
+    appendKeyString_(out, 4, "output_unit", calibrated ? description.calibrationOutputUnit : "");
+    appendKeyInt_(out, 4, "installed_zero_count", description.installedZeroCount);
+    appendKeyInt_(out, 4, "sensor_zero_count", description.sensorZeroCount);
+    appendKeyInt_(out, 4, "sensor_full_count", description.sensorFullCount);
+    appendKeyFloat_(out, 4, "sensor_full_travel", description.sensorFullTravel);
+    appendKeyBool_(out, 4, "invert", description.invert, false);
+    out += F("}\n}");
+  }
+  out += F("]\n  }");
+  if (comma) out += ',';
+  out += '\n';
+}
+
 bool serializeMetadataJson_(
     JsonOutput& out,
     const BdqLogSessionInfo& info,
@@ -1629,6 +1748,7 @@ bool serializeMetadataJson_(
   appendKeyString_(out, 1, "timezone", info.timezone && *info.timezone ? info.timezone : "unknown");
   appendKeyString_(out, 1, "started_at_utc", info.startedAtUtc);
   appendKeyString_(out, 1, "started_at_local", info.startedAtLocal);
+  if (multiStream && cfg) appendRecordingConfiguration_(out, *cfg);
   appendSensors_(out);
   appendDeviceConfigs_(out);
   appendImuConfigs_(out);

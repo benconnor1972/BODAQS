@@ -9,7 +9,7 @@ ledger records code dependencies without implicitly closing tracker items.
 | #214 | Complete | Source-pinned r133 baseline and selected RTC release port; both A8 target builds pass. START harness: 133 checks; remote lifecycle/fault scenarios and RTC runtime tests pass. |
 | #215 | Implemented; qualification pending | Atomic phase, control-task transitions and producer fault requests; nonblocking ADC/row retirement, retained-resource mutation/restart/sleep guards, phase API/UI. START/preflight 133 checks; asynchronous controller 36 checks; target candidate builds. Final fault/outcome checks continue in #226. |
 | #216 | Implemented; qualification pending | Explicit adaptive drain; production ROM CRC and owner-only DMA batches; observers and mandatory console/benchmark gates disabled. Adapter, storage owner/recovery fixtures and candidate target build pass. Physical no-console/mixed-load gate remains. |
-| #217 | Pending | Counts/calibration snapshots and normal analog import. |
+| #217 | In progress | Embedded sensor/config/calibration snapshot and normal raw/basic-engineering import implemented; 21 BDQ v2 import tests and production serializer fixture pass; target build passes. Flexible/direct acquisition and read-only previews follow in #218/#221. |
 | #218 | Pending | Unified timer and flexible per-ADC plans. |
 | #219 | Pending | Native CAN profiles and normal import. |
 | #220 | Pending | Fast, fair, safely cached reconciliation. |
