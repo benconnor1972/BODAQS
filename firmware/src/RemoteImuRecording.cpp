@@ -1,5 +1,6 @@
 #include "SparseCostProbe.h"
 #include "RemoteImuRecording.h"
+#include "RecordingReadiness.h"
 #include "Lsm6dso32xConfig.h"
 #include "RemoteImuStream.h"
 #include "ImuFlowDiagnostics.h"
@@ -481,6 +482,9 @@ bool configure(const LoggerConfig& cfg) {
  for(uint8_t i=0;i<cfg.sensorCount();++i) {
   SensorSpec spec;bool muted=false;
   if(!cfg.getSensorSpec(i,spec)) continue;
+#if BODAQS_PRODUCTION_RECORDING
+  if(!RecordingReadiness::selected(i)) continue;
+#endif
   if(!SensorManager::getMuted(i,muted)) muted=spec.mutedDefault;
   if(muted) continue;
   if(spec.type!=SensorType::LSM6DSO32XImu) {
@@ -517,6 +521,11 @@ bool configure(const LoggerConfig& cfg) {
  for(uint8_t a=0;a<2;++a) if(board::gBoard && a<board::gBoard->external_adc_count && AnalogInputManager::activeChannelCount(a))
   demand.adc[a]={AnalogInputManager::configuredDataRateSps(a),board::gBoard->external_adcs[a].spi_hz,
                 AnalogInputManager::activeChannelCount(a)};
+#if BODAQS_PRODUCTION_RECORDING
+ const auto& decision=RecordingReadiness::session().decision;
+ report={};report.attempted=mask!=0;report.qualified=decision.qualified;report.benchOnly=decision.candidate;
+ if(!decision.mayPrepare) report.reason=ImuAdmission::Reason::Unqualified;
+#else
  const bool benchMaskAllowed=ImuAdmission::channelRateBenchBuild()?((ImuAdmission::multiNodeBenchBuild() && benchAdcMask==0) || benchAdcMask==0x03 || benchAdcMask==0x11 ||
       (ImuAdmission::scalingBenchBuild() && benchAdcMask==0x33)):benchAdcMask==3;
  const bool bulkAdcOff=!demand.adc[0].activeChannels && !demand.adc[1].activeChannels &&
@@ -537,6 +546,7 @@ bool configure(const LoggerConfig& cfg) {
      : ImuAdmission::singleNodeSmokeBuild()
      ? ImuAdmission::evaluateSingleNodeSmoke(demand,otherActiveSensors)
      : ImuAdmission::evaluate(demand,profile);
+#endif
  if(report.reason!=ImuAdmission::Reason::None || !mask) return true;
  uint64_t session=CanMasterManager::diagnostics().authority.session;
  if(allocatedSession!=session) {allocatedSession=session;nextRecording=1;}
@@ -560,7 +570,11 @@ bool configure(const LoggerConfig& cfg) {
    discardAllocated();report.reason=ImuAdmission::Reason::Allocation;return true;
   }
  }
+#if BODAQS_PRODUCTION_RECORDING
+ report.loggerBytes=sizeof(peers)+demand.nodes*RemoteImuStream::allocatedBufferBytes(true,true)+
+#else
  report.loggerBytes=sizeof(peers)+demand.nodes*RemoteImuStream::allocatedBufferBytes(ImuAdmission::singleNodeSmokeBuild(),ImuAdmission::sampleUnitBenchBuild())+
+#endif
     AcquisitionControl::reservedBytes()+sizeof(CanMasterManager::Diagnostics);
  scopeSession_=session;scopeMasterUid_=CanMasterManager::diagnostics().hardwareUid;
  scopeMasterBoot_=CanMasterManager::diagnostics().control.master_boot_id;
@@ -592,6 +606,11 @@ bool resourcesReady(size_t storageReservedBytes) {
  return true;
 }
 bool configured() {return selected!=0;}
+uint8_t healthyNodeMask() {
+ uint8_t result=0;for(uint8_t n=0;n<4;++n)
+  if((selected&(1u<<n)) && !peers[n].failed()) result|=1u<<n;
+ return result;
+}
 #if defined(BODAQS_PACKED_STARTUP_DIAGNOSTICS) && BODAQS_PACKED_STARTUP_DIAGNOSTICS
 uint8_t startupSampleMask() {return startupSamples.load(std::memory_order_relaxed);}
 #endif

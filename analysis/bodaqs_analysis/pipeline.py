@@ -15,6 +15,7 @@ from .analog_counts import reconstruct_recorded_analog
 from .can_imu import decode_can_imu_streams
 from .string_pot_counts import reconstruct_string_pots
 from .rotary_counts import reconstruct_rotary_counts
+from .recording_membership import recording_membership
 from .gps_native import reconstruct_gps
 from .io_bdq import (
     bdq_primary_dataframe_from_streams,
@@ -1025,6 +1026,11 @@ def load_bdq_session(
         snapshot = info.metadata.get("recording_configuration")
         if isinstance(snapshot, Mapping):
             session.setdefault("meta", {})["recording_configuration"] = copy.deepcopy(dict(snapshot))
+        membership, membership_warnings = recording_membership(info.metadata, info.final_summary)
+        if membership:
+            session.setdefault("meta", {})["recording_membership"] = membership
+        for warning in membership_warnings:
+            _append_qc_warning(session, warning)
         for warning in analog.warnings:
             _append_qc_warning(session, warning)
         session.setdefault("meta", {})["bdq_events"] = [dict(event) for event in info.events]

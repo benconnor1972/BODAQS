@@ -54,13 +54,19 @@ static String configurationNotice_(bool outOfBand = false) {
       SensorManager::configurationDiagnostics(ConfigManager::get());
   if (CanMasterManager::requiredAndUnavailable() && !LoggingManager::isRunning()) {
     html += F("<div class='alert-warn'><strong>CAN-FD master required but unavailable.</strong><br>");
-    html += F("Check the daughterboard, SPI connection, and master firmware. Healthy local sensors can still log.</div>");
+    html += F("Check the daughterboard, SPI connection, and master firmware. Strict START requires all requested sensors; best-effort exclusions must be explicit.</div>");
   }
   if ((issue != LoggingConfigIssue::None || diagnostics.count() != 0) &&
       !LoggingManager::isRunning()) {
     String title = issue == LoggingConfigIssue::RestartRequired ? F("Restart required - press Enter on the home screen.")
         : (issue == LoggingConfigIssue::Conflict ? F("Config conflict - affected sensors will be skipped.")
                                                  : F("Sensor configuration - affected sensors will be skipped."));
+#if BODAQS_PRODUCTION_RECORDING
+    if(issue==LoggingConfigIssue::PreparingParticipants) title=F("Preparing requested participants; see node readiness below.");
+    else if(issue==LoggingConfigIssue::Unqualified) title=F("This configuration requires qualification before production recording.");
+    else if(issue==LoggingConfigIssue::IntegrationCandidate) title=F("Unqualified integration candidate: test recording only.");
+    else if(!ConfigManager::get().recordingBestEffort) title=F("Strict recording requires every requested participant; review blockers below.");
+#endif
     html += String(F("<div class='alert-warn'><strong>")) + title + F("</strong>");
     if (LoggingManager::configurationDetail()[0]) {
       html += F("<br>");

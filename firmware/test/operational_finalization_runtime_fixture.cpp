@@ -1,4 +1,5 @@
 #include "BoundedJsonAllocator.h"
+#include "RecordingReadiness.h"
 #include "BdqV2Catalog.h"
 #include "SensorRuntimeDiagnostics.h"
 #include <cassert>
@@ -49,8 +50,18 @@ namespace SensorManager {
   out.bdqV2RecordsDropped=2;out.bdqV2RecordsRejected=1;return true;
  }
 }
+namespace RecordingReadiness {
+ Observation declared;
+ const Observation& session() {return declared;}
+ const char* reason(const Observation& value) {return RecordingAdmission::blockerText(value.decision.blocker);}
+}
 // PRODUCTION
 int main() {
+ RecordingReadiness::declared.decision.requested=3;
+ RecordingReadiness::declared.decision.selected=1;
+ RecordingReadiness::declared.decision.excluded=2;
+ RecordingReadiness::declared.decision.candidate=true;
+ RecordingReadiness::declared.reservation=RecordingAdmission::Reservation::Acquired;
  for(unsigned i=0;i<37;++i) {
   auto& d=s_bdqV2Descriptors[i];d.source.streamId=i+1;
   std::strcpy(d.sensorId,"local");
@@ -59,6 +70,9 @@ int main() {
  const auto bytes=buildOperationalSummary_({});assert(bytes && bytes<sizeof workspace);
  JsonDocument summary;assert(!deserializeJson(summary,workspace,bytes));
  assert(summary["streams"].size()==9);
+ assert(summary["recording_membership"]["excluded_mask"]==2);
+ assert(summary["recording_membership"]["resources_reserved"]==true);
+ assert(summary["recording_membership"]["qualified"]==false);
  assert(summary["remote_failures"].size()==4);
  assert(summary["remote_tail_windows"].size()==4);
  assert(summary["remote_tail_status"]=="incomplete");

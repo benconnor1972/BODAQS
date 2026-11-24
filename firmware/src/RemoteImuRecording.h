@@ -41,6 +41,7 @@ bool setAdmissionProfile(const ImuAdmission::Profile&);
 // the frozen candidate catalog. It is the barrier before any PREPARE.
 bool resourcesReady(size_t storageReservedBytes=0);
 bool configured();
+uint8_t healthyNodeMask();
 #if defined(BODAQS_PACKED_STARTUP_DIAGNOSTICS) && BODAQS_PACKED_STARTUP_DIAGNOSTICS
 uint8_t startupSampleMask();
 #endif

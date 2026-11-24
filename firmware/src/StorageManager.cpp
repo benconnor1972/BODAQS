@@ -3,6 +3,7 @@
 #include "StoragePathProbe.h"
 #include "RecordingStoragePath.h"
 #include "StorageManager.h"
+#include "RecordingReadiness.h"
 #include "RemoteImuRecording.h"
 #include "AcquisitionControl.h"
 #include "RecordingStorageWorker.h"
@@ -2940,6 +2941,19 @@ static size_t buildOperationalSummary_(const BdqLogEndInfo& endInfo) {
   document["summary_format"] = "bdq.final_summary.v2";
   document["clean_shutdown"] = true;
   document["diagnostics_scope"] = "bounded_operational";
+  const auto& readiness=RecordingReadiness::session();
+  JsonObject membership=document["recording_membership"].to<JsonObject>();
+  membership["schema"]="bodaqs.recording_membership.v1";
+  membership["stage"]="finalization";
+  membership["requested_mask"]=readiness.decision.requested;
+  membership["selected_mask"]=readiness.decision.selected;
+  membership["excluded_mask"]=readiness.decision.excluded;
+  membership["qualified"]=readiness.decision.qualified;
+  membership["unqualified_candidate"]=readiness.decision.candidate;
+  membership["qualification_profile"]=readiness.profileId[0]?readiness.profileId:nullptr;
+  membership["qualification_revision"]=readiness.profileRevision;
+  membership["resources_reserved"]=readiness.reservation==RecordingAdmission::Reservation::Acquired;
+  membership["admission_reason"]=RecordingReadiness::reason(readiness);
   document["session_id"] = s_currentSessionId;
   document["primary_samples_dropped"] = endInfo.samplesDropped;
   document["user_mark_events_dropped"] = s_bdqV2MarkEventsDropped;

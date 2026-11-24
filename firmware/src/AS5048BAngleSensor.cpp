@@ -8,7 +8,6 @@
 #include <string.h>
 
 #include "ConfigManager.h"
-#include "LoggingManager.h"
 #include "I2CManager.h"
 #include "PowerManager.h"
 #include "SensorRegistry.h"
@@ -336,7 +335,7 @@ bool AS5048BAngleSensor::shutdown() {
 }
 
 bool AS5048BAngleSensor::reconfigureFromSpec(const SensorSpec& spec) {
-  if(LoggingManager::configurationLocked()) return false;
+  if(!ConfigManager::configurationMutable()) return false;
   if (spec.type != SensorType::AS5048BAngleI2C) return false;
 
   Params p;
@@ -1155,7 +1154,7 @@ void AS5048BAngleSensor::setOutputConfig(const OutputConfig& cfg) {
 }
 
 bool AS5048BAngleSensor::beginCalibration(CalMode mode) {
-  if(LoggingManager::configurationLocked()) return false;
+  if(!ConfigManager::configurationMutable()) return false;
   if (mode != CalMode::ZERO || m_calibrationEpoch==UINT32_MAX) return false;
   ++m_calibrationEpoch;
   cal_ = CalState{};
@@ -1168,7 +1167,7 @@ bool AS5048BAngleSensor::beginCalibration(CalMode mode) {
 }
 
 bool AS5048BAngleSensor::updateCalibration(int32_t latestCounts) {
-  if(LoggingManager::configurationLocked()) return false;
+  if(!ConfigManager::configurationMutable()) return false;
   if (cal_.phase != CalPhase::ACTIVE || cal_.mode != CalMode::ZERO || latestCounts==INT32_MIN || latestCounts==INT32_MAX) return false;
   ++cal_.samples;
   if (cal_.samples == 1) {
@@ -1180,7 +1179,7 @@ bool AS5048BAngleSensor::updateCalibration(int32_t latestCounts) {
 }
 
 bool AS5048BAngleSensor::finishCalibration(bool persist) {
-  if(LoggingManager::configurationLocked() || cal_.phase!=CalPhase::ACTIVE || cal_.mode!=CalMode::ZERO) return false;
+  if(!ConfigManager::configurationMutable() || cal_.phase!=CalPhase::ACTIVE || cal_.mode!=CalMode::ZERO) return false;
   const int32_t zero=cal_.first_counts!=INT32_MAX?cal_.first_counts:currentRawCounts();
   if(zero==INT32_MIN || zero==INT32_MAX) return false;
   const int32_t nextZero=normalizeCount_(zero);

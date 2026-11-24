@@ -914,8 +914,12 @@ bool validateLoggingStart(
 
   for (uint8_t i = 0; i < cfg.sensorCount() && i < MAX_SENSORS; ++i) {
     SensorSpec spec;
-    if (!cfg.getSensorSpec(i, spec) || spec.mutedDefault ||
-        s_sessionDiagnostics.excludesSensor(i)) continue;
+    if (!cfg.getSensorSpec(i,spec)) continue;
+    bool muted=spec.mutedDefault;
+#if BODAQS_PRODUCTION_RECORDING
+    (void)getMuted(i,muted);
+#endif
+    if(muted || s_sessionDiagnostics.excludesSensor(i)) continue;
     if(spec.type==SensorType::LSM6DSO32XImu &&
        sensorAssignment(spec,board::gBoard).kind==SensorAssignment::Kind::NodeImu) continue;
     if (!s_list[i]) {
@@ -969,6 +973,18 @@ bool validateLoggingStart(
                 sensor->name(), (unsigned)LoggerLimits::kMaxDynamicColumns);
     }
   }
+#if BODAQS_PRODUCTION_RECORDING
+  if(!cfg.recordingBestEffort) {
+    for(uint8_t index=0;index<cfg.sensorCount() && index<MAX_SENSORS;++index) {
+      SensorSpec spec;if(!cfg.getSensorSpec(index,spec)) continue;
+      bool muted=spec.mutedDefault;(void)getMuted(index,muted);
+      if(!muted && s_sessionDiagnostics.excludesSensor(index)) {
+        if(error && errorCapacity) snprintf(error,errorCapacity,"strict recording requires all requested sensors");
+        s_sessionPlanActive=false;return false;
+      }
+    }
+  }
+#endif
   return true;
 }
 
@@ -1064,6 +1080,13 @@ void onLoggingFinalized() {
 
 const SensorDiagnosticList& sessionDiagnostics() { return s_sessionDiagnostics; }
 
+uint32_t sessionParticipantMask() {
+  uint32_t mask=0;
+  for(uint8_t index=0;index<MAX_SENSORS && index<32;++index)
+    if(participates_(index)) mask|=uint32_t{1}<<index;
+  return mask;
+}
+
 uint8_t sessionExcludedCount() {
   bool excluded[MAX_SENSORS] = {};
   for (uint8_t i = 0; i < s_sessionDiagnostics.count(); ++i) {
@@ -1094,6 +1117,8 @@ uint8_t count() {
   return n;
 }
 
+Sensor* getConfiguredSensor(uint8_t index) {return index<MAX_SENSORS?s_list[index]:nullptr;}
+
 Sensor* get(uint8_t i) {
   uint8_t seen = 0;
   for (auto* s : s_list) {
@@ -1118,6 +1143,9 @@ bool getMuted(uint8_t index, bool& outMuted) {
 }
 
 bool setMuted(uint8_t index, bool muted) {
+#if BODAQS_PRODUCTION_RECORDING
+  if(!ConfigManager::configurationMutable()) return false;
+#endif
 #if BODAQS_ADC_RAW_RECORDING_BENCH
   // This diagnostic records a frozen two-column raw layout. Reject mutation
   // before any saved/default/overlay state changes, including local mute.

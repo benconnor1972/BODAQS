@@ -1,6 +1,9 @@
 #include "CpuOccupancy.h"
 #include <Arduino.h>
 #include "LoggingManager.h"
+#include "RecordingReadiness.h"
+#include "SensorAssignment.h"
+#include "BoardSelect.h"
 #include "CanMasterManager.h"
 #include "RemoteImuRecording.h"
 #if defined(ESP32) && defined(BODAQS_PACKED_SEGMENTED_RECEIVER) && BODAQS_PACKED_SEGMENTED_RECEIVER
@@ -671,7 +674,24 @@ void LoggingManager::refreshConfigurationStatus() {
   const String blocker=ConfigManager::configurationBlocker();
   if(blocker.length()) {s_configurationIssue=LoggingConfigIssue::InvalidConfig;snprintf(s_configurationDetail,sizeof(s_configurationDetail),"%s",blocker.c_str());return;}
   char detail[sizeof(s_configurationDetail)] = {};
-  const auto issue = SensorManager::configurationIssue(*s_cfg, detail, sizeof(detail));
+  auto issue = SensorManager::configurationIssue(*s_cfg, detail, sizeof(detail));
+#if BODAQS_PRODUCTION_RECORDING
+  if(!configurationLocked()) {
+    const auto readiness=RecordingReadiness::observe(*s_cfg);
+    if(readiness.decision.mayPrepare) {
+      issue=readiness.decision.candidate?LoggingConfigIssue::IntegrationCandidate:LoggingConfigIssue::None;
+      snprintf(detail,sizeof detail,"%s",readiness.decision.candidate?"Unqualified integration candidate; resource checks occur at START":
+          readiness.decision.excluded?"Best-effort selection has explicit unavailable-source exclusions":"Ready for START resource reservation");
+    } else if(readiness.decision.blocker==RecordingAdmission::Blocker::ParticipantUnavailable) {
+      issue=LoggingConfigIssue::PreparingParticipants;
+      snprintf(detail,sizeof detail,"Waiting for requested participants; unavailable mask=0x%lx",static_cast<unsigned long>(readiness.unavailable));
+    } else if(readiness.decision.blocker==RecordingAdmission::Blocker::Unqualified ||
+        readiness.decision.blocker==RecordingAdmission::Blocker::QualificationRejected ||
+        readiness.decision.blocker==RecordingAdmission::Blocker::InvalidQualification) {
+      issue=LoggingConfigIssue::Unqualified;snprintf(detail,sizeof detail,"%s",RecordingReadiness::reason(readiness));
+    }
+  }
+#endif
   if (issue != s_configurationIssue || strcmp(detail, s_configurationDetail) != 0) {
     LOGGING_LOGI("configuration status=%u detail=%s\n", (unsigned)issue, detail);
     s_configurationIssue = issue;
@@ -790,6 +810,11 @@ void LoggingManager::loop() {
   if(phaseIs_(LifecycleState::Recording) && RemoteImuRecording::failed() && !s_remoteFaultShown) {
     s_remoteFaultShown=true;UI::toast(RemoteImuRecording::failureReason(),1800,1);
   }
+#if BODAQS_PRODUCTION_RECORDING
+  if(phaseIs_(LifecycleState::Preparing) && !s_cfg->recordingBestEffort && RemoteImuRecording::failed()) {
+    stop(StopReason::StartFailure,"strict_remote_preparation_failed");return;
+  }
+#endif
   if(phaseIs_(LifecycleState::Preparing) && s_remotePreparing) {
     if(RemoteImuRecording::failed() && !s_remoteFaultShown) {
       s_remoteFaultShown=true;UI::toast(RemoteImuRecording::failureReason(),1800,1);
@@ -805,9 +830,13 @@ void LoggingManager::loop() {
     const size_t storageBytes=allocation.primaryQueueBytes+allocation.workspaceBytes+
         allocation.outputBufferBytes+allocation.catalogPeakBytes+allocation.primaryColumnsPeakBytes+
         allocation.metadataPayloadBytes+allocation.staticStateBytes+allocation.storageTaskStackBytes;
-    RemoteImuRecording::resourcesReady(storageBytes);
+    if(!RemoteImuRecording::resourcesReady(storageBytes)) {
+      stop(StopReason::StartFailure,"remote_resources_unavailable");return;
+    }
 #else
-    RemoteImuRecording::resourcesReady();
+    if(!RemoteImuRecording::resourcesReady()) {
+      stop(StopReason::StartFailure,"remote_resources_unavailable");return;
+    }
 #endif
     if(!RemoteImuRecording::prepared()) return;
     s_remotePreparing=false;
@@ -866,6 +895,20 @@ void LoggingManager::loop() {
   refreshConfigurationStatus();
 }
 
+#if BODAQS_PRODUCTION_RECORDING
+static bool freezeProductionMembership_(const LoggerConfig& cfg,bool remotePrepared) {
+  uint32_t available=SensorManager::sessionParticipantMask();
+  for(uint8_t i=0;i<cfg.sensorCount() && i<32;++i) {
+    SensorSpec spec;if(!cfg.getSensorSpec(i,spec) || spec.type!=SensorType::LSM6DSO32XImu) continue;
+    const auto assignment=sensorAssignment(spec,board::gBoard);
+    if(assignment.kind!=SensorAssignment::Kind::NodeImu || assignment.provider.index>3) continue;
+    if(!remotePrepared || (RemoteImuRecording::healthyNodeMask()&(1u<<assignment.provider.index)))
+      available|=uint32_t{1}<<i;
+  }
+  return RecordingReadiness::freezeMembership(cfg,available);
+}
+#endif
+
 bool LoggingManager::start() {
   if (!isLifecycleOwner_()) return false;
   if (!phaseIs_(LifecycleState::Preparing) && !phaseIs_(LifecycleState::Recording) && configurationLocked()) return false;
@@ -894,6 +937,16 @@ bool LoggingManager::start() {
   s_stopContext = StopContext{};
   if (!s_cfg) return false;
   if(ConfigManager::configurationBlocker().length()) { UI::status(ConfigManager::configurationBlocker()); return false; }
+#if BODAQS_PRODUCTION_RECORDING
+  if(!RecordingReadiness::beginPreparation(*s_cfg)) {
+    UI::status(RecordingReadiness::reason(RecordingReadiness::session()));
+    LOGGING_LOGW("start refused: %s requested=0x%lx excluded=0x%lx\n",
+        RecordingReadiness::reason(RecordingReadiness::session()),
+        static_cast<unsigned long>(RecordingReadiness::session().decision.requested),
+        static_cast<unsigned long>(RecordingReadiness::session().decision.excluded));
+    return false;
+  }
+#endif
 #if BODAQS_ADC_RAW_RECORDING_BENCH
   if(s_cfg->logFormat!=LogFormat::BodaqsMultiStreamBinary) {
     UI::toast("Select BDQ v2 in settings",1800,1);
@@ -957,12 +1010,25 @@ bool LoggingManager::start() {
   uint16_t requestedHz = s_cfg->sampleRateHz;
   const uint16_t syncCapHz = SensorManager::synchronousMaxSampleRateHz();
   if (syncCapHz != 0 && requestedHz > syncCapHz) {
+#if BODAQS_PRODUCTION_RECORDING
+    UI::status("Requested local rate unsupported");
+    LOGGING_LOGW("start refused: requested local rate %u exceeds source limit %u\n",requestedHz,syncCapHz);
+    return false;
+#else
     LOGGING_LOGW("Sample rate capped by synchronous sensor: requested=%u Hz cap=%u Hz\n",
                  (unsigned)requestedHz,
                  (unsigned)syncCapHz);
     requestedHz = syncCapHz;
+#endif
   }
   const uint16_t effectiveRateHz = AnalogInputManager::configureFromConfig(*s_cfg, requestedHz);
+#if BODAQS_PRODUCTION_RECORDING
+  if(effectiveRateHz!=s_cfg->sampleRateHz) {
+    UI::status("Requested local rate unavailable");
+    LOGGING_LOGW("start refused: requested rate %u would become %u\n",s_cfg->sampleRateHz,effectiveRateHz);
+    return false;
+  }
+#endif
   // Include recoveries during sensor initialization in this session's final
   // bus diagnostics, even when acquisition has not started yet.
   I2CManager::resetRecoveryStats();
@@ -973,7 +1039,12 @@ bool LoggingManager::start() {
     LOGGING_LOGW("start refused: %s\n", sensorError[0] ? sensorError : "sensor validation failed");
     return false;
   }
+#if BODAQS_PRODUCTION_RECORDING
+  uint8_t excludedSensors=0;
+  for(uint32_t mask=RecordingReadiness::session().decision.excluded;mask;mask&=mask-1) ++excludedSensors;
+#else
   const uint8_t excludedSensors = SensorManager::sessionExcludedCount();
+#endif
   if (excludedSensors) {
     char notice[32];
     snprintf(notice, sizeof(notice), "%u sensor%s skipped",
@@ -1035,6 +1106,19 @@ bool LoggingManager::start() {
     LOGGING_LOGW("start refused: %s\n", sensorError[0] ? sensorError : "sensor start failed");
     return false;
   }
+#if BODAQS_PRODUCTION_RECORDING
+  if(!freezeProductionMembership_(*s_cfg,false)) {
+    SensorManager::onLoggingStop();SensorManager::onLoggingFinalized();
+    WiFiManager::resumeAfterLogging();UI::status(RecordingReadiness::reason(RecordingReadiness::session()));return false;
+  }
+#endif
+#if BODAQS_PRODUCTION_RECORDING
+  LOGGING_LOGI("membership mode=%s selected=0x%lx excluded=0x%lx qualified=%u candidate=%u\n",
+      s_cfg->recordingBestEffort?"best_effort":"strict",
+      static_cast<unsigned long>(RecordingReadiness::session().decision.selected),
+      static_cast<unsigned long>(RecordingReadiness::session().decision.excluded),
+      RecordingReadiness::session().decision.qualified,RecordingReadiness::session().decision.candidate);
+#endif
   const uint32_t sensorStartMs = millis() - sensorStartT0;
 
   s_remoteFaultShown=false;
@@ -1085,6 +1169,12 @@ bool LoggingManager::start() {
     WiFiManager::resumeAfterLogging();UI::status("Remote IMU unavailable");
     return false;
   }
+#if BODAQS_PRODUCTION_RECORDING
+  if(RemoteImuRecording::admission().reason!=ImuAdmission::Reason::None) {
+    RecordingReadiness::setReservation(RecordingAdmission::Reservation::Failed);
+    stop(StopReason::StartFailure,"remote_resource_reservation");return false;
+  }
+#endif
   if(RemoteImuRecording::configured()) {
     s_remotePreparing=true;UI::status("Preparing recording");
     if(!StorageManager_startLog()) {LOGGING_LOGW("storage start refused: %s\n",StorageManager_lastStatus());stop(StopReason::StartFailure,"storage_start_failure");return false;}
@@ -1124,6 +1214,15 @@ bool LoggingManager::start() {
 
 void LoggingManager::completeStorageStart() {
   if (!isLifecycleOwner_()) return;
+#if BODAQS_PRODUCTION_RECORDING
+  if(!s_cfg || !freezeProductionMembership_(*s_cfg,true)) {
+    stop(StopReason::StartFailure,"recording_membership_changed");return;
+  }
+  RecordingReadiness::setReservation(RecordingAdmission::Reservation::Acquired);
+  if(!RecordingReadiness::session().decision.mayRecord) {
+    stop(StopReason::StartFailure,"recording_not_admitted");return;
+  }
+#endif
 #if BODAQS_ADC_RAW_RECORDING_BENCH
   const auto raw=StorageManager_rawAdcStats();
   Serial.printf("{\"schema\":\"bodaqs.raw-adc.v1\",\"type\":\"selected\",\"recipe\":\"%s\",\"qualified\":%s,\"capacity\":%lu,\"record_bytes\":%u}\n",
@@ -1323,6 +1422,10 @@ void LoggingManager::stop(StopReason reason, const char* triggerEvent) {
       captureStopContext_(reason, triggerEvent);
     return;
   }
+#endif
+#if BODAQS_PRODUCTION_RECORDING
+  if(reason==StopReason::StartFailure && (phaseIs_(LifecycleState::Preparing) || phaseIs_(LifecycleState::Recording)))
+    RecordingReadiness::setReservation(RecordingAdmission::Reservation::Failed);
 #endif
   if (phaseIs_(LifecycleState::Preparing)) captureStopContext_(reason, triggerEvent);
   cancelStart();

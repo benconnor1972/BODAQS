@@ -93,6 +93,13 @@ constexpr bool bulkMixedAdcBenchBuild() {
 #endif
 }
 constexpr const char* buildMode() {
+#if BODAQS_PRODUCTION_RECORDING
+ #if BODAQS_UNQUALIFIED_INTEGRATION_CANDIDATE
+ return "integration_candidate_unqualified";
+ #else
+ return "production";
+ #endif
+#else
  if(bulkMixedAdcBenchBuild()) return BODAQS_ADC_CONCENTRATED_SCAN_BENCH?"bulk_four_node_adc_scan_unqualified":"bulk_four_node_adc_smoke_unqualified";
  if(sampleUnitBenchBuild()) return fourNodeSampleUnitBenchBuild()?"sample_unit_four_node_unqualified":"sample_unit_two_node_unqualified";
  #if defined(BODAQS_SINGLE_NODE_IMU_ADC_SMOKE) && BODAQS_SINGLE_NODE_IMU_ADC_SMOKE == 1
@@ -101,6 +108,7 @@ constexpr const char* buildMode() {
  #else
  return singleNodeSmokeBuild()?"single_node_smoke_unqualified":"production";
  #endif
+#endif
 }
 constexpr bool singleNodeAdcSmokeBuild() {
 #if defined(BODAQS_SINGLE_NODE_IMU_ADC_SMOKE) && BODAQS_SINGLE_NODE_IMU_ADC_SMOKE == 1
@@ -148,10 +156,15 @@ Report evaluateSingleNodeAdcSmoke(const Demand&,bool otherActiveSensors);
 Report evaluateMultiNodeBench(const Demand&,bool otherActiveSensors);
 const char* reasonText(Reason);
 inline const char* reportText(const Report& r) {
+#if BODAQS_PRODUCTION_RECORDING
+ if(r.reason!=Reason::None) return reasonText(r.reason);
+ return r.qualified?"covered by supplied qualification profile":r.benchOnly?"unqualified integration candidate":"not evaluated";
+#else
  if(r.benchOnly && r.reason==Reason::None && bulkMixedAdcBenchBuild())return BODAQS_ADC_CONCENTRATED_SCAN_BENCH
      ?"four-node plus split/ADC0 concentrated bench (unqualified)":"four-node plus ain0/4 bulk bench (unqualified)";
  return r.benchOnly && r.reason==Reason::None
      ? (sampleUnitBenchBuild()?(fourNodeSampleUnitBenchBuild()?"one/two/four-node sample-unit bench (unqualified)":"one/two-node sample-unit bench (unqualified)"):multiNodeBenchBuild()?"multi-node polling bench (unqualified)":scalingBenchBuild()?"single-node ADC scaling bench (unqualified)":singleNodeAdcSmokeBuild()?"single-node plus two ADC channels (unqualified)":"single-node smoke test (unqualified)")
      : reasonText(r.reason);
+#endif
 }
 }

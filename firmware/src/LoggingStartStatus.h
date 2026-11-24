@@ -2,5 +2,5 @@
 #include <stdint.h>
 
 enum class LoggingConfigIssue : uint8_t {
-  None, Conflict, RestartRequired, InvalidConfig
+  None, Conflict, RestartRequired, InvalidConfig, PreparingParticipants, Unqualified, IntegrationCandidate
 };

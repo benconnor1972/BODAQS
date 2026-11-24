@@ -33,7 +33,8 @@ static uint32_t millis() {return 123;}
 static const char* directionName_(int sign) {return sign<0?"counts_decrease_positive":"counts_increase_positive";}
 namespace LoggingManager {static bool locked=false;bool configurationLocked() {return locked;}}
 namespace ConfigManager {
-  static bool succeed=true;static unsigned writes=0;
+  static bool succeed=true,mutableConfig=true;static unsigned writes=0;
+  bool configurationMutable() {return mutableConfig && !LoggingManager::configurationLocked();}
   static String savedZero="old",savedDirection="old";
   bool saveSensorParamsByName(const char*,const char* const* keys,const String* values,size_t count) {
     ++writes;assert(count==2 && std::string(keys[0])=="zero_count" && std::string(keys[1])=="direction");
@@ -55,7 +56,8 @@ public:
 int main() {
   TestRotary sensor;
   LoggingManager::locked=true;assert(!sensor.beginCalibration(CalMode::ZERO));
-  LoggingManager::locked=false;assert(sensor.beginCalibration(CalMode::ZERO));
+  LoggingManager::locked=false;ConfigManager::mutableConfig=false;assert(!sensor.beginCalibration(CalMode::ZERO));
+  ConfigManager::mutableConfig=true;assert(sensor.beginCalibration(CalMode::ZERO));
   assert(!sensor.updateCalibration(INT32_MIN));assert(sensor.cal_.samples==0);
   assert(sensor.updateCalibration(kCountsPerTurn-4));assert(sensor.updateCalibration(kCountsPerTurn-104));
   LoggingManager::locked=true;assert(!sensor.finishCalibration(true));assert(ConfigManager::writes==0);

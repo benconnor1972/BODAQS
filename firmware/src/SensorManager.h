@@ -51,6 +51,7 @@ namespace SensorManager {
   void onLoggingFinalized();
   const SensorDiagnosticList& sessionDiagnostics();
   uint8_t sessionExcludedCount();
+  uint32_t sessionParticipantMask();
   void discoverHardware(DiscoveryReason reason);
   const SensorInventory& inventory();
   uint32_t discoverySequence();
@@ -65,6 +66,7 @@ namespace SensorManager {
   uint8_t count();
   uint8_t activeCount(); // Local participants plus unmuted remote endpoint assignments.
   Sensor* at(uint8_t i);     // alias to get(i)
+  Sensor* getConfiguredSensor(uint8_t configuredIndex); // configuration slot; preserves CAN/absent holes
   Sensor* get(uint8_t i);
 
   // per-sensor state

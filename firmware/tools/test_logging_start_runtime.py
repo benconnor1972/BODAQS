@@ -11,7 +11,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--compiler", default="g++")
     parser.add_argument("--async-storage", action="store_true")
+    parser.add_argument("--production-readiness", action="store_true",
+                        help="exercise production admission with asynchronous storage")
     args = parser.parse_args()
+    if args.production_readiness:
+        args.async_storage = True
     root = Path(__file__).resolve().parents[1]
     manager = (root / "src/SensorManager.cpp").read_text(encoding="utf-8")
     logging = (root / "src/LoggingManager.cpp").read_text(encoding="utf-8")
@@ -37,6 +41,7 @@ def main():
             "const char* LoggingManager::configurationDetail(", "bool LoggingManager::isStarting(",
             "void LoggingManager::cancelStart(", "LoggingManager::LifecycleState LoggingManager::lifecycleState(", "const char* LoggingManager::lifecycleStateName(", "bool LoggingManager::configurationLocked(", "LoggingManager::StartResult LoggingManager::requestStart(",
             "void LoggingManager::loop(", "void LoggingManager::stop(", "void LoggingManager::completeStorageStart(", "void LoggingManager::finishStorageStop(", "bool LoggingManager::start(")))
+    fixture = fixture.replace("// PRODUCTION_FORMAT", "namespace LoggingManager { bool configurationLocked(); }\n// PRODUCTION_FORMAT")
     fixture = fixture.replace("// PRODUCTION_FORMAT", definition(config, "bool ConfigManager::setLogFormat("))
     fixture = fixture.replace("// PRODUCTION_TOGGLE", definition(buttons, "void ButtonActions::onToggleLogging(").replace("void ButtonActions::onToggleLogging(", "void onToggleLogging("))
     fixture = fixture.replace("// PRODUCTION_BUTTON", definition(buttons, "  void handleButtonBinding_("))
@@ -236,6 +241,33 @@ int main() {
   LoggingManager::loop(); storageWorker.step(11001); LoggingManager::loop();
   check(!s_stopping && !LoggingManager::configurationLocked());
   // A returned sink failure shuts down acquisition""")
+    if args.production_readiness:
+        import re
+        additions = (root / "test/logging_production_readiness_fixture.cpp").read_text(encoding="utf-8")
+        adapters, production_main = additions.split("// PRODUCTION_MAIN", 1)
+        actual = (root / "src/RecordingReadiness.cpp").read_text(encoding="utf-8")
+        actual = re.sub(r'^#include "[^\n]+$', '', actual, flags=re.M)
+        adapters = adapters.replace("// ACTUAL_READINESS", actual)
+        fixture = fixture.replace('#include "RecordingLifecycle.h"', '#include "RecordingLifecycle.h"\n#include "RecordingReadiness.h"')
+        fixture = fixture.replace('  uint8_t sensorN = 0;', '  uint8_t sensorN = 0;\n  bool recordingBestEffort = false;')
+        fixture = fixture.replace('  bool muted() const { return mute; }', '  bool muted() const { return mute; }\n  bool validateLoggingStart(const LoggerConfig&, uint16_t, char*, size_t) const { return !stale; }')
+        begin = fixture.index('namespace RemoteImuRecording {')
+        end = fixture.index('namespace CanMasterManager {', begin)
+        remote, adapters = adapters.split('// REMOTE_END', 1)
+        fixture = fixture[:begin] + remote + fixture[end:]
+        fixture = fixture.replace('  bool handoffReady = true, fenced = false;', '  uint8_t availableNodes = 0;\n  bool configurationReconciled(uint8_t node) { return availableNodes & (1u << node); }\n  bool acquisitionLinkCompatible(uint8_t node) { return configurationReconciled(node); }\n  bool handoffReady = true, fenced = false;')
+        fixture = fixture.replace('  void onLoggingStart() {}', '  void onLoggingStart() {}\n  bool activateRecordingPlan() { events.push_back("activate"); return true; }')
+        fixture = fixture.replace('  uint16_t synchronousMaxSampleRateHz() { return 0; }',
+            '  uint16_t syncLimit = 0;\n  uint16_t synchronousMaxSampleRateHz() { return syncLimit; }')
+        fixture = fixture.replace('  uint16_t configureFromConfig(const LoggerConfig&, uint16_t rate) { return rate; }',
+            '  uint16_t effectiveRate = 0;\n  uint16_t configureFromConfig(const LoggerConfig&, uint16_t rate) { return effectiveRate?effectiveRate:rate; }')
+        fixture = fixture.replace('  bool onLoggingStart(char*, size_t) { events.push_back("sensors"); return sensorsStartOk; }', '  bool onLoggingStart(char*, size_t) { events.push_back("sensors"); return sensorsStartOk; }\n  uint32_t localAllocationMask = ~uint32_t{0};\n  uint32_t sessionParticipantMask() {\n    uint32_t mask=0;\n    for(uint8_t i=0;i<g_cfg.sensorCount();++i) if(s_list[i] && !s_list[i]->muted()) mask |= uint32_t{1}<<i;\n    return mask & localAllocationMask;\n  }\n  Sensor* getConfiguredSensor(uint8_t i) { return i<g_cfg.sensorCount()?s_list[i]:nullptr; }\n  bool getMuted(uint8_t i,bool& muted) { if(!getConfiguredSensor(i)) return false; muted=s_list[i]->muted(); return true; }')
+        # Insert the real adapter before extracted lifecycle methods, after all mocks.
+        anchor = definition(logging, "  bool phaseIs_(")
+        fixture = fixture.replace(anchor, adapters + "\n" + definition(logging, "static bool freezeProductionMembership_(") + "\n" + anchor, 1)
+        fixture = fixture.replace(definition(fixture, 'int main()'), production_main)
+        fixture = fixture.replace('#define check(condition) checkAt((condition), __LINE__)',
+            '#define check(condition) do { const bool ok=bool(condition); if(!ok) fprintf(stderr,"%s\\n",#condition); checkAt(ok,__LINE__); } while(0)')
     for old, value in {
         "s_running": "phaseIs_(LifecycleState::Recording)",
         "s_starting": "phaseIs_(LifecycleState::Preparing)",
@@ -246,14 +278,16 @@ int main() {
     with tempfile.TemporaryDirectory(prefix="bodaqs-log-start-") as temp:
         cpp, exe = Path(temp) / "runtime.cpp", Path(temp) / "runtime.exe"
         cpp.write_text(fixture, encoding="utf-8")
-        (root.parent / ".scratch/logger-production-integration/lifecycle-generated.cpp").write_text(fixture, encoding="utf-8")
-        subprocess.run([args.compiler, "-std=gnu++2a", "-Wall", "-Wextra", "-Wno-unused-variable",
+        for candidate in ((0, 1) if args.production_readiness else (0,)):
+            subprocess.run([args.compiler, "-std=gnu++2a",
+                        f"-DBODAQS_UNQUALIFIED_INTEGRATION_CANDIDATE={candidate}",
+                        f"-DBODAQS_PRODUCTION_RECORDING={int(args.production_readiness)}", "-Wall", "-Wextra", "-Wno-unused-variable",
                         "-pthread", "-I", str(root / "test/stubs"), "-I", str(root / "src"),
                         str(cpp), str(root / "src/SensorAssignment.cpp"),
                         str(root / "src/SensorParams.cpp"),
                         str(root / "src/SensorDiagnostics.cpp"),
                         str(root / "src/SensorInventory.cpp"), "-o", str(exe)], check=True)
-        subprocess.run([str(exe)], check=True)
+            subprocess.run([str(exe)], check=True)
 
 
 if __name__ == "__main__":

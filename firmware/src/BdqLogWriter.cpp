@@ -1,4 +1,5 @@
 #include "BdqLogWriter.h"
+#include "RecordingReadiness.h"
 
 #include <limits.h>
 #include <math.h>
@@ -1608,6 +1609,40 @@ bool buildColumnLayout_() {
 
 // Snapshot sensor configuration only; Wi-Fi credentials and unrelated settings
 // are deliberately outside the recording contract. Called before acquisition.
+#if BODAQS_PRODUCTION_RECORDING
+void appendRecordingMembership_(JsonOutput& out,const LoggerConfig& cfg) {
+  const auto& observation=RecordingReadiness::session();const auto& decision=observation.decision;
+  appendKey_(out,1,"recording_membership");out+='{';
+  appendKeyString_(out,2,"schema","bodaqs.recording_membership.v1");
+  appendKeyString_(out,2,"stage","preparation_selected; final admission is in the session summary");
+  appendKeyString_(out,2,"mode",cfg.recordingBestEffort?"best_effort":"strict");
+  appendKeyBool_(out,2,"qualified",decision.qualified);
+  appendKeyBool_(out,2,"unqualified_candidate",decision.candidate);
+  appendKeyString_(out,2,"qualification_profile",observation.profileId);
+  appendKeyUInt_(out,2,"qualification_revision",observation.profileRevision);
+  appendKeyUInt_(out,2,"requested_mask",decision.requested);
+  appendKeyUInt_(out,2,"selected_mask",decision.selected);
+  appendKeyUInt_(out,2,"excluded_mask",decision.excluded);
+  appendKey_(out,2,"sources");out+='[';bool separated=false;
+  for(uint8_t index=0;index<cfg.sensorCount();++index) {
+    SensorSpec spec;if(!cfg.getSensorSpec(index,spec)) continue;
+    if(separated) out+=',';
+    separated=true;out+='{';
+    const uint32_t bit=index<32?uint32_t{1}<<index:0;
+    appendKeyUInt_(out,3,"configured_index",index);
+    appendKeyString_(out,3,"sensor_id",spec.name);
+    appendKeyString_(out,3,"sensor_type",SensorRegistry::typeKey(spec.type));
+    appendKeyBool_(out,3,"requested",(decision.requested&bit)!=0);
+    appendKeyBool_(out,3,"selected_at_preparation",(decision.selected&bit)!=0);
+    appendKeyBool_(out,3,"zero_data_exclusion",(decision.excluded&bit)!=0);
+    appendKeyString_(out,3,"exclusion_reason",(decision.excluded&bit)?
+        ((observation.invalid&bit)?"unsupported_or_ambiguous":"unavailable"):"none",false);
+    out+='}';
+  }
+  out+="]},\n";
+}
+#endif
+
 void appendRecordingConfiguration_(JsonOutput& out, const LoggerConfig& cfg, bool comma = true) {
   appendKey_(out, 1, "recording_configuration");
   out += F("{\n");
@@ -1756,6 +1791,9 @@ bool serializeMetadataJson_(
   appendKeyString_(out, 1, "timezone", info.timezone && *info.timezone ? info.timezone : "unknown");
   appendKeyString_(out, 1, "started_at_utc", info.startedAtUtc);
   appendKeyString_(out, 1, "started_at_local", info.startedAtLocal);
+#if BODAQS_PRODUCTION_RECORDING
+  if(multiStream && cfg) appendRecordingMembership_(out,*cfg);
+#endif
   if (multiStream && cfg) appendRecordingConfiguration_(out, *cfg);
   appendSensors_(out);
   appendDeviceConfigs_(out);

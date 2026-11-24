@@ -1,5 +1,6 @@
 #include "../can-fd/common/network/bodaqs_can_link.h"
 #include "RemoteImuRecording.h"
+#include "RecordingReadiness.h"
 #include "Routes_Api.h"
 
 #include <Arduino.h>
@@ -33,6 +34,39 @@
 #include "HttpFileSender.h"
 
 namespace {
+
+#if BODAQS_PRODUCTION_RECORDING
+static RecordingReadiness::Observation recordingReadiness_() {
+  return LoggingManager::configurationLocked()?RecordingReadiness::session():RecordingReadiness::observe(ConfigManager::get());
+}
+static void addRecordingReadinessJson_(JsonObject target,const RecordingReadiness::Observation& observation) {
+  const auto& decision=observation.decision;
+  target["schema"]="bodaqs.recording_readiness.v1";
+  target["membership_mode"]=ConfigManager::get().recordingBestEffort?"best_effort":"strict";
+  target["observation_scope"]=LoggingManager::configurationLocked()?"frozen_session":"idle_current";
+  target["requested_mask"]=decision.requested;target["selected_mask"]=decision.selected;
+  target["excluded_mask"]=decision.excluded;target["unavailable_mask"]=observation.unavailable;
+  target["invalid_mask"]=observation.invalid;target["can_prepare"]=decision.mayPrepare;
+  target["resources_reserved"]=observation.reservation==RecordingAdmission::Reservation::Acquired;
+  target["acquisition_ready"]=decision.mayRecord && LoggingManager::isRunning();
+  target["qualified"]=decision.qualified;target["unqualified_candidate"]=decision.candidate;
+  target["qualification_profile"]=observation.profileId[0]?observation.profileId:nullptr;
+  target["qualification_revision"]=observation.profileRevision;
+  target["reason"]=RecordingReadiness::reason(observation);
+  target["idle_scope"]="sensor_membership_and_qualification; resource_and_platform_checks_at_START";
+}
+static bool nodeAcquisitionReady_(uint8_t node) {
+  return node<4 && LoggingManager::isRunning() && RecordingReadiness::session().decision.mayRecord &&
+      (RemoteImuRecording::healthyNodeMask()&(1u<<node));
+}
+#endif
+constexpr bool productionRecordingBuild_() {
+#if BODAQS_PRODUCTION_RECORDING
+  return true;
+#else
+  return false;
+#endif
+}
 
 constexpr uint16_t kSessionListLimit = 24;
 const char* kSessionScanDir = "/";
@@ -238,6 +272,9 @@ static void handleStatus_(WebServer& srv) {
   doc["upload_mode"] = UploadModeManager::isActive();
   doc["logging_active"] = LoggingManager::isRunning();
   doc["recording_phase"] = LoggingManager::lifecycleStateName();
+#if BODAQS_PRODUCTION_RECORDING
+  addRecordingReadinessJson_(doc["recording_readiness"].to<JsonObject>(),recordingReadiness_());
+#endif
   doc["recording_ownership_retained"] = LoggingManager::configurationLocked();
   doc["stop_reason"] = LoggingManager::stopReasonName(LoggingManager::stopContext().reason);
   doc["storage_available"] = scanSummary.storageAvailable;
@@ -337,6 +374,9 @@ static void handleStatus_(WebServer& srv) {
   masterControl["features"] = masterDiagnostics.control.features;
   masterControl["configuration_supported"] = false;
   masterControl["acquisition_ready"] = false;
+#if BODAQS_PRODUCTION_RECORDING
+  masterControl["acquisition_ready"]=LoggingManager::isRunning() && RemoteImuRecording::configured() && RecordingReadiness::session().decision.mayRecord;
+#endif
   char controlDecimal[21];
   snprintf(controlDecimal, sizeof(controlDecimal), "%llu",
            static_cast<unsigned long long>(masterDiagnostics.control.master_boot_id));
@@ -388,6 +428,9 @@ static void handleStatus_(WebServer& srv) {
       if (descriptor.capability_valid && (bodaqs_control_get_u32(descriptor.capability + 8) & 1U))
         masterControl["configuration_supported"] = true;
       state["acquisition_ready"] = false;
+#if BODAQS_PRODUCTION_RECORDING
+      state["acquisition_ready"]=nodeAcquisitionReady_(address);
+#endif
       if (descriptor.capability_valid) {
         state["implemented_features"] = bodaqs_control_get_u32(descriptor.capability + 8);
         state["satisfied_prerequisites"] = bodaqs_control_get_u32(descriptor.capability + 12);
@@ -929,6 +972,15 @@ static void addSensorJson_(JsonObject obj, uint8_t index, const SensorSpec& sp, 
   bool runtimeMuted = sp.mutedDefault;
   (void)SensorManager::getMuted(index, runtimeMuted);
   obj["runtime_muted"] = runtimeMuted;
+#if BODAQS_PRODUCTION_RECORDING
+  const auto membership=recordingReadiness_();
+  const uint32_t bit=index<32?uint32_t{1}<<index:0;
+  obj["recording_requested"]=(membership.decision.requested&bit)!=0;
+  obj["recording_selected"]=(membership.decision.selected&bit)!=0;
+  obj["recording_excluded"]=(membership.decision.excluded&bit)!=0;
+  if(membership.decision.excluded&bit)
+    obj["recording_exclusion_reason"]=(membership.invalid&bit)?"unsupported_or_ambiguous":"unavailable";
+#endif
   String provider = "local", endpoint;
   sp.params.get("provider", provider);
   sp.params.get("endpoint", endpoint);
@@ -950,13 +1002,19 @@ static void addSensorJson_(JsonObject obj, uint8_t index, const SensorSpec& sp, 
     String profile; sp.params.get("profile", profile);
     control["desired_profile"] = profile;
     control["acquisition_ready"] = false;
+#if BODAQS_PRODUCTION_RECORDING
+    const auto readiness=recordingReadiness_();
+    addRecordingReadinessJson_(control["recording_readiness"].to<JsonObject>(),readiness);
+    const auto configuredAssignment=sensorAssignment(sp,board::gBoard);
+    control["acquisition_ready"]=configuredAssignment.provider.kind==SensorProviderKind::CanNode && nodeAcquisitionReady_(configuredAssignment.provider.index);
+#endif
     const auto& admission=RemoteImuRecording::admission();
     JsonObject capacity=control["recording_admission"].to<JsonObject>();
     capacity["attempted"]=admission.attempted;
     capacity["qualified"]=admission.qualified;
     capacity["mode"]=ImuAdmission::buildMode();
     capacity["reason"]=admission.attempted?ImuAdmission::reportText(admission):"not evaluated";
-    if(ImuAdmission::singleNodeSmokeBuild()) {
+    if(productionRecordingBuild_() || ImuAdmission::singleNodeSmokeBuild()) {
       capacity["can_occupancy"]=nullptr;capacity["shared_spi_occupancy"]=nullptr;capacity["drain_ratio"]=nullptr;
     } else {
       capacity["can_occupancy"]=admission.canOccupancy;
