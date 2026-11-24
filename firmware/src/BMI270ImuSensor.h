@@ -65,6 +65,11 @@ public:
       uint16_t effectiveRateHz,
       char* error,
       size_t errorCapacity) override;
+  bool observeLoggingReadiness(
+      const LoggerConfig& config,
+      uint16_t effectiveRateHz,
+      char* error,
+      size_t errorCapacity) const override;
   bool validateLoggingStart(
       const LoggerConfig& config,
       uint16_t effectiveRateHz,
@@ -96,6 +101,12 @@ public:
 private:
   static bool loadParams_(Params& out, const char* instanceName, const ParamPack& params);
   bool initializationHealthy_() const;
+  bool resolveLoggingConfiguration_(
+      const LoggerConfig& config,
+      uint16_t effectiveRateHz,
+      uint16_t& resolvedOutputRate,
+      char* error,
+      size_t errorCapacity) const;
   bool ensureInitialized_(char* error, size_t errorCapacity, bool allowBusRecovery = true);
   bool popBdqV2Record_(uint8_t* destination, size_t capacity);
   static size_t pendingBdqV2Records_(const void* context);

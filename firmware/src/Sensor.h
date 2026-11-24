@@ -258,6 +258,15 @@ public:
       uint16_t,
       char*,
       size_t) const { return true; }
+  // Idle readiness observation must not prepare a session, read hardware or
+  // change an acquisition plan. Existing observational validators remain valid.
+  virtual bool observeLoggingReadiness(
+      const LoggerConfig& config,
+      uint16_t effectiveRateHz,
+      char* error,
+      size_t errorCapacity) const {
+    return validateLoggingStart(config,effectiveRateHz,error,errorCapacity);
+  }
   virtual bool startLoggingSession(char*, size_t) { onLoggingStart(); return true; }
   virtual size_t pendingLoggingRows() const { return 0; }
   virtual bool describeBdqV2Stream(

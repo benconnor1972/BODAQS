@@ -876,12 +876,12 @@ bool BMI270ImuSensor::loggingRestartRequired(const SensorSpec& spec, char* error
   return false;
 }
 
-bool BMI270ImuSensor::validateLoggingStart(
+bool BMI270ImuSensor::resolveLoggingConfiguration_(
     const LoggerConfig& config,
     uint16_t effectiveRateHz,
+    uint16_t& resolvedOutputRate,
     char* error,
     size_t errorCapacity) const {
-  if (muted_) return true;
   if (acquisition_.mixedRate() &&
       config.logFormat != LogFormat::BodaqsMultiStreamBinary) {
     return fail_(error, errorCapacity,
@@ -897,25 +897,43 @@ bool BMI270ImuSensor::validateLoggingStart(
                  params_.name);
   }
   if (loggingRestartRequired(spec, error, errorCapacity)) return false;
-  const uint16_t resolvedOutputRate =
+  resolvedOutputRate =
       config.logFormat == LogFormat::BodaqsMultiStreamBinary
       ? acquisition_.nativeRateHz()
       : BMI270Profile::resolveSparseRowOutputRateHz(
             acquisition_.nativeRateHz(),
             params_.maximumOutputRateHz,
             effectiveRateHz);
-  if (resolvedOutputRate == 0 || acquisition_.outputRateHz() != resolvedOutputRate) {
+  if (resolvedOutputRate == 0) {
     return fail_(error, errorCapacity,
                  "%s could not resolve a safe IMU output rate for effective logger rate %u Hz",
                  params_.name, (unsigned)effectiveRateHz);
   }
-  if (!I2CManager::available(params_.busIndex)) {
-    return fail_(error, errorCapacity, "%s uses unavailable I2C bus %u",
-                 params_.name, (unsigned)params_.busIndex);
-  }
-  const board::I2CProfile* busProfile = I2CManager::profile(params_.busIndex);
-  if (!busProfile || busProfile->hz != 400000u) {
-    return fail_(error, errorCapacity, "%s requires a 400 kHz I2C bus", params_.name);
+  return validateSpec(spec,error,errorCapacity);
+}
+
+bool BMI270ImuSensor::observeLoggingReadiness(
+    const LoggerConfig& config,
+    uint16_t effectiveRateHz,
+    char* error,
+    size_t errorCapacity) const {
+  if(muted_) return true;
+  uint16_t resolvedOutputRate=0;
+  return resolveLoggingConfiguration_(config,effectiveRateHz,resolvedOutputRate,error,errorCapacity);
+}
+
+bool BMI270ImuSensor::validateLoggingStart(
+    const LoggerConfig& config,
+    uint16_t effectiveRateHz,
+    char* error,
+    size_t errorCapacity) const {
+  if(muted_) return true;
+  uint16_t resolvedOutputRate=0;
+  if(!resolveLoggingConfiguration_(config,effectiveRateHz,resolvedOutputRate,error,errorCapacity)) return false;
+  if(acquisition_.outputRateHz()!=resolvedOutputRate) {
+    return fail_(error,errorCapacity,
+        "%s could not resolve a safe IMU output rate for effective logger rate %u Hz",
+        params_.name,(unsigned)effectiveRateHz);
   }
   return true;
 }
@@ -929,24 +947,8 @@ bool BMI270ImuSensor::prepareLoggingStart(
   sessionAvailable_ = false;
   captureClockObservations_ =
       config.logFormat == LogFormat::BodaqsMultiStreamBinary;
-  if (acquisition_.mixedRate() &&
-      config.logFormat != LogFormat::BodaqsMultiStreamBinary) {
-    return fail_(error, errorCapacity,
-                 "%s mixed-rate BMI270 profile requires BDQ v2 logging",
-                 params_.name);
-  }
-  const uint16_t resolvedOutputRate =
-      config.logFormat == LogFormat::BodaqsMultiStreamBinary
-      ? acquisition_.nativeRateHz()
-      : BMI270Profile::resolveSparseRowOutputRateHz(
-            acquisition_.nativeRateHz(),
-            params_.maximumOutputRateHz,
-            effectiveRateHz);
-  if (resolvedOutputRate == 0) {
-    return fail_(error, errorCapacity,
-                 "%s has no safe sparse-row IMU output at logger rate %u Hz",
-                 params_.name, (unsigned)effectiveRateHz);
-  }
+  uint16_t resolvedOutputRate=0;
+  if(!resolveLoggingConfiguration_(config,effectiveRateHz,resolvedOutputRate,error,errorCapacity)) return false;
   if (!acquisition_.setFifoPollRateHz(params_.fifoPollRateHz)) {
     return fail_(error, errorCapacity,
                  "%s could not select %u Hz FIFO service rate",
