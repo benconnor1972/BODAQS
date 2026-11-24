@@ -1,4 +1,5 @@
 #include "BdqV2Writer.h"
+#include "StoragePathProbe.h"
 
 #include <limits.h>
 #include <string.h>
@@ -244,7 +245,11 @@ bool BdqV2Writer::writeChunk_(
   chunk.type = type;
   chunk.sequence = nextChunkSequence_;
   chunk.payloadLength = static_cast<uint32_t>(length);
+#if BODAQS_STORAGE_PATH_PROBE
+  chunk.payloadCrc32 = StoragePathProbe::payloadCrc(payload, length);
+#else
   chunk.payloadCrc32 = BdqV2Format::crc32(payload, length);
+#endif
 
   uint8_t header[BdqV2Format::kChunkHeaderBytes];
   if (!BdqV2Format::encodeChunkHeader(chunk, header, sizeof(header)) ||
@@ -274,6 +279,11 @@ bool BdqV2Writer::stageAndWriteStream_(size_t streamIndex) {
   uint32_t previousSequence = registered.stats.lastSequence;
   bool havePreviousSequence = registered.stats.hasSequence;
 
+  // Single consumer: already-published records cannot disappear beneath us.
+  // Dependency-gated sources retain live per-record readiness checks.
+  // Pure queue arrivals after this snapshot wait for the next fair turn.
+  const size_t pendingRecords = source.snapshotPendingSafe
+      ? source.pendingRecords(source.context) : 0;
   const size_t pendingObservations = source.pendingObservations(source.context);
   size_t reservedObservationCount = pendingObservations;
   if (reservedObservationCount > config_.maximumObservationsPerChunk) {
@@ -290,7 +300,8 @@ bool BdqV2Writer::stageAndWriteStream_(size_t streamIndex) {
       reservedObservationCount * BdqV2Format::kTimeObservationBytes;
 
   while (recordCount < config_.maximumRecordsPerChunk &&
-         source.pendingRecords(source.context) != 0 &&
+         (source.snapshotPendingSafe ? recordCount < pendingRecords
+                                     : source.pendingRecords(source.context) != 0) &&
          cursor + source.recordSizeBytes <= recordLimit) {
     uint8_t* record = workspace_ + cursor;
     if (!source.popRecord(source.context, record, source.recordSizeBytes)) {
@@ -314,7 +325,8 @@ bool BdqV2Writer::stageAndWriteStream_(size_t streamIndex) {
   }
 
   while (observationCount < config_.maximumObservationsPerChunk &&
-         source.pendingObservations(source.context) != 0 &&
+         (source.snapshotPendingSafe ? observationCount < pendingObservations
+                                     : source.pendingObservations(source.context) != 0) &&
          cursor + BdqV2Format::kTimeObservationBytes <= workspaceBytes_) {
     BdqV2Format::TimeObservation observation;
     if (!source.popObservation(source.context, observation) ||
@@ -348,6 +360,7 @@ bool BdqV2Writer::stageAndWriteStream_(size_t streamIndex) {
   if (!writeChunk_(BdqV2Format::ChunkType::StreamData, workspace_, cursor)) {
     return false;
   }
+  if (source.chunkWritten) source.chunkWritten(source.context);
 
   BdqV2WriterStreamStats& streamStats = registered.stats;
   if (recordCount != 0) {

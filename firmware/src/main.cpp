@@ -1,3 +1,7 @@
+#include "CpuOccupancy.h"
+#include "BacklogBalance.h"
+#include "StoragePathProbe.h"
+#include "SparseCostProbe.h"
 #include <Arduino.h>
 #include "ButtonManager.h"
 
@@ -220,6 +224,13 @@ static void setupBringupDiagnostics_() {
 void setup() {
   
     Serial.begin(115200);
+    Serial.printf("[BUILD] recipe=%s\n",FirmwareInfo::buildRecipe());
+#if BODAQS_SPARSE_COST_PROBE
+    SparseCostProbe::bootModeGate();
+    CpuOccupancy::bootGate();
+#endif
+    BacklogBalance::bootGate();
+    StoragePathProbe::bootGate();
     SelectBoard(BoardID::BODAQS_BOARD_PROFILE);
     if (!gBoard) {
       BOOT_LOGE("FATAL: Board not selected\n");
@@ -265,7 +276,15 @@ void setup() {
   //Buffer debug
   static uint32_t g_sampleCounter = 0;
 
-  StorageManager_begin(*gBoard);           
+  StorageManager_begin(*gBoard);
+#if BODAQS_STORAGE_PATH_PROBE
+  // Reserve the unchanged persistent stack before Wi-Fi can fragment internal RAM.
+  // Its worker is idle until LoggingManager explicitly submits START.
+  if (!StorageManager_prepareTask()) {
+    BOOT_LOGE("Storage task reservation failed; boot stopped\n");
+    while (true) delay(1000);
+  }
+#endif
 
   applyLogSettings_(g_cfg);
 

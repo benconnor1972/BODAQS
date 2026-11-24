@@ -14,10 +14,30 @@ SYSCFG_OPT_FILES := $(filter %.opt,$(SYSCFG_FILES))
 GENERATED_FILES := device.opt device.cmd.genlibs device_linker.cmd \
     ti_msp_dl_config.c ti_msp_dl_config.h Event.dot Graph.dot
 
+# Both boards must select the same explicit link; no runtime rate changes.
+CAN_LINK_PROFILE ?= bringup
+ifeq ($(CAN_LINK_PROFILE),bringup)
+CAN_LINK_DEFINE := 1
+else ifeq ($(CAN_LINK_PROFILE),acquisition)
+CAN_LINK_DEFINE := 2
+else
+$(error CAN_LINK_PROFILE must be bringup or acquisition)
+endif
+
 NAME := bodaqs_can_node
 SOURCES := ../src/main.c \
+    ../src/imu_spi.c \
+    ../src/imu_capture.c \
+    ../src/imu_acquisition.c \
+    ../../common/protocol/bodaqs_control_acquisition.c \
+    ../../common/protocol/bodaqs_control_apply.c \
+    ../../common/protocol/bodaqs_imu_disabled.c \
+    ../../common/protocol/bodaqs_control.c \
+    ../../common/protocol/bodaqs_control_authority.c \
+    ../../common/protocol/bodaqs_control_snapshot.c \
+    ../../common/protocol/bodaqs_control_exchange.c \
     ../../common/network/bodaqs_can_network.c
-OBJECTS := main.obj bodaqs_can_network.obj \
+OBJECTS := imu_capture.obj imu_acquisition.obj bodaqs_control_acquisition.obj imu_spi.obj bodaqs_control_apply.obj bodaqs_imu_disabled.obj bodaqs_control_authority.obj bodaqs_control_snapshot.obj bodaqs_control.obj bodaqs_control_exchange.obj main.obj bodaqs_can_network.obj \
     $(patsubst %.c,%.obj,$(notdir $(SYSCFG_C_FILES)))
 
 V := @
@@ -26,6 +46,8 @@ V :=
 endif
 
 CFLAGS := -I../../common/network \
+    -I../../common/protocol \
+    -I../../common/transport \
     -I. \
     $(addprefix @,$(SYSCFG_OPT_FILES)) \
     -O2 \
@@ -38,12 +60,14 @@ CFLAGS := -I../../common/network \
     -mthumb \
     -Wall \
     -Wextra \
+    -DBODAQS_CAN_LINK_PROFILE=$(CAN_LINK_DEFINE) \
     -Werror
 
 LFLAGS := -ldevice.cmd.genlibs \
     "-L$(MSPM0_SDK_INSTALL_DIR)/source" \
     -L. \
     device_linker.cmd \
+    -Wl,--stack_size=2048 \
     "-Wl,-m,$(NAME).map" \
     -Wl,--rom_model \
     -Wl,--warn_sections \
@@ -71,6 +95,8 @@ endef
 $(foreach source,$(SOURCES),$(eval $(call C_RULE,$(source))))
 $(foreach source,$(SYSCFG_C_FILES),$(eval $(call C_RULE,$(source))))
 
+main.obj: ../../common/transport/bodaqs_record_queue.h
+
 $(NAME).out: $(OBJECTS)
 	@echo Linking $@
 	$(V) $(LNK) -Wl,-u,_c_int00 $(OBJECTS) $(LFLAGS) -o $@
@@ -79,3 +105,18 @@ clean:
 	@echo Cleaning...
 	-$(V) $(RM) $(OBJECTS) $(NAME).out $(NAME).map > $(DEVNULL) 2>&1
 	-$(V) $(RM) $(GENERATED_FILES) > $(DEVNULL) 2>&1
+
+main.obj bodaqs_control.obj bodaqs_control_exchange.obj: ../../common/protocol/bodaqs_control.h ../../common/protocol/bodaqs_control_exchange.h
+
+main.obj bodaqs_control_authority.obj: ../../common/protocol/bodaqs_control_authority.h
+main.obj bodaqs_control_snapshot.obj: ../../common/protocol/bodaqs_control_snapshot.h
+
+main.obj bodaqs_control_apply.obj: ../../common/protocol/bodaqs_control_apply.h ../../common/protocol/bodaqs_imu_disabled.h
+
+main.obj bodaqs_control_acquisition.obj: ../../common/protocol/bodaqs_control_acquisition.h
+
+# Profile is a make input, not a generated-code edit. Rebuild its two consumers
+# on every invocation so switching back to a previously built profile is safe.
+.PHONY: can-link-profile
+can-link-profile:
+main.obj: can-link-profile ../../common/network/bodaqs_can_link.h ../../common/network/bodaqs_can_link_ti.h

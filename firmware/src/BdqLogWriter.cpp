@@ -11,6 +11,7 @@
 #include "DebugLog.h"
 #include "LoggerLimits.h"
 #include "BMI270Profile.h"
+#include "ImuAdmission.h"
 
 #define BDQ_LOGE(...) LOGE_TAG("BDQ", __VA_ARGS__)
 #define BDQ_LOGW(...) LOGW_TAG("BDQ", __VA_ARGS__)
@@ -1614,6 +1615,11 @@ bool serializeMetadataJson_(
   appendKeyString_(out, 1, "firmware_name", FirmwareInfo::name());
   appendKeyString_(out, 1, "firmware_version", FirmwareInfo::version());
   appendKeyString_(out, 1, "firmware_build", FirmwareInfo::buildDateTime());
+  appendKeyString_(out, 1, "firmware_recipe_id", FirmwareInfo::buildRecipe());
+  if(ImuAdmission::singleNodeSmokeBuild()) {
+    appendKeyString_(out, 1, "acquisition_test_mode", ImuAdmission::buildMode());
+    appendKeyBool_(out, 1, "acquisition_qualified", false);
+  }
   appendKeyString_(out, 1, "hardware_version", FirmwareInfo::boardName());
   appendKeyString_(out, 1, "recording_id", info.sessionId && *info.sessionId ? info.sessionId : "unknown");
   appendKeyString_(out, 1, "path", info.logPath);

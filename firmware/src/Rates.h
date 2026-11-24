@@ -4,7 +4,11 @@
 #include <stdint.h>
 
 namespace Rates {
-  static constexpr uint16_t kList[] = {10, 20, 50, 100, 200, 500, 700, 1000};
+#if BODAQS_ADC_RATE_SWEEP_BENCH
+  static constexpr uint16_t kList[] = {10,20,50,100,200,300,400,450,500,550,600,650,700,800,900,1000,1200,1500,1667,2000};
+#else
+  static constexpr uint16_t kList[] = {10, 20, 50, 100, 200, 300, 400, 500, 650, 700, 1000};
+#endif
   static constexpr size_t   kCount  = sizeof(kList)/sizeof(kList[0]);
 
   inline int indexOf(uint16_t hz) {

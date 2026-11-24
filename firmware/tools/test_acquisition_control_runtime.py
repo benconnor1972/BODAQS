@@ -1,0 +1,43 @@
+"""Exercise the production logger owner over the real pipelined master SPI fixture."""
+import argparse
+from pathlib import Path
+import subprocess
+import tempfile
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--compiler", default="g++")
+    parser.add_argument("--idle-control-fetch",action="store_true")
+    args = parser.parse_args()
+    root = Path(__file__).resolve().parents[1]
+    fixture = (root / "test/measurement_runtime_fixture.cpp").read_text()
+    fixture = fixture[:fixture.index("int main() {")]
+    fixture = fixture.replace("namespace SharedSpiBus {", "static bool dispatchControl(uint8_t,const BodaqsControlRecord&,BodaqsControlRecord&);\nstatic bool holdControl(uint8_t,const BodaqsControlRecord&);\nnamespace SharedSpiBus {")
+    fixture = fixture.replace("assert(bodaqs_control_node_process(&node.view,&request,&reply));", "assert(dispatchControl(address,request,reply));")
+    fixture = fixture.replace("assert(dispatchControl(address,request,reply));", "if(holdControl(address,request)) return true;\n  assert(dispatchControl(address,request,reply));")
+    fixture += (root / "test/acquisition_control_runtime_fixture.cpp").read_text()
+    manager = (root / "src/CanMasterManager.cpp").read_text()
+    headers = ("Arduino.h", "SPI.h", "esp_system.h", "DebugLog.h", "LoggingManager.h", "SensorManager.h", "SharedSpiBus.h")
+    manager = "\n".join(line for line in manager.splitlines() if not any(line in ('#include <'+h+'>', '#include "'+h+'"') for h in headers))
+    fixture = fixture.replace("// PRODUCTION_MANAGER", manager)
+    client = (root / "src/AcquisitionControl.cpp").read_text().replace('#include <Arduino.h>', '')
+    fixture += "\n" + client
+    protocol = root / "can-fd/common/protocol"
+    sources = [*protocol.glob("bodaqs_control*.c"), protocol/"bodaqs_imu_disabled.c", protocol/"bodaqs_master_service.c", protocol/"bodaqs_master_protocol.c"]
+    sources += [root/"src"/name for name in ("CanMasterProtocol.cpp", "SensorAssignment.cpp", "SensorParams.cpp", "Lsm6dso32xConfig.cpp")]
+    with tempfile.TemporaryDirectory(prefix="bodaqs-acquisition-") as temp:
+        cpp, exe = Path(temp)/"fixture.cpp", Path(temp)/"fixture.exe"
+        cpp.write_text(fixture)
+        flags=["-DBODAQS_SPI_MEASUREMENT_V2=1","-DBODAQS_RECLAIM_IDLE_CONTROL_FETCH=1"] if args.idle_control_fetch else []
+        subprocess.run([args.compiler, "-std=c++17", *flags, "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-I", str(root/"test/stubs"), "-I", str(root/"src"), "-I", str(protocol), "-I", str(root/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
+        subprocess.run([str(exe)], check=True)
+        scenarios=["lost-renewal-challenge", "lost-renewal-result", "renewal-expiry", "stop-renewal-retry", "renewal-wrap", "late-renewal-wire", "late-renewal-retry"]
+        if not args.idle_control_fetch: scenarios.append("split-renewal-stop") # v2 result is one atomic fragment
+        for scenario in scenarios:
+            subprocess.run([str(exe), scenario], check=True)
+        for reason in (7, 10, 20, 26):
+            subprocess.run([str(exe), f"retryable-error-{reason}"], check=True)
+        subprocess.run([str(exe), "expired-proof-error"], check=True)
+
+if __name__ == "__main__":
+    main()

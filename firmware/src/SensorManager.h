@@ -63,7 +63,7 @@ namespace SensorManager {
   // registry / access
   void    registerSensor(Sensor* s);
   uint8_t count();
-  uint8_t activeCount();
+  uint8_t activeCount(); // Local participants plus unmuted remote endpoint assignments.
   Sensor* at(uint8_t i);     // alias to get(i)
   Sensor* get(uint8_t i);
 
@@ -81,6 +81,13 @@ namespace SensorManager {
       uint16_t maxOut,
       uint16_t& written,
       bool excludeBdqV2NativeStreams = false);
+  // Prepared at session start; sampling methods/transforms and muted checks remain.
+  uint16_t recordingColumnCapacity(bool excludeBdqV2NativeStreams);
+  bool recordingSamplingPlanReady();
+  // Cold exact-scope guard for the raw trial; ordinary transforms stay intact.
+  bool rawAdcPairEligible();
+  void sampleRowValues(float* out, uint16_t maxOut, uint16_t& written,
+                       bool excludeBdqV2NativeStreams, const LocalAdcSnapshot& snapshot);
   uint16_t describeSensorColumns(
       SensorColumnDescriptor* out,
       uint16_t maxOut,

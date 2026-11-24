@@ -1,5 +1,12 @@
+#include "CpuOccupancy.h"
 #include <Arduino.h>
 #include "LoggingManager.h"
+#include "CanMasterManager.h"
+#include "RemoteImuRecording.h"
+#if defined(ESP32) && defined(BODAQS_PACKED_SEGMENTED_RECEIVER) && BODAQS_PACKED_SEGMENTED_RECEIVER
+#include "AcquisitionControl.h"
+#endif
+#include "ButtonManager.h"
 #include "StorageManager.h"
 #include "RTCManager.h"
 #include "WebServerManager.h"
@@ -14,10 +21,16 @@
 #include "WiFiManager.h"
 #include "UploadModeManager.h"
 #include "AnalogInputManager.h"
+#include "LocalRowHandoff.h"
+#include <new>
 #include "DebugTrace.h"
 #include "esp_timer.h"
 #include "DebugLog.h"
 #include "LoggerLimits.h"
+#include "FirmwareInfo.h"
+#if BODAQS_ADC_RAW_RECORDING_BENCH && (!BODAQS_ADC_ROW_HANDOFF || !BODAQS_ADC_COMBINED_CAPTURE || !BODAQS_ADC_INLINE_ROW || !BODAQS_ADC_DUAL_SCAN_BENCH || !BODAQS_ADC_BOUNDARY_BENCH)
+#error "Raw ADC trial requires the verified dual-scan inline owner"
+#endif
 #include <atomic>
 #include <string.h>
 
@@ -39,22 +52,36 @@ namespace {
   // Live config (not owned)
   const LoggerConfig* s_cfg = nullptr;
 
+  bool s_starting = false;
+  bool s_stopping = false;
+  bool s_remotePreparing = false;
+  bool s_remoteFaultShown = false;
   // Run-state
   volatile bool   s_running       = false;
   LoggingManager::StartFailureHint s_startFailureHint =
       LoggingManager::StartFailureHint::None;
   LoggingManager::StopContext s_stopContext;
+#if defined(ESP32)
+  portMUX_TYPE s_stopContextMux = portMUX_INITIALIZER_UNLOCKED;
+#endif
 
   void captureStopContext_(
       LoggingManager::StopReason reason,
       const char* triggerEvent) {
-    s_stopContext = LoggingManager::StopContext{};
-    s_stopContext.reason = reason;
-    s_stopContext.uptimeMs = millis();
-    s_stopContext.triggerEvent = triggerEvent ? triggerEvent : "";
-    s_stopContext.sdDetectAvailable = StorageManager_cardDetectAvailable();
-    s_stopContext.sdCardDetected = StorageManager_cardDetectedCached();
-    s_stopContext.analogRailFault = PowerManager::analogRailFaultActive();
+    LoggingManager::StopContext context;
+    context.reason = reason;
+    context.uptimeMs = millis();
+    context.triggerEvent = triggerEvent ? triggerEvent : "";
+    context.sdDetectAvailable = StorageManager_cardDetectAvailable();
+    context.sdCardDetected = StorageManager_cardDetectedCached();
+    context.analogRailFault = PowerManager::analogRailFaultActive();
+#if defined(ESP32)
+    portENTER_CRITICAL(&s_stopContextMux);
+#endif
+    s_stopContext = context;
+#if defined(ESP32)
+    portEXIT_CRITICAL(&s_stopContextMux);
+#endif
   }
 
   LoggingConfigIssue s_configurationIssue = LoggingConfigIssue::None;
@@ -91,6 +118,8 @@ namespace {
   // ---- Task-based sampling (ESP32) ----
 #if defined(ESP32)
   static TaskHandle_t s_sampleTask = nullptr;
+  static bool s_storageStartPending = false;
+  static bool s_storageStopRequested = false;
   static std::atomic<bool> s_sampleInProgress{false};
 
   // Stats: how often the sampler task woke up "late"
@@ -127,14 +156,122 @@ namespace {
   }
 
   // One sample, no scheduling logic (task provides cadence)
-static inline bool sampleOnce_(bool allowStopped = false) {
+#if BODAQS_ADC_ROW_HANDOFF
+#ifndef BODAQS_ADC_INLINE_ROW
+#define BODAQS_ADC_INLINE_ROW 0
+#endif
+#if BODAQS_ADC_INLINE_ROW != 0 && BODAQS_ADC_INLINE_ROW != 1
+#error "Inline row assembly must be 0 or 1"
+#endif
+#if BODAQS_ADC_INLINE_ROW && !BODAQS_ADC_COMBINED_CAPTURE
+#error "Inline row assembly requires verified-pair capture"
+#endif
+struct RowHandoffState {
+  TaskHandle_t worker = nullptr;
+  #if !BODAQS_ADC_INLINE_ROW
+  LocalRowQueue<8> queue;
+  #endif
+  portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+  bool busy = false;
+  uint32_t captured=0, assembled=0, queueDrops=0, markDrops=0, enqueued=0, enqueueFailed=0;
+  uint32_t queuePeak=0, delayMaxUs=0, captureMaxUs=0;
+  uint64_t delayTotalUs=0;
+#if BODAQS_ADC_COMBINED_CAPTURE
+  uint64_t combinedNextUs=0;
+#endif
+  uint32_t prodCount=0, prodT0Ms=0, columnCacheT0Ms=0;
+  uint16_t maxOutCached=0;
+};
+static RowHandoffState* s_rowHandoff = nullptr;
+static void resetRowSessionCaches_() {
+  s_rowHandoff->prodCount=0;s_rowHandoff->prodT0Ms=0;
+  s_rowHandoff->columnCacheT0Ms=0;s_rowHandoff->maxOutCached=0;
+}
+static inline bool sampleOnce_ (bool allowStopped, const LocalRowFrame* frame);
+static bool captureRow_() {
+  if (!s_running) return false;
+  const uint32_t began = micros();
+#if BODAQS_ADC_RAW_RECORDING_BENCH
+  RawAdcRecord record;record.sequence=static_cast<uint32_t>(s_sampleCount++);
+  uint64_t capturedUs=0;
+  const uint32_t captureBegin=micros();
+  if(!AnalogInputManager::captureRawPair(record,capturedUs))return false;
+#if BODAQS_TIMING_INSTRUMENTATION
+  TimingStats_record(s_sensorSampleUs,uint32_t(micros()-captureBegin));
+#endif
+  uint64_t markTime=0;const bool marked=dequeue(&markTime);
+  ++s_rowHandoff->captured;
+  const uint32_t enqueueBegin=micros();
+  const bool accepted=StorageManager_enqueueRawAdc(record,marked,markTime,capturedUs);
+#if BODAQS_TIMING_INSTRUMENTATION
+  TimingStats_record(s_enqueueUs,uint32_t(micros()-enqueueBegin));
+  TimingStats_record(s_sampleOnceUs,uint32_t(micros()-began));
+#endif
+  if(accepted)++s_rowHandoff->enqueued;
+  else {++s_rowHandoff->enqueueFailed;if(marked)++s_rowHandoff->markDrops;}
+  ++s_rowHandoff->assembled; // Compatibility counter: one raw record submitted.
+#else
+  LocalRowFrame frame;
+  frame.sampleId = static_cast<uint32_t>(s_sampleCount++);
+  frame.scheduledUnixUs = Rates::scheduledTimeUs(s_t0UnixUs,frame.sampleId,s_intervalUs);
+  if (!AnalogInputManager::captureRowSnapshot(frame.adc)) return false;
+  frame.marked = dequeue(&frame.markTime);
+  ++s_rowHandoff->captured;
+#if BODAQS_ADC_INLINE_ROW
+  // Pair has been verified and next conversion started; no SPI/cache lock held.
+  // The frame stays owned on this task's stack until storage enqueue returns.
+  if (sampleOnce_(true,&frame)) ++s_rowHandoff->enqueued;
+  else ++s_rowHandoff->enqueueFailed;
+  ++s_rowHandoff->assembled;
+#else
+  portENTER_CRITICAL(&s_rowHandoff->mux);
+  const bool accepted = s_rowHandoff->queue.push(frame);
+  if (s_rowHandoff->queue.size() > s_rowHandoff->queuePeak) s_rowHandoff->queuePeak = s_rowHandoff->queue.size();
+  portEXIT_CRITICAL(&s_rowHandoff->mux);
+  if (accepted) xTaskNotifyGive(s_rowHandoff->worker);
+  else { ++s_rowHandoff->queueDrops; if (frame.marked) ++s_rowHandoff->markDrops; }
+  #endif
+#endif
+  const uint32_t elapsed = micros()-began;
+  if(elapsed>s_rowHandoff->captureMaxUs)s_rowHandoff->captureMaxUs=elapsed;
+  return true;
+}
+#endif
+#if BODAQS_ADC_COMBINED_CAPTURE
+static bool combinedCaptureRow_() {
+  s_sampleInProgress.store(true);
+  if(!s_running) {s_sampleInProgress.store(false);return true;}
+  const uint64_t now=static_cast<uint64_t>(esp_timer_get_time());
+  if(!s_rowHandoff->combinedNextUs)s_rowHandoff->combinedNextUs=now;
+  const uint64_t lag=now>s_rowHandoff->combinedNextUs?now-s_rowHandoff->combinedNextUs:0;
+  const uint32_t missed=Rates::missedSlots(lag,s_intervalUs);
+  s_sampleCount+=missed;s_missedSampleSlots+=missed;
+  s_rowHandoff->combinedNextUs+=uint64_t(missed)*s_intervalUs;
+  ++s_schedulerWakeups;
+  const uint32_t bounded=lag>UINT32_MAX?UINT32_MAX:static_cast<uint32_t>(lag);
+  if(bounded>s_lateMaxLagUs)s_lateMaxLagUs=bounded;
+  if(lag>s_intervalUs/10u)++s_lateOverTenPercent;
+  if(lag>=1000){++s_lateTicks;if((lag+999)/1000>s_lateMaxLagMs)s_lateMaxLagMs=(lag+999)/1000;}
+  const bool ok=captureRow_();
+  s_rowHandoff->combinedNextUs+=s_intervalUs;
+  s_sampleInProgress.store(false);
+  return ok;
+}
+#endif
+static inline bool sampleOnce_(bool allowStopped = false, const LocalRowFrame* frame = nullptr) {
   if (!s_running && !allowStopped) return false;
   if (s_intervalUs < 1 || s_intervalUs > 1000000UL) return false;
 
 
   // --------- 1 Hz production-rate diagnostic ---------
+#if BODAQS_ADC_ROW_HANDOFF
+  if (!s_rowHandoff) return false;
+  auto& s_prodCount=s_rowHandoff->prodCount;
+  auto& s_prodT0_ms=s_rowHandoff->prodT0Ms;
+#else
   static uint32_t s_prodCount = 0;
   static uint32_t s_prodT0_ms = 0;
+#endif
   if (s_prodT0_ms == 0) s_prodT0_ms = millis();
   ++s_prodCount;
   uint32_t now_ms = millis();
@@ -152,19 +289,27 @@ static inline bool sampleOnce_(bool allowStopped = false) {
 
   // --------- Deterministic timestamp for THIS sample (grid-aligned) ---------
   const uint64_t scheduledUnixUs =
-      Rates::scheduledTimeUs(s_t0UnixUs, s_sampleCount, s_intervalUs);
+      frame ? frame->scheduledUnixUs : Rates::scheduledTimeUs(s_t0UnixUs, s_sampleCount, s_intervalUs);
   const uint64_t ts_ms = scheduledUnixUs / 1000ULL;
-  const uint32_t sample_id = (uint32_t)s_sampleCount;
-  ++s_sampleCount;
+  const uint32_t sample_id = frame ? frame->sampleId : (uint32_t)s_sampleCount;
+  if (!frame) ++s_sampleCount;
 
   // --------- Cache dynamic column count (avoid doing it at 500 Hz) ---------
+#if BODAQS_ADC_ROW_HANDOFF
+  auto& s_maxOutCached=s_rowHandoff->maxOutCached;
+  auto& s_cacheT0_ms=s_rowHandoff->columnCacheT0Ms;
+#else
   static uint16_t s_maxOutCached = 0;
   static uint32_t s_cacheT0_ms = 0;
+#endif
 
   // Refresh cache occasionally (every ~1s) in case sensors change mid-run
   const bool independentStreams =
       s_cfg && s_cfg->logFormat == LogFormat::BodaqsMultiStreamBinary;
-  if (s_cacheT0_ms == 0 || (uint32_t)(now_ms - s_cacheT0_ms) >= 1000) {
+  if (frame) {
+    s_maxOutCached=SensorManager::recordingColumnCapacity(independentStreams);
+    if(s_maxOutCached>LoggerLimits::kMaxDynamicColumns)s_maxOutCached=LoggerLimits::kMaxDynamicColumns;
+  } else if (s_cacheT0_ms == 0 || (uint32_t)(now_ms - s_cacheT0_ms) >= 1000) {
     s_cacheT0_ms = now_ms;
     uint16_t cap = SensorManager::dynamicColumnCount(independentStreams);
     if (cap > LoggerLimits::kMaxDynamicColumns) cap = LoggerLimits::kMaxDynamicColumns;
@@ -177,17 +322,28 @@ static inline bool sampleOnce_(bool allowStopped = false) {
   const uint32_t sensorT0 = micros();
 #endif
   const uint64_t hostMonotonicUs =
-      static_cast<uint64_t>(esp_timer_get_time());
-  SensorManager::sampleValues(
-      values, s_maxOutCached, nWritten, independentStreams);
+      frame ? frame->adc.capturedUs : static_cast<uint64_t>(esp_timer_get_time());
+#if BODAQS_ADC_ROW_HANDOFF
+  AnalogInputManager::useRowSnapshot(frame ? &frame->adc : nullptr);
+#endif
+  if(frame)SensorManager::sampleRowValues(values,s_maxOutCached,nWritten,independentStreams,frame->adc);
+  else SensorManager::sampleValues(values,s_maxOutCached,nWritten,independentStreams);
+#if BODAQS_ADC_ROW_HANDOFF
+  AnalogInputManager::useRowSnapshot(nullptr);
+#endif
 #if BODAQS_TIMING_INSTRUMENTATION
   TimingStats_record(s_sensorSampleUs, (uint32_t)(micros() - sensorT0));
 #endif
 
   // --------- One mark per sample ---------
-  uint64_t markTime = 0;
-  bool markNow = dequeue(&markTime);
+  uint64_t markTime = frame ? frame->markTime : 0;
+  bool markNow = frame ? frame->marked : dequeue(&markTime);
 
+#if BODAQS_ADC_CONTINUOUS_LATEST
+  if (!frame) {
+    if(!AnalogInputManager::continuousHealthy())return false;
+  }
+#endif
   // --------- Enqueue for StorageManager_loop() ---------
 #if BODAQS_TIMING_INSTRUMENTATION
   const uint32_t enqueueT0 = micros();
@@ -208,13 +364,110 @@ static inline bool sampleOnce_(bool allowStopped = false) {
 }
 
 
+#if BODAQS_ADC_ROW_HANDOFF && !BODAQS_ADC_INLINE_ROW
+static void rowAssemblyTaskFn_(void*) {
+  for (;;) {
+    (void)ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
+    unsigned burst = 0;
+    for (;;) {
+      LocalRowFrame frame;
+      portENTER_CRITICAL(&s_rowHandoff->mux);
+      const bool have = s_rowHandoff->queue.pop(frame);
+      s_rowHandoff->busy = have;
+      portEXIT_CRITICAL(&s_rowHandoff->mux);
+      if (!have) break;
+      const uint64_t delay = static_cast<uint64_t>(esp_timer_get_time())-frame.adc.capturedUs;
+      s_rowHandoff->delayTotalUs += delay;
+      if (delay>s_rowHandoff->delayMaxUs) s_rowHandoff->delayMaxUs = delay>UINT32_MAX ? UINT32_MAX : delay;
+      if (sampleOnce_(true,&frame)) ++s_rowHandoff->enqueued;
+      else ++s_rowHandoff->enqueueFailed; // Storage failure is accounted separately from upstream drops.
+      ++s_rowHandoff->assembled;
+      portENTER_CRITICAL(&s_rowHandoff->mux);
+      s_rowHandoff->busy = false;
+      portEXIT_CRITICAL(&s_rowHandoff->mux);
+      if (++burst == 4) {burst = 0;vTaskDelay(1);} // Bound P3 bursts; let storage/idle run under overload.
+    }
+  }
+}
+#endif
+
+#ifndef BODAQS_ADC_ROW_COOPERATIVE_WAIT
+#define BODAQS_ADC_ROW_COOPERATIVE_WAIT 0
+#endif
+#if BODAQS_ADC_ROW_COOPERATIVE_WAIT != 0 && BODAQS_ADC_ROW_COOPERATIVE_WAIT != 1
+#error "ADC row cooperative wait must be 0 or 1"
+#endif
+#if BODAQS_ADC_ROW_COOPERATIVE_WAIT && !BODAQS_ADC_ROW_PACING
+#error "ADC row cooperative wait requires row pacing"
+#endif
+#ifndef BODAQS_ADC_ROW_BLOCKED_WAIT
+#define BODAQS_ADC_ROW_BLOCKED_WAIT 0
+#endif
+#if BODAQS_ADC_ROW_BLOCKED_WAIT != 0 && BODAQS_ADC_ROW_BLOCKED_WAIT != 1
+#error "ADC row blocked wait must be 0 or 1"
+#endif
+#if BODAQS_ADC_ROW_BLOCKED_WAIT && !BODAQS_ADC_ROW_PACING && !BODAQS_ADC_CONTINUOUS_LATEST
+#error "ADC blocked wait requires row pacing or continuous latest"
+#endif
+#if BODAQS_ADC_ROW_BLOCKED_WAIT
+static esp_timer_handle_t s_rowSampleTimer=nullptr;
+static void rowSampleTick_(void* argument) {
+  // The sampler task persists across recordings. No callback rearms the timer.
+  xTaskNotifyGive(static_cast<TaskHandle_t>(argument));
+}
+static bool sampleWaitAppointment_(int64_t deadline,bool* blocked=nullptr) {
+  if(blocked)*blocked=false;
+  if(!s_running || esp_timer_get_time()>=deadline)return true;
+  if(!s_rowSampleTimer) {
+    esp_timer_create_args_t args={};args.callback=rowSampleTick_;
+    args.arg=xTaskGetCurrentTaskHandle();args.name="row_sample";
+    if(esp_timer_create(&args,&s_rowSampleTimer)!=ESP_OK) {
+      LOGGING_LOGE("row sample timer creation failed\n");return false;
+    }
+  }
+  (void)esp_timer_stop(s_rowSampleTimer);
+  (void)ulTaskNotifyTake(pdTRUE,0); // discard a previous appointment's pulse
+  while(s_running) {
+    const int64_t remaining=deadline-esp_timer_get_time();
+    if(remaining<=0)return true;
+    if(esp_timer_start_once(s_rowSampleTimer,static_cast<uint64_t>(remaining))!=ESP_OK) {
+      LOGGING_LOGE("row sample timer arm failed\n");return false;
+    }
+    // STOP also notifies this task. A bounded timeout exposes timer failure;
+    // it is not a polling interval or a substitute sampling schedule.
+    if(blocked)*blocked=true;
+    const auto notified=ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(10)+1);
+    (void)esp_timer_stop(s_rowSampleTimer);
+    if(!s_running)return true;
+    if(!notified){LOGGING_LOGE("row sample timer notification timeout\n");return false;}
+    // A stale/early notification cannot move the row before its deadline.
+  }
+  return true;
+}
+#endif
+static int64_t sampleWaitNow_(int64_t deadline) {
+  int64_t now=esp_timer_get_time();
+#if BODAQS_ADC_ROW_COOPERATIVE_WAIT
+  // Equal-priority ADC workers cannot preempt this sampler's fine waits.
+  // Let ready peers run; reread time because yielding may cross the deadline.
+  if(now<deadline){taskYIELD();now=esp_timer_get_time();}
+#else
+  (void)deadline;
+#endif
+  return now;
+}
+
 static void sampleTaskFn_(void* arg) {
   int64_t next_us = esp_timer_get_time();
   int64_t lastBlockUs = next_us;
   bool wasRunning = false;
 
   for (;;) {
-    if (!s_running) {
+    if (!s_running
+#if BODAQS_ADC_COMBINED_CAPTURE
+        || AnalogInputManager::rowHandoffActive()
+#endif
+        ) {
       wasRunning = false;
       vTaskDelay(pdMS_TO_TICKS(10));
       lastBlockUs = esp_timer_get_time();
@@ -224,6 +477,31 @@ static void sampleTaskFn_(void* arg) {
     if (!wasRunning) {
       wasRunning = true;
       next_us = esp_timer_get_time();
+#if BODAQS_ADC_SCAN_ROW_PHASE
+      s_sampleInProgress.store(true);
+      const bool phaseActive=s_running && AnalogInputManager::scanRowPhaseActive();
+      s_sampleInProgress.store(false);
+      if(!s_running)continue;
+      if(phaseActive) {
+        const int64_t limit=next_us+100000;
+        bool ready=false;
+        while(s_running && esp_timer_get_time()<limit) {
+          s_sampleInProgress.store(true);
+          ready=s_running && AnalogInputManager::scanRowDeadline(esp_timer_get_time(),next_us);
+          s_sampleInProgress.store(false);
+          if(ready || !s_running)break;
+          vTaskDelay(1);
+        }
+        if(!s_running)continue;
+        if(!ready){LoggingManager::stop(LoggingManager::StopReason::StartFailure,"adc_phase_handshake");continue;}
+      }
+#endif
+#if BODAQS_ADC_ROW_PACING
+      s_sampleInProgress.store(true);
+      next_us=s_running?AnalogInputManager::beginRowPacing():0;
+      s_sampleInProgress.store(false);
+      if(!next_us){if(s_running)LoggingManager::stop(LoggingManager::StopReason::StartFailure,"adc_row_pacing");continue;}
+#endif
       lastBlockUs = next_us;
     }
 
@@ -231,10 +509,24 @@ static void sampleTaskFn_(void* arg) {
     if (intervalUs == 0) intervalUs = 1;
     const int64_t interval_us = static_cast<int64_t>(intervalUs);
 
+#if BODAQS_ADC_ROW_BLOCKED_WAIT
+    // STOP wakes this wait before waiting on the same startup/row guard.
+    s_sampleInProgress.store(true);
+    bool blockedForRow=false;
+    const bool appointmentReady=sampleWaitAppointment_(next_us,&blockedForRow);
+    s_sampleInProgress.store(false);
+    if(!appointmentReady) {
+      if(s_running)LoggingManager::stop(LoggingManager::StopReason::StartFailure,"adc_row_wait");
+      continue;
+    }
+    if(!s_running)continue;
+    if(blockedForRow)lastBlockUs=esp_timer_get_time(); // preserve overdue-row watchdog safeguard
+#endif
+
     // Wait for the next scheduled slot. If we are already late, skip missed
     // slots instead of trying to catch up with a no-yield burst of samples.
     for (;;) {
-      int64_t now_us = esp_timer_get_time();
+      int64_t now_us = sampleWaitNow_(next_us);
       int64_t remaining_us = next_us - now_us;
 
       if (remaining_us <= 0) {
@@ -286,8 +578,21 @@ static void sampleTaskFn_(void* arg) {
     }
 
     s_sampleInProgress.store(true);
+#if BODAQS_ADC_ROW_HANDOFF
+    const bool handoffActive = AnalogInputManager::rowHandoffActive();
+    const bool captured = handoffActive ? captureRow_() : (sampleOnce_(),true);
+#else
     (void)sampleOnce_();
+#endif
     s_sampleInProgress.store(false);
+#if BODAQS_ADC_ROW_HANDOFF
+    if (s_running && !captured) {LoggingManager::stop(LoggingManager::StopReason::StartFailure,"row_capture");continue;}
+#endif
+#if BODAQS_ADC_CONTINUOUS_LATEST
+    if(s_running && !AnalogInputManager::continuousHealthy()) {
+      LoggingManager::stop(LoggingManager::StopReason::Unspecified,"adc_continuous_fault");continue;
+    }
+#endif
 
     const int64_t afterSampleUs = esp_timer_get_time();
     if ((afterSampleUs - lastBlockUs) >= kSamplerMaxNoBlockUs) {
@@ -331,7 +636,129 @@ void LoggingManager::refreshConfigurationStatus() {
 LoggingConfigIssue LoggingManager::configurationIssue() { return s_configurationIssue; }
 const char* LoggingManager::configurationDetail() { return s_configurationDetail; }
 
+bool LoggingManager::isStarting() { return s_starting; }
+void LoggingManager::cancelStart() {
+  if(s_starting && RemoteImuRecording::configured()) {
+    s_starting=false;s_remotePreparing=false;s_stopping=true;
+    RemoteImuRecording::stop();
+    AnalogInputManager::onLoggingStop();SensorManager::onLoggingStop();
+    UI::status("Finalizing recording");
+    return;
+  }
+#if defined(ESP32)
+  if (s_starting && s_storageStartPending) {
+    s_starting = false;
+    s_storageStartPending = false;
+    s_stopping = true;
+    AnalogInputManager::onLoggingStop();
+    SensorManager::onLoggingStop();
+    s_storageStopRequested = true;
+    StorageManager_stopLog();
+    return;
+  }
+#endif
+  if (!s_starting) return;
+  s_starting = false;
+  CanMasterManager::endRecordingHandoff();
+}
+bool LoggingManager::configurationLocked() { return s_starting || s_running || s_stopping; }
+
+LoggingManager::StartResult LoggingManager::requestStart() {
+  if (s_running) return StartResult::Started;
+  if (s_stopping) return StartResult::Failed;
+  // A completed file must not turn a failed ownership handoff into an
+  // indefinitely pending START. Ordinary in-progress starts retain their fence.
+  if(!s_starting && CanMasterManager::recordingHandoffActive())return StartResult::Failed;
+  if (!s_starting) {
+    s_starting = true;
+    CanMasterManager::beginRecordingHandoff();
+  }
+  if (!CanMasterManager::recordingHandoffReady()) {
+    UI::status("Preparing logging");
+    return StartResult::Pending;
+  }
+  if (start()) return StartResult::Started;
+  return s_starting ? StartResult::Pending : StartResult::Failed;
+}
+
 void LoggingManager::loop() {
+#if BODAQS_ADC_COMBINED_CAPTURE
+  if(s_running && !AnalogInputManager::continuousHealthy()) {
+    stop(StopReason::Unspecified,"combined_adc_capture_fault");
+  }
+#endif
+  RemoteImuRecording::service();
+  if(s_running && RemoteImuRecording::failed() && !s_remoteFaultShown) {
+    s_remoteFaultShown=true;UI::toast(RemoteImuRecording::failureReason(),1800,1);
+  }
+  if(s_starting && s_remotePreparing) {
+    if(RemoteImuRecording::failed() && !s_remoteFaultShown) {
+      s_remoteFaultShown=true;UI::toast(RemoteImuRecording::failureReason(),1800,1);
+    }
+#if defined(ESP32)
+    if(!StorageManager_recordingReady()) {
+      if(!StorageManager_recordingIoPending()) stop(StopReason::StartFailure,"storage_start_failure");
+      return;
+    }
+#endif
+#if defined(ESP32)
+    const auto allocation=StorageManager_recordingAllocation();
+    const size_t storageBytes=allocation.primaryQueueBytes+allocation.workspaceBytes+
+        allocation.outputBufferBytes+allocation.catalogPeakBytes+allocation.primaryColumnsPeakBytes+
+        allocation.metadataPayloadBytes+allocation.staticStateBytes+allocation.storageTaskStackBytes;
+    RemoteImuRecording::resourcesReady(storageBytes);
+#else
+    RemoteImuRecording::resourcesReady();
+#endif
+    if(!RemoteImuRecording::prepared()) return;
+    s_remotePreparing=false;
+#if defined(ESP32)
+    s_storageStartPending=true;s_storageStopRequested=false;
+#else
+    RemoteImuRecording::start();
+#endif
+    return;
+  }
+#if defined(ESP32)
+  if (s_stopping) {
+    if(!RemoteImuRecording::tailDrained()) return;
+    if(!RemoteImuRecording::readyForFileFinalization()) return;
+    if(!StorageManager_recordingIoPending() && !RemoteImuRecording::stopped()) return;
+    if (!StorageManager_recordingIoPending()) { finishStorageStop(); return; }
+    if (s_storageStopRequested) return;
+    if (!StorageManager_storageFault() && !StorageManager_usesIndependentStreams()) {
+      for (unsigned i = 0; i < 8 && SensorManager::pendingLoggingRows(); ++i) {
+        if (!StorageManager_canAcceptSample()) return;
+        const size_t before = SensorManager::pendingLoggingRows();
+        if (!sampleOnce_(true) || SensorManager::pendingLoggingRows() >= before) {
+          s_storageStopRequested = true;
+          StorageManager_stopLog();
+          return;
+        }
+      }
+      if (SensorManager::pendingLoggingRows()) return;
+    }
+    s_storageStopRequested = true;
+    StorageManager_stopLog();
+    if (!StorageManager_recordingIoPending()) finishStorageStop();
+    return;
+  }
+  if (s_starting && s_storageStartPending) {
+    if (StorageManager_recordingReady()) {
+      RemoteImuRecording::start();
+      if(!RemoteImuRecording::recording()) return;
+      s_storageStartPending = false;
+      completeStorageStart();
+    } else if (!StorageManager_recordingIoPending()) {
+      stop(StopReason::StartFailure, "storage_start_failure");
+    }
+    return;
+  }
+#endif
+  if (s_starting) {
+    if (CanMasterManager::recordingHandoffReady()) (void)start();
+    return;
+  }
   if (s_running) return;
   static uint32_t lastCheckMs = 0;
   const uint32_t now = millis();
@@ -341,9 +768,40 @@ void LoggingManager::loop() {
 }
 
 bool LoggingManager::start() {
+  if (s_running || s_stopping) return false;
+  if (!s_starting) {
+    s_starting = true;
+    CanMasterManager::beginRecordingHandoff();
+  }
+  if (!CanMasterManager::recordingHandoffReady()) return false;
+  // Every failure releases admission; successful start retains the fence until
+  // finalization. This guard also covers early power/storage/preflight returns.
+  struct StartAdmission {
+    ~StartAdmission() {
+      if(s_remotePreparing) return;
+#if defined(ESP32)
+      if (s_storageStartPending) return;
+#endif
+      s_starting = false;
+      if (!s_running) CanMasterManager::endRecordingHandoff();
+    }
+  } admission;
   s_startFailureHint = StartFailureHint::None;
   s_stopContext = StopContext{};
   if (!s_cfg) return false;
+#if BODAQS_ADC_RAW_RECORDING_BENCH
+  if(s_cfg->logFormat!=LogFormat::BodaqsMultiStreamBinary) {
+    UI::toast("RAW trial needs BDQ v2",1800,1);
+    LOGGING_LOGW("start refused: raw ADC trial requires BDQ v2\n");
+    return false;
+  }
+  if(!RawAdcRecording::supportsGeometry(s_cfg->sampleRateHz,RawAdcRecording::kColumns)) {
+    UI::toast("RAW trial rate mismatch",1800,1);
+    LOGGING_LOGW("start refused: raw ADC trial rejects requested%uHz for %u channels/ADC\n",
+                 s_cfg->sampleRateHz,RawAdcRecording::kChannelsPerAdc);
+    return false;
+  }
+#endif
   TRACE("enter start()");
   const uint32_t startT0 = millis();
 
@@ -431,6 +889,15 @@ bool LoggingManager::start() {
   const uint32_t wifiOffMs = millis() - wifiOffT0;
   TRACE("stop webserver/wifi? (if any)");
 
+#if BODAQS_ADC_CONCENTRATED_SCAN_BENCH
+  // Reserve the parked owner while internal memory is still unfragmented.
+  // SD/session/remote buffers must not consume its stack first. This does no
+  // conversion work, and the normal split continuous control allocates nothing.
+  if(!AnalogInputManager::reserveScanTask()) {
+    SensorManager::onLoggingFinalized();WiFiManager::resumeAfterLogging();
+    UI::status("ADC task memory");LOGGING_LOGW("start refused: ADC scan worker reservation failed\n");return false;
+  }
+#endif
 
   //PowerManager::setCpuFreqForLogging();
 
@@ -463,6 +930,60 @@ bool LoggingManager::start() {
   }
   const uint32_t sensorStartMs = millis() - sensorStartT0;
 
+  s_remoteFaultShown=false;
+#if defined(ESP32) && defined(BODAQS_PACKED_SEGMENTED_RECEIVER) && BODAQS_PACKED_SEGMENTED_RECEIVER
+  if(!StorageManager_prepareTask()) {
+    LOGGING_LOGW("start refused: %s\n",StorageManager_lastStatus());
+    SensorManager::onLoggingStop();SensorManager::onLoggingFinalized();
+    WiFiManager::resumeAfterLogging();UI::status("Storage task memory");return false;
+  }
+  if(!AcquisitionControl::reserveTask()) {
+    const auto d=AcquisitionControl::startupDiagnostics();
+    LOGGING_LOGW("acquisition task reservation failed stack=6144 internal_free=%lu internal_largest=%lu\n",
+        (unsigned long)d.afterTask.freeBytes,(unsigned long)d.afterTask.largestBlock);
+    SensorManager::onLoggingStop();SensorManager::onLoggingFinalized();
+    WiFiManager::resumeAfterLogging();UI::status("Acquisition task memory");return false;
+  }
+#if BODAQS_ADC_ROW_HANDOFF
+  if (!s_rowHandoff) s_rowHandoff = new (std::nothrow) RowHandoffState();
+  if (!s_rowHandoff
+#if !BODAQS_ADC_INLINE_ROW
+      || (!s_rowHandoff->worker && xTaskCreatePinnedToCore(rowAssemblyTaskFn_,"RowAssembly",4096,
+      nullptr,2,&s_rowHandoff->worker,0)!=pdPASS)
+#endif
+      ) {
+    LOGGING_LOGW("row assembly task reservation failed stack=4096\n");
+    SensorManager::onLoggingStop();SensorManager::onLoggingFinalized();
+    WiFiManager::resumeAfterLogging();UI::status("Row assembly memory");return false;
+  }
+#endif
+#if BODAQS_ADC_COMBINED_CAPTURE
+  if(!AnalogInputManager::scanRowCaptureEligible()) {
+#endif
+  if(!s_sampleTask && xTaskCreatePinnedToCore(sampleTaskFn_,"SampleTask",4096,
+      nullptr,3,&s_sampleTask,0)!=pdPASS) {
+    LOGGING_LOGW("sample task reservation failed stack=4096\n");
+    SensorManager::onLoggingStop();SensorManager::onLoggingFinalized();
+    WiFiManager::resumeAfterLogging();UI::status("Sampler task memory");return false;
+  }
+#if BODAQS_ADC_COMBINED_CAPTURE
+  }
+#endif
+#endif
+#if defined(ESP32)
+  CpuOccupancy::bindTask(CpuOccupancy::Sampler,reinterpret_cast<uintptr_t>(s_sampleTask));
+#endif
+  if(!RemoteImuRecording::configure(*s_cfg)) {
+    SensorManager::onLoggingStop();SensorManager::onLoggingFinalized();
+    WiFiManager::resumeAfterLogging();UI::status("Remote IMU unavailable");
+    return false;
+  }
+  if(RemoteImuRecording::configured()) {
+    s_remotePreparing=true;UI::status("Preparing recording");
+    if(!StorageManager_startLog()) {LOGGING_LOGW("storage start refused: %s\n",StorageManager_lastStatus());stop(StopReason::StartFailure,"storage_start_failure");return false;}
+    return false;
+  }
+
   // Open/create log file
   TRACE("Entering storagemanager_startlog");
   const uint32_t storageT0 = millis();
@@ -476,19 +997,73 @@ bool LoggingManager::start() {
     return false;
   }
   const uint32_t storageMs = millis() - storageT0;
-  TRACE("storagemanager_startlog complete");
+  LOGGING_LOGI("start preparation timing: wifiOff=%lu ms storageCall=%lu ms sensors=%lu ms total=%lu ms rtcValid=%d\n",
+               (unsigned long)wifiOffMs, (unsigned long)storageMs,
+               (unsigned long)sensorStartMs, (unsigned long)(millis() - startT0),
+               rtcValid ? 1 : 0);
+  TRACE("storagemanager_startlog submitted");
 
+#if defined(ESP32)
+  s_storageStartPending = true;
+  s_storageStopRequested = false;
+  // Open/header/health I/O is outstanding on the storage task. The loop
+  // observes completion before enabling acquisition; Stop can cancel it.
+  return false;
+#else
+  completeStorageStart();
+  return true;
+#endif
+}
+
+void LoggingManager::completeStorageStart() {
+  s_starting = false;
+#if BODAQS_ADC_RAW_RECORDING_BENCH
+  const auto raw=StorageManager_rawAdcStats();
+  Serial.printf("{\"schema\":\"bodaqs.raw-adc.v1\",\"type\":\"selected\",\"recipe\":\"%s\",\"qualified\":%s,\"capacity\":%lu,\"record_bytes\":%u}\n",
+    FirmwareInfo::buildRecipe(),raw.qualified?"true":"false",(unsigned long)raw.capacity,
+    unsigned(sizeof(RawAdcRecord)));
+#endif
+#if BODAQS_ADC_ROW_HANDOFF
+  // A new configuration may have a different row geometry on the same boot.
+  resetRowSessionCaches_();
+#endif
   // Paint the durable recording frame while the OLED is still allowed to
   // transfer. Auto/freeze policies may suppress every later refresh.
   DisplayManager::prepareLoggingScreen(
-      effectiveRateHz, SensorManager::activeCount());
+      StorageManager_getSampleRateHz(), SensorManager::activeCount());
+#if BODAQS_ADC_ROW_HANDOFF
+  // Previous producer and assembler have retired before any new START.
+  portENTER_CRITICAL(&s_rowHandoff->mux);
+#if !BODAQS_ADC_INLINE_ROW
+  s_rowHandoff->queue.reset();
+#endif
+  s_rowHandoff->busy=false;
+  portEXIT_CRITICAL(&s_rowHandoff->mux);
+  s_rowHandoff->captured=s_rowHandoff->assembled=s_rowHandoff->queueDrops=s_rowHandoff->markDrops=0;
+  s_rowHandoff->enqueued=s_rowHandoff->enqueueFailed=0;
+  s_rowHandoff->queuePeak=s_rowHandoff->delayMaxUs=s_rowHandoff->captureMaxUs=0;s_rowHandoff->delayTotalUs=0;
+#endif
+#if BODAQS_ADC_COMBINED_CAPTURE
+  s_rowHandoff->combinedNextUs=0;
+  if(AnalogInputManager::scanRowCaptureEligible() && !AnalogInputManager::setScanRowCapture(combinedCaptureRow_)) {
+    stop(StopReason::StartFailure,"combined_capture_registration");return;
+  }
+#endif
   AnalogInputManager::onLoggingStart();
   SensorManager::startLoggingAcquisition();
   s_running = true;
+#if BODAQS_ADC_CONTINUOUS_LATEST
+  if(!AnalogInputManager::continuousHealthy()) {stop(StopReason::StartFailure,"adc_continuous_start");return;}
+#endif
+  ButtonManager_setPollingEnabled(false);
 
 #if defined(ESP32)
   // Start sampler task once (it loops forever; it will idle when not running)
-  if (!s_sampleTask) {
+  if (!s_sampleTask
+#if BODAQS_ADC_COMBINED_CAPTURE
+      && !AnalogInputManager::rowHandoffActive()
+#endif
+      ) {
     // Stack: 4096 is usually fine; bump to 6144/8192 if you add work
     xTaskCreatePinnedToCore(
       sampleTaskFn_,
@@ -507,17 +1082,9 @@ bool LoggingManager::start() {
 
   //UI::toast("Logging started");
   const unsigned hz = StorageManager_getSampleRateHz();
-  char st[24]; snprintf(st, sizeof(st), "Logging %uHz", hz);
+  char st[24]; snprintf(st, sizeof(st), "Recording %uHz", hz);
   UI::status(String(st));
-  LOGGING_LOGI("start timing: wifiOff=%lu ms storage=%lu ms sensors=%lu ms total=%lu ms rtcValid=%d\n",
-               (unsigned long)wifiOffMs,
-               (unsigned long)storageMs,
-               (unsigned long)sensorStartMs,
-               (unsigned long)(millis() - startT0),
-               rtcValid ? 1 : 0);
   TRACE("exit start()");
-
-  return true;
 }
 
 LoggingManager::StartFailureHint LoggingManager::startFailureHint() {
@@ -562,15 +1129,36 @@ const char* LoggingManager::stopReasonName(StopReason reason) {
     case StopReason::SdCardRemoved: return "sd_card_removed";
     case StopReason::StartFailure: return "start_failure";
     case StopReason::Unspecified: return "unspecified";
+    case StopReason::StorageFailure: return "storage_failure";
+    case StopReason::StorageUnresponsive: return "storage_unresponsive";
     default: return "unknown";
   }
 }
 
 LoggingManager::StopContext LoggingManager::stopContext() {
-  return s_stopContext;
+#if defined(ESP32)
+  portENTER_CRITICAL(&s_stopContextMux);
+#endif
+  const StopContext context = s_stopContext;
+#if defined(ESP32)
+  portEXIT_CRITICAL(&s_stopContextMux);
+#endif
+  return context;
 }
 
 void LoggingManager::stop(StopReason reason, const char* triggerEvent) {
+#if defined(ESP32)
+  if (s_stopping) {
+    if ((reason == StopReason::StorageFailure || reason == StopReason::StorageUnresponsive) &&
+        s_stopContext.reason != reason)
+      captureStopContext_(reason, triggerEvent);
+    return;
+  }
+#endif
+#if defined(ESP32)
+  if (s_starting && s_storageStartPending) captureStopContext_(reason, triggerEvent);
+#endif
+  cancelStart();
   if (!s_running) {
     LOGGING_LOGW("stop ignored because logging is not active reason=%s trigger=%s\n",
                  stopReasonName(reason), triggerEvent ? triggerEvent : "");
@@ -585,7 +1173,12 @@ void LoggingManager::stop(StopReason reason, const char* triggerEvent) {
       s_stopContext.sdDetectAvailable ? 1u : 0u,
       s_stopContext.sdCardDetected ? 1u : 0u,
       s_stopContext.analogRailFault ? 1u : 0u);
+  s_stopping = true;
   s_running = false;
+#if defined(ESP32) && BODAQS_ADC_ROW_BLOCKED_WAIT
+  if(s_sampleTask)xTaskNotifyGive(s_sampleTask);
+#endif
+  RemoteImuRecording::stop();
 #if defined(ESP32)
   // A sampler that already passed the run-state check may still be copying a
   // row into the storage queue. Let that bounded operation finish before
@@ -596,9 +1189,44 @@ void LoggingManager::stop(StopReason reason, const char* triggerEvent) {
     vTaskDelay(1);
   }
 #endif
+#if BODAQS_ADC_ROW_HANDOFF
+#if BODAQS_ADC_COMBINED_CAPTURE
+  AnalogInputManager::retireScanRowCapture();
+#endif
+  #if !BODAQS_ADC_INLINE_ROW
+  // Producer is retired above. Pop+busy is atomic with this empty/busy check.
+  xTaskNotifyGive(s_rowHandoff->worker);
+  for (;;) {
+    portENTER_CRITICAL(&s_rowHandoff->mux);
+    const bool drained = !s_rowHandoff->queue.size() && !s_rowHandoff->busy;
+    portEXIT_CRITICAL(&s_rowHandoff->mux);
+    if (drained) break;
+    vTaskDelay(1);
+  }
+  #endif
+  Serial.printf("{\"schema\":\"bodaqs.local-row-handoff.v1\",\"captured\":%lu,\"assembled\":%lu,\"enqueued\":%lu,\"enqueue_failed\":%lu,\"queue_dropped\":%lu,\"marks_dropped\":%lu,\"queue_peak\":%lu,\"capacity\":%u,\"capture_max_us\":%lu,\"assembly_delay_max_us\":%lu,\"assembly_delay_total_us\":%llu}\n",
+      (unsigned long)s_rowHandoff->captured,(unsigned long)s_rowHandoff->assembled,(unsigned long)s_rowHandoff->enqueued,
+      (unsigned long)s_rowHandoff->enqueueFailed,(unsigned long)s_rowHandoff->queueDrops,
+      (unsigned long)s_rowHandoff->markDrops,(unsigned long)s_rowHandoff->queuePeak,BODAQS_ADC_INLINE_ROW?0u:8u,(unsigned long)s_rowHandoff->captureMaxUs,
+      (unsigned long)s_rowHandoff->delayMaxUs,(unsigned long long)s_rowHandoff->delayTotalUs);
+#if BODAQS_ADC_INLINE_ROW
+  if(AnalogInputManager::rowHandoffActive())Serial.printf("{\"schema\":\"bodaqs.inline-row.v1\",\"owner\":\"adc\",\"assembly_task_exists\":%s,\"handoff_capacity\":0}\n",s_rowHandoff->worker?"true":"false");
+#endif
+#if BODAQS_ADC_COMBINED_CAPTURE
+  if(AnalogInputManager::rowHandoffActive())Serial.printf("{\"schema\":\"bodaqs.combined-row-capture.v1\",\"trigger\":\"verified_pair\",\"nominal_interval_us\":%lu,\"sampler_task_exists\":%s,\"missed_row_slots\":%lu}\n",
+      (unsigned long)s_intervalUs,s_sampleTask ? "true" : "false",(unsigned long)s_missedSampleSlots);
+#endif
+#endif
   AnalogInputManager::onLoggingStop();
   SensorManager::onLoggingStop();
 
+#if defined(ESP32)
+  IndicatorManager::ledOff();
+  // The loop feeds bounded final sensor rows as queue space becomes available,
+  // then asks the owner to drain and finalize. It never waits for storage.
+  UI::status("Finalizing recording");
+  return;
+#else
   // Existing logger rows are made durable first. The IMU driver has now
   // suspended production and completed its final FIFO drain, so one forced
   // sparse row per remaining queued sample closes the session boundary.
@@ -631,6 +1259,53 @@ void LoggingManager::stop(StopReason reason, const char* triggerEvent) {
   }
   IndicatorManager::ledOff();
   StorageManager_stopLog();
+  finishStorageStop();
+#endif
+}
+
+#if BODAQS_TIMING_INSTRUMENTATION && BODAQS_ADC_ROW_HANDOFF
+static void printRetiredRowCosts_() {
+  const auto stats=LoggingManager::runtimeStats();
+#if BODAQS_ADC_RAW_RECORDING_BENCH
+  const auto raw=StorageManager_rawAdcStats();
+  Serial.printf("{\"schema\":\"bodaqs.raw-adc.v1\",\"type\":\"retired\",\"recipe\":\"%s\",\"qualified\":%s,\"capacity\":%lu,\"submitted\":%lu,\"enqueued\":%lu,\"encoded\":%lu,\"rejected\":%lu,\"generic_attempts\":%lu}\n",
+    FirmwareInfo::buildRecipe(),raw.qualified?"true":"false",(unsigned long)raw.capacity,
+    (unsigned long)raw.submitted,(unsigned long)raw.enqueued,(unsigned long)raw.encoded,
+    (unsigned long)raw.rejected,(unsigned long)raw.genericAttempts);
+#endif
+  auto print=[](const TimingSummary& v) {
+    Serial.printf("{\"count\":%lu,\"min_us\":%lu,\"max_us\":%lu,\"total_us\":%llu}",
+      (unsigned long)v.count,(unsigned long)v.minUs,(unsigned long)v.maxUs,(unsigned long long)v.totalUs);
+  };
+  Serial.printf("{\"schema\":\"bodaqs.row-cost.v1\",\"type\":\"retired\",\"recipe\":\"%s\",\"scope\":\"nested_wall_time_not_exclusive_cpu\",\"sampling_plan\":%s,\"raw_acquisition\":%s,\"rows\":%lu,\"sample_once_us\":",
+    FirmwareInfo::buildRecipe(),SensorManager::recordingSamplingPlanReady()?"true":"false",
+    BODAQS_ADC_RAW_RECORDING_BENCH?"true":"false",(unsigned long)stats.samplerWakeups);
+  print(stats.sampleOnceUs);Serial.print(",\"sensor_sample_us\":");print(stats.sensorSampleUs);
+  Serial.print(",\"enqueue_us\":");print(stats.enqueueUs);Serial.print(",\"sensors\":[");
+  bool comma=false;
+  const auto& timing=SensorManager::timingStats();
+  for(unsigned i=0;i<SensorTimingStats::kMaxSensors;++i) {
+    const auto& slot=timing.sensor[i];if(!slot.present || !slot.sampleUs.count)continue;
+    Serial.printf("%s{\"index\":%u,\"columns\":%u,\"sample_us\":",comma?",":"",i,unsigned(slot.columnCount));
+    print(slot.sampleUs);Serial.print("}");comma=true;
+  }
+  Serial.println("]}");
+}
+#endif
+
+void LoggingManager::finishStorageStop() {
+#if BODAQS_TIMING_INSTRUMENTATION && BODAQS_ADC_ROW_HANDOFF
+  printRetiredRowCosts_();
+#endif
+#if defined(ESP32)
+  s_storageStopRequested = false;
+  if (StorageManager_storageFault()) {
+    const bool stalled = StorageManager_storageUnresponsive();
+    captureStopContext_(stalled ? StopReason::StorageUnresponsive : StopReason::StorageFailure,
+                        stalled ? "storage_timeout" : "storage_failure");
+    UI::status(stalled ? "Storage unresponsive" : "Storage failure");
+  }
+#endif
   // Recovery is deliberately later than StorageManager_stopLog(): the BDQ
   // final summary must observe the session's original sensor diagnostics.
   SensorManager::onLoggingFinalized();
@@ -648,6 +1323,22 @@ void LoggingManager::stop(StopReason reason, const char* triggerEvent) {
                (unsigned long)s_schedulerWakeups,
                (unsigned long)s_lateOverTenPercent,
                (unsigned long)s_lateMaxLagUs);
+#endif
+  s_stopping = false;
+  RemoteImuRecording::release();
+  CanMasterManager::endRecordingHandoff();
+  // Automatic/error STOP must restore the same navigation as manual STOP.
+  ButtonManager_setPollingEnabled(true);
+#if defined(ESP32)
+  if(!StorageManager_storageFault()) {
+    if(CanMasterManager::recordingHandoffActive()) {
+      UI::status("Control cleanup incomplete");
+      LOGGING_LOGW("file finalized; control handoff still active\n");
+    } else {
+      UI::status("Recording finalized");
+      LOGGING_LOGI("recording finalized; control handoff released\n");
+    }
+  }
 #endif
 }
 

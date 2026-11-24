@@ -82,6 +82,8 @@ public:
 
 
   // For debugging / UI
+  const char* keyAt(uint8_t index) const;
+  const char* valueAt(uint8_t index) const;
   uint16_t size() const;   // number of key/value pairs
 
 private:

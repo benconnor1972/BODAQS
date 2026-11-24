@@ -1,3 +1,4 @@
+#include "Lsm6dso32xConfig.h"
 #include "Arduino.h"
 #include "SensorAssignment.h"
 #include "SensorDiagnostics.h"
@@ -67,6 +68,7 @@ uint8_t excludedSensors = 0;
 int prepares = 0;
 LogFormat preparedFormat, fileFormat;
 
+extern bool s_stopping;
 namespace SensorManager {
   Sensor* s_list[MAX_SENSORS] = {};
   SensorAssignment s_liveAssignment[MAX_SENSORS];
@@ -82,9 +84,10 @@ namespace SensorManager {
   bool onLoggingStart(char*, size_t) { events.push_back("sensors"); return sensorsStartOk; }
   void startLoggingAcquisition() { events.push_back("acquire"); }
   void onLoggingStop() { events.push_back("sensor_stop"); }
-  void onLoggingFinalized() { events.push_back("finalize"); }
+  void onLoggingFinalized() { events.push_back(s_stopping ? "finalize_locked" : "finalize"); }
   uint8_t sessionExcludedCount() { return excludedSensors; }
   uint8_t activeCount() { return 2; }
+  size_t pendingLoggingRows() { return 0; }
 }
 
 class ConfigManager {
@@ -107,17 +110,20 @@ namespace UI {
   void toast(const char*, int, int) { events.push_back("toast"); }
   void status(const String&) {}
   void loop() { events.push_back("paint"); }
-  constexpr int TARGET_SERIAL = 0, LVL_INFO = 0;
+  constexpr int TARGET_SERIAL = 0, LVL_INFO = 0, LVL_ERROR = 2;
   void println(const char*, const char*, int, int) {}
 }
 namespace UploadModeManager { bool isActive() { return upload; } }
-namespace PowerManager { bool canStartLogging() { return powerOk; } }
+namespace PowerManager { bool canStartLogging() { return powerOk; } void restoreCpuFreqAfterLogging() {} }
 bool StorageManager_readyForLogging() { return storageOk; }
 const char* StorageManager_lastStatus() { return "test"; }
 uint32_t StorageManager_getSampleIntervalUs() { return 2000; }
 void StorageManager_setSampleRate(uint16_t) {}
 unsigned StorageManager_getSampleRateHz() { return 500; }
 bool StorageManager_startLog() { events.push_back("file"); fileFormat = g_cfg.logFormat; return openOk; }
+void StorageManager_drainQueuedSamples() {}
+bool StorageManager_usesIndependentStreams() { return false; }
+bool sampleOnce_(bool) { return false; }
 void StorageManager_stopLog() { events.push_back("close"); }
 namespace AnalogInputManager {
   uint16_t configureFromConfig(const LoggerConfig&, uint16_t rate) { return rate; }
@@ -130,19 +136,51 @@ namespace WiFiManager { void suspendForLogging() {} void resumeAfterLogging() { 
 bool RTCManager_hasValidTime() { return true; }
 uint64_t RTCManager_getEpochMs() { return 100000; }
 namespace DisplayManager { void prepareLoggingScreen(uint16_t, uint8_t) { events.push_back("screen"); } }
-namespace IndicatorManager { void ledOn() {} }
+namespace IndicatorManager { void ledOn() {} void ledOff() {} }
 
+namespace RemoteImuRecording {
+const char* failureReason() {return "fixture remote unavailable";}
+bool resourcesReady(size_t=0) {return true;}
+bool configure(const LoggerConfig&) { return true; }
+bool configured() {return false;} bool prepared() {return true;}
+bool recording() {return true;} bool failed() {return false;}
+void start() {} void stop() {} void service() {} void release() {}
+bool stopped() {return true;}
+bool tailDrained() {return true;}
+bool readyForFileFinalization() {return true;}
+}
+namespace CanMasterManager {
+  bool handoffReady = true, fenced = false;
+  void beginRecordingHandoff() { fenced = true; }
+  bool recordingHandoffReady() { return handoffReady; }
+  bool handoffActive = false;
+  bool recordingHandoffActive() { return handoffActive; }
+  void endRecordingHandoff() { fenced = false; }
+}
+namespace ButtonManager { }
+void ButtonManager_setPollingEnabled(bool) {}
 namespace LoggingManager {
+  enum class StartResult : uint8_t { Failed, Pending, Started };
+  StartResult requestStart();
+  bool isStarting();
+  void cancelStart();
+  bool configurationLocked();
+  void loop();
   enum class StartFailureHint { None, RestartNow, ConfigConflict };
-  enum class StopReason { StartFailure };
-  struct StopContext {};
+  enum class StopReason { StartFailure, UserRequest, Unspecified };
+  void stop(StopReason, const char*);
+  struct StopContext {
+    StopReason reason=StopReason::StartFailure; uint32_t uptimeMs=0;
+    const char* triggerEvent=""; bool sdDetectAvailable=false,sdCardDetected=true,analogRailFault=false;
+  };
+  const char* stopReasonName(StopReason) { return "test"; }
   void refreshConfigurationStatus();
   LoggingConfigIssue configurationIssue();
   const char* configurationDetail();
   bool start();
 }
 const LoggerConfig* s_cfg = &g_cfg;
-bool s_running = false;
+bool s_running = false, s_starting = false, s_stopping = false, s_remotePreparing=false, s_remoteFaultShown=false;
 LoggingManager::StartFailureHint s_startFailureHint;
 LoggingManager::StopContext s_stopContext;
 LoggingConfigIssue s_configurationIssue = LoggingConfigIssue::None;
@@ -150,6 +188,7 @@ char s_configurationDetail[160] = {};
 uint32_t s_intervalUs;
 uint64_t s_t0UnixUs, s_sampleCount;
 void captureStopContext_(LoggingManager::StopReason, const char*) {}
+namespace LoggingManager { void completeStorageStart(); void finishStorageStop(); }
 // PRODUCTION_START
 
 enum ButtonEvent { BUTTON_PRESSED, BUTTON_RELEASED, BUTTON_HELD, BUTTON_CLICK };
@@ -174,6 +213,11 @@ struct Binding { uint8_t buttonIndex; ButtonEvent event; int action; };
 Binding s_bindings[] = {{0, BUTTON_PRESSED, 1}, {0, BUTTON_RELEASED, 1}};
 uint8_t s_bindingCount = 2;
 // PRODUCTION_BUTTON
+const char* evName(ButtonEvent) { return "test"; }
+
+namespace ButtonActions {
+// PRODUCTION_TOGGLE
+}
 
 int checks = 0;
 void checkAt(bool ok, int line) {
@@ -187,7 +231,7 @@ void checkAt(bool ok, int line) {
 Sensor live[MAX_SENSORS];
 void reset() {
   g_cfg = LoggerConfig{}; savedConfig = LoggerConfig{}; profile = board::BoardProfile{};
-  events.clear(); s_running = false; s_configurationIssue = LoggingConfigIssue::None; s_configurationDetail[0] = 0;
+  events.clear(); s_running = s_starting = s_stopping = false; CanMasterManager::handoffReady=true; CanMasterManager::fenced=false; s_configurationIssue = LoggingConfigIssue::None; s_configurationDetail[0] = 0;
   saveOk = powerOk = storageOk = openOk = validateOk = sensorsStartOk = true; upload = false; prepares = 0;
   excludedSensors = 0;
   for (int i = 0; i < MAX_SENSORS; ++i) { SensorManager::s_list[i] = nullptr; live[i] = Sensor{}; }
@@ -218,7 +262,41 @@ bool has(const char* event) { return std::find(events.begin(), events.end(), eve
 int index(const char* event) { return std::find(events.begin(), events.end(), event) - events.begin(); }
 int main() {
   using T = SensorType; using I = LoggingConfigIssue;
+  reset();
+  add(T::LSM6DSO32XImu,"imu0",0,0,false);
+  set(0,"provider","can:0"); set(0,"endpoint","imu");
+  set(0,"profile","imu6_3333_32g_2000dps_v1");
+  const String remoteNotice=configurationNotice_();
+  if(remoteNotice.indexOf("Restart required")>=0)
+    fprintf(stderr,"config-only remote IMU incorrectly reports Restart required\n");
+  check(remoteNotice.indexOf("Restart required")<0);
+  check(remoteNotice.indexOf("acquisition_unavailable")<0);
+  check(remoteNotice.indexOf("Remote acquisition is not implemented yet")<0);
+  check(issue()==I::None);
+  check(!SensorManager::configurationDiagnostics(g_cfg).excludesSensor(0));
   reset(); check(issue() == I::None);
+  add(T::AnalogPot,"local",0,0);
+  CanMasterManager::handoffReady=false;
+  ButtonActions::onToggleLogging(BUTTON_CLICK);
+  check(LoggingManager::requestStart()==LoggingManager::StartResult::Pending);
+  check(LoggingManager::isStarting() && LoggingManager::configurationLocked() && !s_running && !has("acquire"));
+  check(LoggingManager::requestStart()==LoggingManager::StartResult::Pending);
+  CanMasterManager::handoffReady=true; LoggingManager::loop();
+  check(s_running && !LoggingManager::isStarting() && has("acquire"));
+  LoggingManager::stop(LoggingManager::StopReason::UserRequest,"test");
+  check(!LoggingManager::configurationLocked() && !CanMasterManager::fenced && has("finalize_locked"));
+  reset();
+  CanMasterManager::handoffReady=false;
+  check(LoggingManager::requestStart()==LoggingManager::StartResult::Pending);
+  LoggingManager::cancelStart(); LoggingManager::cancelStart();
+  check(!LoggingManager::configurationLocked() && !CanMasterManager::fenced && !s_running);
+  CanMasterManager::handoffReady=true; LoggingManager::loop(); check(!has("acquire"));
+  reset();
+  CanMasterManager::handoffReady=false;
+  check(LoggingManager::requestStart()==LoggingManager::StartResult::Pending);
+  powerOk=false; CanMasterManager::handoffReady=true; LoggingManager::loop();
+  check(!s_running && !LoggingManager::configurationLocked() && !CanMasterManager::fenced);
+  reset();
   add(T::BMI270ImuI2C, "imu0", 1, 104); add(T::BMI270ImuI2C, "imu1", 1, 105);
   check(issue() == I::None); check(SensorManager::requiresBdqV2(g_cfg));
   check(LoggingManager::start()); check(s_running); check(savedConfig.logFormat == LogFormat::BodaqsMultiStreamBinary);

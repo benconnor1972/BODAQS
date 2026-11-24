@@ -33,6 +33,7 @@
             -L${COM_TI_MSPM0_SDK_INSTALL_DIR}/source
             -L${PROJECT_ROOT}
             -L${PROJECT_BUILD_DIR}/syscfg
+            -Wl,--stack_size=2048
             -Wl,--rom_model
             -Wl,--warn_sections
             -L${CG_TOOL_ROOT}/lib
@@ -48,6 +49,29 @@
         <property name="buildProfile" value="release"/>
         <property name="isHybrid" value="true"/>
         <file path="../src/main.c" action="copy" />
+        <file path="../src/imu_capture.c" action="copy" />
+        <file path="../src/imu_capture.h" action="copy" />
+        <file path="../src/imu_acquisition.c" action="copy" />
+        <file path="../src/imu_acquisition.h" action="copy" />
+        <file path="../../common/protocol/bodaqs_control_acquisition.c" action="copy" />
+        <file path="../../common/protocol/bodaqs_control_acquisition.h" action="copy" />
+        <file path="../src/imu_spi.c" action="copy" />
+        <file path="../src/imu_spi.h" action="copy" />
+        <file path="../../common/protocol/bodaqs_control_apply.c" action="copy" />
+        <file path="../../common/protocol/bodaqs_control_apply.h" action="copy" />
+        <file path="../../common/protocol/bodaqs_imu_disabled.c" action="copy" />
+        <file path="../../common/protocol/bodaqs_imu_disabled.h" action="copy" />
+        <file path="../../common/protocol/bodaqs_control.c" action="copy" />
+        <file path="../../common/protocol/bodaqs_control_authority.c" action="copy" />
+        <file path="../../common/protocol/bodaqs_control_authority.h" action="copy" />
+        <file path="../../common/protocol/bodaqs_control_snapshot.c" action="copy" />
+        <file path="../../common/protocol/bodaqs_control_snapshot.h" action="copy" />
+
+        <file path="../../common/protocol/bodaqs_control.h" action="copy" />
+        <file path="../../common/protocol/bodaqs_control_exchange.c" action="copy" />
+        <file path="../../common/protocol/bodaqs_control_exchange.h" action="copy" />
+
+        <file path="../../common/transport/bodaqs_record_queue.h" action="copy" />
         <file path="../../common/network/bodaqs_can_network.c" action="copy" />
         <file path="../../common/network/bodaqs_can_network.h" action="copy" />
         <file path="../node.syscfg" openOnCreation="true" action="copy" />

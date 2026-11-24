@@ -1,12 +1,20 @@
+#include "CpuOccupancy.h"
+#include "StoragePathProbe.h"
 #include "StorageManager.h"
+#include "RemoteImuRecording.h"
+#include "AcquisitionControl.h"
+#include "RecordingStorageWorker.h"
 #include "RTCManager.h"
 #include "ConfigManager.h"
 #include "SensorManager.h"
 #include "BdqLogWriter.h"
 #include "BdqV2Catalog.h"
 #include "BdqV2FileSink.h"
+#include "RecordingTimelineJson.h"
+#include "ControlPollingJson.h"
 #include "BdqV2PrimaryStream.h"
 #include "BdqV2Writer.h"
+#include "BdqAdcTimingJson.h"
 #include "LogMetadataWriter.h"
 #include "ZipArchiveWriter.h"
 #include "LoggingManager.h"
@@ -26,6 +34,7 @@
 #include "Rates.h"
 #include "esp_timer.h"
 #include <math.h>
+#include <atomic>
 #include <new>
 #include <time.h>
 
@@ -36,6 +45,10 @@
 #define SD_LOGD(...)   LOGD_TAG("SD", __VA_ARGS__)
 #define ROW_LOGD(...)  LOGD_TAG("ROW", __VA_ARGS__)
 #define DRAIN_LOGD(...) LOGD_TAG("DRAIN", __VA_ARGS__)
+
+#ifndef BODAQS_STORAGE_TASK_PRIORITY
+#define BODAQS_STORAGE_TASK_PRIORITY 1
+#endif
 
 extern LoggerConfig g_cfg;   // declared in your .ino
 
@@ -70,6 +83,9 @@ static BdqV2FileSink s_bdqV2FileSink(logFileMMC);
 static BdqV2Writer s_bdqV2Writer;
 static BdqV2PrimaryStreamSchema s_bdqV2PrimarySchema;
 static DynamicSpscRecordQueue s_bdqV2PrimaryQueue;
+#if defined(BODAQS_BACKLOG_BALANCE_BENCH) && BODAQS_BACKLOG_BALANCE_BENCH
+static std::atomic<size_t> s_balancePrimaryCapacity{0};
+#endif
 static BdqV2StreamDescriptor
     s_bdqV2Descriptors[BdqV2Writer::kMaximumStreams];
 static uint16_t s_bdqV2DescriptorCount = 0;
@@ -79,6 +95,13 @@ static uint8_t* s_bdqV2OutputBuffer = nullptr;
 static size_t s_bdqV2OutputBufferBytes = 0;
 static uint32_t s_bdqV2EventId = 0;
 static uint32_t s_bdqV2MarkEventsDropped = 0;
+// Read-only diagnostics do not race the independently running I/O owner.
+static std::atomic<size_t> s_bdqV2AllocatedPrimary{0};
+static std::atomic<size_t> s_bdqV2AllocatedWorkspace{0};
+static std::atomic<size_t> s_bdqV2AllocatedOutput{0};
+static std::atomic<size_t> s_bdqV2CatalogPeak{0};
+static std::atomic<size_t> s_bdqV2ColumnsPeak{0};
+static std::atomic<size_t> s_bdqV2MetadataPayload{0};
 
 static char* buffer = nullptr;
 static size_t bufferSize = 0;
@@ -89,6 +112,12 @@ static unsigned int sampleRateHz = 1;
 static uint32_t sampleIntervalUs = 1000000;
 
 static bool loggingActive = false;
+#if defined(ESP32)
+static TaskHandle_t s_storageTask = nullptr;
+static void storageTaskFn_(void*);
+static RecordingStorageWorker& storageWorker_();
+static bool storageOwner_() { return xTaskGetCurrentTaskHandle() == s_storageTask; }
+#endif
 
 static char s_customHeader[160] = {0};
 static String s_currentLogPath;
@@ -137,6 +166,24 @@ struct BdqV2PendingMark {
 static FixedSpscQueue<BdqV2PendingMark, 8> s_bdqV2Marks;
 
 
+StorageRecordingAllocation StorageManager_recordingAllocation() {
+  StorageRecordingAllocation value;
+  value.primaryQueueBytes = s_bdqV2AllocatedPrimary.load();
+  value.workspaceBytes = s_bdqV2AllocatedWorkspace.load();
+  value.outputBufferBytes = s_bdqV2AllocatedOutput.load();
+  value.catalogPeakBytes = s_bdqV2CatalogPeak.load();
+  value.primaryColumnsPeakBytes = s_bdqV2ColumnsPeak.load();
+  value.metadataPayloadBytes = s_bdqV2MetadataPayload.load();
+  value.staticStateBytes = sizeof(s_bdqV2Writer) + sizeof(s_bdqV2PrimarySchema) +
+      sizeof(s_bdqV2Descriptors) + sizeof(s_bdqV2Marks) +
+      sizeof(s_bdqV2PrimaryQueue) + sizeof(s_bdqV2FileSink);
+#if defined(ESP32)
+  value.storageTaskStackBytes = 12288;
+#endif
+  return value;
+}
+
+
 #if defined(ESP32)
 static portMUX_TYPE s_qMux = portMUX_INITIALIZER_UNLOCKED;
 #endif
@@ -147,6 +194,10 @@ static uint16_t  s_qCount = 0;
 static uint16_t  s_qMax   = 0;
 static uint32_t  s_samplesDropped = 0;
 static uint16_t  s_primaryPendingStatus = 0;
+#if BODAQS_ADC_RAW_RECORDING_BENCH
+static RawAdcRecordingStats* s_rawAdc=nullptr;
+static_assert(RawAdcRecording::kSensorError==BdqV2PrimaryStreamSchema::kSensorErrorStatus,"Raw flags match existing schema");
+#endif
 
 static SampleRow* s_rows = nullptr;
 static uint16_t   s_qCap = 0;
@@ -166,6 +217,7 @@ static inline bool queueFull()  { return (s_qCap != 0) && (s_qCount >= s_qCap); 
 static void refreshValueColumnTypes_();
 static bool mountSdmmc_();
 static bool isBdqV2Format_();
+static void storageService_();
 
 static void setStatus_(const char* status) {
   if (!status) status = "";
@@ -555,6 +607,7 @@ static void createSessionArchive_(const String& csvPath, const String& metadataP
 
   String error;
   if (!ZipArchiveWriter_createStoreOnly(tempPath.c_str(), entries, 2, &error)) {
+    ++s_storageWriteFailures;
     STOR_LOGW("Session archive failed: %s (%s)\n", tempPath.c_str(), error.c_str());
     if (SD_MMC.exists(tempPath.c_str())) {
       SD_MMC.remove(tempPath.c_str());
@@ -563,6 +616,7 @@ static void createSessionArchive_(const String& csvPath, const String& metadataP
   }
 
   if (!commitArchiveTemp_(tempPath, archivePath)) {
+    ++s_storageWriteFailures;
     STOR_LOGW("Session archive commit failed: %s -> %s\n", tempPath.c_str(), archivePath.c_str());
     return;
   }
@@ -579,10 +633,16 @@ static void resetQueueState_() {
 }
 
 static void releaseBdqV2Session_() {
+#if defined(BODAQS_BACKLOG_BALANCE_BENCH) && BODAQS_BACKLOG_BALANCE_BENCH
+  s_balancePrimaryCapacity.store(0,std::memory_order_release);
+#endif
   s_bdqV2Writer.abort();
   s_bdqV2Writer.clearStreams();
   s_bdqV2FileSink.reset();
   s_bdqV2PrimaryQueue.release();
+#if BODAQS_ADC_RAW_RECORDING_BENCH
+  if(s_rawAdc)s_rawAdc->active=false; // Keep final counters until the next recording begins.
+#endif
   delete[] s_bdqV2Workspace;
   s_bdqV2Workspace = nullptr;
   s_bdqV2WorkspaceBytes = 0;
@@ -811,6 +871,9 @@ bool StorageManager_enqueueSample(
     bool mark,
     uint64_t hostMonotonicUs,
     uint64_t markHostMonotonicUs) {
+#if BODAQS_ADC_RAW_RECORDING_BENCH
+  if(s_rawAdc && s_rawAdc->active){++s_rawAdc->genericAttempts;return false;}
+#endif
   if (!loggingActive) return false;
   if ((!values && nValues != 0) || (nValues == 0 && !isBdqV2Format_())) return false;
   if (nValues > SM_MAX_DYNAMIC_COLS) nValues = SM_MAX_DYNAMIC_COLS;
@@ -1002,6 +1065,28 @@ static bool dequeueSample(SampleRow &out) {
   return true;
 }
 
+#if BODAQS_ADC_RAW_RECORDING_BENCH
+bool StorageManager_enqueueRawAdc(const RawAdcRecord& record,bool mark,uint64_t markTime,uint64_t capturedUs) {
+  if(!loggingActive || !s_rawAdc || !s_rawAdc->active)return false;
+  ++s_rawAdc->submitted;RawAdcRecord value=record;value.status|=s_primaryPendingStatus;
+  size_t depth=0;
+  if(value.reserved || !s_bdqV2PrimaryQueue.push(reinterpret_cast<const uint8_t*>(&value),sizeof(value),&depth)) {
+    if(value.reserved)++s_rowsFormatFailed;
+    ++s_samplesDropped;++s_rawAdc->rejected;
+    s_primaryPendingStatus|=BdqV2Format::DiscontinuityBefore|BdqV2Format::ProducerQueueDropBefore;
+    return false;
+  }
+  ++s_rawAdc->enqueued;s_primaryPendingStatus=0;
+  if(depth>s_qMax)s_qMax=uint16_t(depth);
+  if(mark) {
+    BdqV2PendingMark m;m.hostMonotonicUs=markTime?markTime:capturedUs;m.primarySequence=record.sequence;
+    if(!s_bdqV2Marks.push(m))++s_bdqV2MarkEventsDropped;
+  }
+  return true;
+}
+RawAdcRecordingStats StorageManager_rawAdcStats(){return s_rawAdc?*s_rawAdc:RawAdcRecordingStats{};}
+#endif
+
 static size_t pendingBdqV2PrimaryRecords_(const void*) {
   return s_bdqV2PrimaryQueue.size();
 }
@@ -1014,6 +1099,15 @@ static bool popBdqV2PrimaryRecord_(
     void*,
     uint8_t* destination,
     size_t capacity) {
+#if BODAQS_ADC_RAW_RECORDING_BENCH
+  if(s_rawAdc && s_rawAdc->active) {
+    if(!destination || capacity<sizeof(RawAdcRecord))return false;
+    RawAdcRecord record;
+    if(!s_bdqV2PrimaryQueue.pop(reinterpret_cast<uint8_t*>(&record),sizeof(record)))return false;
+    if(!RawAdcRecording::encode(record,destination,capacity))return false;
+    ++s_rawAdc->encoded;return true;
+  }
+#endif
   return s_bdqV2PrimaryQueue.pop(destination, capacity);
 }
 
@@ -1085,10 +1179,17 @@ static void recordStorageWriteStall_(
 static void observeBdqV2FileOperation_(
     void*,
     BdqV2FileSinkOperation operation,
+    uint32_t startedUs,
     uint32_t durationUs,
     size_t bytes) {
   const uint8_t operationCode =
       operation == BdqV2FileSinkOperation::FileFlush ? 4u : 3u;
+#if defined(BODAQS_RECORDING_PRESSURE_DIAGNOSTICS) && BODAQS_RECORDING_PRESSURE_DIAGNOSTICS
+  RecordingPressureDiagnostics::storageOperation(operationCode,startedUs,durationUs,
+      bytes>UINT32_MAX?UINT32_MAX:static_cast<uint32_t>(bytes),queueDepthSnapshot_());
+#else
+  (void)startedUs;
+#endif
   recordStorageWriteStall_(
       operationCode,
       0,
@@ -1125,6 +1226,9 @@ static void addTimingSummary_(
 
 
 bool StorageManager_loadTextFile(const char* path, String& out) {
+#if defined(ESP32)
+  if (!storageOwner_() && storageWorker_().pending()) return false;
+#endif
     out = "";
     if (!path || !*path) return false;
 
@@ -1173,6 +1277,9 @@ static bool ensureParentDirs_(const String& absPath) {
 }
 
 bool StorageManager_saveTextFile(const char* path, const String& data) {
+#if defined(ESP32)
+  if (!storageOwner_() && storageWorker_().pending()) return false;
+#endif
   if (!path || !*path) return false;
 
   const char* cstr = data.c_str();
@@ -1426,10 +1533,15 @@ static bool allocateBdqV2Workspace_(size_t requestedBytes) {
   s_bdqV2WorkspaceBytes = 0;
   if (requestedBytes < 1024) requestedBytes = 1024;
   if (requestedBytes > 65535) requestedBytes = 65535;
+  const bool exactAllocation = RemoteImuRecording::configured();
   for (size_t attempt = requestedBytes; attempt >= 1024; attempt /= 2) {
     s_bdqV2Workspace = new (std::nothrow) uint8_t[attempt];
-    if (!s_bdqV2Workspace) continue;
+    if (!s_bdqV2Workspace) {
+      if (exactAllocation) return false;
+      continue;
+    }
     s_bdqV2WorkspaceBytes = attempt;
+    s_bdqV2AllocatedWorkspace.store(attempt);
     if (attempt != requestedBytes) {
       STOR_LOGW("BDQ v2 workspace reduced to %u bytes\n", (unsigned)attempt);
     }
@@ -1444,10 +1556,15 @@ static bool allocateBdqV2OutputBuffer_(size_t requestedBytes) {
   s_bdqV2OutputBufferBytes = 0;
   if (requestedBytes < 4096) requestedBytes = 4096;
   if (requestedBytes > 32768) requestedBytes = 32768;
+  const bool exactAllocation = RemoteImuRecording::configured();
   for (size_t attempt = requestedBytes; attempt >= 4096; attempt /= 2) {
     s_bdqV2OutputBuffer = new (std::nothrow) uint8_t[attempt];
-    if (!s_bdqV2OutputBuffer) continue;
+    if (!s_bdqV2OutputBuffer) {
+      if (exactAllocation) return false;
+      continue;
+    }
     s_bdqV2OutputBufferBytes = attempt;
+    s_bdqV2AllocatedOutput.store(attempt);
     if (attempt != requestedBytes) {
       STOR_LOGW("BDQ v2 output buffer reduced to %u bytes\n",
                 (unsigned)attempt);
@@ -1459,6 +1576,12 @@ static bool allocateBdqV2OutputBuffer_(size_t requestedBytes) {
 
 static bool beginBdqV2_(const BdqLogSessionInfo& info) {
   releaseBdqV2Session_();
+  s_bdqV2AllocatedPrimary.store(0);
+  s_bdqV2AllocatedWorkspace.store(0);
+  s_bdqV2AllocatedOutput.store(0);
+  s_bdqV2CatalogPeak.store(0);
+  s_bdqV2ColumnsPeak.store(0);
+  s_bdqV2MetadataPayload.store(0);
 
   const uint16_t primaryColumnCount =
       SensorManager::describeSensorColumns(nullptr, 0, true);
@@ -1466,6 +1589,8 @@ static bool beginBdqV2_(const BdqLogSessionInfo& info) {
   if (primaryColumnCount != 0) {
     primaryColumns = new (std::nothrow)
         SensorColumnDescriptor[primaryColumnCount];
+    if (primaryColumns) s_bdqV2ColumnsPeak.store(
+        primaryColumnCount * sizeof(SensorColumnDescriptor));
     if (!primaryColumns ||
         SensorManager::describeSensorColumns(
             primaryColumns, primaryColumnCount, true) != primaryColumnCount) {
@@ -1482,6 +1607,20 @@ static bool beginBdqV2_(const BdqLogSessionInfo& info) {
   primarySource.pendingObservations = &pendingBdqV2PrimaryObservations_;
   primarySource.popRecord = &popBdqV2PrimaryRecord_;
   primarySource.popObservation = &popBdqV2PrimaryObservation_;
+#if BODAQS_ADC_RAW_RECORDING_BENCH
+  if(!s_rawAdc)s_rawAdc=new(std::nothrow) RawAdcRecordingStats;
+  if(!s_rawAdc){delete[] primaryColumns;return false;}
+  *s_rawAdc={};
+  if(!RawAdcRecording::supportsGeometry(info.sampleRateHz,primaryColumnCount) ||
+     !SensorManager::rawAdcPairEligible()) {
+    delete[] primaryColumns;
+    STOR_LOGE("raw ADC trial requires%uHz,%u RAW columns in AIN0,AIN4[,AIN1,AIN5] order\n",
+             RawAdcRecording::kRateHz,RawAdcRecording::kColumns);return false;
+  }
+  // Both queue adapters are pure SPSC sources. Snapshot once per existing
+  // writer chunk instead of querying readiness again for each raw row.
+  primarySource.snapshotPendingSafe=true;
+#endif
   if (!s_bdqV2PrimarySchema.configure(
           primaryColumns,
           primaryColumnCount,
@@ -1502,10 +1641,19 @@ static bool beginBdqV2_(const BdqLogSessionInfo& info) {
         (unsigned)s_bdqV2PrimarySchema.recordSizeBytes());
     return false;
   }
+  s_bdqV2AllocatedPrimary.store(primaryQueueCapacity *
+      s_bdqV2PrimarySchema.recordSizeBytes());
+#if defined(BODAQS_BACKLOG_BALANCE_BENCH) && BODAQS_BACKLOG_BALANCE_BENCH
+  s_balancePrimaryCapacity.store(primaryQueueCapacity,std::memory_order_release);
+#endif
   s_qCap = primaryQueueCapacity;
   s_qMax = 0;
 
   s_bdqV2Descriptors[0] = s_bdqV2PrimarySchema.descriptor();
+#if BODAQS_ADC_RAW_RECORDING_BENCH
+  if(s_bdqV2PrimarySchema.recordSizeBytes()!=sizeof(RawAdcRecord)) {delete[] primaryColumns;return false;}
+  s_rawAdc->active=s_rawAdc->qualified=true;s_rawAdc->capacity=primaryQueueCapacity;
+#endif
   const uint16_t nativeStreamCount =
       SensorManager::describeBdqV2Streams(nullptr, 0, 2);
   if (nativeStreamCount >= BdqV2Writer::kMaximumStreams) {
@@ -1521,7 +1669,13 @@ static bool beginBdqV2_(const BdqLogSessionInfo& info) {
     delete[] primaryColumns;
     return false;
   }
-  s_bdqV2DescriptorCount = static_cast<uint16_t>(nativeStreamCount + 1u);
+  const uint16_t remoteCount=RemoteImuRecording::describe(nullptr,0,34);
+  if(nativeStreamCount+remoteCount+1u>BdqV2Writer::kMaximumStreams ||
+     RemoteImuRecording::describe(s_bdqV2Descriptors+nativeStreamCount+1,
+       BdqV2Writer::kMaximumStreams-nativeStreamCount-1,34)!=remoteCount) {
+    delete[] primaryColumns;return false;
+  }
+  s_bdqV2DescriptorCount = static_cast<uint16_t>(nativeStreamCount + remoteCount + 1u);
 
   s_bdqV2Writer.clearStreams();
   for (uint16_t index = 0; index < s_bdqV2DescriptorCount; ++index) {
@@ -1540,6 +1694,7 @@ static bool beginBdqV2_(const BdqLogSessionInfo& info) {
   char* catalog = catalogLength != 0
       ? new (std::nothrow) char[catalogLength + 1u]
       : nullptr;
+  if (catalog) s_bdqV2CatalogPeak.store(catalogLength + 1u);
   size_t writtenCatalogLength = 0;
   const bool catalogOk = catalog && BdqV2Catalog::write(
       loggerIdText.c_str(),
@@ -1552,6 +1707,7 @@ static bool beginBdqV2_(const BdqLogSessionInfo& info) {
   String metadata;
   const bool metadataOk = BdqLogWriter::buildV2SessionMetadataJson(
       info, s_bdqV2DescriptorCount, metadata);
+  if (metadataOk) s_bdqV2MetadataPayload.store(metadata.length() + 1u);
   delete[] primaryColumns;
 
   const size_t workspaceBytes = info.targetChunkBytes != 0
@@ -1632,7 +1788,7 @@ static bool drainOneBdqV2Chunk_() {
 }
 
 static bool drainOneReadyBdqV2Chunk_(uint64_t nowUs) {
-  if (!s_bdqV2Writer.hasPendingData()) return writePendingBdqV2Marks_();
+  // Sole caller already checked pending data; this task is the sole consumer.
   if (!s_bdqV2Writer.drainNextReadyChunk(nowUs)) {
     if (s_bdqV2Writer.failed()) ++s_storageWriteFailures;
     return false;
@@ -1640,11 +1796,322 @@ static bool drainOneReadyBdqV2Chunk_(uint64_t nowUs) {
   return writePendingBdqV2Marks_();
 }
 
+static void appendBdqV2AdcTiming_(JsonDocument& document, const BdqLogEndInfo& endInfo) {
+  document["external_adc_timing_status"] = endInfo.externalAdcTiming ? "complete" : "worker_not_retired";
+  if(endInfo.externalAdcTiming)
+    BdqAdcTimingJson::append(document["external_adc_timing"].to<JsonObject>(),*endInfo.externalAdcTiming);
+}
+
+static void appendBdqV2MeasurementFailures_(JsonDocument& document) {
+  uint32_t transfer=0,decode=0;
+  JsonObject failures=document["remote_measurement_failures"].to<JsonObject>();
+  failures["available"]=RemoteImuRecording::finalMeasurementFailures(transfer,decode);
+  if(failures["available"].as<bool>()) {
+    failures["transfer_failed_slots"]=transfer;
+    failures["decode_failed_slots"]=decode;
+    failures["scope"]="measurement_mode_through_cleanup";
+    const auto* reasons=RemoteImuRecording::finalMeasurementDecodeReasons();
+    if(reasons) {
+      JsonObject counts=failures["decode_reasons"].to<JsonObject>();
+      for(unsigned i=1;i<BODAQS_MEASUREMENT_DECODE_COUNT;++i)
+        counts[bodaqs_measurement_decode_name(static_cast<BodaqsMeasurementDecodeResult>(i))]=reasons[i];
+    }
+  }
+  JsonObject replies=failures["rejected_replies"].to<JsonObject>();
+  const auto* capture=RemoteImuRecording::finalRejectedMeasurementReplies();
+  replies["available"]=capture!=nullptr;
+  if(capture) {
+    replies["capacity"]=MeasurementReplyCapture::capacity;
+    replies["captured"]=capture->count;
+    replies["selection"]="first_decode_failures_while_confirmed";
+#if defined(BODAQS_SPI_BOUNDARY_TRACE) && BODAQS_SPI_BOUNDARY_TRACE
+    JsonObject probe=replies["boundary_trace"].to<JsonObject>();
+    probe["attempted"]=capture->boundary.attempted;
+    probe["transferred"]=capture->boundary.transferred;
+    probe["adjacent"]=capture->boundary.adjacent;
+    probe["nonce"]=capture->boundary.nonce;
+    probe["failed_device_sequence"]=capture->boundary.failedDeviceSequence;
+    probe["marker_device_sequence"]=capture->boundary.markerDeviceSequence;
+    probe["duration_us"]=capture->boundary.durationUs;
+    probe["completion_is_freeze_acknowledgement"]=false;
+#endif
+    JsonArray entries=replies["entries"].to<JsonArray>();
+    for(unsigned i=0;i<capture->count;++i) {
+      const auto& entry=capture->entries[i];
+      JsonObject row=entries.add<JsonObject>();
+      row["slot"]=entry.slot;row["request_kind"]=entry.requestKind;
+      row["decode_reason"]=bodaqs_measurement_decode_name(static_cast<BodaqsMeasurementDecodeResult>(entry.decodeReason));
+      JsonObject bus=row["bus"].to<JsonObject>();
+      bus["available"]=entry.bus.valid;
+      if(entry.bus.valid) {
+        bus["sequence"]=entry.bus.sequence;bus["cs"]=entry.bus.cs;
+        bus["bytes"]=entry.bus.bytes;bus["selected_us"]=entry.bus.selectedUs;
+        bus["released_us"]=entry.bus.releasedUs;
+        bus["command_valid"]=entry.bus.commandValid;bus["command"]=entry.bus.command;
+#if defined(BODAQS_SPI_BOUNDARY_TRACE) && BODAQS_SPI_BOUNDARY_TRACE
+        bus["device_sequence"]=entry.bus.deviceSequence;
+        bus["device_sequence_valid"]=entry.bus.deviceSequenceValid;
+#endif
+        bus["previous_valid"]=entry.bus.previousValid;
+        bus["previous_cs"]=entry.bus.previousCs;bus["previous_release_us"]=entry.bus.previousReleaseUs;
+        bus["previous_bytes"]=entry.bus.previousBytes;bus["previous_command"]=entry.bus.previousCommand;
+        bus["previous_command_valid"]=entry.bus.previousCommandValid;
+      }
+      char hex[2*MeasurementReplyCapture::replyBytes+1];
+      static constexpr char digits[]="0123456789abcdef";
+      for(unsigned b=0;b<MeasurementReplyCapture::replyBytes;++b) {
+        hex[2*b]=digits[entry.reply[b]>>4];hex[2*b+1]=digits[entry.reply[b]&15];
+      }
+      hex[sizeof(hex)-1]=0;
+      row["reply_hex"]=hex; // ArduinoJson copies the temporary array.
+#if defined(BODAQS_SPI_BOUNDARY_TRACE) && BODAQS_SPI_BOUNDARY_TRACE
+      row["request_available"]=entry.requestValid;
+      if(entry.requestValid) {
+        for(unsigned b=0;b<256;++b) {
+          hex[2*b]=digits[entry.request[b]>>4];hex[2*b+1]=digits[entry.request[b]&15];
+        }
+        row["request_hex"]=hex;
+      }
+#endif
+    }
+  }
+}
+
+static void appendSharedMetadataRetirements_(JsonDocument& document) {
+  JsonArray entries=document["remote_shared_metadata_retirements"].to<JsonArray>();
+  for(uint8_t node=0;node<4;++node) {
+    RemoteImuRecording::SharedMetadataRetirements counts;
+    if(!RemoteImuRecording::finalSharedMetadataRetirements(node,counts)) continue;
+    auto entry=entries.add<JsonObject>();entry["node"]=node;
+    entry["scope"]="omitted_fanout_after_local_admission_retirement";
+    entry["sync_objects"]=counts.syncObjects;entry["bridge_observations"]=counts.bridgeObservations;
+    entry["management_reports_retired"]=counts.managementReports;
+    entry["management_scope"]="diagnostic_messages_omitted_after_local_admission_retirement_not_unique_losses";
+    entry["at_counter_limit"]=counts.syncObjects==UINT32_MAX || counts.bridgeObservations==UINT32_MAX || counts.managementReports==UINT32_MAX;
+  }
+  document["remote_shared_metadata_retirements_status"]=entries.size()?"complete":"unavailable";
+}
+static void appendRecordingPressure_(JsonDocument& document) {
+#if defined(BODAQS_RECORDING_PRESSURE_DIAGNOSTICS) && BODAQS_RECORDING_PRESSURE_DIAGNOSTICS
+  using namespace RecordingPressureDiagnostics;
+  auto output=document["recording_pressure"].to<JsonObject>();
+  output["version"]=1;
+  const auto* finished=RemoteImuRecording::finalFlowSnapshot(false);
+  // This function runs on the storage owner. Never borrow acquisition arrays
+  // until the existing matching-context retirement barrier has been acquired.
+  output["available"]=finished && finished->context==acquisition.context;
+  if(!finished || finished->context!=acquisition.context) return;
+  output["context"]=finished->context;
+  output["clock"]="logger_monotonic_us_modulo_2^32";
+  output["scope"]="observations_not_causal_or_durable_proof";
+  output["post_loss_us"]=postLossUs;
+  output["service_gap_threshold_us"]=serviceGapThresholdUs;
+  output["storage_capacity"]=storageOperationCapacity;
+  output["service_gap_capacity"]=serviceGapCapacity;
+  output["storage_frozen"]=storage.frozen;
+  output["service_gaps_frozen"]=acquisition.frozen;
+  output["storage_overwritten"]=storage.operations.overwritten;
+  output["service_gaps_overwritten"]=acquisition.gaps.overwritten;
+  auto operations=output["storage_operations"].to<JsonArray>();
+  for(size_t i=0;i<storage.operations.count;++i) {
+    const auto& event=storage.operations.at(i);
+    auto item=operations.add<JsonObject>();
+    item["started_us"]=event.startedUs;item["duration_us"]=event.durationUs;
+    item["bytes"]=event.bytes;item["primary_queue_depth"]=event.primaryDepth;
+    item["operation"]=event.operation; // 3=physical write, 4=File.flush
+  }
+  auto gaps=output["service_gaps"].to<JsonArray>();
+  for(size_t i=0;i<acquisition.gaps.count;++i) {
+    const auto& event=acquisition.gaps.at(i);
+    auto item=gaps.add<JsonObject>();
+    item["started_us"]=event.startedUs;item["duration_us"]=event.durationUs;
+  }
+  const auto* first=RemoteImuRecording::finalFlowSnapshot(true);
+  output["first_loss_observed"]=first!=nullptr;
+  if(!first) return; // Loss-free runs retain the final rolling storage history.
+  auto loss=output["first_loss"].to<JsonObject>();
+  loss["observed_us"]=firstLossUs.load(std::memory_order_relaxed);
+  loss["node"]=acquisition.lossNode;loss["class"]=acquisition.lossClass;
+  loss["reason"]=acquisition.lossReason;loss["stage"]=acquisition.lossStage;
+  loss["counter"]=acquisition.lossCounter;
+  loss["services"]=first->services;loss["gate_wait"]=first->gateWait;
+  loss["bridge_wait"]=first->consumerWait[5];loss["management_wait"]=first->consumerWait[6];
+  loss["empty_replies"]=first->empty;loss["wire_failures"]=first->wireFailures;
+  auto requests=loss["requests"].to<JsonArray>();
+  for(auto value:first->requests) requests.add(value);
+  auto nodes=loss["nodes"].to<JsonArray>();
+  for(uint8_t n=0;n<4;++n) {
+    const auto& stats=first->nodes[n];
+    if(!stats.sampleCapacity && !stats.evidenceCapacity) continue;
+    auto node=nodes.add<JsonObject>();
+    node["node"]=n;node["observed_us"]=stats.observedUs;
+    node["packet_queue_depth"]=stats.sampleQueueDepth;node["packet_queue_sampled_peak"]=stats.sampleQueuePeak;
+    node["packet_queue_capacity"]=stats.sampleCapacity;
+    node["evidence_queue_depth"]=stats.evidenceQueueDepth;node["evidence_queue_sampled_peak"]=stats.evidenceQueuePeak;
+    node["evidence_queue_capacity"]=stats.evidenceCapacity;
+    node["consumer_wait"]=stats.consumerWait;
+    node["first_consumer_wait_us"]=stats.firstConsumerWaitUs;node["last_consumer_wait_us"]=stats.lastConsumerWaitUs;
+    node["packets_accepted"]=stats.packetsAccepted;node["samples_accepted"]=stats.samplesAccepted;
+  }
+#else
+  (void)document;
+#endif
+}
+
+static String serializeBdqV2Summary_(const JsonDocument& document) {
+  String output;
+  if (document.overflowed()) return output;
+  const size_t expectedBytes = measureJson(document);
+  if (!expectedBytes || !output.reserve(expectedBytes)) return String();
+
+  // The SDK String growth path narrows its old length above 64 KB. Reserve
+  // once, then avoid ArduinoJson's String writer, which clears that reservation.
+  struct ReservedStringWriter {
+    String& output;
+    size_t write(uint8_t value) {
+      return output.concat(static_cast<char>(value)) ? 1u : 0u;
+    }
+    size_t write(const uint8_t* data, size_t length) {
+      size_t completed = 0;
+      while (completed < length) {
+        char part[64];
+        const size_t remaining = length - completed;
+        const size_t count = remaining < sizeof(part) - 1 ? remaining : sizeof(part) - 1;
+        memcpy(part, data + completed, count);
+        part[count] = '\0'; // String::concat also reads the byte after count.
+        if (!output.concat(part, count)) return completed;
+        completed += count;
+      }
+      return completed;
+    }
+  } writer{output};
+  const size_t written = serializeJson(document, writer);
+  if (written != expectedBytes || output.length() != expectedBytes) return String();
+  return output;
+}
+
 static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
   // Finalization is serialized; avoid large diagnostics objects on loopTask.
   static SensorRuntimeDiagnostics diagnostics;
   JsonDocument document;
   document["summary_format"] = "bdq.final_summary.v2";
+  appendBdqV2AdcTiming_(document, endInfo);
+  document["remote_imu_excluded"] = RemoteImuRecording::failed();
+  const auto& admission=RemoteImuRecording::admission();
+  document["remote_admission_attempted"]=admission.attempted;
+  document["remote_admission_qualified"]=admission.qualified;
+  document["remote_admission_mode"]=ImuAdmission::buildMode();
+  document["remote_admission_reason"]=admission.attempted?ImuAdmission::reportText(admission):"not evaluated";
+  document["remote_reserved_bytes"]=admission.loggerBytes;
+  document["remote_cleanup_complete"] = RemoteImuRecording::stopped();
+#if defined(BODAQS_PACKED_STARTUP_DIAGNOSTICS) && BODAQS_PACKED_STARTUP_DIAGNOSTICS
+  const auto startup=AcquisitionControl::startupDiagnostics();
+  auto start=document["remote_startup"].to<JsonObject>();
+  start["version"]=1;start["stage"]=AcquisitionControl::startupStageName(startup.stage);
+  start["context"]=startup.context;start["selected_mask"]=startup.selectedMask;
+  start["first_sample_mask"]=RemoteImuRecording::startupSampleMask();
+  start["claim_blockers"]=startup.claimBlockers;start["receiver_reserved_bytes"]=startup.receiverBytes;
+  start["task_stack_bytes"]=startup.taskStackBytes;start["task_existed"]=startup.taskExisted;
+  const auto memory=[&](const char* name,const AcquisitionControl::StartupMemory& value) {
+    auto item=start[name].to<JsonObject>();item["available"]=value.available;
+    item["internal_free_bytes"]=value.freeBytes;item["internal_largest_block"]=value.largestBlock;
+  };
+  memory("before_receiver",startup.beforeReceiver);memory("after_receiver",startup.afterReceiver);memory("after_task",startup.afterTask);
+#if defined(BODAQS_PACKED_EARLY_RESERVE) && BODAQS_PACKED_EARLY_RESERVE
+  start["version"]=2;start["early_reservation"]=startup.earlyReservation;
+  start["reservation_reused"]=startup.reservationReused;start["receiver_existed"]=startup.receiverExisted;
+  memory("at_entry",startup.atEntry);
+#if defined(BODAQS_PACKED_SEGMENTED_RECEIVER) && BODAQS_PACKED_SEGMENTED_RECEIVER
+  start["version"]=3;start["receiver_largest_request"]=startup.receiverLargestRequest;
+  start["receiver_payload_cells"]=29;start["receiver_payload_bytes"]=468;
+#if defined(BODAQS_PACKED_PSRAM_PAYLOADS) && BODAQS_PACKED_PSRAM_PAYLOADS
+  start["receiver_payload_location"]="psram";
+#endif
+#endif
+#endif
+#endif
+  appendBdqV2MeasurementFailures_(document);
+  appendRecordingPressure_(document);
+#if BODAQS_STORAGE_TIMELINE
+  const auto* timelineFinished=RemoteImuRecording::finalFlowSnapshot(false);
+  RecordingTimelineJson::append(document,timelineFinished!=nullptr,timelineFinished?timelineFinished->context:0);
+#if BODAQS_CONTROL_POLL_DIAGNOSTICS
+  ControlPollingJson::append(document,timelineFinished!=nullptr,timelineFinished?timelineFinished->context:0);
+#endif
+#endif
+  appendSharedMetadataRetirements_(document);
+  JsonArray nodeFlow=document["remote_node_flow"].to<JsonArray>();
+  for(uint8_t node=0;node<4;++node) {
+    ImuFlowDiagnostics::NodeStats stats;
+    if(!RemoteImuRecording::finalNodeDiagnostics(node,stats)) continue;
+    auto entry=nodeFlow.add<JsonObject>();
+    entry["node"]=node;entry["scope"]="RAM_accepted_through_producer_retirement";
+    entry["packets_accepted"]=stats.packetsAccepted;entry["samples_accepted"]=stats.samplesAccepted;
+    entry["raw_axis_bytes_accepted"]=stats.samplesAccepted*12;
+    entry["packet_queue_sampled_peak"]=stats.sampleQueuePeak;entry["packet_queue_capacity"]=stats.sampleCapacity;
+    entry["evidence_queue_sampled_peak"]=stats.evidenceQueuePeak;entry["evidence_queue_capacity"]=stats.evidenceCapacity;
+    entry["consumer_wait"]=stats.consumerWait;
+  }
+  bool allStopConfirmed=true,allSourceFinal=true,sampleTailDiscarded=false;
+  uint16_t completionCount=0,expectedCompletions=0;
+  for(uint16_t i=0;i<s_bdqV2DescriptorCount;++i) {
+    const char* schema=s_bdqV2Descriptors[i].payloadSchema;
+    if(schema && (!strcmp(schema,"bodaqs.can_imu6.v1") || !strcmp(schema,"bodaqs.can_imu_packets.v1") || !strcmp(schema,"bodaqs.can_imu_units.v1") || !strcmp(schema,"bodaqs.can_imu_units.v2"))) ++expectedCompletions;
+  }
+  JsonArray remoteCompletion=document["remote_tail_windows"].to<JsonArray>();
+  for(uint8_t node=0;node<4;++node) {
+    RemoteImuRecording::Completion completion;
+    if(!RemoteImuRecording::completion(node,completion)) continue;
+    ++completionCount;allStopConfirmed &= completion.stopConfirmed;
+    allSourceFinal &= completion.sourceFinalObserved;
+    AcquisitionControl::Outcome outcome;
+    if(AcquisitionControl::outcome(node,outcome)) sampleTailDiscarded |= outcome.sampleTailDiscarded;
+    JsonObject entry=remoteCompletion.add<JsonObject>();
+    entry["node"]=node;entry["stop_requested_ms"]=completion.stopRequestedMs;
+    entry["stop_confirmed_ms"]=completion.stopConfirmedMs;entry["drain_closed_ms"]=completion.drainClosedMs;
+    entry["cessation_status"]=completion.stopConfirmed?"confirmed_stop":"unconfirmed";
+    entry["drain_basis"]=completion.uncertain?"bounded_uncertain_prefix":"stop_confirmation_observed_plus_5s";
+    entry["source_final_observed"]=completion.sourceFinalObserved;
+    if(completion.sourceFinalObserved) {entry["final_sequence"]=completion.finalSequence;entry["stream_epoch"]=completion.streamEpoch;}
+  }
+  JsonArray remoteFailures=document["remote_failures"].to<JsonArray>();
+  for(uint8_t node=0;node<4;++node) {
+    RemoteImuRecording::Failure failure;
+    if(!RemoteImuRecording::failure(node,failure)) continue;
+    JsonObject entry=remoteFailures.add<JsonObject>();
+    entry["node"]=node;entry["observed_ms"]=failure.observedMs;
+    entry["phase"]=failure.phase;entry["cause"]=failure.cause;
+    entry["action"]=failure.action;entry["result"]=failure.result;entry["reason"]=failure.reason;
+    entry["measurement_phase"]=failure.measurementPhase;entry["measurement_reason"]=failure.measurementReason;
+    entry["measurement_unavailable"]=failure.measurementUnavailable;
+    entry["objects_received"]=failure.objectsReceived;entry["transfer_errors"]=failure.transferErrors;
+    entry["transfer_error_mask"]=failure.transferErrorMask;
+    entry["stream_failure_site"]=failure.streamFailureSite;
+      auto timing=entry["transport_timing"].to<JsonObject>();
+      timing["available"]=failure.timingAvailable;
+      const auto& t=failure.timing;
+      timing["window_us"]=t.elapsedUs;timing["slots"]=t.slots;
+      timing["failed_slots"]=t.failedSlots;timing["empty_slots"]=t.emptySlots;
+      timing["transfer_failed_slots"]=t.transferFailedSlots;
+      timing["decode_failed_slots"]=t.decodeFailedSlots;
+      timing["exchange_us"]=t.exchangeUs;timing["max_exchange_us"]=t.maxExchangeUs;
+      timing["max_idle_us"]=t.maxIdleUs;
+      auto polls=timing["polls"].to<JsonArray>();
+      auto fragments=timing["fragments"].to<JsonArray>();
+      for(unsigned i=0;i<5;++i) {polls.add(t.polls[i]);fragments.add(t.fragments[i]);}
+      auto deferred=timing["deferrals"].to<JsonArray>();
+      for(unsigned i=0;i<2;++i) deferred.add(t.deferrals[i]);
+  }
+  document["remote_tail_objects_discarded"] = RemoteImuRecording::discardedTailObjects();
+  document["remote_tail_discard_count_scope"] = "known_local_unaccepted_objects_only";
+  document["remote_sample_tail_discarded"] = sampleTailDiscarded;
+  // Storage finalization and membership cleanup do not prove complete source
+  // tails. Preserve unknown coverage until explicit final/accepted boundaries
+  // can be reconciled; any observed deadline discard is explicitly incomplete.
+  document["remote_tail_status"] = !RemoteImuRecording::configured()
+      ? "not_participating" : sampleTailDiscarded
+      ? "incomplete" : completionCount==expectedCompletions && completionCount && allStopConfirmed && allSourceFinal
+      ? "observed_terminal_boundary" : "unknown";
   document["session_id"] = s_currentSessionId;
   document["path"] = s_currentLogPath;
   document["clean_shutdown"] = true;
@@ -1664,6 +2131,13 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
   document["primary_samples_dropped"] = endInfo.samplesDropped;
   document["primary_queue_capacity"] = endInfo.queueDepth;
   document["primary_queue_high_water"] = endInfo.queueMax;
+#if BODAQS_ADC_RAW_RECORDING_BENCH
+  JsonObject rawAdc=document["raw_adc_recording"].to<JsonObject>();
+  rawAdc["qualified"]=s_rawAdc->qualified;rawAdc["record_bytes"]=sizeof(RawAdcRecord);
+  rawAdc["capacity"]=s_rawAdc->capacity;rawAdc["submitted"]=s_rawAdc->submitted;
+  rawAdc["enqueued"]=s_rawAdc->enqueued;rawAdc["encoded"]=s_rawAdc->encoded;
+  rawAdc["rejected"]=s_rawAdc->rejected;rawAdc["generic_attempts"]=s_rawAdc->genericAttempts;
+#endif
   document["user_mark_events_dropped"] = s_bdqV2MarkEventsDropped;
   document["sampler_late_ticks"] = endInfo.samplerLateTicks;
   document["sampler_late_max_lag_us"] = endInfo.samplerLateMaxLagUs;
@@ -2039,10 +2513,7 @@ static String buildBdqV2FinalSummary_(const BdqLogEndInfo& endInfo) {
     }
   }
 
-  String output;
-  if (document.overflowed()) return output;
-  serializeJson(document, output);
-  return output;
+  return serializeBdqV2Summary_(document);
 }
 
 // Start new log file
@@ -2057,6 +2528,15 @@ static void startLog() {
   s_flushMaxMs = 0;
   s_flushTotalMs = 0;
   s_storageTiming = StorageTimingStats{};
+#if defined(BODAQS_RECORDING_PRESSURE_DIAGNOSTICS) && BODAQS_RECORDING_PRESSURE_DIAGNOSTICS
+  RecordingPressureDiagnostics::resetStorage();
+#if BODAQS_STORAGE_TIMELINE
+  RecordingTimelineDiagnostics::resetStorage(micros());
+#if BODAQS_CONTROL_POLL_DIAGNOSTICS
+  ControlPollingDiagnostics::resetStorage(RecordingTimelineDiagnostics::storage.originUs);
+#endif
+#endif
+#endif
   s_storageTiming.writeStallThresholdUs = kStorageWriteStallThresholdUs;
   s_rowsWritten = 0;
   s_rowsFormatFailed = 0;
@@ -2230,10 +2710,32 @@ static void startLog() {
 }
 
 
+bool StorageManager_prepareTask() {
+#if defined(ESP32)
+  static_assert(BODAQS_STORAGE_TASK_PRIORITY > 0 && BODAQS_STORAGE_TASK_PRIORITY < configMAX_PRIORITIES,
+                "Storage task priority must fit the FreeRTOS priority range");
+  if (!s_storageTask && xTaskCreatePinnedToCore(storageTaskFn_, "StorageTask",
+      12288, nullptr, BODAQS_STORAGE_TASK_PRIORITY, &s_storageTask, 1) != pdPASS) {
+    setStatus_("storage task unavailable");
+    STOR_LOGE("task reservation failed stack=12288 internal_free=%u internal_largest=%u\n",
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
+    return false;
+  }
+  return true;
+#else
+  return true;
+#endif
+}
 bool StorageManager_startLog() {
+#if defined(ESP32)
+  if(!StorageManager_prepareTask())return false;
+  return storageWorker_().requestStart();
+#else
   const bool wasActive = loggingActive;
   startLog();
   return loggingActive || wasActive;
+#endif
 }
 
 static void StorageManager_logSampleRow_(const SampleRow& row) {
@@ -2245,7 +2747,7 @@ static void StorageManager_logSampleRow_(const SampleRow& row) {
         row.sample_id, row.ts_ms, row.values, row.nValues, row.mark);
     if (wrote) {
       ++s_rowsWritten;
-    }
+    } else { ++s_storageWriteFailures; }
 #if BODAQS_TIMING_INSTRUMENTATION
     const uint32_t durationUs = (uint32_t)(micros() - t0);
     TimingStats_record(s_storageTiming.rowWriteUs, durationUs);
@@ -2269,6 +2771,9 @@ static void StorageManager_logSampleRow_(const SampleRow& row) {
 }
 
 void StorageManager_drainQueuedSamples() {
+#if defined(ESP32)
+  if (!storageOwner_()) return; // producer never performs or waits for I/O
+#endif
   if (!loggingActive) return;
   if (isBdqV2Format_()) {
     while (s_bdqV2Writer.hasPendingData()) {
@@ -2391,6 +2896,7 @@ static __attribute__((noinline)) void finalizeBdqV1_() {
   endInfo.i2cSchedulerTiming = &I2CBusScheduler::timingStats();
   endInfo.boardProfile = board::gBoard;
   if (!BdqLogWriter::end(endInfo)) {
+    ++s_storageWriteFailures;
     STOR_LOGW("BDQ writer end failed for %s\n", s_currentLogPath.c_str());
   }
 }
@@ -2422,7 +2928,7 @@ static __attribute__((noinline)) void finalizeBdqV2_() {
   endInfo.sensorSampleUs = &stats.sensorSampleUs;
   endInfo.enqueueUs = &stats.enqueueUs;
   endInfo.storageTiming = &s_storageTiming;
-  endInfo.externalAdcTiming = &AnalogInputManager::timingStats();
+  endInfo.externalAdcTiming = AnalogInputManager::stoppedTimingStats();
   endInfo.sensorTiming = &SensorManager::timingStats();
   endInfo.i2cSchedulerTiming = &I2CBusScheduler::timingStats();
   endInfo.boardProfile = board::gBoard;
@@ -2436,9 +2942,11 @@ static __attribute__((noinline)) void finalizeBdqV2_() {
   } else {
     ++s_storageWriteFailures;
   }
+  if (StorageManager_storageFault()) return;
   const String summary = buildBdqV2FinalSummary_(endInfo);
   if (!summary.length() ||
       !s_bdqV2Writer.end(summary.c_str(), summary.length())) {
+    ++s_storageWriteFailures;
     STOR_LOGW("BDQ v2 writer end failed for %s\n", s_currentLogPath.c_str());
   }
 }
@@ -2487,12 +2995,16 @@ static __attribute__((noinline)) void finalizeCsv_() {
     STOR_LOGI("Log metadata written: %s\n", metadataPath.c_str());
     createSessionArchive_(s_currentLogPath, metadataPath);
   } else {
+    ++s_storageWriteFailures;
     STOR_LOGW("Failed to write complete log metadata for %s\n", s_currentLogPath.c_str());
   }
 }
 
 // Stop log
 void StorageManager_stopLog() {
+#if defined(ESP32)
+  if (!storageOwner_()) { storageWorker_().requestStop(); return; }
+#endif
   if (!loggingActive) return;
 
   // Drain any remaining queued samples into the staging buffer
@@ -2503,15 +3015,23 @@ void StorageManager_stopLog() {
     bufferIndex = 0;
   }
 
+  if (s_storageWriteFailures || StorageManager_storageFault()) {
+    logFileMMC.close();
+    loggingActive = false;
+    releaseLogSessionBuffers_();
+    return;
+  }
   if (isCompactBinaryFormat_()) {
     finalizeBdqV1_();
   } else if (isBdqV2Format_()) {
     finalizeBdqV2_();
   }
 
+  if (logFileMMC.getWriteError()) ++s_storageWriteFailures;
   logFileMMC.close();
 
-  if (!isBinaryFormat_() && s_currentLogPath.length() && !ConfigManager::get().omitMetadata) {
+  if (!isBinaryFormat_() && !StorageManager_storageFault() &&
+      !s_storageWriteFailures && s_currentLogPath.length() && !ConfigManager::get().omitMetadata) {
     finalizeCsv_();
   } else if (!isBinaryFormat_() && s_currentLogPath.length()) {
     STOR_LOGI("Log metadata omitted by config\n");
@@ -2568,6 +3088,9 @@ bool StorageManager_isMounted() {
 }
 
 bool StorageManager_remountIfPresent() {
+#if defined(ESP32)
+  if (!storageOwner_() && storageWorker_().pending()) return false;
+#endif
   if (!s_storage || !isSdmmcBackend()) return false;
   if (s_haveDetectPin) {
     s_cardDetectedCached = readCardDetectPin_();
@@ -2578,6 +3101,9 @@ bool StorageManager_remountIfPresent() {
 }
 
 bool StorageManager_readyForLogging() {
+#if defined(ESP32)
+  if (!storageOwner_()) return !storageWorker_().pending() && s_sdMounted && s_cardDetectedCached;
+#endif
   if (StorageManager_isMounted()) return true;
   return StorageManager_remountIfPresent();
 }
@@ -2731,9 +3257,21 @@ static void refreshValueColumnTypes_()
 
 // Background flush
 void StorageManager_loop() {
-  static unsigned long lastFlush = 0;
   unsigned long now = millis();
-  static uint32_t s_rowCount = 0;
+#if defined(ESP32)
+  auto& worker = storageWorker_();
+  worker.poll(now);
+  if (worker.fault() != RecordingStorageWorker::Fault::None) {
+    const bool stalled = worker.fault() == RecordingStorageWorker::Fault::Unresponsive;
+    setStatus_(stalled ? "Storage unresponsive" : "Storage failure");
+    if (LoggingManager::configurationLocked()) {
+      LoggingManager::stop(stalled ? LoggingManager::StopReason::StorageUnresponsive
+                                  : LoggingManager::StopReason::StorageFailure,
+                           stalled ? "storage_timeout" : "storage_failure");
+      UI::status(stalled ? "Storage unresponsive" : "Storage failure");
+    }
+  }
+#endif
 
   if (s_haveDetectPin && (int32_t)(now - s_nextDetectPollMs) >= 0) {
     s_nextDetectPollMs = now + kCardDetectPollMs;
@@ -2755,14 +3293,13 @@ void StorageManager_loop() {
         UI::status("SD removed");
         UI::toast("SD removed", 1800, 1);
 
-        if (LoggingManager::isRunning()) {
+        if (LoggingManager::isRunning() || LoggingManager::isStarting()) {
           STOR_LOGW("Stopping logging because SD card detect went absent\n");
           LoggingManager::stop(
               LoggingManager::StopReason::SdCardRemoved,
               "sd_detect_absent");
-          SD_MMC.end();
-          s_sdMounted = false;
-        } else if (s_sdMounted) {
+          if (!StorageManager_recordingIoPending()) { SD_MMC.end(); s_sdMounted = false; }
+        } else if (s_sdMounted && !StorageManager_recordingIoPending()) {
           SD_MMC.end();
           s_sdMounted = false;
         }
@@ -2770,15 +3307,35 @@ void StorageManager_loop() {
         setStatus_("card inserted");
         STOR_LOGI("SD card inserted; attempting mount\n");
         UI::toast("SD inserted", 1200, 1);
-        if (!LoggingManager::isRunning() && mountSdmmc_()) {
+        if (!StorageManager_recordingIoPending() && !LoggingManager::isRunning() && mountSdmmc_()) {
           UI::status("SD ready");
         }
       }
     }
   }
 
+#if !defined(ESP32)
+  storageService_();
+#endif
+}
+
+static void storageService_() {
+  static unsigned long lastFlush = 0;
+  static uint32_t s_rowCount = 0;
+  unsigned long now = millis();
   if (loggingActive && isBdqV2Format_()) {
     const uint32_t drainStartUs = micros();
+#if BODAQS_STORAGE_TIMELINE
+    const uint64_t timelineIoBefore=RecordingTimelineDiagnostics::storage.ioUs;
+#if BODAQS_CONTROL_POLL_DIAGNOSTICS
+    if(ControlPollingDiagnostics::memoryDue(drainStartUs))
+      ControlPollingDiagnostics::sampleMemory(drainStartUs,
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
+        heap_caps_get_free_size(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT),
+        heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+#endif
+#endif
     uint16_t chunksWritten = 0;
     while (s_bdqV2Writer.hasPendingData()) {
       if (!drainOneReadyBdqV2Chunk_(
@@ -2810,6 +3367,10 @@ void StorageManager_loop() {
       }
       lastFlush = now;
     }
+#if BODAQS_STORAGE_TIMELINE
+    RecordingTimelineDiagnostics::storageService(drainStartUs,uint32_t(micros()-drainStartUs),
+        timelineIoBefore,queueDepthSnapshot_());
+#endif
     return;
   }
 
@@ -2878,7 +3439,7 @@ void StorageManager_loop() {
         ++s_flushCount;
         s_flushTotalMs += dt;
         if (dt > s_flushMaxMs) s_flushMaxMs = dt;
-      }
+      } else { ++s_storageWriteFailures; }
 #if BODAQS_TIMING_INSTRUMENTATION
       recordStorageWriteStall_(
           2u,
@@ -2917,3 +3478,104 @@ void StorageManager_loop() {
 
 
 
+
+#if defined(ESP32)
+class LoggerStorageSink final : public RecordingStorageSink {
+ public:
+  bool healthCheck() override {
+    if (!StorageManager_readyForLogging()) return false;
+#if defined(BODAQS_PACKED_PSRAM_PAYLOADS) && BODAQS_PACKED_PSRAM_PAYLOADS
+    STOR_LOGI("health memory internal_free=%u internal_largest=%u dma_free=%u dma_largest=%u\n",
+      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
+      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
+      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA),
+      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA));
+#endif
+    const char* path = "/.bodaqs-storage-health";
+    SD_MMC.remove(path);
+    File probe = SD_MMC.open(path, FILE_WRITE);
+    const uint8_t expected[] = {0x42, 0x44, 0x51, 0xA5};
+    bool ok = probe && probe.write(expected, sizeof(expected)) == sizeof(expected);
+    if (probe) { probe.flush(); probe.close(); }
+    probe = SD_MMC.open(path, FILE_READ);
+    for (uint8_t byte : expected) ok = probe && probe.read() == byte && ok;
+    if (probe) probe.close();
+    return SD_MMC.remove(path) && ok;
+  }
+  bool start() override {
+    StoragePathProbe::begin(AcquisitionControl::startupDiagnostics().context);
+    ::startLog();
+    if (!loggingActive) StoragePathProbe::finish(false);
+    return loggingActive;
+  }
+  bool service() override {
+    storageService_();
+    return !s_storageWriteFailures && !logFileMMC.getWriteError() && !(isBdqV2Format_() && s_bdqV2Writer.failed());
+  }
+  bool stop(bool clean) override {
+    if (clean) StorageManager_stopLog();
+    else {
+      // The failed file is terminal. No successful summary/archive is emitted.
+      logFileMMC.close();
+      loggingActive = false;
+      releaseLogSessionBuffers_();
+    }
+    StoragePathProbe::finish(clean && !s_storageWriteFailures && !StorageManager_storageFault());
+    return clean && !s_storageWriteFailures;
+  }
+};
+static RecordingStorageWorker& storageWorker_() {
+  static LoggerStorageSink sink;
+  static RecordingStorageWorker worker(sink);
+  return worker;
+}
+static void storageTaskFn_(void*) {
+  CpuOccupancy::bindTask(CpuOccupancy::Storage,reinterpret_cast<uintptr_t>(xTaskGetCurrentTaskHandle()));
+  for (;;) { storageWorker_().step(millis()); vTaskDelay(1); }
+}
+#endif
+
+#if defined(BODAQS_BACKLOG_BALANCE_BENCH) && BODAQS_BACKLOG_BALANCE_BENCH
+size_t StorageManager_primaryPendingForBalance(){return s_bdqV2PrimaryQueue.size();}
+size_t StorageManager_primaryCapacityForBalance(){return s_balancePrimaryCapacity.load(std::memory_order_acquire);}
+#endif
+bool StorageManager_recordingIoPending() {
+#if defined(ESP32)
+  return storageWorker_().pending();
+#else
+  return false;
+#endif
+}
+bool StorageManager_recordingReady() {
+#if defined(ESP32)
+  return storageWorker_().recording() && storageWorker_().fault() == RecordingStorageWorker::Fault::None;
+#else
+  return true;
+#endif
+}
+
+bool StorageManager_storageFault() {
+#if defined(ESP32)
+  return storageWorker_().fault() != RecordingStorageWorker::Fault::None;
+#else
+  return false;
+#endif
+}
+bool StorageManager_canAcceptSample() {
+#if defined(ESP32)
+  portENTER_CRITICAL(&s_qMux);
+#endif
+  const bool available = s_qCap && s_qCount < s_qCap;
+#if defined(ESP32)
+  portEXIT_CRITICAL(&s_qMux);
+#endif
+  return available;
+}
+
+bool StorageManager_storageUnresponsive() {
+#if defined(ESP32)
+  return storageWorker_().fault() == RecordingStorageWorker::Fault::Unresponsive;
+#else
+  return false;
+#endif
+}

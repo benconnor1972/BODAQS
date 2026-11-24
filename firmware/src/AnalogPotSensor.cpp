@@ -156,10 +156,16 @@ void AnalogPotSensor::applyParams(const Params& p) {
 }
 
 // ---------- RAW helpers ----------
-int AnalogPotSensor::readOnce() const {
+int AnalogPotSensor::readOnce(const LocalAdcSnapshot* snapshot) const {
   if (m_ain >= 0) {
     int32_t counts = 0;
-    if (AnalogInputManager::readCounts((uint8_t)m_ain, counts)) {
+    bool ok = false;
+#if BODAQS_ADC_ROW_HANDOFF
+    if (snapshot) ok = AnalogInputManager::readSnapshotCounts((uint8_t)m_ain, counts, *snapshot);
+    else
+#endif
+      ok = AnalogInputManager::readCounts((uint8_t)m_ain, counts);
+    if (ok) {
       return (int)counts;
     }
     return 0;
@@ -178,10 +184,14 @@ static inline float lin_from_counts(int x, int zero, float invSpan, float fullMm
 }
 
 void AnalogPotSensor::sample(float& selectedOut, int& rawOut) {
+  sample_(selectedOut, rawOut, nullptr);
+}
+
+void AnalogPotSensor::sample_(float& selectedOut, int& rawOut, const LocalAdcSnapshot* snapshot) {
   if (m_muted) { selectedOut = 0.0f; rawOut = 0; return; }
 
   // 1) read raw counts directly. Sample-time smoothing has been retired.
-  const int raw = readOnce();
+  const int raw = readOnce(snapshot);
   rawOut = raw;
 
   // 2) RAW path
@@ -473,11 +483,19 @@ bool AnalogPotSensor::describeSensorMetadata(SensorMetadataDescriptor& out) cons
 
 
 void AnalogPotSensor::sampleValues(float* out, uint8_t max) {
+  sampleValues_(out, max, nullptr);
+}
+
+void AnalogPotSensor::sampleRowValues(float* out, uint8_t max, const LocalAdcSnapshot& snapshot) {
+  sampleValues_(out, max, &snapshot);
+}
+
+void AnalogPotSensor::sampleValues_(float* out, uint8_t max, const LocalAdcSnapshot* snapshot) {
   if (!out || max == 0 || m_muted) return;
 
   float selected = 0.0f;
   int   counts   = 0;
-  sample(selected, counts);                 // <-- uses the pipeline above
+  sample_(selected, counts, snapshot);
 
   uint8_t w = 0;
   out[w++] = selected;                      // primary column (counts if RAW, units if LINEAR/transform)

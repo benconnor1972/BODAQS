@@ -49,6 +49,7 @@ public:
   uint8_t columnCount() const override;
   void getColumnName(uint8_t idx, char* out, size_t cap) const override;
   void sampleValues(float* out, uint8_t max) override;
+  void sampleRowValues(float* out, uint8_t max, const LocalAdcSnapshot& snapshot) override;
   bool describeColumn(uint8_t idx, SensorColumnDescriptor& out) const override;
   bool describeSensorMetadata(SensorMetadataDescriptor& out) const override;
   int32_t installedZeroCount() const { return installed_zero_count_; }
@@ -93,8 +94,10 @@ public:
 
 private:
   void  applyParams(const Params& p);
-  int   readOnce() const;
+  int   readOnce(const LocalAdcSnapshot* snapshot = nullptr) const;
   void  sample(float& selectedOut, int& rawOut);
+  void  sample_(float& selectedOut, int& rawOut, const LocalAdcSnapshot* snapshot);
+  void  sampleValues_(float* out, uint8_t max, const LocalAdcSnapshot* snapshot);
   float normalize_(int counts) const;   // 0..1 after zero/full + invert + clamp
   float applyTransform_(float xNorm) const; // identity / LUT / POLY (all expect 0..1)
 

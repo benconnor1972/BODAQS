@@ -1,3 +1,5 @@
+#include "../can-fd/common/network/bodaqs_can_link.h"
+#include "RemoteImuRecording.h"
 #include "Routes_Api.h"
 
 #include <Arduino.h>
@@ -6,6 +8,8 @@
 #include "SD_MMC.h"
 
 #include "ConfigManager.h"
+#include "SensorConfigEdit.h"
+#include "Lsm6dso32xConfig.h"
 #include "DisplayManager.h"
 #include "FirmwareInfo.h"
 #include "LoggingManager.h"
@@ -18,6 +22,8 @@
 #include "CanMasterProtocol.h"
 #include "BoardSelect.h"
 #include "SensorRegistry.h"
+#include "SensorManager.h"
+#include "SensorAssignment.h"
 #include "UploadAckIndex.h"
 #include "UploadModeManager.h"
 #include "UploadSessionCleanup.h"
@@ -29,6 +35,112 @@ namespace {
 
 constexpr uint16_t kSessionListLimit = 24;
 const char* kSessionScanDir = "/";
+
+static void addControlAuthorityJson_(JsonObject node,
+    const BodaqsControlObservation& observation,
+    const BodaqsControlAuthorityPeer& authority, uint64_t session) {
+  char decimal[21];
+  snprintf(decimal, sizeof(decimal), "%llu", static_cast<unsigned long long>(session));
+  node["logger_session_id"] = decimal;
+  node["authority_bound"] = authority.bound;
+  node["authority_observed_current"] = authority.bound && observation.available &&
+      observation.valid && authority.boot == observation.node_boot_id &&
+      observation.active_session == session && session != 0 &&
+      static_cast<int32_t>(observation.observed_ms - authority.confirmed_ms) >= 0;
+  node["authority_reason"] = authority.reason;
+  node["authority_reason_key"] = bodaqs_control_reason_key(authority.reason);
+  node["authority_confirmed_ms"] = authority.confirmed_ms;
+  node["configuration_reconciled"] = false;
+}
+
+static void addControlApplyJson_(JsonObject node, const BodaqsControlApplyClient& apply,
+    uint8_t address, uint64_t generation, bool disabled, bool reconciled, bool enabled = false) {
+  node["configuration_reconciled"] = reconciled;
+  node["desired_mode"] = !generation ? "unknown" : disabled ? "disabled" : enabled ? "enabled" : "unresolved_active";
+  char decimal[21];
+  snprintf(decimal, sizeof(decimal), "%llu", static_cast<unsigned long long>(generation));
+  node["desired_generation"] = decimal;
+  const auto& outcome = apply.nodes[address];
+  JsonObject operation = node["apply_operation"].to<JsonObject>();
+  operation["transport_pending"] = apply.pending && apply.current.node_address == address;
+  operation["pending"] = apply.phase && apply.current.node_address == address && (!outcome.valid || outcome.kind == 2);
+  operation["outcome_valid"] = outcome.valid;
+  operation["sequence"] = outcome.operation;
+  operation["node_boot_id"] = outcome.boot;
+  snprintf(decimal,sizeof(decimal),"%llu",static_cast<unsigned long long>(outcome.session));
+  operation["control_session_id"] = decimal;
+  const auto& previous=apply.previous[address];
+  if(previous.valid) {
+    JsonObject history=operation["previous"].to<JsonObject>();
+    history["kind"]=previous.kind;history["reason"]=previous.reason;
+    history["reason_key"]=bodaqs_control_reason_key(previous.reason);
+    history["sequence"]=previous.operation;history["node_boot_id"]=previous.boot;
+    history["observed_ms"]=previous.observed_ms;
+    snprintf(decimal,sizeof(decimal),"%llu",static_cast<unsigned long long>(previous.session));
+    history["control_session_id"]=decimal;
+    snprintf(decimal,sizeof(decimal),"%llu",static_cast<unsigned long long>(previous.desired_generation));
+    history["desired_generation"]=decimal;
+  }
+  snprintf(decimal, sizeof(decimal), "%llu", static_cast<unsigned long long>(outcome.desired_generation));
+  operation["desired_generation"] = decimal;
+  operation["kind"] = outcome.kind;
+  operation["reason"] = outcome.reason;
+  operation["reason_key"] = bodaqs_control_reason_key(outcome.reason);
+  operation["observed_ms"] = outcome.observed_ms;
+  if (outcome.valid) {
+    snprintf(decimal, sizeof(decimal), "%llu", static_cast<unsigned long long>(outcome.revision));
+    operation["applied_revision"] = decimal;
+    snprintf(decimal, sizeof(decimal), "%llu", static_cast<unsigned long long>(outcome.accepted_generation));
+    operation["accepted_desired_generation"] = decimal;
+  }
+}
+
+// Payload values carry the same field-group provenance as the enclosing state.
+static void addImuConfigurationJson_(JsonObject state, const uint8_t* data) {
+  const uint32_t known = bodaqs_control_get_u32(data + 12);
+  if (known & 1) {
+    state["profile_id"] = data[40] | (uint16_t(data[41]) << 8);
+    state["profile_version"] = data[42] | (uint16_t(data[43]) << 8);
+  }
+  if (known & 2) {
+    state["output_format"] = data[44] | (uint16_t(data[45]) << 8);
+    state["axis_convention"] = data[46];
+  }
+  if (known & 8) {
+    state["accel_full_scale_millig"] = bodaqs_control_get_u32(data + 64);
+    state["gyro_full_scale_millidegrees_per_second"] = bodaqs_control_get_u32(data + 68);
+  }
+  for (uint8_t axis = 0; axis < 2; ++axis) {
+    const char* key = axis ? "nominal_gyro_dps_per_count" : "nominal_accel_g_per_count";
+    if (!(known & 16)) { state[key] = nullptr; continue; }
+    const uint8_t offset = axis ? 80 : 72;
+    JsonObject value = state[key].to<JsonObject>();
+    value["numerator"] = bodaqs_control_get_u32(data + offset);
+    value["denominator"] = bodaqs_control_get_u32(data + offset + 4);
+  }
+  if (known & 32) {
+    state["filter_model"] = data[47];
+    state["optional_filter_flags"] = bodaqs_control_get_u32(data + 88);
+  }
+  if (!(known & 128)) state["native_clock"] = nullptr;
+  if (!(known & 256)) {
+    state["measured_accel_hz"] = nullptr;
+    state["measured_gyro_hz"] = nullptr;
+  }
+  if (!(known & 512)) state["filter_delays"] = nullptr;
+  if (known & 64) state["engine_power_bits"] = data[5];
+  state["acquisition_active"] = data[6] != 0;
+  if (known & 1024) {
+    state["register_verified_uptime_ms"] = bodaqs_control_get_u32(data + 108);
+    JsonArray image = state["register_image"].to<JsonArray>();
+    for (uint8_t n = 0; n < 24; ++n) image.add(data[152 + n]);
+  }
+  if (known & 2048) {
+    JsonObject mismatch = state["register_mismatch"].to<JsonObject>();
+    mismatch["address"] = data[176] | (uint16_t(data[177]) << 8);
+    mismatch["expected"] = data[178]; mismatch["observed"] = data[179]; mismatch["mask"] = data[180];
+  }
+}
 
 static void noteHttpActivity_() {
   WiFiManager::noteUserActivity();
@@ -181,6 +293,149 @@ static void handleStatus_(WebServer& srv) {
   snprintf(masterUid, sizeof(masterUid), "%016llX",
            static_cast<unsigned long long>(masterDiagnostics.hardwareUid));
   canMaster["hardware_uid"] = masterUid;
+  JsonObject measurement = canMaster["measurement"].to<JsonObject>();
+  measurement["status_valid"] = masterDiagnostics.measurementStatusValid;
+  measurement["phase"] = masterDiagnostics.measurement.phase;
+  measurement["reason"] = masterDiagnostics.measurement.reason;
+  measurement["confirmed"] = masterDiagnostics.measurementConfirmed;
+  measurement["unavailable"] = masterDiagnostics.measurementUnavailable;
+  measurement["spi_hz"] = masterDiagnostics.measurement.hz;
+  measurement["physical_bytes"] = masterDiagnostics.measurement.physical;
+  measurement["inactive_cs_us"] = masterDiagnostics.measurement.gap;
+  measurement["objects_received"] = masterDiagnostics.measurementObjectsReceived;
+  measurement["duplicates"] = masterDiagnostics.measurementDuplicates;
+  measurement["transfer_errors"] = masterDiagnostics.measurementTransferErrors;
+  measurement["transfer_error_mask"] = masterDiagnostics.measurementTransferErrorMask;
+  measurement["control_submitted"] = masterDiagnostics.measurementControlSubmitted;
+  measurement["assembly_bytes"] = masterDiagnostics.measurementAssemblyBytes;
+  measurement["last_class"] = masterDiagnostics.measurementLastClass;
+  measurement["last_node"] = masterDiagnostics.measurementLastNode;
+  measurement["last_object"] = masterDiagnostics.measurementLastObject;
+  char measurementId[21];
+  snprintf(measurementId, sizeof(measurementId), "%llu",
+           static_cast<unsigned long long>(masterDiagnostics.measurement.boot));
+  measurement["master_boot"] = measurementId;
+  snprintf(measurementId, sizeof(measurementId), "%llu",
+           static_cast<unsigned long long>(masterDiagnostics.measurement.session));
+  measurement["owning_session"] = measurementId;
+  snprintf(measurementId, sizeof(measurementId), "%llu",
+           static_cast<unsigned long long>(masterDiagnostics.measurement.recording));
+  measurement["recording"] = measurementId;
+  snprintf(measurementId, sizeof(measurementId), "%llu",
+           static_cast<unsigned long long>(masterDiagnostics.measurement.context));
+  measurement["context"] = measurementId;
+  JsonObject masterControl = canMaster["control"].to<JsonObject>();
+  masterControl["supported"] = masterDiagnostics.controlSupported;
+  masterControl["info_valid"] = masterDiagnostics.controlInfoValid;
+  masterControl["features"] = masterDiagnostics.control.features;
+  masterControl["configuration_supported"] = false;
+  masterControl["acquisition_ready"] = false;
+  char controlDecimal[21];
+  snprintf(controlDecimal, sizeof(controlDecimal), "%llu",
+           static_cast<unsigned long long>(masterDiagnostics.control.master_boot_id));
+  masterControl["master_boot_id"] = controlDecimal;
+  JsonArray controlNodes = masterControl["nodes"].to<JsonArray>();
+  for (uint8_t address = 0; address < 4; ++address) {
+    const auto& observation = masterDiagnostics.control.nodes[address];
+    JsonObject node = controlNodes.add<JsonObject>();
+    addControlAuthorityJson_(node, observation, masterDiagnostics.authority.nodes[address],
+                             masterDiagnostics.authority.session);
+    addControlApplyJson_(node, masterDiagnostics.apply, address,
+        masterDiagnostics.desiredGeneration[address], masterDiagnostics.desiredDisabled[address],
+        CanMasterManager::configurationReconciled(address), masterDiagnostics.desiredEnabled[address]);
+    node["address"] = address;
+    node["available"] = observation.available;
+    node["valid"] = observation.valid;
+    node["node_boot_id"] = observation.node_boot_id;
+    node["flags"] = observation.flags;
+    node["pending_operation"] = observation.pending_operation;
+    node["observed_ms"] = observation.observed_ms;
+    node["receipt_state"] = observation.receipt_state;
+    node["reason"] = observation.reason;
+    node["reason_key"] = bodaqs_control_reason_key(observation.reason);
+    node["field"] = observation.field;
+    snprintf(controlDecimal, sizeof(controlDecimal), "%llu",
+             static_cast<unsigned long long>(observation.active_session));
+    node["active_session_id"] = controlDecimal;
+    JsonArray endpoints = node["endpoints"].to<JsonArray>();
+    for (uint8_t endpoint = 0; endpoint < 6; ++endpoint) {
+      if (!(observation.endpoint_mask & (1U << endpoint))) continue;
+      JsonObject state = endpoints.add<JsonObject>();
+      state["endpoint"] = endpoint;
+      state["valid"] = (observation.epoch_valid_mask & (1U << endpoint)) != 0;
+      snprintf(controlDecimal, sizeof(controlDecimal), "%llu",
+               static_cast<unsigned long long>(observation.endpoint_epoch[endpoint]));
+      state["state_epoch"] = controlDecimal;
+      const auto& descriptor = observation.endpoints[endpoint];
+      state["provenance"] = "observational";
+      state["capability_valid"] = descriptor.capability_valid;
+      state["effective_valid"] = descriptor.effective_valid;
+      state["current"] = descriptor.current;
+      state["observed_node_boot_id"] = descriptor.effective_boot;
+      char effectiveUid[24]; snprintf(effectiveUid,sizeof(effectiveUid),"%llu",
+          static_cast<unsigned long long>(descriptor.effective_uid));
+      state["observed_hardware_uid"] = effectiveUid;
+      state["observed_ms"] = descriptor.observed_ms;
+      state["configuration_supported"] = descriptor.capability_valid &&
+          (bodaqs_control_get_u32(descriptor.capability + 8) & 1U) != 0;
+      if (descriptor.capability_valid && (bodaqs_control_get_u32(descriptor.capability + 8) & 1U))
+        masterControl["configuration_supported"] = true;
+      state["acquisition_ready"] = false;
+      if (descriptor.capability_valid) {
+        state["implemented_features"] = bodaqs_control_get_u32(descriptor.capability + 8);
+        state["satisfied_prerequisites"] = bodaqs_control_get_u32(descriptor.capability + 12);
+        state["capability_health"] = bodaqs_control_get_u32(descriptor.capability + 16);
+        JsonArray profiles = state["profiles"].to<JsonArray>();
+        for (uint8_t i = 0; i < descriptor.capability[6]; ++i) {
+          JsonObject profile = profiles.add<JsonObject>();
+          const uint8_t* pair = descriptor.capability + 64 + 4 * i;
+          profile["id"] = pair[0] | (static_cast<uint16_t>(pair[1]) << 8);
+          profile["version"] = pair[2] | (static_cast<uint16_t>(pair[3]) << 8);
+        }
+      }
+      if (descriptor.effective_valid) {
+        const uint8_t* data = descriptor.effective;
+        const uint32_t applicable = bodaqs_control_get_u32(data + 8);
+        const uint32_t known = bodaqs_control_get_u32(data + 12);
+        const uint32_t historical = bodaqs_control_get_u32(data + 16);
+        state["effective_state"] = data[4];
+        addImuConfigurationJson_(state, data);
+        auto identity = [&](const char* key, size_t offset) {
+          if (!(known & 1U)) { state[key] = nullptr; return; }
+          snprintf(controlDecimal, sizeof(controlDecimal), "%llu",
+                   static_cast<unsigned long long>(bodaqs_control_get_u64(data + offset)));
+          state[key] = controlDecimal;
+        };
+        identity("accepting_session_id", 144);
+        identity("accepted_desired_generation", 24);
+        identity("applied_revision", 32);
+        state["health_flags"] = bodaqs_control_get_u32(data + 20);
+        state["applicable_mask"] = applicable;
+        state["known_mask"] = known;
+        state["historical_mask"] = historical;
+        static const char* groups[] = {"configuration", "format_axes", "nominal_rates",
+          "ranges", "nominal_sensitivities", "filters", "engines", "native_clock",
+          "measured_rates", "filter_delays", "register_proof", "mismatch"};
+        JsonObject fields = state["field_groups"].to<JsonObject>();
+        for (uint8_t bit = 0; bit < 12; ++bit) {
+          fields[groups[bit]] = !(applicable & (1U << bit)) ? "not_applicable" :
+              !(known & (1U << bit)) ? "unknown" :
+              (historical & (1U << bit)) || !descriptor.current ? "historical" : "current";
+        }
+        auto rational = [&](const char* key, uint8_t bit, size_t offset) {
+          if (!(known & (1U << bit))) { state[key] = nullptr; return; }
+          JsonObject value = state[key].to<JsonObject>();
+          value["numerator"] = bodaqs_control_get_u32(data + offset);
+          value["denominator"] = bodaqs_control_get_u32(data + offset + 4);
+        };
+        rational("nominal_accel_hz", 2, 48);
+        rational("nominal_gyro_hz", 2, 56);
+        rational("measured_accel_hz", 8, 120);
+        rational("measured_gyro_hz", 8, 128);
+      }
+
+    }
+  }
   JsonObject masterStatus = canMaster["status"].to<JsonObject>();
   masterStatus["supported"] = masterDiagnostics.statusSupported;
   masterStatus["valid"] = masterDiagnostics.statusValid;
@@ -541,12 +796,12 @@ static void handleDelete_(WebServer& srv) {
 }
 
 static bool configEditLocked_() {
-  return LoggingManager::isRunning() || UploadModeManager::isActive();
+  return LoggingManager::configurationLocked() || UploadModeManager::isActive();
 }
 
 static bool rejectConfigEditLocked_(WebServer& srv) {
   if (!configEditLocked_()) return false;
-  sendError_(srv, 423, "config_locked", "Configuration is locked while logging or upload mode is active.");
+  sendError_(srv, 423, "config_locked", "Configuration is locked while recording starts, runs, or stops, or upload mode is active. Stop recording, then retry. Nothing was changed.");
   return true;
 }
 
@@ -579,6 +834,7 @@ static bool parseSensorTypeKey_(String text, SensorType& out) {
     out = SensorType::DANF10NGps;
     return true;
   }
+  if (text.equalsIgnoreCase("lsm6dso32x_imu")) { out=SensorType::LSM6DSO32XImu; return true; }
   if (text.equalsIgnoreCase("bmi270_imu_i2c")) {
     out = SensorType::BMI270ImuI2C;
     return true;
@@ -613,6 +869,17 @@ static void addSensorParamsJson_(JsonObject obj, const SensorSpec& sp) {
   const SensorTypeInfo* ti = SensorRegistry::lookup(sp.type);
   size_t defCount = 0;
   const ParamDef* defs = ti ? ti->paramDefs(defCount) : nullptr;
+  // Generic saved fields need not appear in the driver's parameter schema.
+  for (uint8_t k = 0; k < sp.params.size(); ++k) {
+    const char* key = sp.params.keyAt(k);
+    if (!key || !*key || !strncasecmp(key, "__", 2) || !strcasecmp(key, "output_id")) continue;
+    bool hidden = false;
+    for (size_t d = 0; defs && d < defCount; ++d) {
+      if (!strcasecmp(key, defs[d].key)) { hidden = defs[d].hidden; break; }
+    }
+    if (!hidden) params[key] = sp.params.valueAt(k);
+  }
+
   for (size_t i = 0; defs && i < defCount; ++i) {
     const ParamDef& pd = defs[i];
     if (!pd.key || !*pd.key || pd.hidden) continue;
@@ -652,6 +919,85 @@ static void addSensorJson_(JsonObject obj, uint8_t index, const SensorSpec& sp, 
   obj["type"] = SensorRegistry::typeKey(sp.type);
   obj["type_label"] = SensorRegistry::typeLabel(sp.type);
   obj["muted"] = sp.mutedDefault;
+  bool runtimeMuted = sp.mutedDefault;
+  (void)SensorManager::getMuted(index, runtimeMuted);
+  obj["runtime_muted"] = runtimeMuted;
+  String provider = "local", endpoint;
+  sp.params.get("provider", provider);
+  sp.params.get("endpoint", endpoint);
+  obj["provider"] = provider;
+  obj["endpoint"] = endpoint;
+  if (SensorConfigEdit::isLegacyRemoteImu(sp)) {
+    obj["assignment_state"] = "unresolved_legacy_remote_imu";
+    obj["recording_eligible"] = false;
+    obj["message"] = "Legacy remote BMI270 placeholder: explicitly select the LSM type and profile to migrate. BMI profiles are not translated.";
+    JsonObject migration = obj["migration"].to<JsonObject>();
+    migration["type"] = "lsm6dso32x_imu";
+    migration["profile"] = Lsm6dso32xConfig::profile;
+    migration["method"] = "PUT";
+    migration["url"] = String("/api/v1/sensor?id=") + String(index);
+    migration["request_field"] = "migration";
+  }
+  if (sp.type == SensorType::LSM6DSO32XImu) {
+    JsonObject control = obj["remote_control"].to<JsonObject>();
+    String profile; sp.params.get("profile", profile);
+    control["desired_profile"] = profile;
+    control["acquisition_ready"] = false;
+    const auto& admission=RemoteImuRecording::admission();
+    JsonObject capacity=control["recording_admission"].to<JsonObject>();
+    capacity["attempted"]=admission.attempted;
+    capacity["qualified"]=admission.qualified;
+    capacity["mode"]=ImuAdmission::buildMode();
+    capacity["reason"]=admission.attempted?ImuAdmission::reportText(admission):"not evaluated";
+    if(ImuAdmission::singleNodeSmokeBuild()) {
+      capacity["can_occupancy"]=nullptr;capacity["shared_spi_occupancy"]=nullptr;capacity["drain_ratio"]=nullptr;
+    } else {
+      capacity["can_occupancy"]=admission.canOccupancy;
+      capacity["shared_spi_occupancy"]=admission.spiOccupancy;
+      capacity["drain_ratio"]=admission.drainRatio;
+    }
+    capacity["logger_reserved_bytes"]=admission.loggerBytes;
+
+    const auto assignment = sensorAssignment(sp, nullptr);
+    if (assignment.provider.kind == SensorProviderKind::CanNode) {
+      const uint8_t address = assignment.provider.index;
+      const auto& master = CanMasterManager::diagnostics();
+      control["master_link_profile"]=bodaqs_can_link_from_capabilities(master.capabilities);
+      control["node_link_profile"]=CanMasterManager::acquisitionLinkProfile(address);
+      control["acquisition_link_compatible"]=CanMasterManager::acquisitionLinkCompatible(address);
+      addControlApplyJson_(control, master.apply, address, master.desiredGeneration[address],
+          master.desiredDisabled[address], CanMasterManager::configurationReconciled(address),
+          master.desiredEnabled[address]);
+      const auto& observation = master.control.nodes[address].endpoints[0];
+      JsonObject effective = control["effective"].to<JsonObject>();
+      effective["available"] = observation.effective_valid;
+      effective["current"] = observation.current;
+      effective["observed_node_boot_id"] = observation.effective_boot;
+      char observedUid[24]; snprintf(observedUid,sizeof(observedUid),"%llu",
+          static_cast<unsigned long long>(observation.effective_uid));
+      effective["observed_hardware_uid"] = observedUid;
+      if (observation.effective_valid) {
+        const uint8_t* data = observation.effective;
+        effective["state"] = data[4];
+        effective["applicable_mask"] = bodaqs_control_get_u32(data + 8);
+        effective["known_mask"] = bodaqs_control_get_u32(data + 12);
+        effective["historical_mask"] = bodaqs_control_get_u32(data + 16);
+        effective["health_flags"] = bodaqs_control_get_u32(data + 20);
+        addImuConfigurationJson_(effective, data);
+        if (bodaqs_control_get_u32(data + 12) & 1) {
+          const char* keys[] = {"accepted_desired_generation", "applied_revision", "accepting_session_id", "state_epoch"};
+          const uint8_t offsets[] = {24,32,144,184};
+          char decimal[21];
+          for (uint8_t n=0; n<4; ++n) {
+            snprintf(decimal,sizeof(decimal),"%llu",static_cast<unsigned long long>(bodaqs_control_get_u64(data+offsets[n])));
+            effective[keys[n]]=decimal;
+          }
+        }
+      }
+    }
+  }
+
+
   const CalModeMask supported = SensorRegistry::supportedCalMask(sp.type);
   const CalModeMask allowed = ConfigManager::calAllowedMaskByIndex(index);
   const CalModeMask effective = (allowed == 0xFF) ? supported : (supported & allowed);
@@ -802,6 +1148,7 @@ static void handleSensorTypes_(WebServer& srv) {
     SensorType::AS5600AngleI2C,
     SensorType::DANF10NGps,
     SensorType::BMI270ImuI2C,
+    SensorType::LSM6DSO32XImu,
   };
   for (const auto type : types) {
     const SensorTypeInfo* ti = SensorRegistry::lookup(type);
@@ -871,7 +1218,12 @@ static void handleSensorGet_(WebServer& srv) {
 }
 
 static void seedSensorDefaults_(SensorSpec& sp) {
+  String provider, endpoint;
+  const bool haveProvider = sp.params.get("provider", provider);
+  const bool haveEndpoint = sp.params.get("endpoint", endpoint);
   sp.params.clear();
+  if (haveProvider) sp.params.set("provider", provider);
+  if (haveEndpoint) sp.params.set("endpoint", endpoint);
   const SensorTypeInfo* ti = SensorRegistry::lookup(sp.type);
   size_t defCount = 0;
   const ParamDef* defs = ti ? ti->paramDefs(defCount) : nullptr;
@@ -884,34 +1236,55 @@ static void seedSensorDefaults_(SensorSpec& sp) {
   }
 }
 
-static void handleSensorPut_(WebServer& srv) {
-  if (rejectConfigEditLocked_(srv)) return;
+static bool commitSensorEdit_(WebServer& srv, SensorConfigEdit& edit, const LoggerConfig& cfg) {
+  char detail[160] = {};
+  const auto result = edit.commit(cfg, detail, sizeof(detail));
+  if (result == SensorConfigEdit::Result::Applied) return true;
+  JsonDocument doc;
+  addEnvelope_(doc, "bodaqs.logger.sensor_edit");
+  doc["saved"] = result == SensorConfigEdit::Result::SavedNotApplied;
+  doc["runtime_rebuilt"] = false;
+  doc["restart_recommended"] = false;
+  doc["error"] = result == SensorConfigEdit::Result::Invalid ? "invalid_sensor_config"
+      : result == SensorConfigEdit::Result::Locked ? "configuration_locked"
+      : result == SensorConfigEdit::Result::SaveFailed ? "save_failed" : "runtime_rebuild_failed";
+  doc["message"] = detail;
+  sendJson_(srv, result == SensorConfigEdit::Result::Invalid ? 400
+      : result == SensorConfigEdit::Result::Locked ? 423 : 500, doc);
+  return false;
+}
 
-  uint8_t idx = 0;
-  if (!readSensorIndexArg_(srv, idx)) return;
-
-  JsonDocument req;
-  if (!readJsonBody_(srv, req)) return;
-
-  LoggerConfig tmp = ConfigManager::get();
-  SensorSpec sp;
-  if (!tmp.getSensorSpec(idx, sp)) {
-    sendError_(srv, 404, "unknown_sensor", "Sensor index is not configured.");
-    return;
+static bool applySensorJson_(WebServer& srv, JsonDocument& req, SensorSpec& sp) {
+  if (!req["migration"].isUnbound()) {
+    JsonObjectConst migration = req["migration"].as<JsonObjectConst>();
+    char error[160] = {};
+    if (req.size() != 1 || migration.size() != 2 ||
+        !migration["type"].is<const char*>() || !migration["profile"].is<const char*>() ||
+        !SensorConfigEdit::migrateLegacyRemoteImu(sp, migration["type"], migration["profile"], error, sizeof(error))) {
+      sendError_(srv, 400, "invalid_migration", error[0] ? error : "migration requires only explicit type and profile selections.");
+      return false;
+    }
+    return true;
   }
-
-  bool restartRecommended = false;
+  if ((!req["params"].isNull() && !req["params"].is<JsonObjectConst>()) ||
+      (!req["muted"].isNull() && !req["muted"].is<bool>())) {
+    sendError_(srv, 400, "invalid_sensor_params", "params must be an object and muted must be a boolean.");
+    return false;
+  }
   if (!req["type"].isNull()) {
     String typeText = req["type"] | "";
     SensorType newType = sp.type;
     if (!parseSensorTypeKey_(typeText, newType) || !SensorRegistry::lookup(newType)) {
       sendError_(srv, 400, "invalid_sensor_type", "Unknown sensor type.");
-      return;
+      return false;
+    }
+    if (newType == SensorType::LSM6DSO32XImu && SensorConfigEdit::isLegacyRemoteImu(sp)) {
+      sendError_(srv, 400, "migration_required", "Use the explicit migration action to select the LSM type and profile while preserving installation data.");
+      return false;
     }
     if (newType != sp.type) {
       sp.type = newType;
       seedSensorDefaults_(sp);
-      restartRecommended = true;
     }
   }
   if (!req["name"].isNull()) {
@@ -921,28 +1294,64 @@ static void handleSensorPut_(WebServer& srv) {
   }
   if (!req["muted"].isNull()) sp.mutedDefault = req["muted"] | sp.mutedDefault;
 
+
+  for (const char* key : {"provider", "endpoint"}) {
+    if (!req[key].isNull() && (!req[key].is<const char*>() || !sp.params.set(key, req[key].as<String>()))) {
+      sendError_(srv, 400, "invalid_sensor_params", "Could not store sensor assignment."); return false;
+    }
+  }
   JsonObjectConst params = req["params"].as<JsonObjectConst>();
   for (JsonPairConst kv : params) {
     const char* key = kv.key().c_str();
     if (!key || !*key || strcasecmp(key, "output_id") == 0) continue;
     if (strcasecmp(key, "units_label") == 0 || strcasecmp(key, "i2c_hz") == 0) continue;
+    if (kv.value().isNull() || kv.value().is<JsonObjectConst>() || kv.value().is<JsonArrayConst>()) {
+      sendError_(srv, 400, "invalid_sensor_params", "Sensor parameter must be a scalar value."); return false;
+    }
+    bool stored = false;
     if (strcasecmp(key, "output_mode") == 0) {
       String text;
       if (kv.value().is<const char*>()) text = kv.value().as<const char*>();
       else text = String((long)(kv.value() | 1));
-      sp.params.setInt(key, parseLoggerOutputMode_(text));
+      if (!text.equalsIgnoreCase("RAW") && !text.equalsIgnoreCase("LINEAR") && text != "0" && text != "1") {
+        sendError_(srv, 400, "invalid_sensor_params", "Invalid output mode."); return false;
+      }
+      stored = sp.params.setInt(key, parseLoggerOutputMode_(text));
     } else if (kv.value().is<bool>()) {
-      sp.params.setBool(key, kv.value().as<bool>());
+      stored = sp.params.setBool(key, kv.value().as<bool>());
     } else if (kv.value().is<long>() || kv.value().is<int>()) {
-      sp.params.setInt(key, kv.value().as<long>());
+      stored = sp.params.setInt(key, kv.value().as<long>());
     } else if (kv.value().is<double>() || kv.value().is<float>()) {
-      sp.params.setFloat(key, kv.value().as<double>());
+      stored = sp.params.setFloat(key, kv.value().as<double>());
     } else {
       String text = kv.value().as<String>();
-      sp.params.set(key, text);
+      stored = sp.params.set(key, text);
     }
+    if (!stored) { sendError_(srv, 400, "invalid_sensor_params", "Could not store sensor parameter."); return false; }
   }
-  sp.params.set("output_id", "identity");
+
+  return true;
+}
+
+static void handleSensorPut_(WebServer& srv) {
+  if (rejectConfigEditLocked_(srv)) return;
+
+  uint8_t idx = 0;
+  if (!readSensorIndexArg_(srv, idx)) return;
+
+  JsonDocument req;
+  if (!readJsonBody_(srv, req)) return;
+
+  SensorConfigEdit edit;
+  if (!edit.ready()) { sendError_(srv, 503, "editor_unavailable", "Sensor editor unavailable."); return; }
+  LoggerConfig tmp = ConfigManager::get();
+  SensorSpec sp;
+  if (!tmp.getSensorSpec(idx, sp)) {
+    sendError_(srv, 404, "unknown_sensor", "Sensor index is not configured.");
+    return;
+  }
+
+  if (!applySensorJson_(srv, req, sp)) return;
 
   tmp.sensors[idx].type = sp.type;
   tmp.sensors[idx].mutedDefault = sp.mutedDefault;
@@ -951,14 +1360,13 @@ static void handleSensorPut_(WebServer& srv) {
   tmp.sensors[idx].params = sp.params;
   ConfigManager::setSensorHeaderByIndex(idx, sp);
 
-  if (!ConfigManager::save(tmp)) {
-    sendError_(srv, 500, "save_failed", "Failed to save sensor configuration.");
-    return;
-  }
+  if (!commitSensorEdit_(srv, edit, tmp)) return;
 
   JsonDocument doc;
   addEnvelope_(doc, "bodaqs.logger.sensor");
-  doc["restart_recommended"] = restartRecommended;
+  doc["restart_recommended"] = false;
+  doc["saved"] = true;
+  doc["runtime_rebuilt"] = true;
   JsonObject sensor = doc["sensor"].to<JsonObject>();
   addSensorJson_(sensor, idx, sp, true);
   sendJson_(srv, 200, doc);
@@ -979,8 +1387,9 @@ static void handleSensorPost_(WebServer& srv) {
 
   String name = req["name"] | "";
   name.trim();
-  if (!ConfigManager::appendSensor(type, name.length() ? name.c_str() : nullptr) ||
-      !ConfigManager::save(ConfigManager::get())) {
+  SensorConfigEdit edit;
+  if (!edit.ready()) { sendError_(srv, 503, "editor_unavailable", "Sensor editor unavailable."); return; }
+  if (!ConfigManager::appendSensor(type, name.length() ? name.c_str() : nullptr)) {
     sendError_(srv, 500, "add_sensor_failed", "Failed to add sensor.");
     return;
   }
@@ -988,9 +1397,16 @@ static void handleSensorPost_(WebServer& srv) {
   const uint8_t idx = ConfigManager::sensorCount() - 1;
   SensorSpec sp;
   ConfigManager::getSensorSpec(idx, sp);
+  if (!applySensorJson_(srv, req, sp)) return;
+  ConfigManager::setSensorHeaderByIndex(idx, sp);
+  LoggerConfig tmp = ConfigManager::get();
+  tmp.sensors[idx] = sp;
+  if (!commitSensorEdit_(srv, edit, tmp)) return;
   JsonDocument doc;
   addEnvelope_(doc, "bodaqs.logger.sensor");
-  doc["restart_recommended"] = true;
+  doc["restart_recommended"] = false;
+  doc["saved"] = true;
+  doc["runtime_rebuilt"] = true;
   JsonObject sensor = doc["sensor"].to<JsonObject>();
   addSensorJson_(sensor, idx, sp, true);
   sendJson_(srv, 201, doc);
@@ -1001,14 +1417,19 @@ static void handleSensorDelete_(WebServer& srv) {
 
   uint8_t idx = 0;
   if (!readSensorIndexArg_(srv, idx)) return;
-  if (!ConfigManager::deleteSensorByIndex(idx) || !ConfigManager::save(ConfigManager::get())) {
+  SensorConfigEdit edit;
+  if (!edit.ready()) { sendError_(srv, 503, "editor_unavailable", "Sensor editor unavailable."); return; }
+  if (!ConfigManager::deleteSensorByIndex(idx)) {
     sendError_(srv, 500, "delete_sensor_failed", "Failed to delete sensor.");
     return;
   }
   JsonDocument doc;
+  if (!commitSensorEdit_(srv, edit, ConfigManager::get())) return;
   addEnvelope_(doc, "bodaqs.logger.sensor_deleted");
   doc["deleted_index"] = idx;
-  doc["restart_recommended"] = true;
+  doc["restart_recommended"] = false;
+  doc["saved"] = true;
+  doc["runtime_rebuilt"] = true;
   sendJson_(srv, 200, doc);
 }
 

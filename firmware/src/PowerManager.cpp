@@ -123,7 +123,7 @@ static bool checkAnalogRailFault_(bool stopLogging)
     UI::toast("Analog fault", 2000, 1);
   }
 
-  if (stopLogging && LoggingManager::isRunning()) {
+  if (stopLogging && (LoggingManager::isRunning() || LoggingManager::isStarting())) {
     PWR_LOGW("Stopping logging because analog rail fault asserted\n");
     LoggingManager::stop(
         LoggingManager::StopReason::AnalogRailFault,
@@ -364,14 +364,18 @@ static void fuelGaugeInitIfNeeded_()
 }
 
 
-static void preSleep_() {
+static bool preSleep_() {
   // Stop high-level activities cleanly
-  if (LoggingManager::isRunning()) {
+  if (LoggingManager::isRunning() || LoggingManager::isStarting()) {
     LoggingManager::stop(
         LoggingManager::StopReason::SleepRequest,
         "pre_sleep");
   }
 
+  if (StorageManager_recordingIoPending()) {
+    UI::status("Storage busy");
+    return false;
+  }
   WebServerManager::stop();   // safe even if not started
   applyAnalogRailPin_(false);
 
@@ -381,11 +385,12 @@ static void preSleep_() {
   DisplayManager::clear();
   DisplayManager::present();
   delay(2000);
+  return true;
 }
 
 void PowerManager::sleepOnEnterEXT0()
 {
-  preSleep_();
+  if (!preSleep_()) return;
 
   if (g_enterWakePin == GPIO_NUM_NC) {
     PWR_LOGW("No nav_enter wake pin configured; refusing deep sleep\n");

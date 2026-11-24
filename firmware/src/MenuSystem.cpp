@@ -955,10 +955,11 @@ namespace {
     }
     const uint8_t issues =
         SensorManager::configurationDiagnostics(ConfigManager::get()).count();
-    String sensors = String("Sensors: ") + present + "/" +
+    String sensors = String("S:") + present + "/" +
         ConfigManager::get().sensorCount();
     if (issues) sensors += String(" !") + issues;
-    sensors += String(" ") + CanMasterManager::shortStatus();
+    sensors += String(" ") + CanMasterManager::shortStatus() + " " +
+        CanMasterManager::controlShortStatus();
     UI::oledText(0, 54, truncateForOled_(sensors, 21));
     DisplayManager::present();
   }
@@ -1353,7 +1354,11 @@ namespace {
     const uint8_t sel = s_sensorSel;
     bool m = false;
     if (!SensorManager::getMuted(sel, m)) return;
-    SensorManager::setMuted(sel, !m);
+    if (!SensorManager::setMuted(sel, !m)) {
+      UI::toastModal(LoggingManager::configurationLocked()
+          ? "Recording locked\nStop, then retry" : "Mute unavailable", 2000, 1);
+      return;
+    }
 
     MLOG("[MENU] toggle sensor %u -> %s\n", (unsigned)sel, (!m ? "Muted" : "Unmuted"));
 

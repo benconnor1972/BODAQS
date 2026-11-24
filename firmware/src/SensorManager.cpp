@@ -1,4 +1,6 @@
 #include "SensorManager.h"
+#include "CanMasterManager.h"
+#include "LoggingManager.h"
 #include "Sensor.h"
 #include "AnalogPotSensor.h"
 #include "ConfigManager.h"
@@ -11,10 +13,13 @@
 #include "I2CBusScheduler.h"
 #include "BMI270ImuSensor.h"
 #include "BMI270Profile.h"
+#include "Lsm6dso32xConfig.h"
 #include "BdqV2Catalog.h"
 #include "LoggerLimits.h"
 #include "SensorAssignment.h"
 #include <cstring>
+#include <new>
+#include "RawAdcRecording.h"
 #include "BoardSelect.h"
 #include "DebugLog.h"
 
@@ -46,6 +51,38 @@ namespace {
   const LoggerConfig* s_cfg               = nullptr;
   AnalogPotSensor*    s_primaryPot        = nullptr;
   SensorTimingStats   s_timingStats;
+  struct SamplingEntry { Sensor* sensor=nullptr; uint8_t index=0,columns=0; };
+  SamplingEntry* s_samplingPlan=nullptr; // Persistent, bounded START allocation.
+  uint8_t s_samplingCount=0;
+  uint16_t s_samplingColumns=0;
+  bool s_samplingReady=false,s_samplingExcludeNative=false;
+
+  struct RemoteMuteOverride {
+    SensorAssignment assignment;
+    SensorType type = SensorType::Unknown;
+    char name[sizeof(SensorSpec::name)] = {};
+    bool valid = false, muted = false, savedDefault = false;
+  };
+  RemoteMuteOverride s_remoteMute[MAX_SENSORS];
+
+  // A temporary menu override survives unrelated rebuilds, but never follows a
+  // deleted/reassigned slot or overrides an explicit saved-default change.
+  bool remoteMuteSpec_(uint8_t index, SensorSpec& spec, RemoteMuteOverride*& overlay) {
+    if (index >= MAX_SENSORS) return false;
+    if (!ConfigManager::get().getSensorSpec(index, spec)) {
+      s_remoteMute[index].valid = false;
+      return false;
+    }
+    const auto assignment = sensorAssignment(spec, board::gBoard);
+    if (assignment.provider.kind != SensorProviderKind::CanNode) {
+      s_remoteMute[index].valid = false;
+      return false;
+    }
+    overlay = &s_remoteMute[index];
+    if (overlay->valid && (!(overlay->assignment == assignment) || overlay->type != spec.type ||
+        strcmp(overlay->name, spec.name) || overlay->savedDefault != spec.mutedDefault)) overlay->valid = false;
+    return true;
+  }
 
   int firstFree() {
     for (int i = 0; i < (int)MAX_SENSORS; ++i) if (!s_list[i]) return i;
@@ -62,6 +99,21 @@ namespace {
   bool participates_(uint8_t index) {
     if (index >= MAX_SENSORS || !s_list[index] || s_list[index]->muted()) return false;
     return !s_sessionPlanActive || s_sessionParticipating[index];
+  }
+
+  void prepareSamplingPlan_() {
+    s_samplingReady=false;s_samplingCount=0;s_samplingColumns=0;
+    if(!s_samplingPlan)s_samplingPlan=new(std::nothrow) SamplingEntry[MAX_SENSORS];
+    if(!s_samplingPlan){SENS_LOGW("recording sampling plan unavailable; using generic row path\n");return;}
+    s_samplingExcludeNative=s_cfg && s_cfg->logFormat==LogFormat::BodaqsMultiStreamBinary;
+    for(uint8_t i=0;i<MAX_SENSORS;++i) {
+      Sensor* sensor=s_list[i];
+      if(!participates_(i) || (s_samplingExcludeNative && sensor->usesBdqV2NativeStream()))continue;
+      const uint8_t columns=sensor->columnCount();
+      if(!columns)continue;
+      s_samplingPlan[s_samplingCount++]={sensor,i,columns};s_samplingColumns+=columns;
+    }
+    s_samplingReady=true;
   }
 
   void addSessionIssue_(SensorIssueCode code,
@@ -195,6 +247,7 @@ namespace {
 
   uint32_t capabilitiesForType_(SensorType type) {
     switch (type) {
+      case SensorType::LSM6DSO32XImu: return SENSOR_CAP_IMU;
       case SensorType::BMI270ImuI2C:
         return SENSOR_CAP_IMU | SENSOR_CAP_NATIVE_STREAM | SENSOR_CAP_SYNC_CAPTURE;
       case SensorType::AnalogPot:
@@ -214,6 +267,7 @@ namespace {
   bool assignmentMatchesType_(SensorType type, const SensorAssignment& assignment) {
     if (assignment.provider.kind != SensorProviderKind::CanNode) return true;
     switch (type) {
+      case SensorType::LSM6DSO32XImu:
       case SensorType::BMI270ImuI2C:
         return assignment.kind == SensorAssignment::Kind::NodeImu;
       case SensorType::AnalogPot:
@@ -272,6 +326,7 @@ void begin(const LoggerConfig* cfg) {
   s_cfg = cfg;
   for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
     s_list[i] = nullptr;
+    s_remoteMute[i].valid = false;
     s_loggingStarted[i] = false;
     s_loggingStopped[i] = false;
     s_sessionParticipating[i] = false;
@@ -291,6 +346,10 @@ void registerSensor(Sensor* s) {
 
 void buildSensorsFromConfig(const LoggerConfig& cfg) {
   SENS_LOGI("Starting buildSensorsFromConfig\n");
+  for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
+    SensorSpec spec; RemoteMuteOverride* overlay = nullptr;
+    (void)remoteMuteSpec_(i, spec, overlay);
+  }
   const uint8_t n = cfg.sensorCount();
   if (n == 0) {
     UI::status("No sensors");
@@ -736,6 +795,13 @@ const SensorDiagnosticList& configurationDiagnostics(const LoggerConfig& cfg) {
           SensorIssueImpact::ExcludeSensor, i, 0xFF, assignment);
       continue;
     }
+    if (current.type == SensorType::LSM6DSO32XImu) {
+      char validation[128] = {};
+      if (!Lsm6dso32xConfig::validateSpec(current, validation, sizeof(validation))) {
+        add(SensorIssueCode::CapabilityMismatch, SensorIssueSeverity::Error,
+            SensorIssueImpact::ExcludeSensor, i, 0xFF, assignment);
+      }
+    }
     if (current.type == SensorType::BMI270ImuI2C) {
       char validation[128] = {0};
       if (!BMI270ImuSensor::validateSpec(current, validation, sizeof(validation))) {
@@ -769,12 +835,11 @@ const SensorDiagnosticList& configurationDiagnostics(const LoggerConfig& cfg) {
     if (!cfg.getSensorSpec(i, current) || !configuredActive_(current)) continue;
     const SensorAssignment assignment = sensorAssignment(current, board::gBoard);
     if (assignment.provider.kind == SensorProviderKind::CanNode) {
-      // Discovery can establish that the physical endpoint exists before the
-      // remote acquisition/data-plane driver is implemented. Keep it out of
-      // the live session without misreporting the hardware as absent.
-      if (!diagnostics.excludesSensor(i)) {
-        add(SensorIssueCode::RuntimeConfigurationDiffers,
-            SensorIssueSeverity::Warning,
+      // The native LSM recorder owns its fresh readiness and admission checks;
+      // it deliberately has no synchronous Sensor instance or logger-row data.
+      if (current.type!=SensorType::LSM6DSO32XImu && !diagnostics.excludesSensor(i)) {
+        add(SensorIssueCode::AcquisitionUnavailable,
+            SensorIssueSeverity::Info,
             SensorIssueImpact::ExcludeSensor, i, 0xFF, assignment);
       }
       continue;
@@ -819,6 +884,7 @@ bool requiresBdqV2(const LoggerConfig& cfg) {
   uint8_t count = 0;
   for (uint8_t i = 0; i < cfg.sensorCount(); ++i) {
     SensorSpec spec;
+    if(cfg.getSensorSpec(i,spec) && spec.type==SensorType::LSM6DSO32XImu && configuredActive_(spec)) return true;
     if (!cfg.getSensorSpec(i, spec) || spec.type != SensorType::BMI270ImuI2C ||
         !configuredActive_(spec) || diagnostics.excludesSensor(i)) continue;
     if (++count > 1) return true;
@@ -850,6 +916,8 @@ bool validateLoggingStart(
     SensorSpec spec;
     if (!cfg.getSensorSpec(i, spec) || spec.mutedDefault ||
         s_sessionDiagnostics.excludesSensor(i)) continue;
+    if(spec.type==SensorType::LSM6DSO32XImu &&
+       sensorAssignment(spec,board::gBoard).kind==SensorAssignment::Kind::NodeImu) continue;
     if (!s_list[i]) {
       addSessionIssue_(SensorIssueCode::SensorAbsent, SensorIssueSeverity::Error,
                        SensorIssueImpact::ExcludeSensor, i);
@@ -905,6 +973,7 @@ bool validateLoggingStart(
 }
 
 bool onLoggingStart(char* error, size_t errorCapacity) {
+  s_samplingReady=false;
 #if BODAQS_TIMING_INSTRUMENTATION
   resetTimingStats_();
 #endif
@@ -933,6 +1002,9 @@ bool onLoggingStart(char* error, size_t errorCapacity) {
       if (error && errorCapacity) error[0] = '\0';
     }
   }
+#if BODAQS_ADC_ROW_HANDOFF && !BODAQS_ADC_RAW_RECORDING_BENCH
+  prepareSamplingPlan_();
+#endif
   return true;
 }
 
@@ -950,6 +1022,7 @@ void onLoggingStop() {
 }
 
 void onLoggingFinalized() {
+  s_samplingReady=false;s_samplingCount=0;s_samplingColumns=0;
   for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
     if (s_loggingStarted[i] && s_list[i]) s_list[i]->onLoggingFinalized();
     s_loggingStarted[i] = false;
@@ -1005,12 +1078,36 @@ Sensor* get(uint8_t i) {
 Sensor* at(uint8_t i) { return get(i); }
 
 bool getMuted(uint8_t index, bool& outMuted) {
+  SensorSpec spec; RemoteMuteOverride* overlay = nullptr;
+  if (remoteMuteSpec_(index, spec, overlay)) {
+    outMuted = overlay->valid ? overlay->muted : spec.mutedDefault;
+    return true;
+  }
   if (index >= MAX_SENSORS || !s_list[index]) return false;
   outMuted = s_list[index]->muted();
   return true;
 }
 
 bool setMuted(uint8_t index, bool muted) {
+#if BODAQS_ADC_RAW_RECORDING_BENCH
+  // This diagnostic records a frozen two-column raw layout. Reject mutation
+  // before any saved/default/overlay state changes, including local mute.
+  if(LoggingManager::configurationLocked())return false;
+#endif
+  // Admission precedes even overlay identity invalidation: rejected edits have
+  // no deferred state and do not touch the saved ParamPack or desired plan.
+  SensorSpec spec;
+  const bool configured = index < MAX_SENSORS && ConfigManager::get().getSensorSpec(index, spec);
+  const auto assignment = sensorAssignment(spec, board::gBoard);
+  if (configured && assignment.provider.kind == SensorProviderKind::CanNode) {
+    if (LoggingManager::configurationLocked()) return false;
+    auto& overlay = s_remoteMute[index];
+    overlay.assignment = assignment; overlay.type = spec.type;
+    snprintf(overlay.name, sizeof(overlay.name), "%s", spec.name);
+    overlay.savedDefault = spec.mutedDefault; overlay.muted = muted; overlay.valid = true;
+    CanMasterManager::scheduleConfigurationReconciliation();
+    return true;
+  }
   if (index >= MAX_SENSORS || !s_list[index]) return false;
   s_list[index]->setMuted(muted);
   return true;
@@ -1046,7 +1143,14 @@ bool gpsStatus(SensorGpsStatus& out) {
 
 uint8_t activeCount() {
   uint8_t active = 0;
-  for (uint8_t i = 0; i < MAX_SENSORS; ++i) if (participates_(i)) ++active;
+  for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
+    if (participates_(i)) { ++active; continue; }
+    // Remote endpoints have no local Sensor instance. Count their unmuted
+    // assignments for the HUD; this count is not proof of sample delivery.
+    SensorSpec spec; RemoteMuteOverride* overlay = nullptr;
+    if (remoteMuteSpec_(i, spec, overlay) &&
+        !(overlay->valid ? overlay->muted : spec.mutedDefault)) ++active;
+  }
   return active;
 }
 
@@ -1099,6 +1203,58 @@ String buildHeaderString(bool humanTs) {
 
   appendCsv(out, "mark");
   return out;
+}
+
+uint16_t recordingColumnCapacity(bool excludeBdqV2NativeStreams) {
+  return s_samplingReady && excludeBdqV2NativeStreams==s_samplingExcludeNative
+      ? s_samplingColumns : dynamicColumnCount(excludeBdqV2NativeStreams);
+}
+
+bool recordingSamplingPlanReady() { return s_samplingReady; }
+
+bool rawAdcPairEligible() {
+  if(!s_sessionPlanActive || !s_cfg || s_cfg->logFormat!=LogFormat::BodaqsMultiStreamBinary)return false;
+  unsigned columns=0;
+  for(uint8_t i=0;i<MAX_SENSORS;++i) {
+    if(!participates_(i))continue;
+    const Sensor* sensor=s_list[i];
+    if(sensor->usesBdqV2NativeStream())continue;
+    const auto& assignment=s_liveAssignment[i];
+    if(columns>=RawAdcRecording::kColumns || s_liveType[i]!=SensorType::AnalogPot ||
+       sensor->outputMode()!=OutputMode::RAW || sensor->columnCount()!=1 ||
+       assignment.provider.kind!=SensorProviderKind::Local || assignment.kind!=SensorAssignment::Kind::ExternalAdc ||
+       assignment.bus!=int(columns%2) || assignment.input!=int(columns/2) ||
+       assignment.negativeInput!=-1)return false;
+    ++columns;
+  }
+  return columns==RawAdcRecording::kColumns;
+}
+
+void sampleRowValues(float* out,uint16_t cap,uint16_t& written,
+                     bool excludeBdqV2NativeStreams,const LocalAdcSnapshot& snapshot) {
+  if(!s_samplingReady || excludeBdqV2NativeStreams!=s_samplingExcludeNative) {
+    sampleValues(out,cap,written,excludeBdqV2NativeStreams);return;
+  }
+  written=0;if(!out || !cap)return;
+  AnalogInputManager::beginSample();
+  for(uint8_t i=0;i<s_samplingCount;++i) {
+    const auto& entry=s_samplingPlan[i];Sensor* sensor=entry.sensor;
+    if(sensor->muted())continue;
+    const uint16_t room=written<cap?cap-written:0;if(!room)break;
+    const uint8_t toWrite=entry.columns<=room?entry.columns:uint8_t(room);
+#if BODAQS_TIMING_INSTRUMENTATION
+    auto& timing=s_timingStats.sensor[entry.index];
+    if(!timing.present)refreshTimingSlot_(entry.index,sensor);
+    timing.muted=false;timing.columnCount=entry.columns;
+    const uint32_t begin=micros();
+#endif
+    sensor->sampleRowValues(out+written,toWrite,snapshot);
+#if BODAQS_TIMING_INSTRUMENTATION
+    TimingStats_record(timing.sampleUs,uint32_t(micros()-begin));
+#endif
+    written+=toWrite;if(toWrite<entry.columns)break;
+  }
+  AnalogInputManager::endSample();
 }
 
 void sampleValues(

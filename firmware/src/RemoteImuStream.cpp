@@ -1,0 +1,865 @@
+#include "RemoteImuStream.h"
+#include "../can-fd/common/protocol/bodaqs_imu_profiles.h"
+#include "MeasurementPipelineTrace.h"
+#include <cstdio>
+#include <cstring>
+#include <algorithm>
+#include <cmath>
+#include <new>
+#include "../can-fd/common/protocol/bodaqs_fragment_transport.h"
+#ifdef BODAQS_LOGGER_SAMPLE_QUEUE_CAPACITY
+#if BODAQS_LOGGER_SAMPLE_QUEUE_CAPACITY != 512 || BODAQS_SPI_BULK_BYTES != 512 || !BODAQS_V4_FOUR_NODE_BENCH
+#error "Logger sample buffer override requires the selected 512-entry four-node bulk bench"
+#endif
+#else
+#define BODAQS_LOGGER_SAMPLE_QUEUE_CAPACITY BODAQS_SAMPLE_QUEUE_CAPACITY
+#endif
+namespace {
+uint32_t u32(const uint8_t* p) { return BdqV2Format::getU32(p); }
+uint16_t u16(const uint8_t* p) { return BdqV2Format::getU16(p); }
+void put(uint8_t* p,uint32_t v) { BdqV2Format::putU32(p,v); }
+const BdqV2CatalogStatusFlag flags[]={ {"discontinuity_before",1},{"producer_drop_before",2},{"source_recovery_before",4},{"timing_degraded",8},{"native_tick_estimated",16} };
+const BdqV2CatalogChannel sampleChannels[]={
+ {"sequence","sequence","count","uint32",0,"diagnostic"},
+ {"native_tick","time","tick","uint32",4,"time"},
+ {"status_flags","flags","bitmask","uint16",8,"diagnostic"},
+ {"source_segment_id","source_segment","count","uint32",12,"diagnostic"},
+ {"ax","acceleration","count","int16",16,"signal","x","sensor","accel"},
+ {"ay","acceleration","count","int16",18,"signal","y","sensor","accel"},
+ {"az","acceleration","count","int16",20,"signal","z","sensor","accel"},
+ {"gx","angular_velocity","count","int16",22,"signal","x","sensor","gyro"},
+ {"gy","angular_velocity","count","int16",24,"signal","y","sensor","gyro"},
+ {"gz","angular_velocity","count","int16",26,"signal","z","sensor","gyro"}
+};
+const BdqV2CatalogChannel unitChannels[]={
+ {"sequence","sample_unit","count","uint32",0,"diagnostic"},
+ {"native_tick","sample_unit","count","uint32",4,"diagnostic"},
+ {"status_flags","sample_unit","count","uint16",8,"diagnostic"},
+ {"source_segment_id","sample_unit","count","uint32",12,"diagnostic"},
+ {"sequence_floor","sample_unit","count","uint32",16,"diagnostic"},
+ {"context_low","sample_unit","count","uint32",24,"diagnostic"},
+ {"context_high","sample_unit","count","uint32",28,"diagnostic"},
+ {"object_id","sample_unit","count","uint32",32,"diagnostic"},
+ {"node","sample_unit","count","uint8",36,"diagnostic"},
+ {"object_class","sample_unit","count","uint8",37,"diagnostic"},
+ {"direction","sample_unit","count","uint8",38,"diagnostic"},
+ {"total","sample_unit","count","uint16",40,"diagnostic"},
+ {"unit_word0","sample_unit","count","uint32",44,"diagnostic"},
+ {"unit_word1","sample_unit","count","uint32",48,"diagnostic"},
+ {"unit_word2","sample_unit","count","uint32",52,"diagnostic"},
+ {"unit_word3","sample_unit","count","uint32",56,"diagnostic"},
+ {"unit_word4","sample_unit","count","uint32",60,"diagnostic"},
+ {"unit_word5","sample_unit","count","uint32",64,"diagnostic"},
+ {"unit_word6","sample_unit","count","uint32",68,"diagnostic"},
+ {"unit_word7","sample_unit","count","uint32",72,"diagnostic"},
+ {"unit_word8","sample_unit","count","uint32",76,"diagnostic"},
+ {"unit_word9","sample_unit","count","uint32",80,"diagnostic"},
+ {"unit_word10","sample_unit","count","uint32",84,"diagnostic"},
+ {"unit_word11","sample_unit","count","uint32",88,"diagnostic"},
+ {"unit_word12","sample_unit","count","uint32",92,"diagnostic"},
+ {"unit_word13","sample_unit","count","uint32",96,"diagnostic"},
+ {"unit_word14","sample_unit","count","uint32",100,"diagnostic"},
+ {"unit_word15","sample_unit","count","uint32",104,"diagnostic"},
+ {"unit_word16","sample_unit","count","uint32",108,"diagnostic"},
+ {"unit_word17","sample_unit","count","uint32",112,"diagnostic"},
+ {"unit_word18","sample_unit","count","uint32",116,"diagnostic"},
+ {"unit_word19","sample_unit","count","uint32",120,"diagnostic"},
+ {"unit_word20","sample_unit","count","uint32",124,"diagnostic"},
+ {"unit_word21","sample_unit","count","uint32",128,"diagnostic"},
+ {"unit_word22","sample_unit","count","uint32",132,"diagnostic"},
+ {"unit_word23","sample_unit","count","uint32",136,"diagnostic"},
+ {"unit_word24","sample_unit","count","uint32",140,"diagnostic"},
+ {"unit_word25","sample_unit","count","uint32",144,"diagnostic"},
+ {"unit_word26","sample_unit","count","uint32",148,"diagnostic"},
+ {"unit_word27","sample_unit","count","uint32",152,"diagnostic"},
+ {"unit_word28","sample_unit","count","uint32",156,"diagnostic"},
+ {"unit_word29","sample_unit","count","uint32",160,"diagnostic"},
+ {"unit_word30","sample_unit","count","uint32",164,"diagnostic"},
+ {"unit_word31","sample_unit","count","uint32",168,"diagnostic"},
+ {"unit_word32","sample_unit","count","uint32",172,"diagnostic"},
+ {"unit_word33","sample_unit","count","uint32",176,"diagnostic"},
+ {"unit_word34","sample_unit","count","uint32",180,"diagnostic"},
+ {"unit_word35","sample_unit","count","uint32",184,"diagnostic"},
+ {"unit_word36","sample_unit","count","uint32",188,"diagnostic"},
+ {"unit_word37","sample_unit","count","uint32",192,"diagnostic"},
+ {"unit_word38","sample_unit","count","uint32",196,"diagnostic"},
+ {"unit_word39","sample_unit","count","uint32",200,"diagnostic"},
+ {"unit_word40","sample_unit","count","uint32",204,"diagnostic"},
+ {"unit_word41","sample_unit","count","uint32",208,"diagnostic"},
+ {"unit_word42","sample_unit","count","uint32",212,"diagnostic"},
+ {"unit_word43","sample_unit","count","uint32",216,"diagnostic"},
+ {"unit_word44","sample_unit","count","uint32",220,"diagnostic"},
+ {"unit_word45","sample_unit","count","uint32",224,"diagnostic"},
+ {"unit_word46","sample_unit","count","uint32",228,"diagnostic"},
+ {"unit_word47","sample_unit","count","uint32",232,"diagnostic"},
+ {"unit_word48","sample_unit","count","uint32",236,"diagnostic"},
+ {"unit_word49","sample_unit","count","uint32",240,"diagnostic"},
+ {"unit_word50","sample_unit","count","uint32",244,"diagnostic"},
+ {"unit_word51","sample_unit","count","uint32",248,"diagnostic"},
+ {"unit_word52","sample_unit","count","uint32",252,"diagnostic"},
+ {"unit_word53","sample_unit","count","uint32",256,"diagnostic"},
+#if BODAQS_SPI_BULK_BYTES >= 512
+ {"unit_word54","sample_unit","count","uint32",260,"diagnostic"},
+ {"unit_word55","sample_unit","count","uint32",264,"diagnostic"},
+ {"unit_word56","sample_unit","count","uint32",268,"diagnostic"},
+ {"unit_word57","sample_unit","count","uint32",272,"diagnostic"},
+ {"unit_word58","sample_unit","count","uint32",276,"diagnostic"},
+ {"unit_word59","sample_unit","count","uint32",280,"diagnostic"},
+ {"unit_word60","sample_unit","count","uint32",284,"diagnostic"},
+ {"unit_word61","sample_unit","count","uint32",288,"diagnostic"},
+ {"unit_word62","sample_unit","count","uint32",292,"diagnostic"},
+ {"unit_word63","sample_unit","count","uint32",296,"diagnostic"},
+ {"unit_word64","sample_unit","count","uint32",300,"diagnostic"},
+ {"unit_word65","sample_unit","count","uint32",304,"diagnostic"},
+ {"unit_word66","sample_unit","count","uint32",308,"diagnostic"},
+ {"unit_word67","sample_unit","count","uint32",312,"diagnostic"},
+ {"unit_word68","sample_unit","count","uint32",316,"diagnostic"},
+ {"unit_word69","sample_unit","count","uint32",320,"diagnostic"},
+ {"unit_word70","sample_unit","count","uint32",324,"diagnostic"},
+ {"unit_word71","sample_unit","count","uint32",328,"diagnostic"},
+ {"unit_word72","sample_unit","count","uint32",332,"diagnostic"},
+ {"unit_word73","sample_unit","count","uint32",336,"diagnostic"},
+ {"unit_word74","sample_unit","count","uint32",340,"diagnostic"},
+ {"unit_word75","sample_unit","count","uint32",344,"diagnostic"},
+ {"unit_word76","sample_unit","count","uint32",348,"diagnostic"},
+ {"unit_word77","sample_unit","count","uint32",352,"diagnostic"},
+ {"unit_word78","sample_unit","count","uint32",356,"diagnostic"},
+ {"unit_word79","sample_unit","count","uint32",360,"diagnostic"},
+ {"unit_word80","sample_unit","count","uint32",364,"diagnostic"},
+ {"unit_word81","sample_unit","count","uint32",368,"diagnostic"},
+ {"unit_word82","sample_unit","count","uint32",372,"diagnostic"},
+ {"unit_word83","sample_unit","count","uint32",376,"diagnostic"},
+ {"unit_word84","sample_unit","count","uint32",380,"diagnostic"},
+ {"unit_word85","sample_unit","count","uint32",384,"diagnostic"},
+ {"unit_word86","sample_unit","count","uint32",388,"diagnostic"},
+ {"unit_word87","sample_unit","count","uint32",392,"diagnostic"},
+ {"unit_word88","sample_unit","count","uint32",396,"diagnostic"},
+ {"unit_word89","sample_unit","count","uint32",400,"diagnostic"},
+ {"unit_word90","sample_unit","count","uint32",404,"diagnostic"},
+ {"unit_word91","sample_unit","count","uint32",408,"diagnostic"},
+ {"unit_word92","sample_unit","count","uint32",412,"diagnostic"},
+ {"unit_word93","sample_unit","count","uint32",416,"diagnostic"},
+ {"unit_word94","sample_unit","count","uint32",420,"diagnostic"},
+ {"unit_word95","sample_unit","count","uint32",424,"diagnostic"},
+ {"unit_word96","sample_unit","count","uint32",428,"diagnostic"},
+ {"unit_word97","sample_unit","count","uint32",432,"diagnostic"},
+ {"unit_word98","sample_unit","count","uint32",436,"diagnostic"},
+ {"unit_word99","sample_unit","count","uint32",440,"diagnostic"},
+ {"unit_word100","sample_unit","count","uint32",444,"diagnostic"},
+ {"unit_word101","sample_unit","count","uint32",448,"diagnostic"},
+ {"unit_word102","sample_unit","count","uint32",452,"diagnostic"},
+ {"unit_word103","sample_unit","count","uint32",456,"diagnostic"},
+ {"unit_word104","sample_unit","count","uint32",460,"diagnostic"},
+ {"unit_word105","sample_unit","count","uint32",464,"diagnostic"},
+ {"unit_word106","sample_unit","count","uint32",468,"diagnostic"},
+ {"unit_word107","sample_unit","count","uint32",472,"diagnostic"},
+ {"unit_word108","sample_unit","count","uint32",476,"diagnostic"},
+ {"unit_word109","sample_unit","count","uint32",480,"diagnostic"},
+ {"unit_word110","sample_unit","count","uint32",484,"diagnostic"},
+ {"unit_word111","sample_unit","count","uint32",488,"diagnostic"},
+ {"unit_word112","sample_unit","count","uint32",492,"diagnostic"},
+ {"unit_word113","sample_unit","count","uint32",496,"diagnostic"},
+ {"unit_word114","sample_unit","count","uint32",500,"diagnostic"},
+ {"unit_word115","sample_unit","count","uint32",504,"diagnostic"},
+ {"unit_word116","sample_unit","count","uint32",508,"diagnostic"},
+ {"unit_word117","sample_unit","count","uint32",512,"diagnostic"},
+#endif
+#if BODAQS_SPI_BULK_BYTES >= 1024
+ {"unit_word118","sample_unit","count","uint32",516,"diagnostic"},
+ {"unit_word119","sample_unit","count","uint32",520,"diagnostic"},
+ {"unit_word120","sample_unit","count","uint32",524,"diagnostic"},
+ {"unit_word121","sample_unit","count","uint32",528,"diagnostic"},
+ {"unit_word122","sample_unit","count","uint32",532,"diagnostic"},
+ {"unit_word123","sample_unit","count","uint32",536,"diagnostic"},
+ {"unit_word124","sample_unit","count","uint32",540,"diagnostic"},
+ {"unit_word125","sample_unit","count","uint32",544,"diagnostic"},
+ {"unit_word126","sample_unit","count","uint32",548,"diagnostic"},
+ {"unit_word127","sample_unit","count","uint32",552,"diagnostic"},
+ {"unit_word128","sample_unit","count","uint32",556,"diagnostic"},
+ {"unit_word129","sample_unit","count","uint32",560,"diagnostic"},
+ {"unit_word130","sample_unit","count","uint32",564,"diagnostic"},
+ {"unit_word131","sample_unit","count","uint32",568,"diagnostic"},
+ {"unit_word132","sample_unit","count","uint32",572,"diagnostic"},
+ {"unit_word133","sample_unit","count","uint32",576,"diagnostic"},
+ {"unit_word134","sample_unit","count","uint32",580,"diagnostic"},
+ {"unit_word135","sample_unit","count","uint32",584,"diagnostic"},
+ {"unit_word136","sample_unit","count","uint32",588,"diagnostic"},
+ {"unit_word137","sample_unit","count","uint32",592,"diagnostic"},
+ {"unit_word138","sample_unit","count","uint32",596,"diagnostic"},
+ {"unit_word139","sample_unit","count","uint32",600,"diagnostic"},
+ {"unit_word140","sample_unit","count","uint32",604,"diagnostic"},
+ {"unit_word141","sample_unit","count","uint32",608,"diagnostic"},
+ {"unit_word142","sample_unit","count","uint32",612,"diagnostic"},
+ {"unit_word143","sample_unit","count","uint32",616,"diagnostic"},
+ {"unit_word144","sample_unit","count","uint32",620,"diagnostic"},
+ {"unit_word145","sample_unit","count","uint32",624,"diagnostic"},
+ {"unit_word146","sample_unit","count","uint32",628,"diagnostic"},
+ {"unit_word147","sample_unit","count","uint32",632,"diagnostic"},
+ {"unit_word148","sample_unit","count","uint32",636,"diagnostic"},
+ {"unit_word149","sample_unit","count","uint32",640,"diagnostic"},
+ {"unit_word150","sample_unit","count","uint32",644,"diagnostic"},
+ {"unit_word151","sample_unit","count","uint32",648,"diagnostic"},
+ {"unit_word152","sample_unit","count","uint32",652,"diagnostic"},
+ {"unit_word153","sample_unit","count","uint32",656,"diagnostic"},
+ {"unit_word154","sample_unit","count","uint32",660,"diagnostic"},
+ {"unit_word155","sample_unit","count","uint32",664,"diagnostic"},
+ {"unit_word156","sample_unit","count","uint32",668,"diagnostic"},
+ {"unit_word157","sample_unit","count","uint32",672,"diagnostic"},
+ {"unit_word158","sample_unit","count","uint32",676,"diagnostic"},
+ {"unit_word159","sample_unit","count","uint32",680,"diagnostic"},
+ {"unit_word160","sample_unit","count","uint32",684,"diagnostic"},
+ {"unit_word161","sample_unit","count","uint32",688,"diagnostic"},
+ {"unit_word162","sample_unit","count","uint32",692,"diagnostic"},
+ {"unit_word163","sample_unit","count","uint32",696,"diagnostic"},
+ {"unit_word164","sample_unit","count","uint32",700,"diagnostic"},
+ {"unit_word165","sample_unit","count","uint32",704,"diagnostic"},
+ {"unit_word166","sample_unit","count","uint32",708,"diagnostic"},
+ {"unit_word167","sample_unit","count","uint32",712,"diagnostic"},
+ {"unit_word168","sample_unit","count","uint32",716,"diagnostic"},
+ {"unit_word169","sample_unit","count","uint32",720,"diagnostic"},
+ {"unit_word170","sample_unit","count","uint32",724,"diagnostic"},
+ {"unit_word171","sample_unit","count","uint32",728,"diagnostic"},
+ {"unit_word172","sample_unit","count","uint32",732,"diagnostic"},
+ {"unit_word173","sample_unit","count","uint32",736,"diagnostic"},
+ {"unit_word174","sample_unit","count","uint32",740,"diagnostic"},
+ {"unit_word175","sample_unit","count","uint32",744,"diagnostic"},
+ {"unit_word176","sample_unit","count","uint32",748,"diagnostic"},
+ {"unit_word177","sample_unit","count","uint32",752,"diagnostic"},
+ {"unit_word178","sample_unit","count","uint32",756,"diagnostic"},
+ {"unit_word179","sample_unit","count","uint32",760,"diagnostic"},
+ {"unit_word180","sample_unit","count","uint32",764,"diagnostic"},
+ {"unit_word181","sample_unit","count","uint32",768,"diagnostic"},
+ {"unit_word182","sample_unit","count","uint32",772,"diagnostic"},
+ {"unit_word183","sample_unit","count","uint32",776,"diagnostic"},
+ {"unit_word184","sample_unit","count","uint32",780,"diagnostic"},
+ {"unit_word185","sample_unit","count","uint32",784,"diagnostic"},
+ {"unit_word186","sample_unit","count","uint32",788,"diagnostic"},
+ {"unit_word187","sample_unit","count","uint32",792,"diagnostic"},
+ {"unit_word188","sample_unit","count","uint32",796,"diagnostic"},
+ {"unit_word189","sample_unit","count","uint32",800,"diagnostic"},
+ {"unit_word190","sample_unit","count","uint32",804,"diagnostic"},
+ {"unit_word191","sample_unit","count","uint32",808,"diagnostic"},
+ {"unit_word192","sample_unit","count","uint32",812,"diagnostic"},
+ {"unit_word193","sample_unit","count","uint32",816,"diagnostic"},
+ {"unit_word194","sample_unit","count","uint32",820,"diagnostic"},
+ {"unit_word195","sample_unit","count","uint32",824,"diagnostic"},
+ {"unit_word196","sample_unit","count","uint32",828,"diagnostic"},
+ {"unit_word197","sample_unit","count","uint32",832,"diagnostic"},
+ {"unit_word198","sample_unit","count","uint32",836,"diagnostic"},
+ {"unit_word199","sample_unit","count","uint32",840,"diagnostic"},
+ {"unit_word200","sample_unit","count","uint32",844,"diagnostic"},
+ {"unit_word201","sample_unit","count","uint32",848,"diagnostic"},
+ {"unit_word202","sample_unit","count","uint32",852,"diagnostic"},
+ {"unit_word203","sample_unit","count","uint32",856,"diagnostic"},
+ {"unit_word204","sample_unit","count","uint32",860,"diagnostic"},
+ {"unit_word205","sample_unit","count","uint32",864,"diagnostic"},
+ {"unit_word206","sample_unit","count","uint32",868,"diagnostic"},
+ {"unit_word207","sample_unit","count","uint32",872,"diagnostic"},
+ {"unit_word208","sample_unit","count","uint32",876,"diagnostic"},
+ {"unit_word209","sample_unit","count","uint32",880,"diagnostic"},
+ {"unit_word210","sample_unit","count","uint32",884,"diagnostic"},
+ {"unit_word211","sample_unit","count","uint32",888,"diagnostic"},
+ {"unit_word212","sample_unit","count","uint32",892,"diagnostic"},
+ {"unit_word213","sample_unit","count","uint32",896,"diagnostic"},
+ {"unit_word214","sample_unit","count","uint32",900,"diagnostic"},
+ {"unit_word215","sample_unit","count","uint32",904,"diagnostic"},
+ {"unit_word216","sample_unit","count","uint32",908,"diagnostic"},
+ {"unit_word217","sample_unit","count","uint32",912,"diagnostic"},
+ {"unit_word218","sample_unit","count","uint32",916,"diagnostic"},
+ {"unit_word219","sample_unit","count","uint32",920,"diagnostic"},
+ {"unit_word220","sample_unit","count","uint32",924,"diagnostic"},
+ {"unit_word221","sample_unit","count","uint32",928,"diagnostic"},
+ {"unit_word222","sample_unit","count","uint32",932,"diagnostic"},
+ {"unit_word223","sample_unit","count","uint32",936,"diagnostic"},
+ {"unit_word224","sample_unit","count","uint32",940,"diagnostic"},
+ {"unit_word225","sample_unit","count","uint32",944,"diagnostic"},
+ {"unit_word226","sample_unit","count","uint32",948,"diagnostic"},
+ {"unit_word227","sample_unit","count","uint32",952,"diagnostic"},
+ {"unit_word228","sample_unit","count","uint32",956,"diagnostic"},
+ {"unit_word229","sample_unit","count","uint32",960,"diagnostic"},
+ {"unit_word230","sample_unit","count","uint32",964,"diagnostic"},
+ {"unit_word231","sample_unit","count","uint32",968,"diagnostic"},
+ {"unit_word232","sample_unit","count","uint32",972,"diagnostic"},
+ {"unit_word233","sample_unit","count","uint32",976,"diagnostic"},
+ {"unit_word234","sample_unit","count","uint32",980,"diagnostic"},
+ {"unit_word235","sample_unit","count","uint32",984,"diagnostic"},
+ {"unit_word236","sample_unit","count","uint32",988,"diagnostic"},
+ {"unit_word237","sample_unit","count","uint32",992,"diagnostic"},
+ {"unit_word238","sample_unit","count","uint32",996,"diagnostic"},
+ {"unit_word239","sample_unit","count","uint32",1000,"diagnostic"},
+ {"unit_word240","sample_unit","count","uint32",1004,"diagnostic"},
+ {"unit_word241","sample_unit","count","uint32",1008,"diagnostic"},
+ {"unit_word242","sample_unit","count","uint32",1012,"diagnostic"},
+ {"unit_word243","sample_unit","count","uint32",1016,"diagnostic"},
+ {"unit_word244","sample_unit","count","uint32",1020,"diagnostic"},
+ {"unit_word245","sample_unit","count","uint32",1024,"diagnostic"},
+#endif
+
+};
+const BdqV2CatalogChannel packetChannels[]={
+ {"sequence","packet_observation","count","uint32",0,"diagnostic"},
+ {"native_tick","packet_observation","count","uint32",4,"diagnostic"},
+ {"status_flags","packet_observation","count","uint16",8,"diagnostic"},
+ {"source_segment_id","packet_observation","count","uint32",12,"diagnostic"},
+ {"sequence_floor","packet_observation","count","uint32",16,"diagnostic"},
+ {"master_receive_tick","packet_observation","count","uint32",20,"diagnostic"},
+ {"master_receive_ordinal_low","packet_observation","count","uint32",24,"diagnostic"},
+ {"master_receive_ordinal_high","packet_observation","count","uint32",28,"diagnostic"},
+ {"first_sequence_low","packet_observation","count","uint16",32,"diagnostic"},
+ {"stream_epoch","packet_observation","count","uint8",34,"diagnostic"},
+ {"packet_flags","packet_observation","count","uint8",35,"diagnostic"},
+ {"packet_length","packet_observation","count","uint16",36,"diagnostic"},
+ {"reception_flags","packet_observation","count","uint8",38,"diagnostic"},
+ {"ax0","packet_observation","count","int16",40,"diagnostic"},
+ {"ay0","packet_observation","count","int16",42,"diagnostic"},
+ {"az0","packet_observation","count","int16",44,"diagnostic"},
+ {"gx0","packet_observation","count","int16",46,"diagnostic"},
+ {"gy0","packet_observation","count","int16",48,"diagnostic"},
+ {"gz0","packet_observation","count","int16",50,"diagnostic"},
+ {"ax1","packet_observation","count","int16",52,"diagnostic"},
+ {"ay1","packet_observation","count","int16",54,"diagnostic"},
+ {"az1","packet_observation","count","int16",56,"diagnostic"},
+ {"gx1","packet_observation","count","int16",58,"diagnostic"},
+ {"gy1","packet_observation","count","int16",60,"diagnostic"},
+ {"gz1","packet_observation","count","int16",62,"diagnostic"},
+ {"ax2","packet_observation","count","int16",64,"diagnostic"},
+ {"ay2","packet_observation","count","int16",66,"diagnostic"},
+ {"az2","packet_observation","count","int16",68,"diagnostic"},
+ {"gx2","packet_observation","count","int16",70,"diagnostic"},
+ {"gy2","packet_observation","count","int16",72,"diagnostic"},
+ {"gz2","packet_observation","count","int16",74,"diagnostic"},
+ {"ax3","packet_observation","count","int16",76,"diagnostic"},
+ {"ay3","packet_observation","count","int16",78,"diagnostic"},
+ {"az3","packet_observation","count","int16",80,"diagnostic"},
+ {"gx3","packet_observation","count","int16",82,"diagnostic"},
+ {"gy3","packet_observation","count","int16",84,"diagnostic"},
+ {"gz3","packet_observation","count","int16",86,"diagnostic"},
+ {"ax4","packet_observation","count","int16",88,"diagnostic"},
+ {"ay4","packet_observation","count","int16",90,"diagnostic"},
+ {"az4","packet_observation","count","int16",92,"diagnostic"},
+ {"gx4","packet_observation","count","int16",94,"diagnostic"},
+ {"gy4","packet_observation","count","int16",96,"diagnostic"},
+ {"gz4","packet_observation","count","int16",98,"diagnostic"},
+};
+const BdqV2CatalogChannel evidenceChannels[]={
+ {"sequence","sequence","count","uint32",0,"diagnostic"},
+ {"native_tick","native_tick","count","uint32",4,"diagnostic"},
+ {"status_flags","status_flags","count","uint16",8,"diagnostic"},
+ {"kind","kind","count","uint8",12,"diagnostic"},
+ {"endpoint","endpoint","count","uint8",13,"diagnostic"},
+ {"stream_epoch","stream_epoch","count","uint8",14,"diagnostic"},
+ {"validity_mask","validity_mask","count","uint32",16,"diagnostic"},
+ {"source_segment_id","source_segment_id","count","uint32",20,"diagnostic"},
+ {"related_sequence","related_sequence","count","uint32",24,"diagnostic"},
+ {"node_boot","node_boot","count","uint32",28,"diagnostic"},
+ {"sensor_clock_epoch","sensor_clock_epoch","count","uint32",32,"diagnostic"},
+ {"node_clock_epoch","node_clock_epoch","count","uint32",36,"diagnostic"},
+ {"master_clock_epoch","master_clock_epoch","count","uint32",40,"diagnostic"},
+ {"model_id","model_id","count","uint32",44,"diagnostic"},
+ {"node_evidence_ordinal","node_evidence_ordinal","count","uint32",48,"diagnostic"},
+ {"raw_sensor_timestamp","raw_sensor_timestamp","count","uint32",52,"diagnostic"},
+ {"drdy_node_tick","drdy_node_tick","count","uint32",56,"diagnostic"},
+ {"capture_ordinal","capture_ordinal","count","uint32",60,"diagnostic"},
+ {"sync_sequence","sync_sequence","count","uint32",64,"diagnostic"},
+ {"node_sync_tick","node_sync_tick","count","uint32",68,"diagnostic"},
+ {"master_sync_tick","master_sync_tick","count","uint32",72,"diagnostic"},
+ {"master_receive_tick","master_receive_tick","count","uint32",76,"diagnostic"},
+ {"master_receive_ordinal_low","master_receive_ordinal_low","count","uint32",80,"diagnostic"},
+ {"fifo_accel_tag","fifo_accel_tag","count","uint8",84,"diagnostic"},
+ {"fifo_gyro_tag","fifo_gyro_tag","count","uint8",85,"diagnostic"},
+ {"fifo_timestamp_tag","fifo_timestamp_tag","count","uint8",86,"diagnostic"},
+ {"association_flags","association_flags","count","uint8",87,"diagnostic"},
+ {"anchor_sequence","anchor_sequence","count","uint32",88,"diagnostic"},
+ {"anchor_node_tick","anchor_node_tick","count","uint32",92,"diagnostic"},
+ {"step_numerator","step_numerator","count","uint32",96,"diagnostic"},
+ {"step_denominator","step_denominator","count","uint32",100,"diagnostic"},
+ {"uncertainty_us","uncertainty_us","count","uint32",104,"diagnostic"},
+ {"maximum_sample_span","maximum_sample_span","count","uint32",108,"diagnostic"},
+ {"maximum_duration_us","maximum_duration_us","count","uint32",112,"diagnostic"},
+ {"fifo_slot_ordinal","fifo_slot_ordinal","count","uint32",116,"diagnostic"},
+ {"logger_lower_low","logger_lower_low","count","uint32",120,"diagnostic"},
+ {"logger_lower_high","logger_lower_high","count","uint32",124,"diagnostic"},
+ {"logger_upper_low","logger_upper_low","count","uint32",128,"diagnostic"},
+ {"logger_upper_high","logger_upper_high","count","uint32",132,"diagnostic"},
+ {"bridge_master_tick","bridge_master_tick","count","uint32",136,"diagnostic"},
+ {"bridge_method","bridge_method","count","uint16",140,"diagnostic"},
+ {"boundary_reason","boundary_reason","count","uint16",142,"diagnostic"},
+ {"bridge_token","bridge_token","count","uint32",144,"diagnostic"},
+ {"source_loss_delta","source_loss_delta","count","uint32",148,"diagnostic"},
+ {"evidence_loss_delta","evidence_loss_delta","count","uint32",152,"diagnostic"},
+ {"capture_loss_delta","capture_loss_delta","count","uint32",156,"diagnostic"},
+ {"first_affected","first_affected","count","uint32",160,"diagnostic"},
+ {"last_affected","last_affected","count","uint32",164,"diagnostic"},
+ {"loss_stage","loss_stage","count","uint8",168,"diagnostic"},
+ {"count_validity","count_validity","count","uint16",170,"diagnostic"},
+ {"first_input_ordinal","first_input_ordinal","count","uint32",172,"diagnostic"},
+ {"last_input_ordinal","last_input_ordinal","count","uint32",176,"diagnostic"},
+ {"clock_bound_flags","clock_bound_flags","count","uint32",180,"diagnostic"},
+ {"original_message_type","original_message_type","count","uint8",184,"diagnostic"},
+ {"original_message_version","original_message_version","count","uint8",185,"diagnostic"},
+ {"original_message_length","original_message_length","count","uint8",186,"diagnostic"},
+ {"master_receive_ordinal_high","master_receive_ordinal_high","count","uint32",188,"diagnostic"},
+ {"boundary_node_tick","boundary_node_tick","count","uint32",192,"diagnostic"},
+ {"recovery_elapsed_us","recovery_elapsed_us","count","uint32",196,"diagnostic"},
+ {"boundary_event_kind","boundary_event_kind","count","uint8",200,"diagnostic"},
+ {"snapshot_presence","snapshot_presence","count","uint8",201,"diagnostic"},
+ {"model_kind","model_kind","count","uint8",202,"diagnostic"},
+ {"snapshot_flags","snapshot_flags","count","uint16",204,"diagnostic"},
+ {"model_flags","model_flags","count","uint16",206,"diagnostic"},
+ {"boundary_validity_flags","boundary_validity_flags","count","uint16",208,"diagnostic"},
+};
+}
+bool RemoteImuStream::configure(const RemoteImuBinding& b,uint16_t sample,uint16_t companion) {
+  release(); if(!bodaqs_imu_profile_rate(b.profileId))return false;
+  if(b.profileId!=1 && !bodaqs_imu_profile_matches_effective(b.profileId,b.effective))return false;
+  if(!b.boot || b.node>3 || !sample || !companion || sample==companion) return false;
+  if(b.sampleUnits && !b.compactPackets) return false;
+  if(!(b.compactPackets?packets_.allocate(b.sampleUnits?BODAQS_SAMPLE_RECORD_BYTES:100,b.sampleUnits?BODAQS_LOGGER_SAMPLE_QUEUE_CAPACITY:2048):samples_.allocate(8192)) ||
+     !evidence_.allocate(224,512)) {release();return false;}
+  provenance_=static_cast<char*>(DynamicSpscQueueDetail::allocateBytes(3072));
+  models_=static_cast<Model*>(DynamicSpscQueueDetail::allocateBytes(32*sizeof(Model)));
+  anchors_=static_cast<Anchor*>(DynamicSpscQueueDetail::allocateBytes(32*sizeof(Anchor)));
+  if(!provenance_ || !models_ || !anchors_) {release();return false;}
+  for(unsigned i=0;i<32;++i) {new(models_+i) Model{};new(anchors_+i) Anchor{};}
+  binding_=b;sampleId_=sample;evidenceId_=companion;
+  char raw[385];for(size_t i=0;i<192;++i) std::snprintf(raw+2*i,3,"%02x",b.effective[i]);
+  const bool scalingKnown=(u32(b.effective+12)&16u) && !(u32(b.effective+16)&16u) &&
+    u32(b.effective+76) && u32(b.effective+84);
+  const uint64_t accelScale=scalingKnown?uint64_t(u32(b.effective+72))*1000000/u32(b.effective+76):0;
+  const uint64_t gyroScale=scalingKnown?uint64_t(u32(b.effective+80))*1000000/u32(b.effective+84):0;
+  char mount[768];
+  std::snprintf(mount,sizeof mount,"\"orientation_status\":\"unset\"");
+  if(b.orientationValid) {
+    const double w=b.mountingQuaternion[0],x=b.mountingQuaternion[1],y=b.mountingQuaternion[2],z=b.mountingQuaternion[3];
+    const double norm=w*w+x*x+y*y+z*z;
+    if(!std::isfinite(norm) || std::fabs(norm-1)>0.001) {release();return false;}
+    std::snprintf(mount,sizeof mount,
+      "\"orientation_status\":\"accepted\",\"saved_mount_quaternion\":[%.12g,%.12g,%.12g,%.12g],"
+      "\"mount_transform\":{\"from\":\"sensor_native\",\"to\":\"body_local\",\"representation\":\"rotation_matrix\","
+      "\"matrix\":[[%.12g,%.12g,%.12g],[%.12g,%.12g,%.12g],[%.12g,%.12g,%.12g]]}",
+      w,x,y,z,1-2*(y*y+z*z),2*(x*y-z*w),2*(x*z+y*w),
+      2*(x*y+z*w),1-2*(x*x+z*z),2*(y*z-x*w),
+      2*(x*z-y*w),2*(y*z+x*w),1-2*(x*x+y*y));
+  }
+  const int provenanceLength=std::snprintf(provenance_,3072,
+    "\"provider_uid\":\"%llu\",\"node_address\":%u,\"node_boot\":%lu,\"master_boot\":\"%llu\",\"master_uid\":\"%llu\","
+    "\"recording_id\":\"%llu\",\"control_session\":\"%llu\",\"measurement_context\":\"%llu\","
+    "\"desired_generation\":\"%llu\",\"applied_revision\":\"%llu\",\"effective_descriptor_hex\":\"%s\","
+    "\"known_mask\":%lu,\"historical_mask\":%lu,\"engine_power_bits\":%u,"
+    "\"verification_phase\":\"stopped_configuration_at_admission\","
+    "\"runtime_proof\":\"separate_acquisition_state\",%s,"
+    "\"related_sample_stream_id\":%u,\"raw_axis_scaling\":{\"valid\":%s,\"accel_ug_per_count\":%llu,\"gyro_udps_per_count\":%llu},"
+    "\"nominal_sensitivities\":{\"accel_g_numerator\":%lu,\"accel_g_denominator\":%lu,"
+    "\"gyro_dps_numerator\":%lu,\"gyro_dps_denominator\":%lu},"
+    "\"sensor_clock_id\":\"can%u_sensor_boot_%lu\",\"master_clock_id\":\"master_boot_%llu_native\","
+    "\"logger_clock_id\":\"logger_monotonic_creation\",\"master_clock_epoch_scope\":\"one_per_boot_fail_closed_on_discontinuity\",\"master_timestamp_nominal_hz\":1000000,\"master_timestamp_modulus\":4294967296,\"physical_timing_bounds\":\"unknown_pending_qualification\",\"node_sync_capture_flags\":{\"0\":\"raw_capture_sequence_unknown\",\"1\":\"sequence_association_proven\"},\"bridge_methods\":{\"1\":\"complete_causal_bracket\",\"2\":\"expired_token_only_no_master_observation\"},"
+    "\"sensor_timestamp_nominal_hz\":40000,\"sensor_timestamp_modulus\":4294967296,"
+    "\"tick_semantics\":\"%s\",\"inter_node_alignment\":\"unknown\","
+    "\"uncertainty_validity\":\"validity_mask bit13\",\"snapshot_flag_semantics\":\"acquisition_contract_5.1\","
+    "\"clock_bound_flags_semantics\":\"bits0..7 original reception flags; bit0 receive tick unknown\",\"validity_mask_semantics\":\"acquisition_contract_6.1\",\"tag_decoding\":\"LSM6DSO32X FIFO_DATA_OUT_TAG\","
+    "\"companion_prefix_semantics\":\"logger_creation_observation_not_sample_time\"",
+    (unsigned long long)b.uid,b.node,(unsigned long)b.boot,(unsigned long long)b.masterBoot,(unsigned long long)b.masterUid,
+    (unsigned long long)b.recording,(unsigned long long)b.session,(unsigned long long)b.context,
+    (unsigned long long)BdqV2Format::getU64(b.effective+24),(unsigned long long)BdqV2Format::getU64(b.effective+32),raw,
+    (unsigned long)u32(b.effective+12),(unsigned long)u32(b.effective+16),b.effective[5],mount,sample,
+    scalingKnown?"true":"false",(unsigned long long)accelScale,(unsigned long long)gyroScale,
+    (unsigned long)u32(b.effective+72),(unsigned long)u32(b.effective+76),
+    (unsigned long)u32(b.effective+80),(unsigned long)u32(b.effective+84),
+    b.node,(unsigned long)b.boot,(unsigned long long)b.masterBoot,
+    b.compactPackets?"logger_packet_observation_not_sample_time":"modelled_acceleration_output_ready");
+  if(provenanceLength<0 || size_t(provenanceLength)>=3072) {release();return false;}
+  return true;
+}
+size_t RemoteImuStream::allocatedBufferBytes(bool compactPackets,bool sampleUnits) {
+ return (compactPackets?(sampleUnits?BODAQS_LOGGER_SAMPLE_QUEUE_CAPACITY*BODAQS_SAMPLE_RECORD_BYTES:2048*100):8192*sizeof(Sample))+512*224+3072+32*sizeof(Model)+32*sizeof(Anchor);
+}
+void RemoteImuStream::release() {
+  samples_.release();packets_.release();evidence_.release();sampleId_=evidenceId_=0;
+  nextPacket_=sequenceFloor_=0;
+  lastUnit_=lastUnitChecksum_=0;
+  compactSamplesAccepted_=0;
+  segment_=nextSequence_=stagedEvidence_=modelCount_=epoch_=anchorCount_=0;nextEvidence_=1;
+  persistedEvidence_.store(0);haveSequence_=haveBoundary_=failed_=holding_=false;
+  terminalObserved_=false;terminalSequence_=0;terminalEpoch_=0;
+
+  DynamicSpscQueueDetail::releaseBytes(provenance_);provenance_=nullptr;
+  DynamicSpscQueueDetail::releaseBytes(models_);models_=nullptr;
+  DynamicSpscQueueDetail::releaseBytes(anchors_);anchors_=nullptr;
+  for(auto& l:losses_) l=Loss{};
+  producerGap_=alignmentDegraded_=false;lossDependency_=0;
+  std::memset(managementLoss_,0,sizeof managementLoss_);failureSite_.store(0,std::memory_order_relaxed);
+  lastLossReport_=nextLossLane_=0;
+
+}
+BdqV2StreamSource RemoteImuStream::sampleSource() {
+  BdqV2StreamSource s;s.streamId=sampleId_;s.recordSizeBytes=28;s.nativeTickModulus=uint64_t{1}<<32;
+  if(binding_.compactPackets) s.recordSizeBytes=100;
+  if(binding_.sampleUnits) s.recordSizeBytes=BODAQS_SAMPLE_RECORD_BYTES;
+  s.snapshotPendingSafe=binding_.compactPackets;
+  s.context=this;s.pendingRecords=pendingSamples;s.pendingObservations=noObservations;s.popRecord=popSample;s.popObservation=noObservation;return s;
+}
+BdqV2StreamSource RemoteImuStream::evidenceSource() {
+  auto s=sampleSource();s.streamId=evidenceId_;s.recordSizeBytes=224;s.snapshotPendingSafe=true;s.pendingRecords=pendingEvidence;s.popRecord=popEvidence;s.chunkWritten=writtenEvidence;return s;
+}
+size_t RemoteImuStream::pendingSamples(const void* p) {
+  auto& s=*const_cast<RemoteImuStream*>(static_cast<const RemoteImuStream*>(p));
+  if(s.binding_.compactPackets) return s.packets_.size();
+  if(!s.holding_) s.holding_=s.samples_.pop(s.held_);
+  if(!s.holding_ || s.held_.dependency>s.persistedEvidence_.load(std::memory_order_acquire)) return 0;
+  return 1+s.samples_.size(); // each pop rechecks its own evidence dependency
+}
+size_t RemoteImuStream::pendingEvidence(const void* p) {return static_cast<const RemoteImuStream*>(p)->evidence_.size();}
+bool RemoteImuStream::popSample(void* p,uint8_t* out,size_t capacity) {
+  auto& s=*static_cast<RemoteImuStream*>(p);
+  if(s.binding_.compactPackets) return s.packets_.pop(out,capacity);
+  if(capacity<28 || !pendingSamples(p)) return false;
+  std::memcpy(out,s.held_.bytes,28);s.holding_=false;return true;
+}
+bool RemoteImuStream::popEvidence(void* p,uint8_t* out,size_t capacity) {
+  auto& s=*static_cast<RemoteImuStream*>(p);if(!s.evidence_.pop(out,capacity)) return false;
+  s.stagedEvidence_=u32(out);return true;
+}
+void RemoteImuStream::writtenEvidence(void* p) {
+  auto& s=*static_cast<RemoteImuStream*>(p);s.persistedEvidence_.store(s.stagedEvidence_,std::memory_order_release);
+}
+BdqV2StreamDescriptor RemoteImuStream::descriptor(bool ev) {
+  BdqV2StreamDescriptor d;d.source=ev?evidenceSource():sampleSource();
+  std::snprintf(d.streamKey,sizeof d.streamKey,"can%u_%s",binding_.node,ev?"timing":"imu6");
+  std::snprintf(d.sensorId,sizeof d.sensorId,"%s",binding_.sensorId);
+  std::snprintf(d.transport,sizeof d.transport,"can_fd");
+  if(ev) std::snprintf(d.streamKind,sizeof d.streamKind,"intermittent");
+  std::snprintf(d.clockId,sizeof d.clockId,ev?"logger_monotonic_creation":"can%u_boot%lu_native",binding_.node,(unsigned long)binding_.boot);
+  std::snprintf(d.requestedProfile,sizeof d.requestedProfile,"%s",bodaqs_imu_profile_name(binding_.profileId));
+  std::snprintf(d.payloadSchema,sizeof d.payloadSchema,ev?"bodaqs.can_timing_evidence.v1":"bodaqs.can_imu6.v1");
+  if(!ev && binding_.compactPackets) {
+    std::snprintf(d.payloadSchema,sizeof d.payloadSchema,"bodaqs.can_imu_packets.v1");
+    std::snprintf(d.clockId,sizeof d.clockId,"logger_monotonic_creation");
+    std::snprintf(d.streamKind,sizeof d.streamKind,"intermittent");
+  }
+  std::snprintf(d.domain,sizeof d.domain,"%s",binding_.domain);
+  std::snprintf(d.end,sizeof d.end,"%s",binding_.end);
+  std::snprintf(d.mountPoint,sizeof d.mountPoint,"%s",binding_.mountPoint);
+  std::snprintf(d.calibrationRef,sizeof d.calibrationRef,"%s",binding_.calibrationRef);
+  d.nominalSampleRateNumeratorHz=ev?50:bodaqs_imu_profile_rate(binding_.profileId);
+  d.effectiveAccelRateHz=d.effectiveGyroRateHz=bodaqs_imu_profile_rate(binding_.profileId);
+  d.channels=ev?evidenceChannels:sampleChannels;d.channelCount=ev?sizeof evidenceChannels/sizeof *evidenceChannels:sizeof sampleChannels/sizeof *sampleChannels;
+  if(!ev && binding_.compactPackets) {d.channels=packetChannels;d.channelCount=sizeof packetChannels/sizeof *packetChannels;}
+  if(!ev && binding_.sampleUnits) {
+    std::snprintf(d.payloadSchema,sizeof d.payloadSchema,BODAQS_SPI_BULK_BYTES?"bodaqs.can_imu_units.v2":"bodaqs.can_imu_units.v1");
+    d.channels=unitChannels;d.channelCount=sizeof unitChannels/sizeof *unitChannels;
+  }
+  d.statusFlags=flags;d.statusFlagCount=sizeof flags/sizeof *flags;d.acquisitionDetailsJson=provenance_;return d;
+}
+RemoteImuStream::Acceptance RemoteImuStream::accept(uint16_t id,const uint8_t* p,size_t n,uint32_t tick,uint64_t order,uint32_t logger,uint8_t receptionFlags) {
+  if(failed_ || !sampleId_ || !p) return Invalid;
+  if(id==0x100+8*binding_.node) return binding_.compactPackets?packet(p,n,tick,order,logger,receptionFlags):samples(p,n,logger);
+  if(id!=0x90+binding_.node || n<8 || p[0]!=1 || p[2]!=1 || p[3] || p[7]) return Invalid;
+  if(p[1]==0x22) {
+    if(n!=32 || p[6]!=20 || p[8] || p[9]!=1 || u16(p+26) || u32(p+28)) return Invalid;
+    if(binding_.compactPackets) return Accepted; // optional legacy timing model anchor
+    for(uint8_t i=0;i<modelCount_;++i) {auto& m=models_[i];
+      if(m.epoch==p[10] && m.anchor==u32(p+12)) {
+        if(m.tick==u32(p+16) && m.numerator==u32(p+20) && m.denominator==u16(p+24)) {m.anchored=true;return Accepted;}
+        markFailed(__LINE__);return Invalid;
+      }
+    }
+    // Holding this immutable head would prevent a later matching model from
+    // reaching the logger. Retain the canonical origin in bounded RAM instead.
+    for(uint8_t i=0;i<anchorCount_;++i) {
+      const auto& a=anchors_[i];
+      if(a.epoch==p[10] && a.sequence==u32(p+12)) {
+        if(a.tick==u32(p+16) && a.numerator==u32(p+20) && a.denominator==u16(p+24)) return Accepted;
+        markFailed(__LINE__);return Invalid;
+      }
+    }
+    if(!u32(p+20) || !u16(p+24) || anchorCount_==32) {markFailed(__LINE__);return Invalid;}
+    auto& a=anchors_[anchorCount_++];a.epoch=p[10];a.sequence=u32(p+12);a.tick=u32(p+16);
+    a.numerator=u32(p+20);a.denominator=u16(p+24);
+    return Accepted;
+  }
+  if(p[1]==0x21) {
+    if(n!=24 || p[6]!=16 || u16(p+22) || u32(p+16)!=binding_.boot ||
+       u16(p+4)!=uint16_t(u32(p+8))) return Invalid;
+    uint8_t out[224]={};put(out+4,logger);out[12]=3;out[14]=epoch_;
+    put(out+16,(1u<<0)|(1u<<1)|(1u<<3)|(1u<<7)|((receptionFlags&1)?0:1u<<9)|(1u<<10)|(1u<<22));
+    put(out+20,segment_);put(out+28,binding_.boot);put(out+36,1);put(out+40,1);
+    put(out+64,u32(p+8));put(out+68,u32(p+12));put(out+76,(receptionFlags&1)?0:tick);put(out+180,receptionFlags);
+    put(out+80,(uint32_t)order);put(out+188,(uint32_t)(order>>32));
+    BdqV2Format::putU16(out+140,u16(p+20));out[184]=0x21;out[185]=1;out[186]=24;
+    return pushShared(out);
+  }
+  if(n!=64 || p[6]!=56 || p[1]<0x23 || p[1]>0x25) return Invalid;
+  if(u32(p+8)!=binding_.boot || p[12]) return Invalid;
+  return evidence(p[1],p+8,tick,order,logger,false,receptionFlags);
+}
+RemoteImuStream::Acceptance RemoteImuStream::evidence(uint8_t type,const uint8_t* b,uint32_t tick,uint64_t order,uint32_t logger,bool local,uint8_t receptionFlags) {
+  if((type==0x23 || (binding_.compactPackets && type==0x24)) && evidence_.size()>=evidence_.capacity()-8) {
+    return drop(1,1,0,logger)?Accepted:Invalid;
+  }
+  if(!flushLoss(logger)) return Invalid;
+  if(evidence_.size()==evidence_.capacity() || nextEvidence_==UINT32_MAX) {markFailed(__LINE__);return Invalid;}
+  uint8_t out[224]={};put(out,nextEvidence_);put(out+4,logger);out[12]=type==0x23?1:type==0x24?2:b[6]==3?7:6;
+  out[13]=b[4];out[14]=b[5];put(out+28,binding_.boot);put(out+76,(receptionFlags&1)?0:tick);put(out+180,receptionFlags);put(out+80,(uint32_t)order);put(out+188,(uint32_t)(order>>32));
+  if(!local) {out[184]=type;out[185]=1;out[186]=64;}
+  uint32_t valid=(1u<<0)|((receptionFlags&1)?0:1u<<9)|(1u<<10);
+  if(type==0x25) {
+    if(!local) put(out+48,u32(b+8));
+    const uint16_t v=u16(b+46);if(v&~2047u || b[6]<1 || b[6]>8) return Invalid;
+    if(b[6]==2) {
+      if(segment_==UINT32_MAX) {markFailed(__LINE__);return Invalid;}
+      ++segment_;epoch_=b[5];haveBoundary_=true;haveSequence_=false;modelCount_=0;
+      terminalObserved_=false;
+      sequenceFloor_=u32(b+20);
+      unitSequenceFloor_=sequenceFloor_;
+    }
+    if(!local && (!haveBoundary_ || b[5]!=epoch_)) return Invalid;
+    if(!local && b[6]==8 && (v&1)) {terminalObserved_=true;terminalSequence_=u32(b+20);terminalEpoch_=b[5];}
+    if(v&1) {put(out+24,u32(b+20));valid|=1u<<4;}
+    if(v&2) {put(out+160,u32(b+24));put(out+164,u32(b+28));valid|=1u<<19;}
+    if(v&4) {put(out+148,u32(b+32));valid|=1u<<16;}
+    if(v&8) {put(out+152,u32(b+40));valid|=1u<<17;}
+    if(v&16) {put(out+156,u32(b+36));valid|=1u<<18;}
+    if(v&32) {put(out+32,u32(b+12));put(out+36,u32(b+16));valid|=6;}
+    if(v&64) put(out+192,u32(b+52));
+    out[168]=b[7];BdqV2Format::putU16(out+170,v);BdqV2Format::putU16(out+142,u16(b+44));
+    put(out+196,u32(b+48));out[200]=b[6];BdqV2Format::putU16(out+208,v);valid|=1u<<22;
+  } else if(type==0x24) {
+    if(!haveBoundary_ || b[5]!=epoch_ || !(u16(b+6)&1) || (u16(b+6)&~31u) || b[34]!=1 || b[35] || !u16(b+32) || !u32(b+8) || !u32(b+28) || !u32(b+36) || !u32(b+44)) return Invalid;
+    if(u32(b+36)>500 || u32(b+44)>150000) return Invalid;
+    for(uint8_t i=0;i<modelCount_;++i) {
+      const auto& old=models_[i];
+      if(old.id==u32(b+8) || old.anchor==u32(b+20)) {
+        if(std::memcmp(old.canonical,b,56)==0) return Accepted;
+        markFailed(__LINE__);return Invalid;
+      }
+    }
+    if(modelCount_==32) { // retire only decoded definitions; queued native records retain evidence serials
+      if(!binding_.compactPackets && (!haveSequence_ || uint32_t(nextSequence_-models_[0].anchor)<models_[0].span)) {
+        markFailed(__LINE__);return Invalid;
+      }
+      for(uint8_t i=1;i<modelCount_;++i) models_[i-1]=models_[i];
+      --modelCount_;
+    }
+    auto& m=models_[modelCount_++];m=Model{};m.id=u32(b+8);m.epoch=b[5];m.flags=u16(b+6);m.nodeEpoch=u32(b+12);m.sensorEpoch=u32(b+16);m.anchor=u32(b+20);m.tick=u32(b+24);m.numerator=u32(b+28);m.denominator=u16(b+32);m.span=u32(b+36);m.duration=u32(b+44);m.dependency=nextEvidence_;
+    std::memcpy(m.canonical,b,56);
+    for(uint8_t i=0;i<anchorCount_;++i) {
+      const auto& a=anchors_[i];
+      if(a.epoch==m.epoch && a.sequence==m.anchor) {
+        if(a.tick!=m.tick || a.numerator!=m.numerator || a.denominator!=m.denominator) {markFailed(__LINE__);return Invalid;}
+        m.anchored=true;
+        for(uint8_t j=i+1;j<anchorCount_;++j) anchors_[j-1]=anchors_[j];
+        --anchorCount_;break;
+      }
+    }
+    put(out+44,m.id);put(out+32,m.sensorEpoch);put(out+36,m.nodeEpoch);put(out+24,m.anchor);put(out+88,m.anchor);put(out+92,m.tick);put(out+96,m.numerator);put(out+100,m.denominator);put(out+108,m.span);put(out+112,m.duration);
+    if(m.flags&2) {put(out+104,u32(b+40));valid|=1u<<13;}
+    if(m.flags&4) {put(out+172,u32(b+48));put(out+176,u32(b+52));valid|=1u<<20;}
+    out[202]=b[34];BdqV2Format::putU16(out+206,m.flags);valid|=6|(1u<<4)|(1u<<12);
+  } else {
+    if(!haveBoundary_ || b[5]!=epoch_ || u16(b+6)&~511u) return Invalid;
+    const uint8_t presence=b[51];const uint16_t association=u16(b+6);
+    if(binding_.compactPackets && (presence&128)) {
+      if(u32(b+12)<sequenceFloor_) {markFailed(__LINE__);return Invalid;}
+      sequenceFloor_=u32(b+12);
+    }
+    put(out+48,u32(b+8));put(out+32,u32(b+16));put(out+36,u32(b+20));valid|=6;
+    if(presence&128) {put(out+24,u32(b+12));valid|=1u<<4;}
+    if(presence&8) {put(out+52,u32(b+24));valid|=1u<<5;}
+    if(presence&16) {put(out+56,u32(b+28));put(out+60,u32(b+32));valid|=1u<<6;}
+    if(presence&32) {put(out+64,u32(b+36));put(out+68,u32(b+40));valid|=1u<<7;}
+    if(association&16) put(out+44,u32(b+44));
+    if(presence&7) {for(unsigned i=0;i<3;++i) if(presence&(1u<<i)) out[84+i]=b[48+i];valid|=1u<<11;}
+    if(presence&64) {put(out+116,u32(b+52));valid|=1u<<21;}
+    out[87]=(uint8_t)association;out[201]=presence;BdqV2Format::putU16(out+204,association);
+  }
+  put(out+20,segment_);put(out+16,valid);
+  if(!evidence_.push(out,224)) {markFailed(__LINE__);return Invalid;}
+  ++nextEvidence_;
+  if(!local && type==0x25 && b[6]==8 && (u16(b+46)&1))
+    MeasurementPipelineTrace::terminal(binding_.node);
+  if(local && u16(b+44)==31) markFailed(__LINE__);
+  return Accepted;
+}
+RemoteImuStream::Acceptance RemoteImuStream::acceptSampleUnit(uint64_t context,uint32_t object,
+    const uint8_t* p,uint16_t total,uint32_t logger) {
+#if BODAQS_MEASUREMENT_VERSION >= 4
+  if(!failed_ && !haveBoundary_) return Blocked; // essential START progresses independently
+#endif
+  if(!binding_.sampleUnits || failed_ || !p || context!=binding_.context || !object ||
+     !haveBoundary_ || total<84 || total>(BODAQS_SPI_BULK_BYTES?BODAQS_SAMPLE_UNIT_MAX:212U) || (total-20)%64 || u16(p)!=2 ||
+     p[2]!=1 || p[3]!=binding_.node || u32(p+4)!=binding_.boot ||
+     u16(p+12)!=(total-20)/64 || u16(p+14)) return Invalid;
+  const uint32_t checksum=u32(p+total-4);
+  if(object<lastUnit_ || (object==lastUnit_ && checksum!=lastUnitChecksum_)) return Invalid;
+  if(object==lastUnit_) return Accepted;
+  unsigned readings=0;
+  for(unsigned i=0;i<(total-20u)/64;++i) {
+    const auto* packet=p+16+64*i;const unsigned count=packet[3]&7;
+    if(!count || count>5 || packet[2]!=epoch_ || (packet[3]&128) ||
+       !bodaqs_measurement_zero(packet+4+12*count,60-12*count)) return Invalid;
+    readings+=count;
+  }
+  if(nextPacket_==UINT32_MAX) return Invalid;
+  uint8_t record[BODAQS_SAMPLE_RECORD_BYTES]={};put(record,nextPacket_);put(record+4,logger);
+  BdqV2Format::putU16(record+8,BdqV2Format::TimingDegraded);
+  put(record+12,segment_);put(record+16,sequenceFloor_);
+#if BODAQS_MEASUREMENT_VERSION >= 4
+  // Evidence can overtake queued units. A later snapshot is not a lower bound
+  // on an earlier unit; only its observed START bounds every unit in scope.
+  put(record+16,unitSequenceFloor_);
+#endif
+  bodaqs_measurement_put(record+24,context,8);put(record+32,object);
+  record[36]=binding_.node;record[37]=1;record[38]=1;
+  BdqV2Format::putU16(record+40,total);std::memcpy(record+44,p,total);
+  if(!packets_.push(record,sizeof record)) return Blocked;
+  lastUnit_=object;lastUnitChecksum_=checksum;++nextPacket_;compactSamplesAccepted_+=readings;
+  return Accepted;
+}
+RemoteImuStream::Acceptance RemoteImuStream::packet(const uint8_t* p,size_t n,uint32_t tick,uint64_t order,uint32_t logger,uint8_t receptionFlags) {
+  if(n<16 || n>64 || !haveBoundary_ || p[2]!=epoch_) return Invalid;
+  const uint8_t count=p[3]&7;
+  if(!count || count>5 || n<4+12u*count || (p[3]&128)) return Invalid;
+  for(size_t i=4+12u*count;i<n;++i) if(p[i]) return Invalid;
+  if(nextPacket_==UINT32_MAX) {markFailed(__LINE__);return Invalid;}
+  // Backpressure keeps the real retained master head pinned until copied.
+  if(packets_.size()==packets_.capacity()) return Blocked;
+  uint8_t out[100]={};put(out,nextPacket_);put(out+4,logger);
+  BdqV2Format::putU16(out+8,BdqV2Format::TimingDegraded);
+  put(out+12,segment_);put(out+16,sequenceFloor_);put(out+20,tick);
+  put(out+24,static_cast<uint32_t>(order));put(out+28,static_cast<uint32_t>(order>>32));
+  BdqV2Format::putU16(out+32,u16(p));out[34]=p[2];out[35]=p[3];
+  BdqV2Format::putU16(out+36,static_cast<uint16_t>(n));out[38]=receptionFlags;
+  std::memcpy(out+40,p+4,12u*count);
+  if(!packets_.push(out,sizeof out)) return Blocked;
+  ++nextPacket_;compactSamplesAccepted_+=count;return Accepted;
+}
+RemoteImuStream::Acceptance RemoteImuStream::samples(const uint8_t* p,size_t n,uint32_t logger) {
+  if(n<16 || !haveBoundary_ || p[2]!=epoch_) return Invalid;
+  const uint8_t count=p[3]&7;if(!count || count>5 || n<4+12u*count) return Invalid;
+  for(size_t i=4+12u*count;i<n;++i) if(p[i]) return Invalid;
+  uint32_t seq=haveSequence_?nextSequence_:0;
+  const uint16_t delta=(uint16_t)(u16(p)-(uint16_t)seq);if(delta>=32768) return Invalid;
+  seq+=delta;
+  Model* selected=nullptr;
+  for(uint8_t i=0;i<modelCount_;++i) {auto& m=models_[i];
+    const uint32_t span=seq-m.anchor;
+    if(m.anchored && m.epoch==epoch_ && span<0x80000000u && span+count<=m.span &&
+       (uint64_t)(span+count-1)*m.numerator/m.denominator<=m.duration) selected=&m;
+  }
+  // The master preserves one ordered selected data/evidence head. A missing
+  // definition cannot be fetched behind this pinned dependent head: fail the
+  // source explicitly instead of waiting forever or inventing a native tick.
+  if(!selected) {markFailed(__LINE__);return Invalid;}
+  if(!flushLoss(logger)) return Invalid;
+  if(samples_.capacity()-samples_.size()<count || losses_[0].source) {
+    nextSequence_=seq+count;haveSequence_=true;
+    return drop(0,count,seq,logger)?Accepted:Invalid;
+  }
+  auto& m=*selected;
+  for(uint8_t i=0;i<count;++i) {
+    Sample out={};put(out.bytes,seq+i);put(out.bytes+4,m.tick+(uint32_t)((uint64_t)(seq+i-m.anchor)*m.numerator/m.denominator));
+    uint16_t status=BdqV2Format::NativeTickEstimated;
+    if(!(m.flags&2) || (p[3]&64) || alignmentDegraded_) status|=BdqV2Format::TimingDegraded;
+    if(i==0 && (!haveSequence_ || delta || (p[3]&8))) status|=BdqV2Format::DiscontinuityBefore;
+    if(i==0 && !haveSequence_ && (m.flags&16)) status|=BdqV2Format::SourceRecoveryBefore;
+    if(i==0 && (p[3]&48)) status|=BdqV2Format::ProducerQueueDropBefore;
+    if(i==0 && producerGap_) status|=BdqV2Format::DiscontinuityBefore|BdqV2Format::ProducerQueueDropBefore;
+    BdqV2Format::putU16(out.bytes+8,status);put(out.bytes+12,segment_);std::memcpy(out.bytes+16,p+4+12*i,12);
+    out.dependency=std::max(m.dependency,lossDependency_);if(!samples_.push(out)) return Invalid;
+  }
+  producerGap_=false;
+  nextSequence_=seq+count;haveSequence_=true;return Accepted;
+}
+
+RemoteImuStream::Acceptance RemoteImuStream::pushShared(uint8_t out[224]) {
+  if(failed_ || !sampleId_ || nextEvidence_==UINT32_MAX) return Invalid;
+  if(evidence_.size()>=evidence_.capacity()-8) return drop(1,1,0,u32(out+4))?Accepted:Invalid;
+  if(!flushLoss(u32(out+4))) return Invalid;
+  put(out,nextEvidence_);
+  if(!evidence_.push(out,224)) return Blocked;
+  ++nextEvidence_;return Accepted;
+}
+bool RemoteImuStream::drop(unsigned lane,uint32_t count,uint32_t first,uint32_t logger) {
+  auto& l=losses_[lane];uint32_t& total=lane?l.evidence:l.source;
+  if(UINT32_MAX-total<count) {markFailed(__LINE__);return false;}
+  if(!lane && !total) l.first=first;
+  total+=count;if(!lane) {l.last=first+count-1;producerGap_=true;} else alignmentDegraded_=true;
+  return flushLoss(logger);
+}
+bool RemoteImuStream::flushLoss(uint32_t logger) {
+  if(uint32_t(logger-lastLossReport_)<100000) return true;
+  for(unsigned turn=0;turn<2;++turn) {
+    const unsigned lane=(nextLossLane_+turn)%2;
+    auto& l=losses_[lane];
+    if(!l.source && !l.evidence) continue;
+    if(evidence_.size()==evidence_.capacity() || nextEvidence_==UINT32_MAX) {markFailed(__LINE__);return false;}
+    uint8_t out[224]={};put(out,nextEvidence_);put(out+4,logger);out[12]=7;out[14]=epoch_;
+    put(out+28,binding_.boot);put(out+20,segment_);out[168]=lane?9:8;out[200]=3;
+    const uint32_t valid=(1u<<0)|(1u<<22)|(lane?(1u<<17):((1u<<16)|(1u<<19)));
+    put(out+16,valid);put(out+148,l.source);put(out+152,l.evidence);
+    if(!lane) {put(out+160,l.first);put(out+164,l.last);}
+    BdqV2Format::putU16(out+170,lane?8:6);BdqV2Format::putU16(out+208,lane?8:6);
+    if(!evidence_.push(out,224)) {markFailed(__LINE__);return false;}
+    lossDependency_=nextEvidence_++;l.source=l.evidence=0;lastLossReport_=logger;
+    nextLossLane_=(lane+1)%2;return true;
+  }
+  return true;
+}
+bool RemoteImuStream::finish(uint32_t logger) {
+  if(!flushLoss(logger)) return false;
+  return !losses_[0].source && !losses_[1].evidence;
+}
+bool RemoteImuStream::terminalBoundary(uint32_t& sequence,uint8_t& epoch) const {
+  if(!terminalObserved_) return false;
+  sequence=terminalSequence_;epoch=terminalEpoch_;return true;
+}
+RemoteImuStream::Acceptance RemoteImuStream::acceptSharedSync(uint32_t sequence,uint32_t tick,uint32_t epoch,uint32_t logger) {
+  if(!epoch) return Invalid;
+  uint8_t out[224]={};put(out+4,logger);out[12]=4;
+  put(out+16,(1u<<3)|(1u<<8)|(1u<<22));put(out+40,epoch);put(out+64,sequence);put(out+72,tick);
+  return pushShared(out);
+}
+RemoteImuStream::Acceptance RemoteImuStream::acceptBridge(uint32_t token,uint32_t tick,uint32_t epoch,uint64_t lower,uint64_t upper,uint32_t logger) {
+  if(!token || !epoch || upper<lower || upper-lower>=300000) return Invalid;
+  uint8_t out[224]={};put(out+4,logger);out[12]=5;
+  put(out+16,(1u<<3)|(1u<<14)|(1u<<15)|(1u<<22));put(out+40,epoch);
+  BdqV2Format::putU64(out+120,lower);BdqV2Format::putU64(out+128,upper);
+  put(out+136,tick);BdqV2Format::putU16(out+140,1);put(out+144,token);
+  return pushShared(out);
+}
+RemoteImuStream::Acceptance RemoteImuStream::acceptLocalLoss(const uint8_t b[56],uint32_t tick,uint64_t order,uint32_t logger) {
+  return evidence(0x25,b,tick,order,logger,true);
+}
+RemoteImuStream::Acceptance RemoteImuStream::acceptManagementLoss(uint8_t cls,uint8_t reason,uint16_t stage,uint32_t counter,uint32_t logger) {
+  if(cls<1 || cls>2 || (stage!=5 && stage!=6) || (reason!=9 && reason!=14)) return Invalid;
+  uint32_t& previous=managementLoss_[stage-5][cls-1];
+  if(reason==9 && counter==previous) return Accepted;
+  if(reason==9 && counter<previous) {markFailed(__LINE__);return Invalid;}
+  if(evidence_.size()==evidence_.capacity() || nextEvidence_==UINT32_MAX) {markFailed(__LINE__);return Invalid;}
+  uint8_t out[224]={};put(out,nextEvidence_);put(out+4,logger);out[12]=7;
+  // ERROR counters are context/node/class scoped. Their wire representation
+  // does not identify a source epoch, acquisition tick or CAN reception.
+  put(out+28,binding_.boot);out[168]=(uint8_t)stage;out[200]=3;
+  uint32_t valid=(1u<<0)|(1u<<22);
+  if(reason==9) {
+    put(out+(cls==1?148:152),counter-previous);valid|=1u<<(cls==1?16:17);
+    BdqV2Format::putU16(out+170,cls==1?4:8);BdqV2Format::putU16(out+208,cls==1?4:8);
+  } else BdqV2Format::putU16(out+142,31);
+  put(out+16,valid);
+  if(!evidence_.push(out,224)) {markFailed(__LINE__);return Invalid;}
+  // Fatal reports have no counter. Preserve the last cumulative observation so
+  // their replay cannot turn a later duplicate into another full loss delta.
+  if(reason==9) previous=counter;
+  ++nextEvidence_;
+  if(reason==14) markFailed(__LINE__);
+  return Accepted;
+}
+
+RemoteImuStream::Acceptance RemoteImuStream::acceptMissingBridge(uint32_t token,uint32_t logger) {
+  if(!token) return Invalid;
+  uint8_t out[224]={};put(out+4,logger);out[12]=5;
+  // Method 2 records an expired token only. No epoch, M or logger interval is
+  // present. It can never be composed as a bounded clock observation.
+  put(out+16,(1u<<15)|(1u<<22));BdqV2Format::putU16(out+140,2);put(out+144,token);
+  return pushShared(out);
+}

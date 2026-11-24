@@ -9,6 +9,7 @@
 
 class TransformRegistry;
 struct BdqV2StreamDescriptor;
+struct LocalAdcSnapshot;
 
 using CalMask = CalModeMask;
 
@@ -280,6 +281,11 @@ public:
   virtual uint8_t columnCount() const = 0;
   virtual void getColumnName(uint8_t idx, char* out, size_t cap) const = 0;
   virtual void sampleValues(float* out, uint8_t max) = 0;
+  // Synchronous row-owner call. The borrowed snapshot never escapes this call.
+  // Sensors without a specialized reader retain the ordinary sampling path.
+  virtual void sampleRowValues(float* out, uint8_t max, const LocalAdcSnapshot&) {
+    sampleValues(out, max);
+  }
   virtual bool describeColumn(uint8_t idx, SensorColumnDescriptor& out) const;
   virtual bool describeSensorMetadata(SensorMetadataDescriptor& out) const;
   virtual bool describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out) const {

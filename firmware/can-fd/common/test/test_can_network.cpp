@@ -167,6 +167,16 @@ void testInventoryTracksBootStaleAndDuplicate() {
   assert(inventory.nodes[1].conflicting_hardware_uid ==
       announce.hardware_uid);
   assert(inventory.generation == 6u);
+  bodaqs_node_inventory_update_stale(&inventory, 10000000u, 3000u);
+  assert(inventory.nodes[1].duplicate);
+  assert(!bodaqs_node_inventory_observe_announce(&inventory,&announce,10000001u));
+  assert(inventory.nodes[1].duplicate); // Silence never clears this powered-interval latch.
+  bodaqs_node_inventory_init(&inventory);
+  assert(bodaqs_node_inventory_observe_announce(&inventory,&announce,10000002u));
+  assert(!inventory.nodes[1].duplicate); // Replacement qualifies only in fresh discovery.
+  announce.hardware_uid=UINT64_C(0x1111222233334444);
+  assert(!bodaqs_node_inventory_observe_announce(&inventory,&announce,10000003u));
+  assert(inventory.nodes[1].duplicate); // Both fitted nodes relatch the fault after reset.
 }
 
 }  // namespace
