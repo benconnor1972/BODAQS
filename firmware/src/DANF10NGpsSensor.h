@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Sensor.h"
+#include "GpsNativeStream.h"
 #include "SensorParams.h"
 #include "SensorTypes.h"
 #include <stdint.h>
@@ -79,6 +80,13 @@ public:
   void onLoggingStart() override;
   void onLoggingStop() override;
 
+  bool startLoggingSession(char*, size_t) override;
+  void onLoggingFinalized() override;
+  bool usesBdqV2NativeStream() const override;
+  bool describeBdqV2Stream(uint16_t, BdqV2StreamDescriptor&) override;
+  bool describeRuntimeDiagnostics(SensorRuntimeDiagnostics&) const override;
+  size_t pendingLoggingRows() const override { return m_nativeStream.pending(); }
+
   bool muted() const override { return m_muted; }
   void setMuted(bool m) override;
 
@@ -104,6 +112,8 @@ private:
     bool fixOk = false;
     bool invalidLlh = true;
     bool valid = false;
+    bool dateValid = false;
+    bool timeValid = false;
     uint8_t fixType = 0;
     uint8_t satellites = 0;
     int32_t latE7 = 0;
@@ -127,7 +137,7 @@ private:
   void stopTask_();
   bool initializeGnss_();
   void taskLoop_();
-  void updateSnapshotFromGnss_();
+  void updateSnapshotFromGnss_(uint32_t generation);
   void clearSessionSnapshot_();
   bool copySnapshot_(Snapshot& out) const;
   bool outputValueValid_(const Snapshot& s, uint32_t ageMs, bool fresh) const;
@@ -162,6 +172,10 @@ private:
   bool m_warnedInit = false;
   volatile bool m_taskRun = false;
 
+  GpsNativeStream m_nativeStream;
+  bool m_sessionFrozen = false;
+  std::atomic<uint32_t> m_sessionGeneration{0};
+  char m_nativeProvenance[768]{};
   Snapshot m_snapshot;
   uint32_t m_nextSeq = 0;
   uint32_t m_lastLoggedSeq = 0;

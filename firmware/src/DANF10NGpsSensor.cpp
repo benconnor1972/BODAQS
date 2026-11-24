@@ -1,4 +1,5 @@
 #include "DANF10NGpsSensor.h"
+#include "BdqV2Catalog.h"
 
 #include <Arduino.h>
 #include <HardwareSerial.h>
@@ -321,7 +322,7 @@ bool DANF10NGpsSensor::shutdown() {
 }
 
 void DANF10NGpsSensor::setMuted(bool m) {
-  if (m_muted == m) return;
+  if (m_sessionFrozen || m_muted == m) return;
   m_muted = m;
 
   if (m_muted) {
@@ -337,7 +338,7 @@ void DANF10NGpsSensor::setMuted(bool m) {
 }
 
 bool DANF10NGpsSensor::reconfigureFromSpec(const SensorSpec& spec) {
-  if (spec.type != SensorType::DANF10NGps) return false;
+  if (m_sessionFrozen || spec.type != SensorType::DANF10NGps) return false;
   Params p;
   loadParamsFromPack_(p, spec.name, spec.params);
   applyParams(p);
@@ -487,8 +488,9 @@ void DANF10NGpsSensor::taskLoop_() {
       }
     }
 
+    const auto generation=m_sessionGeneration.load();
     if (m_gnss && m_gnss->getPVT(0)) {
-      updateSnapshotFromGnss_();
+      updateSnapshotFromGnss_(generation);
     }
 
     // Keep GPS acquisition cooperative with the Arduino loop, which services
@@ -535,7 +537,7 @@ bool DANF10NGpsSensor::initializeGnss_() {
   return true;
 }
 
-void DANF10NGpsSensor::updateSnapshotFromGnss_() {
+void DANF10NGpsSensor::updateSnapshotFromGnss_(uint32_t generation) {
   if (!m_gnss) return;
 
   Snapshot s;
@@ -554,18 +556,29 @@ void DANF10NGpsSensor::updateSnapshotFromGnss_() {
   s.speedAccMmS = m_gnss->getSpeedAccEst(0);
   s.headingAccDegE5 = m_gnss->getHeadingAccEst(0);
   s.gpsTowMs = m_gnss->getTimeOfWeek(0);
-  s.gpsUnixSeconds = m_gnss->getUnixEpoch(0);
+  s.dateValid = m_gnss->getDateValid(0);
+  s.timeValid = m_gnss->getTimeValid(0);
+  s.gpsUnixSeconds = s.dateValid && s.timeValid ? m_gnss->getUnixEpoch(0) : 0;
   s.receivedMs = millis();
   s.valid = s.fixOk && !s.invalidLlh && s.fixType >= 2;
   s.seq = ++m_nextSeq;
 
 #if defined(ESP32)
-  if (m_mutex && xSemaphoreTake(m_mutex, portMAX_DELAY) == pdTRUE) {
-    m_snapshot = s;
-    xSemaphoreGive(m_mutex);
-  }
-#else
-  m_snapshot = s;
+  if(!m_mutex || xSemaphoreTake(m_mutex,portMAX_DELAY)!=pdTRUE) return;
+#endif
+    if(generation==m_sessionGeneration.load()) {
+      m_snapshot = s;
+      GpsNativeStream::Observation p;
+      p.latE7=s.latE7;p.lonE7=s.lonE7;p.altMslMm=s.altMslMm;
+      p.groundSpeedMmS=s.groundSpeedMmS;p.headingDegE5=s.headingDegE5;
+      p.hAccMm=s.hAccMm;p.vAccMm=s.vAccMm;p.speedAccMmS=s.speedAccMmS;p.headingAccDegE5=s.headingAccDegE5;
+      p.gpsTowMs=s.gpsTowMs;p.gpsUnixSeconds=s.gpsUnixSeconds;p.receivedMs=s.receivedMs;
+      p.flags=1|(s.fixOk?2:0)|(s.invalidLlh?4:0)|(s.dateValid?8:0)|(s.timeValid?16:0);
+      p.fixType=s.fixType;p.satellites=s.satellites;
+      m_nativeStream.observe(p,micros());
+    }
+#if defined(ESP32)
+  xSemaphoreGive(m_mutex);
 #endif
 }
 
@@ -728,7 +741,8 @@ void DANF10NGpsSensor::sampleValues(float* out, uint8_t max) {
   const uint32_t ageMs = snapshotAgeMs_(s, now);
   const bool fresh = s.have && s.seq != m_lastLoggedSeq;
   const bool emitValue = outputValueValid_(s, ageMs, fresh);
-  if (s.have) m_lastLoggedSeq = s.seq;
+  // Preview reads never advance recording freshness or consume native records.
+  if (!usesBdqV2NativeStream() && s.have) m_lastLoggedSeq = s.seq;
 
   const uint8_t limit = (n < max) ? n : max;
   for (uint8_t i = 0; i < limit; ++i) {
@@ -758,7 +772,18 @@ void DANF10NGpsSensor::onLoggingStart() {
 }
 
 void DANF10NGpsSensor::onLoggingStop() {
+#if defined(ESP32)
+  if(m_mutex && xSemaphoreTake(m_mutex,portMAX_DELAY)==pdTRUE) {
+    ++m_sessionGeneration;m_nativeStream.stop();xSemaphoreGive(m_mutex);
+  }
+#else
+  ++m_sessionGeneration;m_nativeStream.stop();
+#endif
   stopTask_();
+}
+
+void DANF10NGpsSensor::onLoggingFinalized() {
+  (void)m_nativeStream.finalizeSession();m_sessionFrozen=false;
 }
 
 bool DANF10NGpsSensor::describeColumn(uint8_t idx, SensorColumnDescriptor& out) const {
@@ -892,3 +917,90 @@ static bool _reg_dan_f10n_gps =
     &DANF10NGpsSensor::create,
     CAL_NONE
   );
+
+
+bool DANF10NGpsSensor::usesBdqV2NativeStream() const {
+#if BODAQS_PRODUCTION_RECORDING
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool DANF10NGpsSensor::startLoggingSession(char* error,size_t capacity) {
+  if(usesBdqV2NativeStream()) {
+    if(m_sessionFrozen) {
+      if(error && capacity) snprintf(error,capacity,"GPS session finalization pending");
+      return false;
+    }
+    bool ready=false;
+#if defined(ESP32)
+    if(m_mutex && xSemaphoreTake(m_mutex,portMAX_DELAY)==pdTRUE) {
+#endif
+      ready=m_nativeStream.begin();
+      if(ready) {++m_sessionGeneration;m_sessionFrozen=true;m_snapshot=Snapshot{};}
+#if defined(ESP32)
+      xSemaphoreGive(m_mutex);
+    }
+#endif
+    if(!ready) {
+      if(error && capacity) snprintf(error,capacity,"GPS native recording reservation failed");
+      return false;
+    }
+    snprintf(m_nativeProvenance,sizeof m_nativeProvenance,
+      "\"uart_port\":%u,\"baud\":%lu,\"update_rate_hz\":%u,\"stale_after_ms\":%lu,"
+      "\"validity_policy\":%u,\"quality_columns\":%u,\"emit_position\":%s,\"emit_altitude\":%s,\"emit_motion\":%s,"
+      "\"receiver_flags\":{\"have\":1,\"fix_ok\":2,\"invalid_llh\":4,\"date_valid\":8,\"time_valid\":16},"
+      "\"timestamp_basis\":\"logger_receive_time_not_measurement_time\",\"utc_alignment_proven\":false",
+      unsigned(m_uartPort),(unsigned long)m_baud,unsigned(m_updateRateHz),(unsigned long)m_staleAfterMs,
+      unsigned(m_validityPolicy),unsigned(m_qualityColumns),m_emitPosition?"true":"false",
+      m_emitAltitude?"true":"false",m_emitMotion?"true":"false");
+  }
+  onLoggingStart();return true;
+}
+
+bool DANF10NGpsSensor::describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out) const {
+  if(!usesBdqV2NativeStream()) return false;
+  out=SensorRuntimeDiagnostics{};out.present=true;
+  copyField_(out.sensorName,sizeof out.sensorName,name());copyField_(out.kind,sizeof out.kind,"gps_native");
+  const auto stats=m_nativeStream.stats();out.hasBdqV2Stream=true;
+  out.bdqV2RecordsEnqueued=stats.recordsEnqueued;out.bdqV2RecordsDequeued=stats.recordsDequeued;
+  out.bdqV2RecordsDropped=stats.recordsDropped;out.bdqV2QueueHighWater=stats.recordQueueHighWater;
+  out.bdqV2QueueCapacity=m_nativeStream.capacity();out.bdqV2FinalQueueDepth=m_nativeStream.pending();
+  out.bdqV2NominalRateHz=m_updateRateHz;return true;
+}
+
+bool DANF10NGpsSensor::describeBdqV2Stream(uint16_t id,BdqV2StreamDescriptor& out) {
+  if(!usesBdqV2NativeStream() || m_muted || !id) return false;
+  static const BdqV2CatalogChannel channels[]={
+    {"sequence","sample_sequence","count","uint32",0,"diagnostic"},
+    {"native_tick","receive_time","us","uint32",4,"diagnostic"},
+    {"status_flags","status","bitfield","uint16",8,"diagnostic"},
+    {"latitude_e7","position_latitude","1e-7 deg","int32",12,"signal"},
+    {"longitude_e7","position_longitude","1e-7 deg","int32",16,"signal"},
+    {"altitude_msl_mm","altitude","mm","int32",20,"signal"},
+    {"ground_speed_mm_s","speed","mm/s","int32",24,"signal"},
+    {"course_e5","heading","1e-5 deg","int32",28,"signal"},
+    {"horizontal_accuracy_mm","horizontal_accuracy","mm","uint32",32,"diagnostic"},
+    {"vertical_accuracy_mm","vertical_accuracy","mm","uint32",36,"diagnostic"},
+    {"speed_accuracy_mm_s","speed_accuracy","mm/s","uint32",40,"diagnostic"},
+    {"course_accuracy_e5","course_accuracy","1e-5 deg","uint32",44,"diagnostic"},
+    {"receiver_tow_ms","receiver_time_of_week","ms","uint32",48,"diagnostic"},
+    {"receiver_unix_seconds","receiver_utc","s","uint32",52,"diagnostic"},
+    {"received_ms","receive_time","ms","uint32",56,"diagnostic"},
+    {"receiver_flags","receiver_flags","bitfield","uint16",60,"diagnostic"},
+    {"fix_type","fix_type","code","uint8",62,"diagnostic"},
+    {"satellites","satellites","count","uint8",63,"diagnostic"}};
+  static const BdqV2CatalogStatusFlag flags[]={
+    {"discontinuity_before",1},{"producer_queue_drop_before",2},{"sensor_error",32}};
+  out=BdqV2StreamDescriptor{};out.source=m_nativeStream.source(id);
+  snprintf(out.streamKey,sizeof out.streamKey,"%s_native",name());
+  copyField_(out.sensorId,sizeof out.sensorId,name());copyField_(out.transport,sizeof out.transport,"uart_ubx");
+  copyField_(out.clockId,sizeof out.clockId,"logger_monotonic");
+  copyField_(out.clockRelation,sizeof out.clockRelation,"logger_monotonic");
+  copyField_(out.requestedProfile,sizeof out.requestedProfile,"dan_f10n_nav_pvt_v1");
+  copyField_(out.payloadSchema,sizeof out.payloadSchema,"bodaqs.gps_nav_pvt.v1");
+  out.acquisitionDetailsJson=m_nativeProvenance;out.nominalSampleRateNumeratorHz=m_updateRateHz;
+  out.channels=channels;out.channelCount=sizeof channels/sizeof channels[0];
+  out.statusFlags=flags;out.statusFlagCount=sizeof flags/sizeof flags[0];return out.valid();
+}
