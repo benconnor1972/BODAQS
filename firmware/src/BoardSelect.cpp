@@ -50,6 +50,8 @@ namespace board {
   static const char* rtcTypeName_(RtcType type) {
     switch (type) {
       case RtcType::RV3028: return "RV3028";
+      case RtcType::ISL1208: return "ISL1208";
+      case RtcType::Auto: return "auto";
       case RtcType::None:
       default: return "None";
     }

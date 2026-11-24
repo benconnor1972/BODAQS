@@ -49,6 +49,7 @@ test: $(TEST_BIN)
 	$(PYTHON) ../tools/test_storage_timeline_runtime.py --control-state --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_bdq_adc_footer_runtime.py --spi-phase-timing --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_i2c_schedule_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_rtc_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_i2c_startup_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_startup_log_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_logging_start_runtime.py --compiler "$(CXX)"

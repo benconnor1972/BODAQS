@@ -6,7 +6,7 @@ ledger records code dependencies without implicitly closing tracker items.
 
 | Issue | State | Evidence / remaining work |
 |---|---|---|
-| #214 | In progress | Selected r133 firmware imported; recipe matches exactly before RTC port. Initial lifecycle harness:133 checks; remote lifecycle/fault scenarios pass. RTC release delta not yet applied. |
+| #214 | Complete | Source-pinned r133 baseline and selected RTC release port; both A8 target builds pass. START harness: 133 checks; remote lifecycle/fault scenarios and RTC runtime tests pass. |
 | #215 | Pending | Lifecycle owner and user-visible guards. |
 | #216 | Pending | Unattended boot and operational storage policy. |
 | #217 | Pending | Counts/calibration snapshots and normal analog import. |
