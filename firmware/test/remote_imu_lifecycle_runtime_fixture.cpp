@@ -36,7 +36,9 @@ int main(int argc,char** argv) {
   assert(savedParams.set("endpoint","imu"));
   assert(savedParams.set("profile","imu6_3333_32g_2000dps_v1"));
   saved.params.bind(&savedParams);
-  fixtureSensorCount=argc>1 && (!std::strcmp(argv[1],"four") || !std::strcmp(argv[1],"four-bus-off"))?4:1;
+  const bool failingReadiness=argc>1 && !std::strcmp(argv[1],"readiness-failing");
+  const bool readinessCase=failingReadiness || (argc>1 && !std::strcmp(argv[1],"readiness"));
+  fixtureSensorCount=argc>1 && (readinessCase || !std::strcmp(argv[1],"four") || !std::strcmp(argv[1],"four-bus-off"))?4:1;
   const bool multiCase=argc>1 && !std::strncmp(argv[1],"multi-",6);
   if(multiCase) {assert(ImuAdmission::multiNodeBenchBuild());fixtureSensorCount=unsigned(argv[1][6]-'0');}
   const bool mixedRejected=argc>1 && !std::strncmp(argv[1],"mixed-reject-",13);
@@ -63,10 +65,47 @@ int main(int argc,char** argv) {
   }
   bodaqs_master_service_set_inventory(&master,2,records,4);
   assert(CanMasterManager::probeNow());
+  const uint32_t preparationBegan=clockMs;
+  loseIdleNodeZero=failingReadiness;
   for(unsigned wait=0;wait<300000;++wait) {
     advance(1);bool ready=true;
-    for(unsigned n=0;n<fixtureSensorCount;++n) ready=ready && CanMasterManager::configurationReconciled(n);
+    for(unsigned n=failingReadiness?1:0;n<fixtureSensorCount;++n) ready=ready && CanMasterManager::configurationReconciled(n);
     if(ready) break;
+  }
+  if(readinessCase) {
+    std::printf("Modeled preparation (%s): %lu ms\n",failingReadiness?"one nonresponding peer":"four healthy peers",static_cast<unsigned long>(clockMs-preparationBegan));
+    // Failure progress includes unchanged protocol timeouts/retry semantics;
+    // this is a finite-progress regression guard, not a product latency SLA.
+    assert(clockMs-preparationBegan<(failingReadiness?60000u:10000u));
+    if(failingReadiness) {
+      assert(!CanMasterManager::configurationReconciled(0));
+      for(unsigned n=1;n<4;++n) assert(CanMasterManager::configurationReconciled(n));
+      return 0;
+    }
+    for(unsigned n=0;n<4;++n) assert(CanMasterManager::configurationReconciled(n));
+    // Steady state uses fresh state checks without downloading unchanged pages.
+    advance(1500);
+    for(unsigned n=0;n<4;++n) assert(CanMasterManager::configurationReconciled(n));
+    assert(extraParams[0].set("profile","imu6_1667_32g_2000dps_v1"));
+    CanMasterManager::scheduleConfigurationReconciliation();
+    assert(!CanMasterManager::configurationReconciled(1));
+    const uint32_t changedAt=clockMs;
+    for(unsigned wait=0;wait<10000 && !CanMasterManager::configurationReconciled(1);++wait) advance(1);
+    assert(CanMasterManager::configurationReconciled(1));
+    assert(peerFixture(1).regs.bytes[0][16]==0x84);
+    std::printf("Changed profile modeled preparation: %lu ms\n",static_cast<unsigned long>(clockMs-changedAt));
+    // A late/absent configured node does not monopolize ready peers.
+    records[0].flags=0;
+    bodaqs_master_service_set_inventory(&master,3,records,4);
+    assert(CanMasterManager::probeNow());
+    advance(1500);
+    assert(!CanMasterManager::configurationReconciled(0));
+    for(unsigned n=1;n<4;++n) assert(CanMasterManager::configurationReconciled(n));
+    records[0].flags=1;
+    bodaqs_master_service_set_inventory(&master,4,records,4);
+    for(unsigned wait=0;wait<10000 && !CanMasterManager::configurationReconciled(0);++wait) advance(1);
+    assert(CanMasterManager::configurationReconciled(0));
+    return 0;
   }
   for(unsigned n=0;n<fixtureSensorCount;++n) if(!CanMasterManager::configurationReconciled(n)) {
     const auto& d=CanMasterManager::diagnostics();std::fprintf(stderr,"unreconciled %u desired=%d generation=%llu current=%d session=%llu active=%llu phase=%u\n",n,d.desiredEnabled[n],(unsigned long long)d.desiredGeneration[n],d.control.nodes[n].endpoints[0].current,(unsigned long long)d.authority.session,(unsigned long long)peerFixture(n).view.active_session,peerFixture(n).apply.phase);

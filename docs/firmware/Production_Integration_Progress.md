@@ -12,7 +12,7 @@ ledger records code dependencies without implicitly closing tracker items.
 | #217 | In progress | Embedded sensor/config/calibration snapshot and normal raw/basic-engineering import implemented; 21 BDQ v2 import tests and production serializer fixture pass; target build passes. Flexible/direct acquisition is implemented in #218; read-only previews remain in #221. |
 | #218 | Implemented; qualification pending | START plan binds sensor identities, sparse/unequal/idle external ADCs and direct GPIOs to typed count fields. One rational absolute timer; independent device appointments, skipped-row evidence, no dummy conversions. Actual ADC-manager/SPI/DRDY/timer model and dynamic queue tests pass; candidate build passes. Focused physical comparison remains. |
 | #219 | Implemented; qualification pending | Existing native 833/1667/3333 node profiles retained and exercised; normal import exposes independently verified six-axis counts/scaling while preserving unit/timing streams. Source-bounded completeness, uncertain timing and corrupt-source isolation tested. Four-node real recording composition imports normally. Physical profile/UI qualification remains. |
-| #220 | Pending | Fast, fair, safely cached reconciliation. |
+| #220 | Implemented core; qualification/UI pending | Bounded 5ms idle control progress while configured nodes are unreconciled; priority/fair cursors, faster inventory discovery, scoped snapshot reuse and explicit invalidation. API preparation/blockers added. Actual manager/model cold/change/late/failing-peer checks and target build pass; broader migration/UI #225 and physical before/after remain. |
 | #221 | Pending | String-pot evidence and snapshot previews. |
 | #222 | Pending | I2C rotary sensor preservation. |
 | #223 | Pending | Local BMI270 native preservation. |
@@ -128,3 +128,32 @@ storage/writer composition passes four-node custody, pressure, selective loss,
 partial STOP and corruption cases; its good recording imports four 64-sample
 streams through the normal pipeline. Node SPI/capture/acquisition tests and
 native 1667/833 acquisition variants pass. No new physical qualification claimed.
+
+## Idle reconciliation (#220)
+
+Production idle preparation services one bounded control exchange at a time,
+using 5ms dispatch spacing while configured participants need reconciliation.
+The ready-state 100ms background cadence and recording-time dispatch are
+unchanged. Unready configured nodes get observer preference with round-robin
+selection; mutation scheduling rotates after each admitted apply. Discovery is
+revisited at most once per second during preparation. Existing challenge,
+snapshot, transfer and mutation uncertainty deadlines remain in force.
+
+A coherent endpoint snapshot can be reused only after a fresh endpoint-state
+response agrees on epoch, boot, identity and observed authority session. A
+changed/invalid scope takes the complete snapshot and final epoch check again.
+Discovery hardware-identity changes invalidate observation/authority/apply state
+and renew the control scope. Failed observations retain deliberate retry backoff.
+API configuration preparation and blocker fields describe agreement only; they
+do not assert general recording admission or timing qualification.
+
+Independent host composition models four healthy peers becoming reconciled in
+1974ms and a saved profile change in 1333ms. These are simulated service times,
+not hardware latency promises. An absent/returning peer is handled, and healthy
+peers eventually reconcile with one continuously nonresponding peer (37595ms in
+this model, including unchanged protocol retry/timeout behavior). This still has
+failure latency; it does not freeze controls or declare the failed node ready.
+Cache/session/epoch/reboot invalidation, actual profile/register application,
+authority and snapshot suites pass; existing remote recording/fault lifecycle
+regressions pass. A8 target build passes. Physical preparation measurements and
+complete menu/web readiness presentation remain pending.

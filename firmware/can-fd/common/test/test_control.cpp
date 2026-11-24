@@ -351,11 +351,55 @@ void clockHealthChangesOnlyFittedEpochsAndFailsClosedAtExhaustion()
     assert(bodaqs_control_node_update_clock_fault(&node, false));
     assert(node.endpoint_epoch[0] == 3);
 }
+void unchangedEndpointReusesOnlyFreshlyScopedSnapshot()
+{
+    BodaqsControlNode node = {};
+    node.boot_id = 55; node.endpoint_mask = 1; node.endpoint_epoch[0] = 1;
+    node.active_session = 42;
+    BodaqsControlSnapshot snapshot = {};
+    BodaqsControlObserver observer;
+    bodaqs_control_observer_init(&observer);
+    bodaqs_control_observer_boot(&observer, 99, 3);
+    bodaqs_control_observer_node(&observer, 0, 55, 1, true);
+    unsigned step = 0;
+    auto exchange = [&]() {
+        BodaqsControlWrapped query, answer; uint8_t type;
+        assert(bodaqs_control_observer_next(&observer, &query, &type));
+        answer = query;
+        assert(bodaqs_control_snapshot_process(&snapshot, &node, &query.record, step, &answer.record) ||
+               bodaqs_control_node_process(&node, &query.record, &answer.record));
+        assert(bodaqs_control_observer_accept(&observer, BODAQS_CONTROL_POLL_RESPONSE, &answer, step++));
+        return query.record.opcode;
+    };
+    auto& endpoint = observer.nodes[0].endpoints[0];
+    while (!endpoint.current && step < 64) exchange();
+    assert(endpoint.current);
+    // A complete second node+endpoint round needs fresh state, not 14 pages.
+    assert(exchange() == BODAQS_CONTROL_GET_NODE_STATE);
+    assert(exchange() == BODAQS_CONTROL_GET_NODE_STATE);
+    assert(observer.snapshot_phase == 0 && endpoint.current);
+    assert(endpoint.observed_ms == step-1);
+    // Same epoch under another authority context cannot reuse cached contents.
+    node.active_session = 43;
+    exchange(); exchange();
+    assert(observer.snapshot_phase != 0 && !endpoint.current);
+    while (!endpoint.current && step < 128) exchange();
+    assert(endpoint.current);
+    ++node.endpoint_epoch[0];
+    exchange(); exchange();
+    assert(observer.snapshot_phase != 0 && !endpoint.current);
+    bodaqs_control_observer_node(&observer, 0, 56, 1, true);
+    assert(!endpoint.current && !observer.snapshot_phase);
+    bodaqs_control_observer_boot(&observer, 100, 3);
+    assert(!endpoint.current);
+}
+
 int main()
 {
     assert(strcmp(bodaqs_control_reason_key(26), "can_exchange_timeout") == 0);
     assert(strcmp(bodaqs_control_reason_key(255), "unknown") == 0);
     clockHealthInvalidatesCapturedSnapshot();
+    unchangedEndpointReusesOnlyFreshlyScopedSnapshot();
     clockHealthChangesOnlyFittedEpochsAndFailsClosedAtExhaustion();
     wireExchangeAndBootRecovery();
     nodeDistinguishesUnsupportedStaleAndMalformed();

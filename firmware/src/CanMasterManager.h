@@ -317,8 +317,9 @@ void enableControlAuthority(uint64_t session);
 bool releaseControlAuthority(uint8_t address);
 // Current epoch-checked hardware agreement; configuration-only, never readiness.
 bool configurationReconciled(uint8_t address);
-#if defined(BODAQS_PACKED_STARTUP_DIAGNOSTICS) && BODAQS_PACKED_STARTUP_DIAGNOSTICS
 uint32_t configurationReadinessBlockers(uint8_t address);
+const char* configurationPreparationState(uint8_t address);
+#if defined(BODAQS_PACKED_STARTUP_DIAGNOSTICS) && BODAQS_PACKED_STARTUP_DIAGNOSTICS
 void logConfigurationReadiness();
 #endif
 // Explicit selected-link capabilities; protocol compatibility alone is insufficient.

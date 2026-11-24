@@ -6,6 +6,7 @@ static BodaqsControlAcquisition acquisitions[4];
 static BodaqsControlSnapshot acquisitionSnapshots[4];
 static uint8_t pendingCommand[4];
 static bool delayNodeZero=false;
+static bool loseIdleNodeZero=false;
 static bool holdCommit=false, commitHeld=false;
 static BodaqsControlRecord heldCommit;
 static bool loseRenewalChallenges=false, loseRenewalResults=false;
@@ -16,6 +17,7 @@ static uint8_t renewalError=0;
 static bool renewalErrorOnProof=false;
 static BodaqsControlRecord heldRenewal;
 static bool holdControl(uint8_t address,const BodaqsControlRecord& request) {
+ if(!address && loseIdleNodeZero) return true;
  if(address) return false;
  if(loseStopResults && request.opcode==0x25) {
   BodaqsControlRecord ignored;assert(dispatchControl(address,request,ignored));++lostStopResults;return true;

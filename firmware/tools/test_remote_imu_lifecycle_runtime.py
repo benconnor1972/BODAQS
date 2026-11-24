@@ -45,6 +45,7 @@ def fixture_source(root,pipeline_trace=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--compiler", default="g++")
+    parser.add_argument("--production-idle", action="store_true")
     parser.add_argument("--flow-diagnostics", action="store_true")
     parser.add_argument("--reply-capture",action="store_true")
     parser.add_argument("--cs-setup-us",type=int,default=0)
@@ -88,6 +89,7 @@ static void captureFlowLog(const char* tag,const char*,...) {if(!std::strcmp(tag
         cpp, exe = Path(temp)/"fixture.cpp", Path(temp)/"fixture.exe"
         cpp.write_text(fixture)
         flags=["-DBODAQS_SINGLE_NODE_IMU_SMOKE=1"] if args.smoke else []
+        if args.production_idle: flags.append("-DBODAQS_PRODUCTION_RECORDING=1")
         if args.mixed: flags.append("-DBODAQS_SINGLE_NODE_IMU_ADC_SMOKE=1")
         if args.channel_rate: flags.append("-DBODAQS_ADC_CHANNEL_RATE_BENCH=1")
         if args.scaling: flags.append("-DBODAQS_ADC_SCALING_BENCH=1")
@@ -104,6 +106,10 @@ static void captureFlowLog(const char* tag,const char*,...) {if(!std::strcmp(tag
         if args.reply_capture: flags.append("-DBODAQS_MEASUREMENT_REPLY_CAPTURE=1")
         if args.cs_setup_us: flags.append(f"-DBODAQS_MEASUREMENT_CS_SETUP_US={args.cs_setup_us}")
         subprocess.run([args.compiler, "-std=c++17", *flags, "-DBODAQS_QUEUE_ALLOCATION_TEST", "-ffunction-sections", "-Wl,--gc-sections", "-Wall", "-Wextra", "-Werror", "-Wno-class-memaccess", "-Wno-unused-function", "-I", str(root/"test/stubs"), "-I", str(root/"src"), "-I", str(protocol), "-I", str(root/"can-fd/common/test"), str(cpp), *map(str, sources), "-o", str(exe)], check=True)
+        if args.production_idle:
+            subprocess.run([str(exe), "readiness"], check=True)
+            subprocess.run([str(exe), "readiness-failing"], check=True)
+            return
         subprocess.run([str(exe)], check=True)
         if args.multi_node:
             for case in ("multi-1-none","multi-2-none","multi-4-none","multi-2-200","multi-4-200","multi-4-500","multi-4-fault"):

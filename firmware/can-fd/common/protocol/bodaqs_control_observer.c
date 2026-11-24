@@ -73,6 +73,7 @@ void bodaqs_control_observer_node(BodaqsControlObserver *observer,
         node->endpoint_mask != endpoints)
     {
         invalidate_current(node);
+        observer->retry_after_ms[address] = 0;
         if ((observer->pending && observer->current.node_address == address) ||
             (observer->snapshot_phase && observer->snapshot_address == address))
         {
@@ -144,6 +145,11 @@ bool bodaqs_control_observer_next(BodaqsControlObserver *observer,
         *type = BODAQS_CONTROL_SUBMIT_REQUEST;
         return true;
     }
+    uint8_t preferred_available = 0;
+    for (i = 0; i < 4; ++i)
+        if (observer->nodes[i].available && (!observer->retry_after_ms[i] ||
+            (int32_t)(observer->now_ms-observer->retry_after_ms[i])>=0))
+            preferred_available |= observer->preferred_nodes & (1U << i);
     for (i = 0; i < 28; ++i)
     {
         uint8_t address = observer->cursor_address,
@@ -154,7 +160,9 @@ bool bodaqs_control_observer_next(BodaqsControlObserver *observer,
             observer->cursor_endpoint = 0;
             observer->cursor_address = (uint8_t)((address + 1) % 4);
         }
-        if (!node->available ||
+        if (!node->available || (observer->retry_after_ms[address] &&
+            (int32_t)(observer->now_ms-observer->retry_after_ms[address])<0) ||
+            (preferred_available && !(preferred_available & (1U << address))) ||
             (endpoint && !(node->endpoint_mask & (1U << (endpoint - 1)))))
         {
             continue;
@@ -367,6 +375,7 @@ bool bodaqs_control_observer_accept(BodaqsControlObserver *observer,
         record->data[3] == BODAQS_CONTROL_GET_NODE_STATE)
     {
         invalidate_current(node);
+        observer->retry_after_ms[reply->node_address] = now + 5000;
         node->reason = record->data[1];
         node->field = record->data[2];
         observer->pending = false;
@@ -407,15 +416,27 @@ bool bodaqs_control_observer_accept(BodaqsControlObserver *observer,
                 ep->effective_valid = true;
                 ep->effective_boot = node->node_boot_id;
                 ep->effective_uid = bodaqs_control_get_u64(ep->capability + 40);
+                ep->observed_session = node->active_session;
                 ep->observed_ms = now;
             }
             observer->snapshot_phase = 0;
         }
         else
         {
-            ep->current = ep->current && ep->effective_valid &&
+            /* Reuse only a previously coherent snapshot checked against this
+             * fresh endpoint state, in the same boot/identity/authority scope.
+             * Any invalidation takes the full snapshot + final epoch path. */
+            ep->current = ep->current && ep->capability_valid && ep->effective_valid &&
+                          ep->effective_boot == node->node_boot_id &&
+                          ep->effective_uid == bodaqs_control_get_u64(ep->capability + 40) &&
+                          ep->observed_session == node->active_session &&
                           bodaqs_control_get_u64(ep->effective + 184) ==
                               node->endpoint_epoch[record->endpoint];
+            if (ep->current)
+            {
+                ep->observed_ms = now;
+                return true;
+            }
             observer->snapshot_phase = SNAPSHOT_OPEN_CAPABILITY;
             observer->snapshot_address = reply->node_address;
             observer->snapshot_endpoint = record->endpoint;

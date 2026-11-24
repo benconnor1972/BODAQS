@@ -97,6 +97,7 @@ uint8_t s_exchangeOwner = 0;
 uint32_t s_exchangeStartedMs = 0;
 BodaqsControlWrapped s_exchangeIdentity = {};
 uint32_t s_nextAuthorityRetryMs[4] = {};
+uint8_t s_applyCursor = 0;
 
 
 uint64_t freshSession_(uint64_t previous) {
@@ -162,7 +163,12 @@ uint8_t desiredProfile_(uint8_t address) {
 
 void scheduleDisabled_() {
   if (LoggingManager::configurationLocked() || s_recordingFence) return;
-  for (uint8_t address = 0; address < 4; ++address) {
+  for (uint8_t turn = 0; turn < 4; ++turn) {
+#if BODAQS_PRODUCTION_RECORDING
+    const uint8_t address = (s_applyCursor + turn) % 4;
+#else
+    const uint8_t address = turn;
+#endif
     const bool disabled = desiredDisabled_(address);
     const bool enabled = desiredEnabled_(address);
     auto& generation = s_diagnostics.desiredGeneration[address];
@@ -199,10 +205,21 @@ void scheduleDisabled_() {
         bodaqs_control_get_u64(endpoint.effective + 32), descriptor, millis())) {
       s_diagnostics.control.nodes[address].endpoints[0].current=false;
       s_nextRecoveryMs[address]=millis()+30000;
+      s_applyCursor = (address+1)%4;
       return;
     }
   }
 }
+
+#if BODAQS_PRODUCTION_RECORDING
+uint8_t idlePreparationMask_() {
+  uint8_t mask=0;
+  for(uint8_t n=0;n<4;++n)
+    if((desiredEnabled_(n) || desiredDisabled_(n)) && !CanMasterManager::configurationReconciled(n))
+      mask |= uint8_t(1u<<n);
+  return mask;
+}
+#endif
 
 uint8_t spiDataMode_(uint8_t mode) {
   switch (mode) {
@@ -461,7 +478,9 @@ void serviceControl_() {
     } else {
       s_diagnostics.control.pending=false;
       s_diagnostics.control.snapshot_phase=0;
-      auto& node=s_diagnostics.control.nodes[s_diagnostics.control.current.node_address];
+      const uint8_t address=s_diagnostics.control.current.node_address;
+      s_diagnostics.control.retry_after_ms[address]=now+5000;
+      auto& node=s_diagnostics.control.nodes[address];
       node.valid=false;node.epoch_valid_mask=0;
       for(auto& endpoint:node.endpoints) endpoint.current=false;
     }
@@ -607,6 +626,14 @@ void commitInventory_(
   for (uint8_t node = 0; node < CanMasterProtocol::kDiscoveryNodeCount;
        ++node) {
     const auto& record = records[node];
+    const bool identityChanged=s_diagnostics.inventory[node].hardwareUid &&
+        s_diagnostics.inventory[node].hardwareUid!=record.hardwareUid;
+    if(identityChanged) {
+      bodaqs_control_observer_node(&s_diagnostics.control,node,record.bootId,record.endpointMask,false);
+      bodaqs_control_authority_client_node(&s_diagnostics.authority,node,record.bootId,false);
+      bodaqs_control_apply_client_invalidate(&s_diagnostics.apply,node);
+      s_renewSession=true;
+    }
     s_diagnostics.inventory[node] = record;
     const bool present =
         (record.flags & CanMasterProtocol::kDiscoveryFlagPresent) != 0;
@@ -1936,7 +1963,6 @@ bool configurationReconciled(uint8_t address) {
       (!s_diagnostics.apply.phase || s_diagnostics.apply.current.node_address != address);
 }
 
-#if defined(BODAQS_PACKED_STARTUP_DIAGNOSTICS) && BODAQS_PACKED_STARTUP_DIAGNOSTICS
 // Observation only; configurationReconciled remains the admission authority.
 uint32_t configurationReadinessBlockers(uint8_t address) {
  if(address>=4)return UINT32_C(0x80000000);
@@ -1957,6 +1983,16 @@ uint32_t configurationReadinessBlockers(uint8_t address) {
  uint32_t blockers=0;for(unsigned i=0;i<20;++i)if(!checks[i])blockers|=UINT32_C(1)<<i;
  return blockers;
 }
+const char* configurationPreparationState(uint8_t address) {
+  if(address>=4 || (!desiredEnabled_(address) && !desiredDisabled_(address))) return "unconfigured";
+  if(configurationReconciled(address)) return "configuration_ready";
+  if(!s_diagnostics.control.nodes[address].available) return "waiting_for_node";
+  if(!s_diagnostics.authority.nodes[address].bound) return "waiting_for_authority";
+  if(s_diagnostics.apply.phase && s_diagnostics.apply.current.node_address==address) return "applying_configuration";
+  if(!s_diagnostics.control.nodes[address].endpoints[0].current) return "verifying_configuration";
+  return "configuration_not_reconciled";
+}
+#if defined(BODAQS_PACKED_STARTUP_DIAGNOSTICS) && BODAQS_PACKED_STARTUP_DIAGNOSTICS
 void logConfigurationReadiness(){
  for(uint8_t n=0;n<4;++n){const auto& node=s_diagnostics.control.nodes[n];const auto& endpoint=node.endpoints[0];
   uint32_t blocked=configurationReadinessBlockers(n);bool ready=configurationReconciled(n);
@@ -1981,6 +2017,7 @@ void beginRecordingHandoff() {
   if (!measurementAccess_()) return;
   if (s_recordingFence) return;
   s_recordingFence = true;
+  s_diagnostics.control.preferred_nodes=0;
   s_handoffReady = false;
   s_handoffStartedMs = millis();
 }
@@ -2407,11 +2444,21 @@ void loop() {
        (s_profile.irq_active_low ? LOW : HIGH));
   const bool irqBecameAsserted = irqAsserted && !s_lastIrqAsserted;
   s_lastIrqAsserted = irqAsserted;
-  if (s_probeRequested || irqBecameAsserted || due_(now, s_nextProbeMs)) {
+  uint8_t preparationMask=0;
+#if BODAQS_PRODUCTION_RECORDING
+  preparationMask=idlePreparationMask_();
+  const bool preparationDiscovery=preparationMask &&
+      static_cast<uint32_t>(now-s_diagnostics.lastInventoryMs)>=1000 &&
+      static_cast<uint32_t>(now-s_diagnostics.lastProbeMs)>=1000;
+#else
+  const bool preparationDiscovery=false;
+#endif
+  if (s_probeRequested || irqBecameAsserted || due_(now, s_nextProbeMs) || preparationDiscovery) {
     (void)probeNow();
   }
   if (s_diagnostics.state == State::Present && due_(now, s_nextControlMs)) {
-    s_nextControlMs = now + 100;
+    s_nextControlMs = now + (preparationMask?5:100);
+    s_diagnostics.control.preferred_nodes=preparationMask;
     serviceControl_();
     // A master reboot may have returned to legacy mode while nodes retain an
     // abandoned recording. A rejected bind is only a trigger for inspection;

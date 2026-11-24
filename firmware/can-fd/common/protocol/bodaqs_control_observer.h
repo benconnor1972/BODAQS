@@ -9,7 +9,7 @@ extern "C"
     typedef struct
     {
         uint8_t capability[128], effective[192];
-        uint64_t effective_uid;
+        uint64_t effective_uid, observed_session;
         uint32_t effective_boot, observed_ms;
         bool capability_valid, effective_valid, current;
     } BodaqsControlEndpointObservation;
@@ -28,7 +28,7 @@ extern "C"
         uint32_t features, next_read_id;
         BodaqsControlObservation nodes[4];
         BodaqsControlWrapped current;
-        uint8_t cursor_address, cursor_endpoint;
+        uint8_t cursor_address, cursor_endpoint, preferred_nodes;
         bool pending;
         uint8_t snapshot_phase, snapshot_address, snapshot_endpoint,
             snapshot_page;
@@ -36,6 +36,7 @@ extern "C"
         uint16_t snapshot_length;
         uint64_t snapshot_id, snapshot_epoch, snapshot_revision;
         uint32_t now_ms, snapshot_started_ms, snapshot_read_id;
+        uint32_t retry_after_ms[4];
 
     } BodaqsControlObserver;
     void bodaqs_control_observer_tick(BodaqsControlObserver *observer,

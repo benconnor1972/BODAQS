@@ -56,6 +56,9 @@ static void addControlAuthorityJson_(JsonObject node,
 static void addControlApplyJson_(JsonObject node, const BodaqsControlApplyClient& apply,
     uint8_t address, uint64_t generation, bool disabled, bool reconciled, bool enabled = false) {
   node["configuration_reconciled"] = reconciled;
+  node["configuration_preparation"] = CanMasterManager::configurationPreparationState(address);
+  node["configuration_blockers"] = CanMasterManager::configurationReadinessBlockers(address);
+  node["configuration_readiness_scope"] = "configuration_only";
   node["desired_mode"] = !generation ? "unknown" : disabled ? "disabled" : enabled ? "enabled" : "unresolved_active";
   char decimal[21];
   snprintf(decimal, sizeof(decimal), "%llu", static_cast<unsigned long long>(generation));
