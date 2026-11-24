@@ -17,6 +17,7 @@ def main():
     upload = re.sub(r'^#include.*\n', '', upload, flags=re.M)
     storage = (root/'src/StorageManager.cpp').read_text(encoding='utf-8')
     logging = (root/'src/LoggingManager.cpp').read_text(encoding='utf-8')
+    restart = (root/'src/DeviceRestart.cpp').read_text(encoding='utf-8')
     fixture = r'''
 #include <cassert>
 #include <cstring>
@@ -45,7 +46,15 @@ namespace UI {
 constexpr int TARGET_BOTH=0,LVL_WARN=1,LVL_INFO=0;
 template<class... T> void println(T...){}
 void status(const char*){}
+template<class... T> void toast(T...){}
+template<class... T> void toastModal(T...){}
 }
+namespace DisplayManager {void present(){}}
+struct SerialPort {void println(const char*){}void flush(){}} Serial;
+unsigned restarts=0,invalidations=0;
+void RTCManager_invalidateInternalTime(){++invalidations;}
+void esp_restart(){++restarts;}
+namespace DeviceRestart {void restart();}
 namespace WiFiManager {void refreshDiscovery(){}}
 uint32_t nowMs=100;
 struct CardBackend final:UsbUploadSession::Backend {
@@ -74,6 +83,7 @@ const char* stateKey(){return usb.stateKey();}const char* label(){return usb.lab
 const char* shortLabel(){return usb.shortLabel();}
 }
 // UPLOAD
+// RESTART
 int main(){
  UploadModeManager::begin([]{return s_lifecycle.state()==RecordingLifecycle::State::Recording;});
  for(auto phase:{RecordingLifecycle::State::Preparing,RecordingLifecycle::State::Recording,
@@ -92,16 +102,19 @@ int main(){
   auto transfer=StorageFilesystem::ownership().acquireLocal();assert(transfer);
   assert(UploadModeManager::enter());UploadModeManager::loop();
   assert(usb.state()==UsbUploadSession::State::Waiting);
+  DeviceRestart::restart();assert(!restarts && !invalidations);
   assert(!StorageFilesystem::ownership().acquireLocal());
   assert(!StorageFilesystem::ownership().beginExternal());
  }
  assert(StorageFilesystem::ownership().beginExternal());
  StorageFilesystem::ownership().externalReady();UploadModeManager::loop();
  assert(usb.state()==UsbUploadSession::State::Shared);
+ DeviceRestart::restart();assert(!restarts && !invalidations);
  UploadModeManager::exit();nowMs+=2999;UploadModeManager::loop();
  assert(UploadModeManager::isActive() && UploadModeManager::exitPending());
  nowMs++;UploadModeManager::loop();
  assert(!UploadModeManager::isActive() && StorageFilesystem::ownership().localAvailable());
+ DeviceRestart::restart();assert(restarts==1 && invalidations==1);
  assert(UploadModeManager::canEnter());
  puts("USB/recording ownership: preparation, retirement, I/O, handoff, open transfer and reclaim passed");
 }
@@ -109,6 +122,7 @@ int main(){
     fixture = fixture.replace('// LOCK',definition(logging,'bool LoggingManager::configurationLocked(').replace('bool LoggingManager::','bool '))
     fixture = fixture.replace('// REQUEST',definition(storage,'bool StorageManager_requestExternalAccess('))
     fixture = fixture.replace('// UPLOAD',upload)
+    fixture = fixture.replace('// RESTART',definition(restart,'void DeviceRestart::restart('))
     with tempfile.TemporaryDirectory(prefix='bodaqs-usb-ownership-') as tmp:
         cpp,exe=Path(tmp)/'ownership.cpp',Path(tmp)/'ownership.exe'
         cpp.write_text(fixture,encoding='utf-8')

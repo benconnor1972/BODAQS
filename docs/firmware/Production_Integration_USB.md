@@ -24,6 +24,10 @@ access until they close. Only then can the control loop unmount and grant USB
 ownership. The storage worker's fault/deadline monitoring remains active before
 the USB ownership early return.
 
+Software restart and sleep also refuse while local card ownership is unavailable.
+Finish or cancel the transition and reclaim the card first; a physical reset or
+power interruption cannot provide the same software guarantee.
+
 All firmware SD consumers use `StorageFilesystem`, including the production
 storage health probe and migration backup existence check added after the USB
 branch diverged. Raw USB writes pass through the existing SD driver wrapper but
