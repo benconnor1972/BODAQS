@@ -14,11 +14,11 @@ ledger records code dependencies without implicitly closing tracker items.
 | #219 | Implemented; qualification pending | Existing native 833/1667/3333 node profiles retained and exercised; normal import exposes independently verified six-axis counts/scaling while preserving unit/timing streams. Source-bounded completeness, uncertain timing and corrupt-source isolation tested. Four-node real recording composition imports normally. Physical profile/UI qualification remains. |
 | #220 | Implemented core; qualification/UI pending | Bounded 5ms idle control progress while configured nodes are unreconciled; priority/fair cursors, faster inventory discovery, scoped snapshot reuse and explicit invalidation. API preparation/blockers added. Actual manager/model cold/change/late/failing-peer checks and target build pass; broader migration/UI #225 and physical before/after remain. |
 | #221 | Implemented; qualification pending | Analog/I2C string-pot typed native counts, signed tracking estimate, quality/reset/epoch and auxiliary I2C evidence; owner-only acquisition and snapshot previews. Normal calibrated/raw-only import, direction/hold/timeout/gap/loss/overflow/restart and preview-equivalence checks pass. Reviewed A8 build and 69 focused import tests pass; physical qualification remains. |
-| #222 | Pending | I2C rotary sensor preservation. |
-| #223 | Pending | Local BMI270 native preservation. |
-| #224 | Pending | UART GPS preservation. |
-| #225 | Pending | Configuration migration and UI. |
-| #226 | Pending | Bounded finalization and runtime faults. |
+| #222 | Implemented; final checks / qualification pending | Both rotary families record native counts, optional register evidence, validity and configured zero/polarity; bounded PSRAM-first queues and snapshot-only previews. Normal import and queue/calibration fault fixtures pass; final adapter checks in progress. |
+| #223 | Implemented; qualification pending | Native FIFO recording and scale/orientation import preserved; previews now read coherent published snapshots without consuming sample/evidence queues. Actual adapter/retirement checks, focused imports and A8 target build pass. |
+| #224 | Implemented; qualification pending | Native fixed-point UART observations, fix/time/accuracy evidence and embedded settings; bounded queue, lifecycle fencing and normal derived import. Actual sensor/catalog/import fixture and A8 build pass. Physical receiver/mixed-load qualification remains. |
+| #225 | In progress | Shared one-time reviewed migration with original preservation; format/family UI and persistence/lifecycle guards under implementation. |
+| #226 | In progress | Bounded operational footer, I2C producer retirement barrier, shared-fault containment and late ownership recovery under focused validation. |
 | #227 | Pending | Truthful admission and membership. |
 | #228 | Pending | Retire superseded production paths. |
 | #229 | Pending | Reproducible board-specific package. |

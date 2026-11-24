@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "ConfigManager.h"
+#include "LoggingManager.h"
 #include "I2CManager.h"
 #include "PowerManager.h"
 #include "SensorRegistry.h"
@@ -335,6 +336,7 @@ bool AS5048BAngleSensor::shutdown() {
 }
 
 bool AS5048BAngleSensor::reconfigureFromSpec(const SensorSpec& spec) {
+  if(LoggingManager::configurationLocked()) return false;
   if (spec.type != SensorType::AS5048BAngleI2C) return false;
 
   Params p;
@@ -1152,6 +1154,7 @@ void AS5048BAngleSensor::setOutputConfig(const OutputConfig& cfg) {
 }
 
 bool AS5048BAngleSensor::beginCalibration(CalMode mode) {
+  if(LoggingManager::configurationLocked()) return false;
   if (mode != CalMode::ZERO) return false;
   cal_ = CalState{};
   cal_.mode = mode;
@@ -1163,7 +1166,8 @@ bool AS5048BAngleSensor::beginCalibration(CalMode mode) {
 }
 
 bool AS5048BAngleSensor::updateCalibration(int32_t latestCounts) {
-  if (cal_.phase != CalPhase::ACTIVE || cal_.mode != CalMode::ZERO) return false;
+  if(LoggingManager::configurationLocked()) return false;
+  if (cal_.phase != CalPhase::ACTIVE || cal_.mode != CalMode::ZERO || latestCounts==INT32_MIN || latestCounts==INT32_MAX) return false;
   ++cal_.samples;
   if (cal_.samples == 1) {
     cal_.first_counts = latestCounts;
@@ -1174,37 +1178,25 @@ bool AS5048BAngleSensor::updateCalibration(int32_t latestCounts) {
 }
 
 bool AS5048BAngleSensor::finishCalibration(bool persist) {
-  if (cal_.phase != CalPhase::ACTIVE) return false;
-
-  if (cal_.mode == CalMode::ZERO) {
-    const bool haveZero = (cal_.first_counts != INT32_MAX);
-    const bool haveDirection = (cal_.second_counts != INT32_MIN);
-    const int32_t zero = haveZero ? cal_.first_counts : currentRawCounts();
-    m_zeroCount = normalizeCount_(zero);
-
-    if (haveDirection) {
-      const int32_t delta = cal_.second_counts - zero;
-      const int32_t absDelta = (delta < 0) ? -delta : delta;
-      if (absDelta < kDirectionMinDeltaCounts) {
-        cal_.phase = CalPhase::COMPLETE;
-        cal_.mode = CalMode::NONE;
-        return false;
-      }
-      m_directionSign = (delta < 0) ? -1 : 1;
-    }
-
-    if (persist) {
-      ConfigManager::saveSensorParamByName(name(), "zero_count", String(m_zeroCount));
-      ConfigManager::saveSensorParamByName(name(), "direction", String(directionName_(m_directionSign)));
-    }
-  } else {
-    cal_.phase = CalPhase::COMPLETE;
-    cal_.mode = CalMode::NONE;
-    return false;
+  if(LoggingManager::configurationLocked() || cal_.phase!=CalPhase::ACTIVE || cal_.mode!=CalMode::ZERO) return false;
+  const int32_t zero=cal_.first_counts!=INT32_MAX?cal_.first_counts:currentRawCounts();
+  if(zero==INT32_MIN || zero==INT32_MAX) return false;
+  const int32_t nextZero=normalizeCount_(zero);
+  int8_t nextDirection=m_directionSign;
+  if(cal_.second_counts!=INT32_MIN) {
+    const int64_t delta=int64_t(cal_.second_counts)-zero;
+    const int64_t magnitude=delta<0?-delta:delta;
+    if(magnitude<kDirectionMinDeltaCounts) return false;
+    nextDirection=delta<0?-1:1;
   }
-
-  cal_.phase = CalPhase::COMPLETE;
-  cal_.mode = CalMode::NONE;
+  if(persist) {
+    const char* keys[]={"zero_count","direction"};
+    const String values[]={String(nextZero),String(directionName_(nextDirection))};
+    if(!ConfigManager::saveSensorParamsByName(name(),keys,values,2)) return false;
+  }
+  // Failed persistence leaves the previous anchors and active calibration intact.
+  m_zeroCount=nextZero;m_directionSign=nextDirection;
+  cal_.phase=CalPhase::COMPLETE;cal_.mode=CalMode::NONE;
   return true;
 }
 
