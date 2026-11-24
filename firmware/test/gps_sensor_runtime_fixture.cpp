@@ -9,7 +9,9 @@
 #include "DANF10NGpsSensor.h"
 #undef private
 #include "BdqV2Catalog.h"
+#if !defined(ESP32)
 using BaseType_t=int;
+#endif
 struct LoggerConfig {};
 namespace board {
 constexpr unsigned BOARD_MAX_UART_PORTS=2;
@@ -17,7 +19,7 @@ struct Uart {bool present=true;int rx=1,tx=2;};
 struct Board {unsigned uart_count=2;Uart uart[2];};
 Board profile;Board* gBoard=&profile;
 }
-class HardwareSerial {public:void end(){} void begin(uint32_t,int,int,int){} int available(){return 0;} int read(){return -1;}};
+class HardwareSerial {public:void end(){} void begin(uint32_t,int,int,int){} void setRxBufferSize(size_t){} int available(){return 0;} int read(){return -1;}};
 HardwareSerial Serial1,Serial2;
 constexpr int SERIAL_8N1=0,COM_TYPE_UBX=1,VAL_LAYER_RAM=1;
 uint32_t micros(){return uint32_t(millis())*1000;}
@@ -25,6 +27,7 @@ class SFE_UBLOX_GNSS_SERIAL {
 public:
  bool fix=true,date=true,time=true;
  bool begin(HardwareSerial&,uint16_t){return true;}
+ bool getPVT(int){return false;}
  bool setUART1Output(int,int,uint16_t){return true;}
  bool setNavigationFrequency(int,int,uint16_t){return true;}
  bool setAutoPVT(bool,int,uint16_t){return true;}
@@ -44,8 +47,65 @@ class UploadModeManager {public:static bool isActive(){return false;}};
 // ACTUAL_SENSOR
 // ACTUAL_BASE_FUNCTIONS
 
+static void startupFailureChecks() {
+#if defined(ESP32) && BODAQS_PRODUCTION_RECORDING
+  const auto allocated=GpsRuntime::liveAllocations;
+  {
+    DANF10NGpsSensor::Params params;params.name="gps_failure";
+    DANF10NGpsSensor sensor(params);char error[120]{};
+    GpsRuntime::failTask=true;
+    sensor.begin();
+    assert(!sensor.startLoggingSession(error,sizeof error));
+    assert(error[0] && sensor.pendingLoggingRows()==0);
+    // A failed attempted session still belongs to lifecycle cleanup.
+    assert(!sensor.startLoggingSession(error,sizeof error));
+    sensor.onLoggingStop();sensor.onLoggingFinalized();
+    GpsRuntime::failTask=false;
+    assert(sensor.startLoggingSession(error,sizeof error));
+    sensor.onLoggingStop();sensor.onLoggingFinalized();assert(sensor.shutdown());
+  }
+  assert(GpsRuntime::liveAllocations==allocated);
+  {
+    DANF10NGpsSensor::Params params;params.name="gps_uart_failure";
+    DANF10NGpsSensor sensor(params);char error[120]{};
+    board::profile.uart[0].present=false;sensor.begin();
+    assert(!sensor.startLoggingSession(error,sizeof error));
+    assert(error[0] && sensor.pendingLoggingRows()==0);
+    sensor.onLoggingStop();sensor.onLoggingFinalized();
+    board::profile.uart[0].present=true;
+    assert(sensor.startLoggingSession(error,sizeof error));
+    sensor.onLoggingStop();sensor.onLoggingFinalized();assert(sensor.shutdown());
+  }
+  assert(GpsRuntime::liveAllocations==allocated);
+  for(auto mode:{DANF10NGpsSensor::DiagnosticMode::Disabled,DANF10NGpsSensor::DiagnosticMode::SerialOnly,
+                DANF10NGpsSensor::DiagnosticMode::SleepTask,DANF10NGpsSensor::DiagnosticMode::DrainTask}) {
+    DANF10NGpsSensor::Params params;params.name="gps_diagnostic";params.diagnosticMode=mode;
+    DANF10NGpsSensor sensor(params);char error[120]{};sensor.begin();
+    assert(!sensor.startLoggingSession(error,sizeof error));
+    assert(error[0] && sensor.pendingLoggingRows()==0);
+    sensor.onLoggingStop();sensor.onLoggingFinalized();assert(sensor.shutdown());
+  }
+  assert(GpsRuntime::liveAllocations==allocated);
+#endif
+}
+
 int main(int argc,char** argv) {
   assert(argc==2);
+#if !BODAQS_PRODUCTION_RECORDING
+  for(auto mode:{DANF10NGpsSensor::DiagnosticMode::Normal,DANF10NGpsSensor::DiagnosticMode::Disabled,
+                DANF10NGpsSensor::DiagnosticMode::SerialOnly,DANF10NGpsSensor::DiagnosticMode::SleepTask,
+                DANF10NGpsSensor::DiagnosticMode::DrainTask}) {
+    DANF10NGpsSensor::Params params;params.diagnosticMode=mode;
+    DANF10NGpsSensor sensor(params);char error[120]{};
+    GpsRuntime::failTask=true;sensor.begin();
+    assert(!sensor.usesBdqV2NativeStream());
+    assert(sensor.startLoggingSession(error,sizeof error));
+    sensor.onLoggingStop();sensor.onLoggingFinalized();assert(sensor.shutdown());
+  }
+  GpsRuntime::failTask=false;
+  return 0;
+#else
+  startupFailureChecks();
   DANF10NGpsSensor::Params params;params.name="gps";params.qualityColumns=DANF10NGpsSensor::QualityColumns::Full;
   DANF10NGpsSensor sensor(params);sensor.begin();
   assert(sensor.initializeGnss_());
@@ -86,4 +146,5 @@ int main(int argc,char** argv) {
   sensor.updateSnapshotFromGnss_(sensor.m_sessionGeneration.load());assert(sensor.pendingLoggingRows()==1);
   sensor.onLoggingStop();sensor.onLoggingFinalized();assert(sensor.pendingLoggingRows()==0);
   assert(sensor.shutdown());
+#endif
 }

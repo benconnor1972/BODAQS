@@ -752,6 +752,14 @@ void DANF10NGpsSensor::sampleValues(float* out, uint8_t max) {
 }
 
 void DANF10NGpsSensor::onLoggingStart() {
+  (void)startLoggingAcquisition_(nullptr,0);
+}
+
+bool DANF10NGpsSensor::startLoggingAcquisition_(char* error,size_t capacity) {
+  if(usesBdqV2NativeStream() && m_diagnosticMode!=DiagnosticMode::Normal) {
+    if(error && capacity) snprintf(error,capacity,"GPS diagnostic mode suppresses acquisition");
+    return false;
+  }
   // A GPS observation belongs to a session only after a new PVT snapshot has
   // been received for that session. Do not carry the previous session's last
   // coordinates across the boundary.
@@ -761,15 +769,22 @@ void DANF10NGpsSensor::onLoggingStart() {
       m_diagnosticMode != DiagnosticMode::Disabled &&
       m_diagnosticMode != DiagnosticMode::SerialOnly) {
     if (!m_serial) {
-      (void)startSerial_();
+      if(!startSerial_()) {
+        if(error && capacity) snprintf(error,capacity,"GPS UART startup unavailable");
+        return false;
+      }
     }
     // If acquisition was stopped between sessions, discard queued UART bytes
     // before restarting so pre-session PVT messages are not presented as new.
 #if defined(ESP32)
     if (!m_task && m_serial) drainSerial_(m_serial, m_rxBufferBytes);
 #endif
-    (void)startTask_();
+    if(!startTask_()) {
+      if(error && capacity) snprintf(error,capacity,"GPS acquisition task reservation failed");
+      return false;
+    }
   }
+  return true;
 }
 
 void DANF10NGpsSensor::onLoggingStop() {
@@ -957,6 +972,7 @@ bool DANF10NGpsSensor::startLoggingSession(char* error,size_t capacity) {
       unsigned(m_validityPolicy),unsigned(m_qualityColumns),m_emitPosition?"true":"false",
       m_emitAltitude?"true":"false",m_emitMotion?"true":"false");
   }
+  if(usesBdqV2NativeStream()) return startLoggingAcquisition_(error,capacity);
   onLoggingStart();return true;
 }
 

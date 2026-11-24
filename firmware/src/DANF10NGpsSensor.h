@@ -80,6 +80,7 @@ public:
   void onLoggingStart() override;
   void onLoggingStop() override;
 
+  // Failed native startup retains its attempted session until STOP/finalization.
   bool startLoggingSession(char*, size_t) override;
   void onLoggingFinalized() override;
   bool usesBdqV2NativeStream() const override;
@@ -132,6 +133,7 @@ private:
   };
 
   void applyParams(const Params& p);
+  bool startLoggingAcquisition_(char* error, size_t capacity);
   bool startSerial_();
   bool startTask_();
   void stopTask_();
