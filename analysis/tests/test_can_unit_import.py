@@ -12,7 +12,7 @@ from bodaqs_analysis.pipeline import load_bdq_session
 
 
 def recording(path, *, rate=3333, stop=True, corrupt=False, epoch=5,
-              terminal=1, claimed_profile=None, boot=9):
+              terminal=1, claimed_profile=None, boot=9, first=0):
     profile = {3333: 1, 1667: 2, 833: 3}[rate]
     effective = bytearray(192)
     struct.pack_into('<HH', effective, 40, profile, 1)
@@ -61,7 +61,7 @@ def recording(path, *, rate=3333, stop=True, corrupt=False, epoch=5,
                                             24:'related_sequence',200:'boundary_event_kind',208:'boundary_validity_flags'})
     data = bytearray(472)
     struct.pack_into('<HBBIIHH', data, 0, 2, 1, 0, 9, 0, 1, 0)
-    struct.pack_into('<HBB', data, 16, 0, 5, 0x42)
+    struct.pack_into('<HBB', data, 16, first, 5, 0x42)
     struct.pack_into('<12h', data, 20, -32768,32767,-1,1,-2,3,100,-200,300,-400,500,-600)
     checksum = zlib.crc32(struct.pack('<QIBBBxHxx', 400,1,0,1,1,84) + data[:80])
     struct.pack_into('<I', data, 80, checksum)
@@ -69,7 +69,7 @@ def recording(path, *, rate=3333, stop=True, corrupt=False, epoch=5,
         data[20] ^= 1
     unit = bytearray(516)
     struct.pack_into('<IIHH', unit, 0, 0,10000,8,0)
-    for offset, value in ((12,1),(24,400),(32,1)):
+    for offset, value in ((12,1),(16,first),(24,400),(32,1)):
         struct.pack_into('<I', unit, offset, value)
     unit[37:39] = b'\x01\x01'
     struct.pack_into('<H', unit, 40, 84)
@@ -80,7 +80,7 @@ def recording(path, *, rate=3333, stop=True, corrupt=False, epoch=5,
         struct.pack_into('<IIHH', row, 0, index,10000+index,0,0)
         row[12], row[14], row[200] = 1, epoch, kind
         struct.pack_into('<I', row, 20, 1)
-        struct.pack_into('<I', row, 24, terminal if kind == 8 else 0)
+        struct.pack_into('<I', row, 24, terminal if kind == 8 else first)
         struct.pack_into('<H', row, 208, 1)
         boundaries.append(bytes(row))
     metadata = {**_metadata(), 'stream_count': 3}
@@ -128,6 +128,8 @@ def test_terminal_tail_loss_is_counted(tmp_path):
     session = load_bdq_session(recording(tmp_path/'test.bdq', terminal=3))
     delivery = session['meta']['secondary_streams']['can0_imu6_samples']['source_bounded_delivery']
     assert delivery == {'expected': 4, 'retained': 2, 'missing': 2}
+    gaps = session['meta']['secondary_streams']['can0_imu6_samples']['gaps']
+    assert gaps == [{'source_segment_id': 1, 'first': 2, 'last': 3, 'count': 2, 'extent': 'known'}]
 
 
 def test_mismatched_profile_is_not_presented_as_applied_or_scaled(tmp_path):
@@ -136,3 +138,10 @@ def test_mismatched_profile_is_not_presented_as_applied_or_scaled(tmp_path):
     assert list(frame.ax) == [-32768,100]
     assert 'ax_g' not in frame
     assert session['meta']['secondary_streams']['can0_imu6_samples']['native_profile_hz'] is None
+
+
+def test_nonzero_start_does_not_invent_pre_session_loss(tmp_path):
+    session = load_bdq_session(recording(tmp_path/'test.bdq', first=3, terminal=4))
+    meta = session['meta']['secondary_streams']['can0_imu6_samples']
+    assert meta['gaps'] == []
+    assert meta['source_bounded_delivery'] == {'expected': 2, 'retained': 2, 'missing': 0}

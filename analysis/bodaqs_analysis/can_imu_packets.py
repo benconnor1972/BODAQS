@@ -49,10 +49,18 @@ def read_can_imu_packets(path: str | Path, stream_key: str) -> dict:
                     raise ValueError('conflicting sample-unit source epoch')
                 epochs[segment] = epoch
         packets = _unit_packets(packets, acquisition, epochs)
-    terminal = {}
+    terminal, initial = {}, {}
     for row in evidence:
+        if row["boundary_event_kind"] == 2 and row["boundary_validity_flags"] & 1:
+            segment, first = row['source_segment_id'], row['related_sequence']
+            if segment in initial and initial[segment] != first:
+                raise ValueError('conflicting source START boundary')
+            initial[segment] = first
         if row["boundary_event_kind"] == 8 and row["boundary_validity_flags"] & 1:
-            terminal[row["source_segment_id"]] = row["related_sequence"] + 1
+            segment, end = row['source_segment_id'], row['related_sequence'] + 1
+            if segment in terminal and terminal[segment] != end:
+                raise ValueError('conflicting source STOP boundary')
+            terminal[segment] = end
     groups, receptions = {}, {}
     replayed_samples = 0
     last_order = 0
@@ -82,7 +90,7 @@ def read_can_imu_packets(path: str | Path, stream_key: str) -> dict:
     ambiguous, duplicates = 0, replayed_samples
     for segment, rows in groups.items():
         minimum, maximum = [], [0]*len(rows)
-        lower = 0
+        lower = initial.get(segment, 0)
         for i, packet in enumerate(rows):
             floor = packet["sequence_floor"]
             if i and floor < rows[i-1]["sequence_floor"]:
@@ -105,7 +113,7 @@ def read_can_imu_packets(path: str | Path, stream_key: str) -> dict:
             upper = maximum[i]
             if i and _same_readings(packet, rows[i-1]):
                 upper += packet["count"]
-        expected, seen = 0, {}
+        expected, seen = initial.get(segment), {}
         for i, packet in enumerate(rows):
             known = minimum[i] == maximum[i]
             if not known:
@@ -133,6 +141,16 @@ def read_can_imu_packets(path: str | Path, stream_key: str) -> dict:
                     "packet_observation": packet["sequence"], **axes})
             if known:
                 expected = max(expected or 0, first + packet["count"])
+        if segment in terminal and expected is not None and expected < terminal[segment]:
+            gaps.append(dict(source_segment_id=segment, first=expected,
+                             last=terminal[segment]-1, count=terminal[segment]-expected, extent='known'))
+        elif segment not in terminal:
+            gaps.append(dict(source_segment_id=segment, first=expected,
+                             last=None, count=None, extent='uncertain'))
+    for segment, first in initial.items():
+        if segment not in groups and segment in terminal and terminal[segment] > first:
+            gaps.append(dict(source_segment_id=segment, first=first, last=terminal[segment]-1,
+                             count=terminal[segment]-first, extent='known'))
     return {"schema": "bodaqs.can_imu_packet_decode.v1", "source": acquisition,
             "readings": readings, "gaps": gaps, "duplicates": duplicates,
             "ambiguous_packets": ambiguous, "packet_count": len(packets),

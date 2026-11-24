@@ -54,13 +54,7 @@ def _assess_imu_stream(path, info, descriptor):
     segments = sorted({r["source_segment_id"] for r in decoded["readings"]})
     terminal = {r["source_segment_id"]: r["related_sequence"] for r in stops}
     gaps = list(decoded["gaps"])
-    # The reader identifies internal gaps. A lost final packet also needs the
-    # terminal boundary's inclusive upper endpoint reconciled independently.
-    for segment in segments:
-        known = [r["sequence"] for r in decoded["readings"] if r["source_segment_id"] == segment and r["sequence"] is not None]
-        if known and segment in terminal and max(known) < terminal[segment]:
-            gaps.append({"source_segment_id": segment, "first": max(known)+1,
-                         "last": terminal[segment], "count": terminal[segment]-max(known), "extent": "known"})
+    # The shared decoder owns internal and source-bounded terminal gaps.
     sequence_known = bool(decoded["readings"]) and not decoded["ambiguous_packets"]
     started = {r["source_segment_id"] for r in starts if r["boundary_validity_flags"] & 1}
     complete_bounds = bool(segments) and all(segment in terminal and segment in started for segment in segments)
