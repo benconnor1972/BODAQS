@@ -70,6 +70,8 @@ def audit_images(folder: Path) -> dict:
         path = folder / name
         data = path.read_bytes()
         limit = OFFSETS[names[index + 1]] if index + 1 < len(names) else FLASH_BYTES
+        if name == 'partitions.bin':
+            limit = 0x9000  # canonical table slot ends where NVS begins
         if not data or OFFSETS[name] + len(data) > limit:
             raise ValueError(f'{name}: empty or exceeds flash segment bounds')
         entry = {**record(path), 'offset': OFFSETS[name], 'end': OFFSETS[name] + len(data)}

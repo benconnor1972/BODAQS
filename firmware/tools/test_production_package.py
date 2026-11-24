@@ -85,7 +85,8 @@ class PackageAuditTests(unittest.TestCase):
                 (root / name).write_bytes(image)
             original = canonical_partitions()
             variants = {'missing_otadata': original[:32] + original[64:],
-                        'missing_coredump': original[:96] + original[128:]}
+                        'missing_coredump': original[:96] + original[128:],
+                        'table_overwrites_nvs': original + b'\xff' * (0x2000 - len(original))}
             for label, index, value in [('wrong_offset', 4, 0xa000),
                                          ('overlap', 36, 0xd000),
                                          ('wrong_app_size', 72, 0x300000),
