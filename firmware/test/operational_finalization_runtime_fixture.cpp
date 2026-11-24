@@ -10,6 +10,8 @@
 struct BdqLogEndInfo {
  const char* stopReason="user_request"; const char* stopTriggerEvent="operator";
  uint32_t stopUptimeMs=5000,samplesDropped=3,missedSampleSlots=7;
+ struct AdcTiming {struct Device {bool sourceTimedOut=false;uint32_t firstTimeoutTickUs=0;uint8_t failedChannelMask=0;} adc[2];};
+ const AdcTiming* externalAdcTiming=nullptr;
 };
 struct Stats {uint32_t recordsWritten=10,firstSequence=4,lastSequence=13;bool hasSequence=true;};
 struct Writer {
@@ -67,7 +69,10 @@ int main() {
   std::strcpy(d.sensorId,"local");
   if(i && i%2) std::strcpy(d.payloadSchema,"bodaqs.can_imu_units.v2");
  }
- const auto bytes=buildOperationalSummary_({});assert(bytes && bytes<sizeof workspace);
+ BdqLogEndInfo info;BdqLogEndInfo::AdcTiming timing;
+ timing.adc[0].sourceTimedOut=true;timing.adc[0].firstTimeoutTickUs=12345;timing.adc[0].failedChannelMask=5;
+ info.externalAdcTiming=&timing;
+ const auto bytes=buildOperationalSummary_(info);assert(bytes && bytes<sizeof workspace);
  JsonDocument summary;assert(!deserializeJson(summary,workspace,bytes));
  assert(summary["streams"].size()==9);
  assert(summary["recording_membership"]["excluded_mask"]==2);
@@ -78,6 +83,10 @@ int main() {
  assert(summary["remote_tail_status"]=="incomplete");
  assert(summary["streams"][0]["producer_drop_count"]==3);
  assert(summary["streams"][1]["producer_drop_count"]==2);
+ assert(summary["adc_source_failures"].size()==1);
+ assert(summary["adc_source_failures"][0]["adc_index"]==0);
+ assert(summary["adc_source_failures"][0]["first_timeout_tick_us"]==12345);
+ assert(summary["adc_source_failures"][0]["channel_mask"]==5);
  // The footer cannot overwrite data still waiting to use this workspace.
  s_bdqV2Writer.pending=true;assert(!buildOperationalSummary_({}));s_bdqV2Writer.pending=false;
  // A reduced/fragmented START allocation fails honestly, without partial JSON.

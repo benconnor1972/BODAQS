@@ -60,6 +60,9 @@ static_assert(sizeof(RawAdcRecord)==RawAdcRecording::kRecordBytes,
 
 namespace RawAdcRecording {
 constexpr uint16_t kSensorError=0x0020;
+// Primary-stream-specific status bits; not general BDQ status assignments.
+constexpr uint16_t kAdc0TimedOut=0x1000, kAdc1TimedOut=0x2000;
+constexpr uint16_t kMissingCount=UINT16_MAX;
 inline uint16_t count(int32_t value,uint16_t& status) {
   if(value<0){status|=kSensorError;return 0;}
   if(value>4095){status|=kSensorError;return 4095;}

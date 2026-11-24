@@ -62,6 +62,7 @@ struct RecordingScanState {
   LocalAnalogRecordingPlan plan;
   AdcAcquisitionCadence::Due row;
   AnalogInputManager::CountPublisher publisher=nullptr;
+  uint8_t failedAdcs=0;
 };
 RecordingScanState* s_recordingScan = nullptr; // Persistent, bounded START reservation.
 #endif
@@ -780,7 +781,18 @@ bool concentratedExchange_(uint8_t channel,uint8_t adc=0) {
   auto& dev=s_ads[adc];auto& stats=s_timingStats.adc[adc];uint32_t waited=0;
   if(!adsWaitReady_(dev,conversionTimeoutUs_(dev),&waited)) {
     if(!s_scanRun.load())return false;
-    ++stats.scanWaitTimeouts;++stats.waitTimeouts;++stats.channel[channel].acquireFail;s_scanFault=true;return false;
+    ++stats.scanWaitTimeouts;++stats.waitTimeouts;++stats.channel[channel].acquireFail;
+#if BODAQS_PRODUCTION_RECORDING
+    // No shared transaction occurred: this device's DRDY timeout alone does
+    // not invalidate independent sources. Never retry/reuse its cached values.
+    s_recordingScan->failedAdcs |= uint8_t(1u << adc);
+    stats.sourceTimedOut=true;stats.firstTimeoutTickUs=micros();
+    stats.failedChannelMask=s_recordingScan->plan.mask(adc);
+    for(unsigned ch=0;ch<4;++ch) dev.cachedValid[ch]=false;
+#else
+    s_scanFault=true;
+#endif
+    return false;
   }
   if(!s_scanRun.load())return false;
   TimingStats_record(stats.waitUs,waited);TimingStats_record(stats.channel[channel].waitUs,waited);
@@ -869,10 +881,13 @@ void concentratedTask_(void*) {
       const uint64_t now = static_cast<uint64_t>(esp_timer_get_time());
       const auto due = cadence.claim(now);
       for (unsigned adc = 0; adc < 2; ++adc) {
-        if (!(due.adcMask & (1u << adc))) continue;
+        if (!(due.adcMask & (1u << adc)) || (s_recordingScan->failedAdcs & (1u << adc))) continue;
         auto& stats = s_timingStats.adc[adc];
         stats.scanMissedAppointments += due.missed[adc];
-        if (!concentratedExchange_(pending[adc], adc)) break;
+        if (!concentratedExchange_(pending[adc], adc)) {
+          if(s_scanFault.load() || !s_scanRun.load()) break;
+          continue;
+        }
         pending[adc] = s_recordingScan->plan.nextChannel(adc, pending[adc]);
       }
       if (!s_scanRun.load() || s_scanFault.load()) break;
@@ -1258,6 +1273,7 @@ bool setRecordingPlan(const LocalAnalogRecordingPlan& plan, CountPublisher publi
   if (!s_recordingScan) return false;
   s_recordingScan->plan = plan;
   s_recordingScan->row = {};
+  s_recordingScan->failedAdcs=0;
   s_recordingScan->publisher=publisher;
   for (unsigned adc = 0; adc < 2; ++adc) {
     auto& dev = s_ads[adc];
@@ -1333,6 +1349,8 @@ bool captureRawPair(RawAdcRecord& record,uint64_t& capturedUs) {
   const uint64_t now = static_cast<uint64_t>(esp_timer_get_time());
   capturedUs = now;
   record.tick = static_cast<uint32_t>(now); record.status = 0; record.reserved = 0;
+  if(s_recordingScan->failedAdcs & 1) record.status |= RawAdcRecording::kAdc0TimedOut;
+  if(s_recordingScan->failedAdcs & 2) record.status |= RawAdcRecording::kAdc1TimedOut;
   unsigned output=0;
   for (unsigned index = 0; index < s_recordingScan->plan.inputs(); ++index) {
     const auto& source = s_recordingScan->plan.column(index);
@@ -1348,7 +1366,8 @@ bool captureRawPair(RawAdcRecord& record,uint64_t& capturedUs) {
       const uint32_t age = now >= dev.cachedAcquiredUs[source.channel] ? uint32_t(now - dev.cachedAcquiredUs[source.channel]) : 0;
       recordCachedRowUse_(source.adc, source.channel, dev.cachedValid[source.channel], fresh, age);
     } else value = analogRead(uint8_t(source.pin));
-    const auto counts=RawAdcRecording::count(value, fieldStatus);
+    auto counts=RawAdcRecording::count(value, fieldStatus);
+    if(fieldStatus & RawAdcRecording::kSensorError) counts=RawAdcRecording::kMissingCount;
     if(source.primary) {record.counts[output++]=counts;record.status|=fieldStatus;}
     if(s_recordingScan->publisher)
       s_recordingScan->publisher(source.sensorIndex,counts,record.tick,fieldStatus,record.sequence);

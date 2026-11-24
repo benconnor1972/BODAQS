@@ -54,6 +54,13 @@ def reconstruct_recorded_analog(
         result.warnings.append("analog_raw_only:ambiguous_primary_source")
         return result
     channels = descriptors[0]["channels"]
+    acquisition = descriptors[0].get("acquisition")
+    validity = acquisition.get("count_validity") if isinstance(acquisition, Mapping) else None
+    per_field_validity = isinstance(validity, Mapping) and dict(validity) == {
+        "schema": "bodaqs.adc_count_validity.v1", "valid_minimum": 0,
+        "valid_maximum": 4095, "missing_count": 65535,
+        "sensor_error_scope": "per_field_missing_count",
+    }
     derived = primary.loc[:, [key for key in ("time_s", "sequence", "native_tick", "status_flags") if key in primary]].copy()
     identities = Counter(sensor.get("sensor_id") for sensor in sensors
                          if isinstance(sensor, Mapping) and isinstance(sensor.get("sensor_id"), str))
@@ -94,7 +101,9 @@ def reconstruct_recorded_analog(
             result.warnings.append(f"analog_raw_only:{identity}:invalid_calibration")
             continue
         raw = pd.to_numeric(primary[raw_field], errors="coerce")
-        invalid = raw.isna() | (raw < 0) | (raw > 4095) | ((primary["status_flags"].astype("uint64") & 0x20) != 0)
+        invalid = raw.isna() | (raw < 0) | (raw > 4095)
+        if not per_field_validity:
+            invalid |= (primary["status_flags"].astype("uint64") & 0x20) != 0
         field_name = f"{identity}_engineering [{unit}]"
         scale = travel / abs(high - low) * (-1 if invert else 1)
         derived[field_name] = ((raw - zero) * scale).mask(invalid)

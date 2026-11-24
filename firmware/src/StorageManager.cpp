@@ -2978,6 +2978,20 @@ static size_t buildOperationalSummary_(const BdqLogEndInfo& endInfo) {
   document["primary_samples_dropped"] = endInfo.samplesDropped;
   document["user_mark_events_dropped"] = s_bdqV2MarkEventsDropped;
   document["missed_sample_slots"] = endInfo.missedSampleSlots;
+  auto adcFailures=document["adc_source_failures"].to<JsonArray>();
+  if(endInfo.externalAdcTiming) for(unsigned adc=0;adc<2;++adc) {
+    const auto& source=endInfo.externalAdcTiming->adc[adc];
+    if(!source.sourceTimedOut) continue;
+    auto failure=adcFailures.add<JsonObject>();
+    failure["adc_index"]=adc;
+    failure["channel_mask"]=source.failedChannelMask;
+    failure["first_timeout_tick_us"]=source.firstTimeoutTickUs;
+    failure["clock_id"]="logger_monotonic";
+    failure["native_tick_modulus"]=uint64_t{1}<<32;
+    failure["cause"]="drdy_timeout";
+    failure["missing_interval"]="from_timeout_through_session_stop";
+    failure["source_binding"]="recording_configuration.assignment.bus/input";
+  }
   auto stop = document["stop"].to<JsonObject>();
   stop["reason"] = endInfo.stopReason;
   stop["trigger_event"] = endInfo.stopTriggerEvent;

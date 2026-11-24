@@ -1,5 +1,6 @@
 """Run the real ADC manager/owner against an independent SPI/DRDY/timer model."""
 import argparse
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -92,6 +93,41 @@ uint32_t ulTaskNotifyTake(int, TickType_t ticks) {
                         "-I", str(folder), "-I", str(root / "test/stubs"), "-I", str(root / "src"),
                         str(cpp), str(root / "src/SensorParams.cpp"), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True, timeout=20)
+        # Exercise the actual primary descriptor/catalog, so per-field validity
+        # cannot exist only in a hand-written importer fixture.
+        cpp.write_text(r'''
+#include "BdqV2PrimaryStream.h"
+#include <cassert>
+#include <cstdio>
+#include <cstring>
+int main() {
+  BdqV2PrimaryStreamSchema schema;
+  SensorColumnDescriptor column;
+  strcpy(column.columnId,"pot_raw");strcpy(column.sensorName,"pot");column.raw=true;
+  BdqV2StreamSource source;source.streamId=1;source.context=&schema;
+  source.nativeTickModulus=uint64_t{1}<<32;
+  source.pendingRecords=source.pendingObservations=[](const void*)->size_t{return 0;};
+  source.popRecord=[](void*,uint8_t*,size_t){return false;};
+  source.popObservation=[](void*,BdqV2Format::TimeObservation&){return false;};
+  assert(schema.configure(&column,1,500,source));
+  char json[8192];size_t bytes=0;
+  const auto& descriptor=schema.descriptor();
+  assert(descriptor.source.recordSizeBytes==14);
+  assert(BdqV2Catalog::write("A8",&descriptor,1,json,sizeof json,bytes));
+  puts(json);
+}
+''', encoding="utf-8")
+        subprocess.run([args.compiler,"-std=c++17","-DBODAQS_PRODUCTION_RECORDING=1",
+                        "-I",str(root/"test/stubs"),"-I",str(root/"src"),str(cpp),
+                        str(root/"src/BdqV2PrimaryStream.cpp"),str(root/"src/BdqV2Catalog.cpp"),
+                        "-o",str(exe)],check=True)
+        descriptor=json.loads(subprocess.check_output([str(exe)],text=True))["streams"][0]
+        assert descriptor["acquisition"]["count_validity"] == {
+            "schema":"bodaqs.adc_count_validity.v1","valid_minimum":0,
+            "valid_maximum":4095,"missing_count":65535,
+            "sensor_error_scope":"per_field_missing_count"}
+        assert descriptor["status_flags"]["adc0_drdy_timeout_persistent"]==0x1000
+        assert descriptor["status_flags"]["adc1_drdy_timeout_persistent"]==0x2000
 
 
 if __name__ == "__main__":

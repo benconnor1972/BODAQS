@@ -3,8 +3,7 @@
 The A8 production integration candidate records local analog inputs in the
 existing `uint16` 0..4095 count domain. Native negative conversion results clamp
 to zero during count scaling, preserving the existing acquisition behavior.
-Values outside the declared domain presented to the record encoder clamp with
-the sensor-error bit. This does not claim twelve effective bits of accuracy.
+This does not claim twelve effective bits of accuracy.
 
 BDQ v2 session metadata includes `recording_configuration`, with schema
 `bodaqs.recording_configuration.v1`. It snapshots the common local row rate and
@@ -29,7 +28,7 @@ Normal `load_bdq_session` import preserves the original counts in `df_raw` and
 exposes valid basic reconstruction as `stream_dfs["analog_engineering"]`. Its
 metadata explicitly labels the stream as derived from `primary` using the
 embedded snapshot. It copies sequence/time/status evidence without filling gaps
-or aligning independent clocks. Sensor-error rows retain raw evidence and have
+or aligning independent clocks. Legacy sensor-error rows retain raw evidence and have
 missing derived values. Unknown domains, unsupported calibration models,
 ambiguous identities or mismatched field bindings remain raw-only.
 
@@ -44,6 +43,29 @@ sparse subsets, unequal counts or an idle device. Applicable direct GPIO inputs
 use the same explicitly selected twelve-bit domain. One rational timer cadence
 supplies the common row rate. Skipped deadlines appear as sequence gaps, with
 no catch-up rows. Reused ADC values carry the timing-degraded bit.
+
+Production catalogs now declare `acquisition.count_validity`, schema
+`bodaqs.adc_count_validity.v1`, with `valid_minimum: 0`, `valid_maximum: 4095`,
+`missing_count: 65535` and `sensor_error_scope: per_field_missing_count`.
+The `uint16` record geometry and valid-count domain are unchanged. Missing or
+invalid inputs use the sentinel instead of a plausible zero or repeated cached
+count. Normal import retains that raw evidence, suppresses its engineering value
+and preserves valid engineering values for other fields in the same row. Files
+without this exact declared policy keep the conservative row-wide error rule.
+
+A single external ADC's DRDY timeout retires that device for the rest of the
+session, while healthy ADC, GPIO and independent native streams continue. The
+primary stream's persistent `adc0_drdy_timeout_persistent` (`0x1000`) and
+`adc1_drdy_timeout_persistent` (`0x2000`) bits identify the affected ADC; these
+are primary-specific flags, not general BDQ flags. Configured assignment
+`bus`/`input` binds the device and channels to sensor identities. Analog string
+pots receive the same missing count with invalid-input/tracking-uncertainty
+evidence in their native stream. The bounded footer's `adc_source_failures`
+records ADC index, affected channel mask, first timeout tick in the logger's
+modulo-2^32 microsecond clock, and the missing interval through session STOP.
+The failed device is never retried implicitly; a new explicit recording resets
+the failure state. Shared SPI transfer, register identity, timer and task faults
+still request controlled session STOP.
 
 Host checks establish these software properties. Physical timing and mixed-load
 comparison remain required before qualifying the complete candidate.

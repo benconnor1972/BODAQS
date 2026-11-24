@@ -681,6 +681,34 @@ def test_recorded_analog_polarity_and_clamped_error_are_honest(tmp_path):
     assert derived["fork_pot_engineering [mm]"].iloc[1] == pytest.approx(-20)
 
 
+def test_declared_missing_count_preserves_healthy_sensor_during_adc_timeout(tmp_path):
+    import copy
+    path, metadata, catalog = _count_recording(tmp_path)
+    healthy = copy.deepcopy(metadata['recording_configuration']['sensors'][0])
+    healthy.update(sensor_id='shock_pot', raw_fields=['shock_raw'])
+    metadata['recording_configuration']['sensors'].append(healthy)
+    descriptor = catalog['streams'][0]
+    channel = copy.deepcopy(descriptor['channels'][-1])
+    channel.update(field='shock_raw', sensor='shock_pot', byte_offset=14)
+    descriptor['channels'].append(channel)
+    descriptor['acquisition'] = {'count_validity': {
+        'schema': 'bodaqs.adc_count_validity.v1', 'valid_minimum': 0,
+        'valid_maximum': 4095, 'missing_count': 65535,
+        'sensor_error_scope': 'per_field_missing_count'}}
+    records = [STREAM_RECORD_PREFIX_STRUCT.pack(i, 100000+i*5000, 0x1020, 0)
+               + struct.pack('<HH', 65535, value) for i, value in enumerate((200, 300))]
+    path.write_bytes(_bdq_v2_bytes(metadata=metadata, catalog=catalog, primary_records=records))
+    session = load_bdq_session(path)
+    derived = session['stream_dfs']['analog_engineering']
+    assert derived['fork_pot_engineering [mm]'].isna().all()
+    assert derived['shock_pot_engineering [mm]'].tolist() == pytest.approx([10, 20])
+    assert session['df_raw']['suspension_raw_dom_suspension [count]'].tolist() == [65535, 65535]
+    # Unknown policy must preserve the older conservative row-wide error rule.
+    descriptor['acquisition']['count_validity']['schema'] = 'future_unknown'
+    path.write_bytes(_bdq_v2_bytes(metadata=metadata, catalog=catalog, primary_records=records))
+    assert load_bdq_session(path)['stream_dfs']['analog_engineering']['shock_pot_engineering [mm]'].isna().all()
+
+
 def test_incomplete_counts_recording_retains_raw_and_reconstruction(tmp_path):
     path, _, _ = _count_recording(tmp_path, incomplete=True)
     session = load_bdq_session(path)

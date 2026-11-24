@@ -76,6 +76,11 @@ struct ExternalAdcTimingStats {
     uint32_t scanRowPeriodUs=0,scanMaximumLagUs=0;
 #endif
     uint32_t scanReads=0,scanReadFailures=0,scanConfigFaults=0,scanWaitTimeouts=0;
+#if BODAQS_PRODUCTION_RECORDING
+    bool sourceTimedOut=false;
+    uint8_t failedChannelMask=0;
+    uint32_t firstTimeoutTickUs=0;
+#endif
 #if BODAQS_ADC_SCAN_PIPELINE
     uint32_t scanCombinedCalls=0;
 #if BODAQS_ADC_SCAN_ROW_PHASE

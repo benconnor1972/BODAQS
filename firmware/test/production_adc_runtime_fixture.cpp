@@ -3,6 +3,7 @@
 std::vector<RawAdcRecord> captured;
 unsigned targetRows = 16;
 LocalAnalogRecordingPlan expectedPlan;
+int timeoutAdc = -1;
 struct Publication {uint8_t sensor;int32_t count;uint32_t tick;uint16_t status;};
 std::vector<Publication> publications;
 void publishCount(uint8_t sensor,int32_t count,uint32_t tick,uint16_t status,uint32_t) {
@@ -22,6 +23,12 @@ bool captureProductionRow() {
   for (unsigned field = 0; field < expectedPlan.inputs(); ++field) {
     const auto& input = expectedPlan.column(field);
     const auto conversion = input.external ? delivered[input.adc][input.channel] : 0;
+    if (input.external && input.adc == timeoutAdc && (record.status & (0x1000 << timeoutAdc))) {
+      if(input.primary) assert(record.counts[primaryField++] == 65535);
+      assert(publications[field].count == 65535);
+      assert(publications[field].status & 0x20);
+      continue;
+    }
     const uint16_t expected = input.external
         ? (conversion < 0 ? 0 : uint16_t(double(conversion) * 4095.0 / 8388607.0 + 0.5)) : 123;
     if(input.primary) assert(record.counts[primaryField++] == expected);
@@ -32,6 +39,7 @@ bool captureProductionRow() {
   assert(RawAdcRecording::encode(record, encoded, sizeof(encoded), expectedPlan.columns()));
   assert(!memcmp(encoded, &record, RawAdcRecording::recordBytes(expectedPlan.columns())));
   captured.push_back(record);
+  if (timeoutAdc >= 0 && captured.size() == 2) chips[timeoutAdc].timeout = true;
   if (captured.size() == targetRows) s_scanRun.store(false);
   return true;
 }
@@ -71,9 +79,21 @@ void run(const LocalAnalogRecordingPlan& plan, bool delayed = false, bool badRea
   }
   for (const auto& transaction : wire)
     assert(plan.mask(unsigned(transaction.cs - 10))); // no conversion on idle ADC
+  if (timeoutAdc >= 0) {
+    assert(AnalogInputManager::continuousHealthy());
+    assert(captured.back().status & (0x1000 << timeoutAdc));
+    assert(chips[1-timeoutAdc].reads > targetRows/2);
+    assert(captured.back().sequence > targetRows-1); // Timeout delay is an explicit gap, not catch-up rows.
+    chips[timeoutAdc].timeout = false;
+  }
   assert(AnalogInputManager::retireScanRowCapture());
   AnalogInputManager::onLoggingStop();
-  assert(AnalogInputManager::stoppedTimingStats());
+  const auto* stats=AnalogInputManager::stoppedTimingStats();assert(stats);
+  if(timeoutAdc >= 0) {
+    assert(stats->adc[timeoutAdc].sourceTimedOut && stats->adc[timeoutAdc].firstTimeoutTickUs);
+    assert(stats->adc[timeoutAdc].failedChannelMask==plan.mask(timeoutAdc));
+    assert(!stats->adc[1-timeoutAdc].sourceTimedOut);
+  }
 }
 
 int main() {
@@ -81,6 +101,13 @@ int main() {
   assert(plan.configure(500));
   assert(plan.addExternal(0, 0, 0) && plan.addExternal(1, 1, 0));
   run(plan);
+  timeoutAdc = 0;
+  run(plan); // One device stops responding; healthy rows continue at the admitted rate.
+  timeoutAdc = 1;
+  run(plan);
+  timeoutAdc = -1;
+  run(plan); // The next explicit session has no retained device failure.
+  assert(!(captured.front().status & 0x3000));
   negativeConversions = true;
   run(plan);
   for (const auto& row : captured) assert(row.counts[0] == 0 && row.counts[1] == 0);
@@ -101,6 +128,10 @@ int main() {
   assert(plan.configure(500) && plan.addExternal(7,0,3,false) && plan.addGpio(2,12));
   assert(plan.inputs()==2 && plan.columns()==1);
   run(plan); // Native string-pot input publishes without a duplicate primary field.
+  assert(plan.configure(500) && plan.addExternal(7,0,3,false) && plan.addExternal(2,1,2));
+  timeoutAdc=0;
+  run(plan); // Failed native string-pot receives invalid input, not a repeated count.
+  timeoutAdc=-1;
   assert(plan.configure(500) && plan.addExternal(7,0,3,false));
   assert(plan.inputs()==1 && plan.columns()==0);
   run(plan); // Native-only analog input still gets real conversion appointments.
@@ -116,5 +147,5 @@ int main() {
   assert(s_scanFault.load() && !s_timingWorkers.load() && captured.empty());
   failArm = false;
   AnalogInputManager::onLoggingStop();
-  puts("Production ADC owner: sparse/unequal/idle/direct, fractional timer, late/stale wakes, register proof, timer failure and restart passed");
+  puts("Production ADC owner: sparse/unequal/idle/direct, device timeout containment, invalid counts/native publication, fractional timer, late/stale wakes, register proof, timer failure and restart passed");
 }
