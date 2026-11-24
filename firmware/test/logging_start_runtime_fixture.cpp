@@ -65,7 +65,7 @@ bool fail_(char* error, size_t cap, const char* format, ...) {
 // PRODUCTION_BMI
 std::vector<std::string> events;
 bool saveOk = true, upload = false, powerOk = true, storageOk = true, openOk = true;
-bool validateOk = true, sensorsStartOk = true;
+bool validateOk = true, sensorsStartOk = true, acquisitionStartOk = true;
 uint8_t excludedSensors = 0;
 int prepares = 0;
 LogFormat preparedFormat, fileFormat;
@@ -86,7 +86,7 @@ namespace SensorManager {
     ++prepares; events.push_back("prepare"); preparedFormat = cfg.logFormat; return validateOk;
   }
   bool onLoggingStart(char*, size_t) { events.push_back("sensors"); return sensorsStartOk; }
-  void startLoggingAcquisition() { events.push_back("acquire"); }
+  bool startLoggingAcquisition() { events.push_back("acquire"); return acquisitionStartOk; }
   void onLoggingStop() { events.push_back("sensor_stop"); }
   void onLoggingFinalized() { events.push_back((phaseIs_(LifecycleState::Stopping) || phaseIs_(LifecycleState::Finalizing)) ? "finalize_locked" : "finalize"); }
   uint8_t sessionExcludedCount() { return excludedSensors; }
@@ -260,7 +260,7 @@ Sensor live[MAX_SENSORS];
 void reset() {
   g_cfg = LoggerConfig{}; savedConfig = LoggerConfig{}; profile = board::BoardProfile{};
   events.clear(); s_localStopPending = false; s_lifecycle.publish(LifecycleState::Ready); (void)s_lifecycle.takeStopRequests(); s_stopContext={}; CanMasterManager::handoffReady=true; CanMasterManager::fenced=false; s_configurationIssue = LoggingConfigIssue::None; s_configurationDetail[0] = 0;
-  saveOk = powerOk = storageOk = openOk = validateOk = sensorsStartOk = true; upload = false; prepares = 0;
+  saveOk = powerOk = storageOk = openOk = validateOk = sensorsStartOk = acquisitionStartOk = true; upload = false; prepares = 0;
   excludedSensors = 0;
   for (int i = 0; i < MAX_SENSORS; ++i) { SensorManager::s_list[i] = nullptr; live[i] = Sensor{}; }
   profile.analog.count = 3;
@@ -402,6 +402,9 @@ int main() {
   check(has("sensor_stop") && has("finalize"));
   reset(); add(T::BMI270ImuI2C,"a",1,104); sensorsStartOk = false;
   check(!LoggingManager::start()); check(!has("file") && has("finalize") && has("sensor_stop") && !phaseIs_(LifecycleState::Recording));
+  reset(); add(T::BMI270ImuI2C,"a",1,104); acquisitionStartOk = false;
+  check(!LoggingManager::start());
+  check(has("acquire") && !phaseIs_(LifecycleState::Recording));
   reset(); add(T::BMI270ImuI2C,"a",1,104);
   profile.buttons.count = 1; strcpy(profile.buttons.btn[0].id,"nav_enter");
   revealRestartOnPress = true;

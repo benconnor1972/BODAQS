@@ -46,7 +46,7 @@ namespace SensorManager {
   bool requiresBdqV2(const LoggerConfig& cfg);
   bool validateLoggingStart(const LoggerConfig& cfg, uint16_t effectiveRateHz, char* error, size_t errorCapacity);
   bool onLoggingStart(char* error = nullptr, size_t errorCapacity = 0);
-  void startLoggingAcquisition();
+  bool startLoggingAcquisition();
   void onLoggingStop();
   void onLoggingFinalized();
   const SensorDiagnosticList& sessionDiagnostics();

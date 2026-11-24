@@ -70,6 +70,23 @@ failure policy, not a claim to support every catalog in a reduced workspace.
 Existing START allocation/admission policy and physical fragmented-heap coverage
 remain separate release gates.
 
+## Acquisition-start and operational-loss review
+
+The final integration review found two acquisition reservations whose failure
+was not propagated. GPS now rejects unavailable UART/task owners and production
+diagnostic modes that suppress acquisition. I2C scheduler `start()` and
+`SensorManager::startLoggingAcquisition()` now return `bool`: every active bus
+must have a running owner. Existing callers and test doubles are updated. A
+partial worker allocation failure aborts START through the ordinary retirement
+barrier; neither strict nor best effort can claim acquired shared resources.
+No task priority or core placement changes.
+
+A rejected marked primary row now increments the operational
+`user_mark_events_dropped` counter as well as the row-drop evidence. This remains
+visible without optional handoff profiling. Independent queue saturation and
+worker-allocation failure fixtures cover these cases; actual device allocation
+pressure remains a physical gate.
+
 ## Import behavior
 
 Normal BDQ-v2 metadata now adds `qc.run_stats.bdq_finalization` with footer

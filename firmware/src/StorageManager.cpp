@@ -1092,6 +1092,9 @@ bool StorageManager_enqueueRawAdc(const RawAdcRecord& record,bool mark,uint64_t 
   if(value.reserved || recordBytes > sizeof(value) || !s_bdqV2PrimaryQueue.push(reinterpret_cast<const uint8_t*>(&value),recordBytes,&depth)) {
     if(value.reserved)++s_rowsFormatFailed;
     ++s_samplesDropped;++s_rawAdc->rejected;
+    // captureRow_ already consumed this user event. If its row is rejected,
+    // account for the lost event in the operational footer, not only probes.
+    if(mark)++s_bdqV2MarkEventsDropped;
     s_primaryPendingStatus|=BdqV2Format::DiscontinuityBefore|BdqV2Format::ProducerQueueDropBefore;
     return false;
   }

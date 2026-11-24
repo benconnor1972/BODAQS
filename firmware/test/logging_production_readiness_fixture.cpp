@@ -199,5 +199,16 @@ int main() {
   SensorManager::localAllocationMask=0;
   check(LoggingManager::requestStart()==LoggingManager::StartResult::Failed);
   check(!has("file") && !has("acquire"));
+  // Worker allocation is a shared reservation, not a participant availability
+  // exclusion. Neither strict nor best effort can claim acquired resources.
+  for(bool bestEffort:{false,true}) {
+    productionReset();local();g_cfg.recordingBestEffort=bestEffort;
+    acquisitionStartOk=false;
+    check(LoggingManager::requestStart()==LoggingManager::StartResult::Pending);
+    opened();LoggingManager::loop();
+    check(!s_running && !RecordingReadiness::session().decision.mayRecord);
+    check(RecordingReadiness::session().reservation==RecordingAdmission::Reservation::Failed);
+    settleStop();check(!LoggingManager::configurationLocked());
+  }
   printf("Production readiness/controller: %d checks passed\n",checks);
 }

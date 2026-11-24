@@ -55,7 +55,7 @@ bool requiresBdqV2(const LoggerConfig&) {return true;}
 uint16_t synchronousMaxSampleRateHz() {return 0;}
 bool validateLoggingStart(const LoggerConfig&,uint16_t,char*,size_t) {return true;}
 bool onLoggingStart(char*,size_t) {return true;}
-void startLoggingAcquisition() {++localStarts;}
+bool startLoggingAcquisition() {++localStarts;return true;}
 void onLoggingStop() {++localStops;}
 void onLoggingFinalized() {++finalizations;}
 uint8_t activeCount() {return 5;}

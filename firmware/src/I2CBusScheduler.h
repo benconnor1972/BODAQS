@@ -55,7 +55,8 @@ namespace I2CBusScheduler {
   void resetTimingStats();
   const I2CBusSchedulerTimingStats& timingStats();
 
-  void start();
+  // True only when every active bus has a running acquisition owner.
+  bool start();
   void stop();
   // Nonblocking control-owner retirement. No sensor/queue cleanup until stopped().
   void requestStop();

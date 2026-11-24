@@ -1217,7 +1217,7 @@ bool LoggingManager::start() {
   return false;
 #else
   completeStorageStart();
-  return true;
+  return phaseIs_(LifecycleState::Recording);
 #endif
 }
 
@@ -1265,7 +1265,9 @@ void LoggingManager::completeStorageStart() {
   }
 #endif
   AnalogInputManager::onLoggingStart();
-  SensorManager::startLoggingAcquisition();
+  if (!SensorManager::startLoggingAcquisition()) {
+    stop(StopReason::StartFailure,"i2c_acquisition_start"); return;
+  }
   s_lifecycle.publish(LifecycleState::Recording);
 #if BODAQS_PRODUCTION_RECORDING
   if (!AnalogInputManager::activateRecordingPlan()) {

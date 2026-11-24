@@ -214,6 +214,14 @@ int main() {
   RemoteImuRecording::sharedFault=false;LoggingManager::loop();
   storageWorker.step(12001); LoggingManager::loop();
   check(!LoggingManager::configurationLocked());
+  // An I2C worker reservation failure must not publish a running session.
+  reset(); add(SensorType::BMI270ImuI2C,"a",1,104); blockedOperation=0;
+  acquisitionStartOk=false;
+  check(LoggingManager::requestStart() == LoggingManager::StartResult::Pending);
+  storageWorker.step(12500); LoggingManager::loop();
+  check(!s_running && s_stopping && has("acquire"));
+  LoggingManager::loop();storageWorker.step(12501);LoggingManager::loop();
+  check(!LoggingManager::configurationLocked() && has("close") && has("sensor_stop"));
   printf("Async storage/controller: %d checks passed\n",checks);
 }
 """)

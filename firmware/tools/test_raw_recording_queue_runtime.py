@@ -32,7 +32,7 @@ struct Marks {BdqV2PendingMark last;bool push(const BdqV2PendingMark& m){last=m;
 // ADAPTER
 int main() {
   for(unsigned columns:{0u,1u,2u,3u,8u,32u}) {
-    rawStats={};rawStats.active=true;s_primaryPendingStatus=0;
+    rawStats={};rawStats.active=true;s_primaryPendingStatus=0;s_bdqV2MarkEventsDropped=0;
     s_bdqV2PrimarySchema.width=RawAdcRecording::recordBytes(columns);
     assert(s_bdqV2PrimaryQueue.allocate(s_bdqV2PrimarySchema.width,2));
     RawAdcRecord row;row.sequence=0x12345678;row.tick=0x11223344;
@@ -40,7 +40,8 @@ int main() {
     assert(StorageManager_enqueueRawAdc(row,true,99,100));
     assert(s_bdqV2Marks.last.hostMonotonicUs==99 && s_bdqV2Marks.last.primarySequence==row.sequence);
     assert(StorageManager_enqueueRawAdc(row,false,0,100));
-    assert(!StorageManager_enqueueRawAdc(row,false,0,100));
+    assert(!StorageManager_enqueueRawAdc(row,true,101,100));
+    assert(s_bdqV2MarkEventsDropped==1); // primary rejection must account for its consumed mark
     uint8_t bytes[sizeof(row)+4];memset(bytes,0xcd,sizeof(bytes));
     assert(!popBdqV2PrimaryRecord_(nullptr,bytes,s_bdqV2PrimarySchema.width-1));
     assert(popBdqV2PrimaryRecord_(nullptr,bytes,sizeof(bytes)));

@@ -653,15 +653,19 @@ const I2CBusSchedulerTimingStats& timingStats() {
   return s_timingSnapshot;
 }
 
-void start() {
+bool start() {
 #if defined(ESP32)
+  bool ready = true;
   if (!schedulerTasksActive_()) {
     s_sessionStartUs = static_cast<uint64_t>(esp_timer_get_time());
     s_sessionEndUs = 0;
   }
   for (uint8_t bus = 0; bus < kMaxBuses; ++bus) {
-    if (s_tasks[bus]) continue;
     if (!busHasActiveClients_(bus)) continue;
+    if (s_tasks[bus]) {
+      if (!s_run[bus].load(std::memory_order_acquire)) ready = false;
+      continue;
+    }
 
     s_retired[bus].store(false, std::memory_order_release);
     s_run[bus] = true;
@@ -675,12 +679,16 @@ void start() {
       kTaskCore);
 
     if (ok != pdPASS) {
+      ready = false;
       s_tasks[bus] = nullptr;
       s_run[bus] = false;
       s_retired[bus].store(true, std::memory_order_release);
       I2CSCHED_LOGW("failed to start bus%u scheduler\n", (unsigned)bus);
     }
   }
+  return ready;
+#else
+  return true;
 #endif
 }
 

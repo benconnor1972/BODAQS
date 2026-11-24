@@ -1058,8 +1058,8 @@ bool onLoggingStart(char* error, size_t errorCapacity) {
   return true;
 }
 
-void startLoggingAcquisition() {
-  I2CBusScheduler::start();
+bool startLoggingAcquisition() {
+  return I2CBusScheduler::start();
 }
 
 void onLoggingStop() {
