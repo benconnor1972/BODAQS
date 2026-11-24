@@ -821,6 +821,7 @@ bool AS5048BAngleSensor::acquireAsyncSample_() const {
 
 #if BODAQS_PRODUCTION_RECORDING
   if(snapshot.readOk) snapshot.calibrationCounts=calibrationCountsFromRaw_(snapshot.raw);
+  snapshot.calibrationEpoch=m_calibrationEpoch;
 #endif
   publishAsyncSnapshot_(snapshot);
 #if BODAQS_PRODUCTION_RECORDING
@@ -1155,7 +1156,8 @@ void AS5048BAngleSensor::setOutputConfig(const OutputConfig& cfg) {
 
 bool AS5048BAngleSensor::beginCalibration(CalMode mode) {
   if(LoggingManager::configurationLocked()) return false;
-  if (mode != CalMode::ZERO) return false;
+  if (mode != CalMode::ZERO || m_calibrationEpoch==UINT32_MAX) return false;
+  ++m_calibrationEpoch;
   cal_ = CalState{};
   cal_.mode = mode;
   cal_.phase = CalPhase::ACTIVE;
@@ -1206,7 +1208,11 @@ int32_t AS5048BAngleSensor::currentRawCounts() const {
   if(!copyAsyncSnapshot_(snapshot) || !snapshot.have || !snapshot.readOk || snapshot.reused) return INT32_MIN;
   const uint64_t now=static_cast<uint64_t>(esp_timer_get_time());
   if(now<snapshot.acquiredUs || now-snapshot.acquiredUs>std::max<uint64_t>(100000u,3000000u/asyncTargetRateHz())) return INT32_MIN;
-  return cal_.phase==CalPhase::ACTIVE && cal_.mode==CalMode::ZERO?snapshot.calibrationCounts:snapshot.raw;
+  if(cal_.phase==CalPhase::ACTIVE && cal_.mode==CalMode::ZERO) {
+    if(snapshot.calibrationEpoch!=m_calibrationEpoch) return INT32_MIN;
+    return snapshot.calibrationCounts;
+  }
+  return snapshot.raw;
 #else
   const int raw = readRawAngleOnce_();
   if (cal_.phase == CalPhase::ACTIVE && cal_.mode == CalMode::ZERO) {

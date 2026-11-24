@@ -152,6 +152,7 @@ private:
     uint32_t rawReadFailures = 0;
     uint32_t diagnosticReadFailures = 0;
     int32_t calibrationCounts=0;
+    uint32_t calibrationEpoch=0;
     uint32_t seq = 0;
     uint64_t acquiredUs = 0;
   };
@@ -264,6 +265,7 @@ private:
   mutable bool m_runtimeConfigFailureActive = false;
   bool m_deferredRecoveryPending = false;
 
+  uint32_t m_calibrationEpoch=0;
   mutable bool m_calUnwrapInit = false;
   mutable int32_t m_calLastUnwrapped = 0;
   mutable RotaryCountStream m_countStream;

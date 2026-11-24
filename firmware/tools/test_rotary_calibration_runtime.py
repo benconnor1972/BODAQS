@@ -44,6 +44,7 @@ class TestRotary {
 public:
   struct CalState {CalMode mode=CalMode::NONE;CalPhase phase=CalPhase::IDLE;
     int32_t first_counts=INT32_MAX,second_counts=INT32_MIN;uint32_t started_ms=0,samples=0;};
+  uint32_t m_calibrationEpoch=0;
   CalState cal_;int32_t m_zeroCount=100,m_calLastUnwrapped=0,current=123;
   int8_t m_directionSign=1;bool m_calUnwrapInit=false;
   const char* name() const {return "steering";}int32_t currentRawCounts() const {return current;}
@@ -70,6 +71,7 @@ int main() {
   assert(sensor.m_zeroCount==kCountsPerTurn-4);
   assert(sensor.beginCalibration(CalMode::ZERO));sensor.current=INT32_MIN;
   assert(!sensor.finishCalibration(true));
+  sensor.m_calibrationEpoch=UINT32_MAX;assert(!sensor.beginCalibration(CalMode::ZERO));
 }
 '''.replace('MODULUS', str(modulus)).replace('// ACTUAL', actual)
         with tempfile.TemporaryDirectory(prefix='bodaqs-rotary-cal-') as temp:

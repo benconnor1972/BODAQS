@@ -88,6 +88,10 @@ int main(int argc,char** argv) {
 #if TEST_AS5600
   assert(out[1]==1234);
 #endif
+  // Starting a new calibration cannot reuse a snapshot from its previous wrap epoch.
+  sensor.cal_.phase=CalPhase::ACTIVE;sensor.cal_.mode=CalMode::ZERO;
+  ++sensor.m_calibrationEpoch;
+  assert(sensor.currentRawCounts()==INT32_MIN && wire.transactions==reads);
   // Calibration wrap advances on acquisition only; observing repeatedly cannot change it.
   sensor.cal_.phase=CalPhase::ACTIVE;sensor.cal_.mode=CalMode::ZERO;
   wire.raw=3;modelTimeUs+=5000;assert(sensor.asyncAcquire());
