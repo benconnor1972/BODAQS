@@ -40,6 +40,19 @@ physical qualification remain part of the #230 gate before integration onto
 
 ## Baseline provenance
 
+On 25 November 2026, the full `fix/a8-rtc-autodetect` branch (`95901c2f`)
+was merged into this branch and local `main`. The RTC implementation and its
+runtime tests were already present here from #214; reconciliation preserves
+CAN board diagnostics and the full production test list while bringing across
+the RTC candidate-address diagnostic and updated reference documentation.
+The included `firmware/dist/0.6.2-beta` artifacts are the original RTC-only
+release, not images of this combined production/USB integration.
+
+At the user's request, the explicit integration candidate now uses the ordinary
+rate/channel idle OLED instead of the repeated TEST/unqualified reminder.
+Qualification, admission checks, API/serial diagnostics and recording metadata
+remain unchanged. Strict production rejection and other OLED blockers remain.
+
 Mechanical firmware/ADR import from the sealed r133 source archive, SHA256
 `e36bc97680b1b189ac23d49bcfe1c5f9ca6ad7faa775ec0aafbe0ed8c8f4b067`.
 Initial logger recipe before any source changes:

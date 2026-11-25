@@ -366,9 +366,6 @@ namespace {
     } else if (LoggingManager::configurationIssue() == LoggingConfigIssue::Unqualified) {
       DisplayManager::drawText(0,18,"Not qualified",1);
       DisplayManager::drawText(0,34,"Review status",1);
-    } else if (LoggingManager::configurationIssue() == LoggingConfigIssue::IntegrationCandidate) {
-      DisplayManager::drawText(0,18,"TEST candidate",1);
-      DisplayManager::drawText(0,34,"Unqualified load",1);
     } else if (LoggingManager::configurationIssue() == LoggingConfigIssue::RestartRequired) {
       DisplayManager::drawText(0, 18, "Restart required", 1);
       DisplayManager::drawText(0, 34, "Press Enter", 1);
