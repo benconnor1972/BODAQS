@@ -416,9 +416,131 @@ static bool rv3028WriteEpoch_(time_t epoch) {
   return true;
 }
 
+// ISL1208: Renesas FN8085 rev. 9.01, register map and RTC access (pp. 11-12).
+static constexpr uint8_t kIsl1208StatusReg_ = 0x07;
+static constexpr uint8_t kIsl1208RtcFailMask_ = 0x01;
+static constexpr uint8_t kIsl1208WriteEnableMask_ = 0x10;
+static constexpr uint8_t kIsl1208OscillatorDisableMask_ = 0x40;
+
+static bool rtcCalendarLayoutMatches_(board::RtcType type, const uint8_t* regs) {
+  // Read-only structural checks, deliberately independent of date validity:
+  // a factory-reset RTC must still be selected so network sync can set it.
+  static const uint8_t rvReserved[7] = {0x80, 0x80, 0xC0, 0xF8, 0xC0, 0xE0, 0};
+  static const uint8_t islReserved[7] = {0x80, 0x80, 0x40, 0xC0, 0xE0, 0, 0xF8};
+  const uint8_t* reserved = type == board::RtcType::RV3028 ? rvReserved : islReserved;
+  for (size_t i = 0; i < 7; ++i) {
+    if (regs[i] & reserved[i]) return false;
+  }
+  return true;
+}
+
+static bool rtcProbe_(board::RtcType type, uint8_t address) {
+  s_externalRtcProfile.type = type;
+  s_externalRtcProfile.i2c_addr = address;
+  uint8_t status = 0;
+  const uint8_t statusReg = type == board::RtcType::RV3028 ? 0x0E : kIsl1208StatusReg_;
+  if (!rtcI2cRead_(statusReg, &status, 1)) return false;
+  if (type == board::RtcType::ISL1208 && (status & 0x28)) return false;
+  uint8_t regs[7] = {};
+  return rtcI2cRead_(0x00, regs, sizeof(regs)) && rtcCalendarLayoutMatches_(type, regs);
+}
+
+static bool rtcDetect_() {
+  const bool rv = rtcProbe_(board::RtcType::RV3028, board::RTC_RV3028_ADDRESS);
+  const bool isl = rtcProbe_(board::RtcType::ISL1208, board::RTC_ISL1208_ADDRESS);
+  if (rv == isl) {
+    RTC_LOGW("RTC auto-detection: %s; using internal time\n",
+             rv ? "both RTC candidates responded" : "no supported RTC found");
+    return false;
+  }
+  s_externalRtcProfile.type = rv ? board::RtcType::RV3028 : board::RtcType::ISL1208;
+  s_externalRtcProfile.i2c_addr = rv ? board::RTC_RV3028_ADDRESS : board::RTC_ISL1208_ADDRESS;
+  return true;
+}
+
+static bool isl1208ReadEpoch_(time_t& epochOut) {
+  uint8_t status = 0;
+  if (!rtcI2cRead_(kIsl1208StatusReg_, &status, 1)) return false;
+  // Keep the existing PORF API for either chip's loss-of-time indication.
+  s_externalRtcPorf = (status & kIsl1208RtcFailMask_) != 0;
+  if (s_externalRtcPorf || (status & kIsl1208OscillatorDisableMask_)) {
+    RTC_LOGW("ISL1208 time not trusted: RTCF=%u XTOSCB=%u\n",
+             s_externalRtcPorf ? 1u : 0u,
+             (status & kIsl1208OscillatorDisableMask_) ? 1u : 0u);
+    return false;
+  }
+
+  uint8_t regs[7] = {};
+  if (!rtcI2cRead_(0x00, regs, sizeof(regs)) ||
+      !rtcCalendarLayoutMatches_(board::RtcType::ISL1208, regs)) return false;
+  // All calendar fields except weekday are BCD. Reject malformed digits
+  // rather than allowing them to normalize into a plausible timestamp.
+  for (size_t i = 0; i < 6; ++i) {
+    const uint8_t value = i == 2 ? (regs[i] & 0x3F) : regs[i];
+    if ((value & 0x0F) > 9 || (value >> 4) > 9) return false;
+  }
+  int hour = bcdToDec_(regs[2] & 0x3F);
+  if (!(regs[2] & 0x80)) {
+    hour = bcdToDec_(regs[2] & 0x1F);
+    if (hour < 1 || hour > 12) return false;
+    hour = (hour % 12) + ((regs[2] & 0x20) ? 12 : 0);
+  }
+  if (regs[6] > 6 || bcdToDec_(regs[0]) > 59) return false;
+
+  struct tm tm = {};
+  tm.tm_sec = bcdToDec_(regs[0]);
+  tm.tm_min = bcdToDec_(regs[1]);
+  tm.tm_hour = hour;
+  tm.tm_mday = bcdToDec_(regs[3]);
+  tm.tm_mon = (int)bcdToDec_(regs[4]) - 1;
+  tm.tm_year = bcdToDec_(regs[5]) + 100;
+  time_t epoch = 0;
+  if (!epochFromUtcTm_(tm, epoch) || epoch < kSaneEpoch_) return false;
+  struct tm verified = {};
+  if (!gmtime_r(&epoch, &verified) || verified.tm_year != tm.tm_year ||
+      verified.tm_mon != tm.tm_mon || verified.tm_mday != tm.tm_mday) return false;
+  epochOut = epoch;
+  return true;
+}
+
+static bool isl1208WriteEpoch_(time_t epoch) {
+  if (epoch < kSaneEpoch_) return false;
+  struct tm tm = {};
+  if (!gmtime_r(&epoch, &tm) || tm.tm_year < 100 || tm.tm_year > 199) return false;
+  uint8_t status = 0;
+  if (!rtcI2cRead_(kIsl1208StatusReg_, &status, 1)) return false;
+  // Enable the board's crystal oscillator and calendar writes. Preserve the
+  // alarm/battery indicators and auto-reset mode; leave calibration untouched.
+  const uint8_t enabled = (uint8_t)((status | kIsl1208WriteEnableMask_) &
+                                   (uint8_t)~kIsl1208OscillatorDisableMask_);
+  if (!rtcI2cWrite_(kIsl1208StatusReg_, &enabled, 1)) return false;
+  const uint8_t regs[7] = {
+    decToBcd_((uint8_t)tm.tm_sec), decToBcd_((uint8_t)tm.tm_min),
+    (uint8_t)(0x80 | decToBcd_((uint8_t)tm.tm_hour)), // MIL: 24-hour mode
+    decToBcd_((uint8_t)tm.tm_mday), decToBcd_((uint8_t)(tm.tm_mon + 1)),
+    decToBcd_((uint8_t)(tm.tm_year - 100)), (uint8_t)tm.tm_wday,
+  };
+  const bool wrote = rtcI2cWrite_(0x00, regs, sizeof(regs));
+  // Always attempt to re-protect the calendar, even after a failed transfer.
+  uint8_t after = enabled;
+  const bool readBack = rtcI2cRead_(kIsl1208StatusReg_, &after, 1);
+  const uint8_t locked = (uint8_t)(after & (uint8_t)~kIsl1208WriteEnableMask_);
+  const bool protectedOk = rtcI2cWrite_(kIsl1208StatusReg_, &locked, 1);
+  if (!wrote || !readBack || !protectedOk) return false;
+  if (!rtcI2cRead_(kIsl1208StatusReg_, &after, 1) ||
+      (after & (kIsl1208RtcFailMask_ | kIsl1208WriteEnableMask_ |
+                kIsl1208OscillatorDisableMask_))) return false;
+  // RTCF is cleared by the hardware calendar write, never by a status write.
+  s_externalRtcPorf = false;
+  return true;
+}
+
 static bool externalRtcReadEpoch_(time_t& epochOut) {
   if (s_externalRtcProfile.type == board::RtcType::RV3028) {
     return rv3028ReadEpoch_(epochOut);
+  }
+  if (s_externalRtcProfile.type == board::RtcType::ISL1208) {
+    return isl1208ReadEpoch_(epochOut);
   }
   return false;
 }
@@ -426,6 +548,9 @@ static bool externalRtcReadEpoch_(time_t& epochOut) {
 static bool externalRtcWriteEpoch_(time_t epoch) {
   if (s_externalRtcProfile.type == board::RtcType::RV3028) {
     return rv3028WriteEpoch_(epoch);
+  }
+  if (s_externalRtcProfile.type == board::RtcType::ISL1208) {
+    return isl1208WriteEpoch_(epoch);
   }
   return false;
 }
@@ -601,6 +726,7 @@ const char* RTCManager_sourceLabel() {
   if (currentSource == RTC_EXTERNAL) {
     switch (s_externalRtcProfile.type) {
       case board::RtcType::RV3028: return "RV3028";
+      case board::RtcType::ISL1208: return "ISL1208";
       case board::RtcType::None:
       default: return "external";
     }
@@ -720,6 +846,8 @@ void RTCManager_begin(RTCSource source, TwoWire* extRtcWire) {
   currentSource = source;
   if (currentSource != RTC_EXTERNAL) {
     s_externalRtcProfile = board::RtcProfile{};
+    s_externalRtcLastReadOk = false;
+    s_externalRtcPorf = false;
   }
 
   if (currentSource == RTC_EXTERNAL) {
@@ -741,6 +869,7 @@ void RTCManager_begin(RTCSource source, TwoWire* extRtcWire) {
 void RTCManager_begin(const board::RtcProfile& rtcProfile) {
   s_externalRtcProfile = rtcProfile;
   s_externalRtcLastReadOk = false;
+  s_externalRtcPorf = false;
 
   if (rtcProfile.type == board::RtcType::None) {
     RTCManager_begin(RTC_INTERNAL);
@@ -756,16 +885,21 @@ void RTCManager_begin(const board::RtcProfile& rtcProfile) {
     return;
   }
 
+  if (rtcProfile.type == board::RtcType::Auto && !rtcDetect_()) {
+    RTCManager_begin(RTC_INTERNAL);
+    return;
+  }
+
   if (rtcProfile.interrupt_pin >= 0) {
     const int mode = rtcProfile.interrupt_use_internal_pullup ? INPUT_PULLUP : INPUT;
     pinMode((uint8_t)rtcProfile.interrupt_pin, mode);
   }
 
-  RTC_LOGI("External RTC selected: type=%u addr=0x%02X bus=%u\n",
-           (unsigned)rtcProfile.type,
-           (unsigned)rtcProfile.i2c_addr,
-           (unsigned)rtcProfile.bus_index);
-  if (rtcProfile.type == board::RtcType::RV3028) {
+  RTC_LOGI("External RTC selected: %s addr=0x%02X bus=%u\n",
+           s_externalRtcProfile.type == board::RtcType::RV3028 ? "RV3028" : "ISL1208",
+           (unsigned)s_externalRtcProfile.i2c_addr,
+           (unsigned)s_externalRtcProfile.bus_index);
+  if (s_externalRtcProfile.type == board::RtcType::RV3028) {
     (void)rv3028EnsureBackupConfig_();
   }
   RTCManager_begin(RTC_EXTERNAL, s_externalRtcWire);

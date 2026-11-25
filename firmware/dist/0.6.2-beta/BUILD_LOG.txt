@@ -1,0 +1,300 @@
+Processing bodaqs_s3_mini_n4r2 (platform: espressif32; board: bodaqs_s3_mini_n4r2; framework: arduino)
+--------------------------------------------------------------------------------
+Verbose mode can be enabled via `-v, --verbose` option
+CONFIGURATION: https://docs.platformio.org/page/boards/espressif32/bodaqs_s3_mini_n4r2.html
+PLATFORM: Espressif 32 (6.13.0) > BODAQS A8 ESP32-S3 Mini N4R2
+HARDWARE: ESP32S3 240MHz, 320KB RAM, 4MB Flash
+DEBUG: Current (esp-builtin) On-board (esp-builtin) External (cmsis-dap, esp-bridge, esp-prog, iot-bus-jtag, jlink, minimodule, olimex-arm-usb-ocd, olimex-arm-usb-ocd-h, olimex-arm-usb-tiny-h, olimex-jtag-tiny, tumpa)
+PACKAGES: 
+ - framework-arduinoespressif32 @ 3.20017.241212+sha.dcc1105b 
+ - tool-esptoolpy @ 2.41100.0 (4.11.0) 
+ - toolchain-riscv32-esp @ 8.4.0+2021r2-patch5 
+ - toolchain-xtensa-esp32s3 @ 8.4.0+2021r2-patch5
+LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
+LDF Modes: Finder ~ chain, Compatibility ~ soft
+Found 39 compatible libraries
+Scanning dependencies...
+Dependency Graph
+|-- Adafruit BusIO @ 1.17.4
+|-- Adafruit GFX Library @ 1.12.6
+|-- Adafruit SSD1306 @ 2.5.17
+|-- ArduinoJson @ 7.4.3
+|-- SparkFun u-blox GNSS v3 @ 3.1.15
+|-- BMI270_SensorAPI @ 0.0.0+20261117080559.sha.41129fc
+|-- Wire @ 2.0.0
+|-- SPI @ 2.0.0
+|-- WiFi @ 2.0.0
+|-- WebServer @ 2.0.0
+|-- SD_MMC @ 2.0.0
+|-- HTTPClient @ 2.0.0
+|-- FS @ 2.0.0
+|-- ESPmDNS @ 2.0.0
+Building in release mode
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\AS5048BAngleSensor.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\AS5048LibraryProbe.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\AS5600AngleSensor.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\AS5600StringPotAnalog.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\AS5600StringPotI2C.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\AS5600StringPotSensorBase.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\AnalogInputManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\AnalogPotSensor.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BMI270Device.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BMI270FifoAcquisition.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BMI270FifoParser.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BMI270I2CProbe.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BMI270I2CTransport.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BMI270ImuSensor.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BdqLogWriter.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BdqV2Catalog.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BdqV2PrimaryStream.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BdqV2Writer.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BoardProfile.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\BoardSelect.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\ButtonActions.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\ButtonBindingTable.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\ButtonManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\CalCapture.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\Calibration.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\CalibrationWizard.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\CaptureUtils.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\ConfigManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\DANF10NGpsSensor.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\DebugLog.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\DeviceRestart.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\DisplayManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\GpsUartProbe.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\HtmlUtil.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\HttpFileSender.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\I2CBusScheduler.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\I2CManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\I2CStartupDiagnostics.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\IndicatorManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\LogMetadataWriter.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\LoggingManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\MenuSystem.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\PowerManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\RTCManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\Routes_Api.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\Routes_Config.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\Routes_Files.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\Routes_Static.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\Routes_Transforms.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\Sensor.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\SensorAssignment.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\SensorManager.cpp.o
+platformio.exe : src/Routes_Transforms.cpp: In function 'void addTransformsFromDirMMC_(const char*, 
+ArduinoJson::V743PB22::JsonArray)':
+At line:2 char:1
++ & C:/Users/benco/.platformio/penv/Scripts/platformio.exe run -d firmw ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (src/Routes_Tran...2::JsonArray)'::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+src/Routes_Transforms.cpp:70:46: warning: 'ArduinoJson::V743PB22::JsonObject 
+ArduinoJson::V743PB22::JsonArray::createNestedObject() const' is deprecated: use add<JsonObject>() instead 
+[-Wdeprecated-declarations]
+     JsonObject o = outArr.createNestedObject();
+                                              ^
+In file included from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.hpp:65,
+                 from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/Routes_Transforms.cpp:3:
+.pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson/compatibility.hpp:140:19: note: declared here
+ inline JsonObject JsonArray::createNestedObject() const {
+                   ^~~~~~~~~
+src/Routes_Transforms.cpp: In lambda function:
+src/Routes_Transforms.cpp:108:26: warning: 'DynamicJsonDocument' is deprecated: use JsonDocument instead 
+[-Wdeprecated-declarations]
+   DynamicJsonDocument doc(4096);
+                          ^
+In file included from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.hpp:65,
+                 from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/Routes_Transforms.cpp:3:
+.pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson/compatibility.hpp:125:58: note: declared here
+ class ARDUINOJSON_DEPRECATED("use JsonDocument instead") DynamicJsonDocument
+                                                          ^~~~~~~~~~~~~~~~~~~
+src/Routes_Transforms.cpp:109:50: warning: 'ArduinoJson::V743PB22::JsonArray 
+ArduinoJson::V743PB22::JsonDocument::createNestedArray(TChar*) [with TChar = const char]' is deprecated: use 
+doc[key].to<JsonArray>() instead [-Wdeprecated-declarations]
+   JsonArray items = doc.createNestedArray("items");
+                                                  ^
+In file included from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.hpp:42,
+                 from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/Routes_Transforms.cpp:3:
+.pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson/Document/JsonDocument.hpp:356:13: note: declared here
+   JsonArray createNestedArray(TChar* key) {
+             ^~~~~~~~~~~~~~~~~
+src/Routes_Transforms.cpp:113:45: warning: 'ArduinoJson::V743PB22::JsonObject 
+ArduinoJson::V743PB22::JsonArray::createNestedObject() const' is deprecated: use add<JsonObject>() instead 
+[-Wdeprecated-declarations]
+     JsonObject o = items.createNestedObject();
+                                             ^
+In file included from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.hpp:65,
+                 from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/Routes_Transforms.cpp:3:
+.pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson/compatibility.hpp:140:19: note: declared here
+ inline JsonObject JsonArray::createNestedObject() const {
+                   ^~~~~~~~~
+src/Routes_Transforms.cpp:127:45: warning: 'ArduinoJson::V743PB22::JsonObject 
+ArduinoJson::V743PB22::JsonArray::createNestedObject() const' is deprecated: use add<JsonObject>() instead 
+[-Wdeprecated-declarations]
+     JsonObject o = items.createNestedObject();
+                                             ^
+In file included from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.hpp:65,
+                 from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/Routes_Transforms.cpp:3:
+.pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson/compatibility.hpp:140:19: note: declared here
+ inline JsonObject JsonArray::createNestedObject() const {
+                   ^~~~~~~~~
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\SensorParams.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\SensorRegistry.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\StartupLog.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\StorageManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\TransformRegistry.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\UI.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\UploadAckIndex.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\UploadModeManager.cpp.o
+src/TransformRegistry.cpp: In member function 'bool TransformRegistry::loadPoly_fs(const String&, const String&, 
+fs::FS&)':
+src/TransformRegistry.cpp:164:3: warning: 'template<unsigned int N> class ArduinoJson::V743PB22::StaticJsonDocument' 
+is deprecated: use JsonDocument instead [-Wdeprecated-declarations]
+   StaticJsonDocument<2048> doc;
+   ^~~~~~~~~~~~~~~~~~
+In file included from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.hpp:65,
+                 from .pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson.h:9,
+                 from src/TransformRegistry.cpp:2:
+.pio/libdeps/bodaqs_s3_mini_n4r2/ArduinoJson/src/ArduinoJson/compatibility.hpp:63:58: note: declared here
+ class ARDUINOJSON_DEPRECATED("use JsonDocument instead") StaticJsonDocument
+                                                          ^~~~~~~~~~~~~~~~~~
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\UploadSessionCleanup.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\UploadSessionScanner.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\WebServerManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\WiFiManager.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\ZipArchiveWriter.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\src\main.cpp.o
+Building .pio\build\bodaqs_s3_mini_n4r2\bootloader.bin
+Generating partitions .pio\build\bodaqs_s3_mini_n4r2\partitions.bin
+esptool.py v4.11.0
+Creating esp32s3 image...
+Merged 1 ELF section
+Successfully created esp32s3 image.
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib566\Wire\Wire.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\libef4\SPI\SPI.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib4a0\Adafruit BusIO\Adafruit_BusIO_Register.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib4a0\Adafruit BusIO\Adafruit_GenericDevice.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\lib566\libWire.a
+Archiving .pio\build\bodaqs_s3_mini_n4r2\libef4\libSPI.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib4a0\Adafruit BusIO\Adafruit_I2CDevice.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib4a0\Adafruit BusIO\Adafruit_SPIDevice.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib4c0\Adafruit GFX Library\Adafruit_GFX.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib4c0\Adafruit GFX Library\Adafruit_GrayOLED.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib4c0\Adafruit GFX Library\Adafruit_SPITFT.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\lib4a0\libAdafruit BusIO.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib4c0\Adafruit GFX Library\glcdfont.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib996\Adafruit SSD1306\Adafruit_SSD1306.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\libb8f\SparkFun u-blox GNSS v3\sfe_bus.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\libb8f\SparkFun u-blox GNSS v3\u-blox_GNSS.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\lib4c0\libAdafruit GFX Library.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib56e\BMI270_SensorAPI\bmi2.c.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\lib996\libAdafruit SSD1306.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib56e\BMI270_SensorAPI\bmi270.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib593\WiFi\WiFi.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib593\WiFi\WiFiAP.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\lib56e\libBMI270_SensorAPI.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib593\WiFi\WiFiClient.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib593\WiFi\WiFiGeneric.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib593\WiFi\WiFiMulti.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib593\WiFi\WiFiSTA.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib593\WiFi\WiFiScan.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib593\WiFi\WiFiServer.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\libb8f\libSparkFun u-blox GNSS v3.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib593\WiFi\WiFiUdp.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib162\FS\FS.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib162\FS\vfs_api.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\liba59\WebServer\Parsing.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\lib593\libWiFi.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\liba59\WebServer\WebServer.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\liba59\WebServer\detail\mimetable.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib876\SD_MMC\SD_MMC.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\lib162\libFS.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\libd8f\WiFiClientSecure\WiFiClientSecure.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\libd8f\WiFiClientSecure\esp_crt_bundle.c.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\liba59\libWebServer.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\libd8f\WiFiClientSecure\ssl_client.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib2a2\HTTPClient\HTTPClient.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\lib876\libSD_MMC.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\lib7b6\ESPmDNS\ESPmDNS.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\Esp.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\libd8f\libWiFiClientSecure.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\FirmwareMSC.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\lib7b6\libESPmDNS.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\FunctionalInterrupt.cpp.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\lib2a2\libHTTPClient.a
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\HWCDC.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\HardwareSerial.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\IPAddress.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\IPv6Address.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\MD5Builder.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\Print.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\Stream.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\StreamString.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\Tone.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\USB.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\USBCDC.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\USBMSC.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\WMath.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\WString.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\base64.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\cbuf.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-adc.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-bt.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-cpu.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-dac.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-gpio.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-i2c-slave.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-i2c.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-ledc.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-matrix.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-misc.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-psram.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-rgb-led.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-rmt.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-sigmadelta.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-spi.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-time.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-timer.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-tinyusb.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-touch.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\esp32-hal-uart.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\firmware_msc_fat.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\libb64\cdecode.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\libb64\cencode.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\main.cpp.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\stdlib_noniso.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\wiring_pulse.c.o
+Compiling .pio\build\bodaqs_s3_mini_n4r2\FrameworkArduino\wiring_shift.c.o
+Archiving .pio\build\bodaqs_s3_mini_n4r2\libFrameworkArduino.a
+Linking .pio\build\bodaqs_s3_mini_n4r2\firmware.elf
+Retrieving maximum program size .pio\build\bodaqs_s3_mini_n4r2\firmware.elf
+Checking size .pio\build\bodaqs_s3_mini_n4r2\firmware.elf
+Advanced Memory Usage is available via "PlatformIO Home > Project Inspect"
+RAM:   [=====     ]  53.8% (used 176140 bytes from 327680 bytes)
+Flash: [========= ]  88.4% (used 1852845 bytes from 2097152 bytes)
+Building .pio\build\bodaqs_s3_mini_n4r2\firmware.bin with action:
+  "$PYTHONEXE" "$OBJCOPY" --chip esp32s3 elf2image --flash_mode ${__get_board_flash_mode(__env__)} --flash_freq ${__get_board_f_image(__env__)} --flash_size 4MB --elf-sha256-offset 0xb0 -o $TARGET $SOURCES
+Building .pio\build\bodaqs_s3_mini_n4r2\firmware.bin
+esptool.py v4.11.0
+Creating esp32s3 image...
+Merged 3 ELF sections
+Successfully created esp32s3 image.
+======================== [SUCCESS] Took 138.74 seconds ========================
+
+Environment          Status    Duration
+-------------------  --------  ------------
+bodaqs_s3_mini_n4r2  SUCCESS   00:02:18.740
+========================= 1 succeeded in 00:02:18.740 =========================
+
+esptool.py v4.11.0
+Wrote 0x1d4750 bytes to file C:\Users\benco\dev\BODAQS-worktrees\rtc-autodetect\firmware\dist\0.6.2-beta\bodaqs_a8-0.6.2-beta-full.bin, ready to flash to offset 0x0
+
+esptool.py v4.11.0
+Wrote 0x1d4750 bytes to file C:\Users\benco\dev\BODAQS-worktrees\rtc-autodetect\firmware\dist\0.6.2-beta\bodaqs_a8-0.6.2-beta-full.bin, ready to flash to offset 0x0
