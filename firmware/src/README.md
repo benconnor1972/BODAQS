@@ -337,13 +337,15 @@ desktop import agent.
 
 ## `RTCManager`
 
-**Purpose:** Timekeeping (internal ESP32 RTC or external DS3231), NTP sync, timezone application.
+**Purpose:** Timekeeping (internal ESP32 RTC, RV-3028 or ISL1208), NTP sync, timezone application.
+The A8 profile detects its fitted RTC at startup; see
+[A8 RTC detection](../../docs/firmware/A8_RTC_Autodetection.md).
 
 **Common APIs**
-- `RTCManager_begin(RTC_INTERNAL|RTC_EXTERNAL)`
+- `RTCManager_begin(gBoard->rtc)` — selects the profile's RTC or detects the A8 RTC.
 - `RTCManager_setHumanReadable(bool)` — UI/log timestamp format.
-- `RTCManager_syncWithNTP(ssid, pass)`
-- Tied to `configTzTime(tz, ntp1, ntp2, ntp3)` in `setup()`.
+- `RTCManager_syncNetworkTime(...)` — SNTP with HTTP fallback; updates the selected RTC.
+- `RTCManager_setTimezone(tz)` — applies the POSIX timezone for local display.
 
 ---
 
