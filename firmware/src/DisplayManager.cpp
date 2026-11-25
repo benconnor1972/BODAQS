@@ -340,7 +340,7 @@ namespace {
 
     // Throttle to ~5 Hz and avoid redraws if nothing changed
     unsigned long now = millis();
-    const uint8_t displayPhase = uploadMode ? 2 : (logging ? 1 : 0);
+    const uint8_t displayPhase = uploadMode ? 2 + UploadModeManager::usbPhase() : (logging ? 1 : 0);
     if (logging && s_lastHudMs != 0 && hz == s_lastRate &&
         act == s_lastActive && displayPhase == s_lastBlinkPhase) return;
     if (now - s_lastHudMs < 200 && hz == s_lastRate && act == s_lastActive && displayPhase == s_lastBlinkPhase) return;
@@ -355,9 +355,17 @@ namespace {
     renderFooter_();
     if (uploadMode) {
       DisplayManager::drawText(0, 16, "UPLOAD", 2);
-      DisplayManager::drawText(0, 34, "MODE", 2);
+      if (UploadModeManager::usbEnabled()) {
+        DisplayManager::drawText(0, 40, UploadModeManager::shortTransferLabel(), 1);
+      } else DisplayManager::drawText(0, 34, "MODE", 2);
     } else if (logging) {
       renderLoggingHud_(hz, act);
+    } else if (LoggingManager::configurationIssue() == LoggingConfigIssue::PreparingParticipants) {
+      DisplayManager::drawText(0,18,"Preparing sensors",1);
+      DisplayManager::drawText(0,34,"Waiting for nodes",1);
+    } else if (LoggingManager::configurationIssue() == LoggingConfigIssue::Unqualified) {
+      DisplayManager::drawText(0,18,"Not qualified",1);
+      DisplayManager::drawText(0,34,"Review status",1);
     } else if (LoggingManager::configurationIssue() == LoggingConfigIssue::RestartRequired) {
       DisplayManager::drawText(0, 18, "Restart required", 1);
       DisplayManager::drawText(0, 34, "Press Enter", 1);

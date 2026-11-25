@@ -213,3 +213,12 @@ bool ParamPack::clear() {
   return true;
 }
 
+
+const char* ParamPack::keyAt(uint8_t index) const {
+  const ParamStore* store = asStore(impl_);
+  return store ? store->keyAt(index) : nullptr;
+}
+const char* ParamPack::valueAt(uint8_t index) const {
+  const ParamStore* store = asStore(impl_);
+  return store ? store->valueAt(index) : nullptr;
+}

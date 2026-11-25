@@ -6,6 +6,10 @@
 #include <string.h>
 
 #include "BdqV2Format.h"
+#include "RecordingFeatures.h"
+#if BODAQS_PRODUCTION_RECORDING
+#include "RawAdcRecording.h"
+#endif
 
 namespace {
 
@@ -13,6 +17,10 @@ const BdqV2CatalogStatusFlag kPrimaryStatusFlags[] = {
     {"discontinuity_before", BdqV2Format::DiscontinuityBefore},
     {"producer_queue_drop_before", BdqV2Format::ProducerQueueDropBefore},
     {"sensor_error", BdqV2PrimaryStreamSchema::kSensorErrorStatus},
+#if BODAQS_PRODUCTION_RECORDING
+    {"adc0_drdy_timeout_persistent", RawAdcRecording::kAdc0TimedOut},
+    {"adc1_drdy_timeout_persistent", RawAdcRecording::kAdc1TimedOut},
+#endif
 };
 
 bool isUnwrappedRaw_(const SensorColumnDescriptor& column) {
@@ -111,6 +119,10 @@ bool BdqV2PrimaryStreamSchema::configure(
   descriptor_.nominalSampleRateNumeratorHz = sampleRateHz;
   descriptor_.nominalSampleRateDenominator = 1;
   descriptor_.expectedSequenceStep = 1;
+#if BODAQS_PRODUCTION_RECORDING
+  snprintf(descriptor_.requestedProfile,sizeof descriptor_.requestedProfile,"adc_counts_v1");
+  descriptor_.acquisitionDetailsJson="\"count_validity\":{\"schema\":\"bodaqs.adc_count_validity.v1\",\"valid_minimum\":0,\"valid_maximum\":4095,\"missing_count\":65535,\"sensor_error_scope\":\"per_field_missing_count\"}";
+#endif
 
   catalogChannels_[0] = {
       "sequence", "sample_sequence", "count", "uint32", 0, "diagnostic"};

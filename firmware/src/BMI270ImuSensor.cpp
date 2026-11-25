@@ -490,7 +490,11 @@ void BMI270ImuSensor::sampleValues(float* out, uint8_t maximum) {
   float values[kMaximumColumnCount] {};
   float baseValues[BMI270SparseRow::kColumnCount];
   BMI270ImuSample sample;
+#if BODAQS_PRODUCTION_RECORDING
+  const bool haveSample = acquisition_.latestSample(sample);
+#else
   const bool haveSample = acquisition_.pop(sample);
+#endif
   uint32_t ageUs = 0;
   bool ageValid = false;
   BMI270SparseRow::encode(
@@ -503,7 +507,12 @@ void BMI270ImuSensor::sampleValues(float* out, uint8_t maximum) {
 
   if (params_.iocDiagnostics) {
     BMI270IocOffsetSnapshot snapshot;
-    if (acquisition_.popIocOffsetSnapshot(snapshot)) {
+#if BODAQS_PRODUCTION_RECORDING
+    const bool haveIoc=acquisition_.latestIocOffsetSnapshot(snapshot);
+#else
+    const bool haveIoc=acquisition_.popIocOffsetSnapshot(snapshot);
+#endif
+    if(haveIoc) {
       values[12] = static_cast<float>(snapshot.x);
       values[13] = static_cast<float>(snapshot.y);
       values[14] = static_cast<float>(snapshot.z);
@@ -514,8 +523,11 @@ void BMI270ImuSensor::sampleValues(float* out, uint8_t maximum) {
   const uint8_t configuredCount = columnCount();
   const uint8_t count = maximum < configuredCount ? maximum : configuredCount;
   memcpy(out, values, count * sizeof(float));
-  I2CBusScheduler::recordRowUse(&acquisition_, ageUs, ageValid, haveSample);
-  if (haveSample) acquisition_.recordRowEmission(ageUs, ageValid);
+#if !BODAQS_PRODUCTION_RECORDING
+  I2CBusScheduler::recordRowUse(&acquisition_,ageUs,ageValid,haveSample);
+  if(haveSample) acquisition_.recordRowEmission(ageUs,ageValid);
+#endif
+  // Production inspection never advances native recording queues or diagnostics.
 }
 
 bool BMI270ImuSensor::describeColumn(uint8_t index, SensorColumnDescriptor& out) const {
@@ -864,12 +876,12 @@ bool BMI270ImuSensor::loggingRestartRequired(const SensorSpec& spec, char* error
   return false;
 }
 
-bool BMI270ImuSensor::validateLoggingStart(
+bool BMI270ImuSensor::resolveLoggingConfiguration_(
     const LoggerConfig& config,
     uint16_t effectiveRateHz,
+    uint16_t& resolvedOutputRate,
     char* error,
     size_t errorCapacity) const {
-  if (muted_) return true;
   if (acquisition_.mixedRate() &&
       config.logFormat != LogFormat::BodaqsMultiStreamBinary) {
     return fail_(error, errorCapacity,
@@ -885,25 +897,43 @@ bool BMI270ImuSensor::validateLoggingStart(
                  params_.name);
   }
   if (loggingRestartRequired(spec, error, errorCapacity)) return false;
-  const uint16_t resolvedOutputRate =
+  resolvedOutputRate =
       config.logFormat == LogFormat::BodaqsMultiStreamBinary
       ? acquisition_.nativeRateHz()
       : BMI270Profile::resolveSparseRowOutputRateHz(
             acquisition_.nativeRateHz(),
             params_.maximumOutputRateHz,
             effectiveRateHz);
-  if (resolvedOutputRate == 0 || acquisition_.outputRateHz() != resolvedOutputRate) {
+  if (resolvedOutputRate == 0) {
     return fail_(error, errorCapacity,
                  "%s could not resolve a safe IMU output rate for effective logger rate %u Hz",
                  params_.name, (unsigned)effectiveRateHz);
   }
-  if (!I2CManager::available(params_.busIndex)) {
-    return fail_(error, errorCapacity, "%s uses unavailable I2C bus %u",
-                 params_.name, (unsigned)params_.busIndex);
-  }
-  const board::I2CProfile* busProfile = I2CManager::profile(params_.busIndex);
-  if (!busProfile || busProfile->hz != 400000u) {
-    return fail_(error, errorCapacity, "%s requires a 400 kHz I2C bus", params_.name);
+  return validateSpec(spec,error,errorCapacity);
+}
+
+bool BMI270ImuSensor::observeLoggingReadiness(
+    const LoggerConfig& config,
+    uint16_t effectiveRateHz,
+    char* error,
+    size_t errorCapacity) const {
+  if(muted_) return true;
+  uint16_t resolvedOutputRate=0;
+  return resolveLoggingConfiguration_(config,effectiveRateHz,resolvedOutputRate,error,errorCapacity);
+}
+
+bool BMI270ImuSensor::validateLoggingStart(
+    const LoggerConfig& config,
+    uint16_t effectiveRateHz,
+    char* error,
+    size_t errorCapacity) const {
+  if(muted_) return true;
+  uint16_t resolvedOutputRate=0;
+  if(!resolveLoggingConfiguration_(config,effectiveRateHz,resolvedOutputRate,error,errorCapacity)) return false;
+  if(acquisition_.outputRateHz()!=resolvedOutputRate) {
+    return fail_(error,errorCapacity,
+        "%s could not resolve a safe IMU output rate for effective logger rate %u Hz",
+        params_.name,(unsigned)effectiveRateHz);
   }
   return true;
 }
@@ -917,24 +947,8 @@ bool BMI270ImuSensor::prepareLoggingStart(
   sessionAvailable_ = false;
   captureClockObservations_ =
       config.logFormat == LogFormat::BodaqsMultiStreamBinary;
-  if (acquisition_.mixedRate() &&
-      config.logFormat != LogFormat::BodaqsMultiStreamBinary) {
-    return fail_(error, errorCapacity,
-                 "%s mixed-rate BMI270 profile requires BDQ v2 logging",
-                 params_.name);
-  }
-  const uint16_t resolvedOutputRate =
-      config.logFormat == LogFormat::BodaqsMultiStreamBinary
-      ? acquisition_.nativeRateHz()
-      : BMI270Profile::resolveSparseRowOutputRateHz(
-            acquisition_.nativeRateHz(),
-            params_.maximumOutputRateHz,
-            effectiveRateHz);
-  if (resolvedOutputRate == 0) {
-    return fail_(error, errorCapacity,
-                 "%s has no safe sparse-row IMU output at logger rate %u Hz",
-                 params_.name, (unsigned)effectiveRateHz);
-  }
+  uint16_t resolvedOutputRate=0;
+  if(!resolveLoggingConfiguration_(config,effectiveRateHz,resolvedOutputRate,error,errorCapacity)) return false;
   if (!acquisition_.setFifoPollRateHz(params_.fifoPollRateHz)) {
     return fail_(error, errorCapacity,
                  "%s could not select %u Hz FIFO service rate",
@@ -1104,6 +1118,7 @@ bool BMI270ImuSensor::captureImuOrientation(
     ImuOrientationCalibration& out,
     char* error,
     size_t errorCapacity) {
+  if(!ConfigManager::configurationMutable()) return fail_(error,errorCapacity,"Configuration locked");
   out = ImuOrientationCalibration{};
   out.plane = plane;
   out.normalSign = normalSign;
@@ -1287,46 +1302,20 @@ bool BMI270ImuSensor::saveImuOrientation(
       "orient_accel_mean_g", "orient_accel_std_g",
       "orient_gyro_std_dps", "orient_gyro_max_dps", "orient_roll_deg",
   };
-  String previous[sizeof(keys) / sizeof(keys[0])];
-  bool hadPrevious[sizeof(keys) / sizeof(keys[0])] {};
-  for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
-    hadPrevious[i] = spec.params.get(keys[i], previous[i]);
-  }
-  auto restorePrevious = [&]() {
-    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
-      if (hadPrevious[i]) (void)spec.params.set(keys[i], previous[i]);
-    }
-  };
-
+  if(!ConfigManager::configurationMutable()) return fail_(error,errorCapacity,"Configuration locked");
   char epoch[24];
-  snprintf(epoch, sizeof(epoch), "%llu",
-           static_cast<unsigned long long>(calibration.capturedAtUnixMs));
-  bool stored =
-      spec.params.setBool("orient_valid", true) &&
-      spec.params.set("orient_plane", ImuOrientation::planeKey(calibration.plane)) &&
-      spec.params.setInt("orient_normal_sign", calibration.normalSign) &&
-      spec.params.setFloat("orient_qw", calibration.quaternionWxyz[0]) &&
-      spec.params.setFloat("orient_qx", calibration.quaternionWxyz[1]) &&
-      spec.params.setFloat("orient_qy", calibration.quaternionWxyz[2]) &&
-      spec.params.setFloat("orient_qz", calibration.quaternionWxyz[3]) &&
-      spec.params.setInt("orient_samples", static_cast<long>(calibration.sampleCount)) &&
-      spec.params.set("orient_epoch_ms", epoch) &&
-      spec.params.setFloat("orient_mean_ax", calibration.meanAccelRaw[0]) &&
-      spec.params.setFloat("orient_mean_ay", calibration.meanAccelRaw[1]) &&
-      spec.params.setFloat("orient_mean_az", calibration.meanAccelRaw[2]) &&
-      spec.params.setFloat("orient_accel_mean_g", calibration.accelMagnitudeMeanG) &&
-      spec.params.setFloat("orient_accel_std_g", calibration.accelMagnitudeStdG) &&
-      spec.params.setFloat("orient_gyro_std_dps", calibration.gyroStdMaximumDps) &&
-      spec.params.setFloat("orient_gyro_max_dps", calibration.maximumGyroMagnitudeDps) &&
-      spec.params.setFloat("orient_roll_deg", calibration.rollDeviationDeg);
-  if (!stored) {
-    restorePrevious();
-    return fail_(error, errorCapacity, "%s orientation configuration is full", params_.name);
-  }
-  if (!ConfigManager::save(ConfigManager::get())) {
-    restorePrevious();
-    return fail_(error, errorCapacity, "%s orientation could not be persisted", params_.name);
-  }
+  snprintf(epoch,sizeof(epoch),"%llu",static_cast<unsigned long long>(calibration.capturedAtUnixMs));
+  const String values[] = {
+    "true",ImuOrientation::planeKey(calibration.plane),String(calibration.normalSign),
+    String(calibration.quaternionWxyz[0],8),String(calibration.quaternionWxyz[1],8),
+    String(calibration.quaternionWxyz[2],8),String(calibration.quaternionWxyz[3],8),
+    String(calibration.sampleCount),epoch,
+    String(calibration.meanAccelRaw[0],8),String(calibration.meanAccelRaw[1],8),String(calibration.meanAccelRaw[2],8),
+    String(calibration.accelMagnitudeMeanG,8),String(calibration.accelMagnitudeStdG,8),
+    String(calibration.gyroStdMaximumDps,8),String(calibration.maximumGyroMagnitudeDps,8),String(calibration.rollDeviationDeg,8),
+  };
+  if(!ConfigManager::saveSensorParamsByName(params_.name,keys,values,sizeof(keys)/sizeof(keys[0])))
+    return fail_(error,errorCapacity,"%s orientation could not be persisted",params_.name);
   params_.orientation = calibration;
   return true;
 }

@@ -1,3 +1,7 @@
+#include "CpuOccupancy.h"
+#include "BacklogBalance.h"
+#include "StoragePathProbe.h"
+#include "SparseCostProbe.h"
 #include <Arduino.h>
 #include "ButtonManager.h"
 
@@ -47,7 +51,7 @@
 #include "esp_heap_caps.h"
 
 #include "FS.h"
-#include "SD_MMC.h"
+#include "StorageFilesystem.h"
 
 // Finalization includes nested metadata serializers and libc formatting.
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
@@ -184,7 +188,9 @@ static void applyLogSettings_(const LoggerConfig& cfg) {
 
 
 LoggerConfig g_cfg;  
+#if !BODAQS_PRODUCTION_RECORDING
 TransformRegistry gTransforms;
+#endif
 
 using namespace board;
 
@@ -220,6 +226,15 @@ static void setupBringupDiagnostics_() {
 void setup() {
   
     Serial.begin(115200);
+    Serial.printf("[BUILD] recipe=%s\n",FirmwareInfo::buildRecipe());
+#if BODAQS_SPARSE_COST_PROBE
+    SparseCostProbe::bootModeGate();
+    CpuOccupancy::bootGate();
+#endif
+#if !BODAQS_PRODUCTION_RECORDING
+    BacklogBalance::bootGate();
+    StoragePathProbe::bootGate();
+#endif
     SelectBoard(BoardID::BODAQS_BOARD_PROFILE);
     if (!gBoard) {
       BOOT_LOGE("FATAL: Board not selected\n");
@@ -265,7 +280,14 @@ void setup() {
   //Buffer debug
   static uint32_t g_sampleCounter = 0;
 
-  StorageManager_begin(*gBoard);           
+  StorageManager_begin(*gBoard);
+#if BODAQS_STORAGE_PATH_PROBE || BODAQS_PRODUCTION_RECORDING
+  // Reserve the unchanged persistent stack before Wi-Fi can fragment internal RAM.
+  // Its worker is idle until LoggingManager explicitly submits START.
+  if (!StorageManager_prepareTask()) {
+    BOOT_LOGE("Storage task unavailable; START will retry reservation\n");
+  }
+#endif
 
   applyLogSettings_(g_cfg);
 
@@ -362,7 +384,7 @@ void setup() {
   WebServerManager::begin(isLoggingPredicate);
     BOOT_LOGI("SETUP: F done\n");
 
-  // Choose RTC from the board profile. A8 uses its RV3028; legacy boards
+  // Choose RTC from the board profile. A8 detects its fitted RTC; legacy boards
   // retain the ESP32 internal clock until network sync.
   RTCManager_begin(gBoard->rtc);
 
@@ -463,6 +485,7 @@ void loop() {
   WiFiManager::loop();
   RTCManager_loop();
   ButtonManager_loop();
+  UploadModeManager::loop();
   StorageManager_loop();       
   WebServerManager::loop();
   LoggingManager::loop();

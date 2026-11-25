@@ -4,7 +4,17 @@
 #include <string.h>
 
 #include "bodaqs_can_network.h"
+#include "bodaqs_control.h"
+#include "bodaqs_control_authority.h"
+#include "bodaqs_control_snapshot.h"
+#include "bodaqs_control_apply.h"
+#include "bodaqs_control_acquisition.h"
+#include "imu_spi.h"
+#include "imu_capture.h"
+#include "imu_acquisition.h"
+#include "bodaqs_record_queue.h"
 #include "ti_msp_dl_config.h"
+#include "bodaqs_can_link_ti.h"
 
 #define NODE_FIRMWARE_VERSION (0x00010001U)
 #define NODE_HARDWARE_TYPE BODAQS_CAN_HARDWARE_IMU_ONLY_NODE
@@ -18,10 +28,16 @@
 
 typedef struct {
     uint32_t reset_cause;
+    uint32_t can_link_profile;
     uint32_t uptime_ms;
     uint64_t hardware_uid;
     uint32_t boot_id;
     uint32_t can_rx_frames;
+    uint32_t can_rx_dropped;
+    uint32_t can_rx_hardware_losses;
+    uint16_t can_rx_capacity;
+    uint16_t can_rx_pending;
+    uint16_t can_rx_pending_high_water;
     uint32_t can_tx_frames;
     uint32_t can_error_events;
     uint32_t can_bus_off_recovery_attempts;
@@ -45,8 +61,37 @@ typedef struct {
     bool clock_fault;
 } NodeRuntimeInfo;
 
+/* Snapshot at most the configured hardware FIFO depth per interrupt. */
+#define CAN_RX_CAPACITY (4U)
+typedef struct {
+    DL_MCAN_RxBufElement message;
+    uint32_t received_ms;
+} CanReceiveRecord;
+static CanReceiveRecord gCanReceiveStorage[CAN_RX_CAPACITY];
+static BodaqsRecordQueue gCanReceiveQueue;
+static volatile bool gHealthDue;
+
+/* Queue metadata and record copies are serialized; decoding never masks IRQs. */
+static bool take_record(BodaqsRecordQueue *queue, void *record)
+{
+    uint32_t primask = __get_PRIMASK();
+    bool available;
+    __disable_irq();
+    available = bodaqs_record_queue_pop(queue, record);
+    __set_PRIMASK(primask);
+    return available;
+}
+
 volatile NodeRuntimeInfo gNodeRuntimeInfo;
 
+static BodaqsControlNode gControlNode;
+static BodaqsControlAuthority gControlAuthority;
+static BodaqsControlSnapshot gControlSnapshot;
+static BodaqsControlApply gControlApply;
+static BodaqsImuDisabled gImuDisabled;
+static BodaqsControlAcquisition gAcquisition;
+static uint64_t gChallengeEntropy;
+static unsigned gChallengeEntropyWords;
 static volatile uint32_t gUptimeMs;
 static volatile bool gAnnounceScheduled;
 static volatile uint32_t gAnnounceDueMs;
@@ -56,6 +101,7 @@ static uint32_t gStatusDueMs;
 static volatile bool gCanRecoveryDue;
 static volatile uint32_t gCanRecoveryDueMs;
 static bool gCanWasBusOff;
+static bool gCanLinkReady;
 
 static const uint32_t gCanErrorInterruptMask =
     DL_MCAN_INTERRUPT_ARA |
@@ -128,6 +174,35 @@ static uint32_t read_boot_id(uint64_t hardware_uid)
     return boot_id;
 }
 
+/* One readiness check/capture per turn; runtime entropy never blocks CAN. */
+static void service_challenge_entropy(void)
+{
+    if (gChallengeEntropyWords < 2U && !DL_TRNG_isHealthTestFail(TRNG) &&
+        !DL_TRNG_isCommandFail(TRNG) && DL_TRNG_isCaptureReady(TRNG)) {
+        uint32_t value = DL_TRNG_getCapture(TRNG);
+        DL_TRNG_clearInterruptStatus(TRNG, DL_TRNG_INTERRUPT_CAPTURE_RDY_EVENT);
+        gChallengeEntropy |= (uint64_t)value << (32U * gChallengeEntropyWords++);
+        if (gChallengeEntropyWords == 2U) DL_TRNG_disablePower(TRNG);
+    }
+}
+static uint64_t challenge_random(void *context)
+{
+    (void)context;
+    return gChallengeEntropyWords == 2U ? gChallengeEntropy : 0U;
+}
+
+static void capture_endpoint_descriptor(void *context,
+    const BodaqsControlNode *view, uint8_t endpoint, bool effective,
+    uint8_t *data)
+{
+    (void)context;
+    bodaqs_control_apply_capture(&gControlApply, view, endpoint, effective, data);
+    if (!effective) {
+        bodaqs_control_put_u32(data + 36, NODE_FIRMWARE_VERSION);
+        bodaqs_control_put_u64(data + 40, gNodeRuntimeInfo.hardware_uid);
+    }
+}
+
 static uint8_t read_node_address(void)
 {
     uint8_t address = 0U;
@@ -145,7 +220,7 @@ static void update_can_state(void)
 {
     DL_MCAN_ProtocolStatus protocol_status = {0};
     uint32_t clock_status = DL_SYSCTL_getClockStatus();
-    gNodeRuntimeInfo.can_initialized =
+    gNodeRuntimeInfo.can_initialized = gCanLinkReady &&
         DL_MCAN_isMemInitDone(MCAN0_INST) &&
         (DL_MCAN_getOpMode(MCAN0_INST) == DL_MCAN_OPERATION_MODE_NORMAL);
     DL_MCAN_getProtocolStatus(MCAN0_INST, &protocol_status);
@@ -186,6 +261,7 @@ static void update_tx_queue_state(void)
 static bool send_can_frame(
     uint16_t identifier, const uint8_t *payload, size_t length)
 {
+    if (!gCanLinkReady) return false;
     DL_MCAN_TxBufElement message = {0};
     DL_MCAN_TxFIFOStatus fifo_status = {0};
     uint8_t dlc = bodaqs_can_length_to_dlc(length);
@@ -221,6 +297,13 @@ static bool send_can_frame(
     return true;
 }
 
+static bool can_transmit_idle(void)
+{
+    DL_MCAN_TxFIFOStatus fifo = {0};
+    DL_MCAN_getTxFIFOQueStatus(MCAN0_INST, &fifo);
+    return fifo.freeLvl == TX_FIFO_SIZE;
+}
+
 static bool send_announcement(void)
 {
     BodaqsCanNodeAnnounce announce = {0};
@@ -231,7 +314,7 @@ static bool send_announcement(void)
     announce.hardware_type = NODE_HARDWARE_TYPE;
     announce.endpoint_mask = NODE_ENDPOINT_MASK;
     announce.firmware_version = NODE_FIRMWARE_VERSION;
-    announce.capabilities = 0U;
+    announce.capabilities = bodaqs_can_link_capability(bodaqs_can_link_active(MCAN0_INST));
     announce.hardware_uid = gNodeRuntimeInfo.hardware_uid;
     announce.boot_id = gNodeRuntimeInfo.boot_id;
     return bodaqs_can_encode_node_announce(
@@ -247,7 +330,8 @@ static bool send_status(void)
 
     status.boot_id = gNodeRuntimeInfo.boot_id;
     status.uptime_ms = gUptimeMs;
-    status.status_flags = 0U;
+    status.status_flags = (gControlNode.flags & (1UL << 8)) ? 1U : 0U;
+    if (gControlNode.flags & (1UL << 3)) status.status_flags |= 2U;
     if (gNodeRuntimeInfo.can_error_passive) {
         status.status_flags |= (1UL << 2);
     }
@@ -274,7 +358,8 @@ static uint16_t can_standard_identifier(const DL_MCAN_RxBufElement *message)
     return (uint16_t) ((message->id >> 18U) & 0x7FFU);
 }
 
-static void process_can_message(const DL_MCAN_RxBufElement *message)
+static void process_can_message(
+    const DL_MCAN_RxBufElement *message, uint32_t received_ms)
 {
     BodaqsCanDiscoveryRequest request;
     BodaqsCanDecodeResult result;
@@ -283,6 +368,39 @@ static void process_can_message(const DL_MCAN_RxBufElement *message)
     if ((message->xtd != 0U) || (message->rtr != 0U) ||
         (message->fdf == 0U) || (message->brs == 0U)) {
         ++gNodeRuntimeInfo.malformed_frames;
+        return;
+    }
+    if(can_standard_identifier(message)==BODAQS_CAN_ID_SYNC_MARKER) {
+        const uint8_t *p=message->data;
+        if(bodaqs_can_dlc_to_length((uint8_t)message->dlc)==16 && p[0]==1 && p[1]==0x20 &&
+           p[2]==1 && !p[3] && p[6]==8 && !p[7] &&
+           (uint16_t)(p[4]|((uint16_t)p[5]<<8))==(uint16_t)bodaqs_control_get_u32(p+8))
+            bodaqs_node_sync_marker(bodaqs_control_get_u32(p+8),bodaqs_control_get_u32(p+12));
+        else ++gNodeRuntimeInfo.malformed_frames;
+        return;
+    }
+    if (can_standard_identifier(message) == BODAQS_CAN_ID_TARGET_REQUEST_BASE + gNodeRuntimeInfo.node_address) {
+        BodaqsControlRecord control, reply;
+        uint16_t transaction;
+        uint8_t payload[64];
+        /* Exhaustion is latched in the view; all services then reject control. */
+        (void)bodaqs_control_node_update_clock_fault(
+            &gControlNode, gNodeRuntimeInfo.clock_fault);
+        if (bodaqs_control_decode_can(message->data, bodaqs_can_dlc_to_length((uint8_t)message->dlc), false, &transaction, &control) &&
+            (bodaqs_control_authority_process(&gControlAuthority, &gControlNode,
+                 &control, gUptimeMs, challenge_random, NULL, &reply) ||
+             bodaqs_control_snapshot_process(&gControlSnapshot, &gControlNode,
+                 &control, gUptimeMs, &reply) ||
+             bodaqs_control_acquisition_process(&gAcquisition, &control, gUptimeMs, &reply) ||
+             bodaqs_control_apply_process(&gControlApply, &control, gUptimeMs, &reply) ||
+             bodaqs_control_node_process(&gControlNode, &control, &reply)) &&
+            bodaqs_control_encode_can(&reply, true, transaction, payload)) {
+            if (!send_can_frame((uint16_t)(BODAQS_CAN_ID_RESPONSE_BASE + gNodeRuntimeInfo.node_address), payload, sizeof(payload))) {
+                ++gNodeRuntimeInfo.transmit_enqueue_failures;
+            }
+        } else {
+            ++gNodeRuntimeInfo.malformed_frames;
+        }
         return;
     }
     if (can_standard_identifier(message) !=
@@ -305,27 +423,42 @@ static void process_can_message(const DL_MCAN_RxBufElement *message)
 
     ++gNodeRuntimeInfo.discovery_requests_received;
     gAnnounceTransaction = request.transaction;
-    gAnnounceDueMs = gUptimeMs + bodaqs_can_discovery_delay_ms(
+    gAnnounceDueMs = received_ms + bodaqs_can_discovery_delay_ms(
         gNodeRuntimeInfo.hardware_uid, request.nonce,
         gNodeRuntimeInfo.node_address, request.response_window_ms);
     gAnnounceScheduled = true;
 }
 
-static void drain_can_receive_fifo(void)
+static void capture_can_receive_fifo(void)
 {
-    DL_MCAN_RxBufElement message;
+    CanReceiveRecord record;
     DL_MCAN_RxFIFOStatus fifo_status = {0};
+    uint32_t remaining;
 
     fifo_status.num = DL_MCAN_RX_FIFO_NUM_0;
     DL_MCAN_getRxFIFOStatus(MCAN0_INST, &fifo_status);
-    while (fifo_status.fillLvl != 0U) {
+    remaining = fifo_status.fillLvl;
+    if (remaining > CAN_RX_CAPACITY) {
+        remaining = CAN_RX_CAPACITY;
+    }
+    while (remaining-- != 0U) {
         DL_MCAN_readMsgRam(MCAN0_INST, DL_MCAN_MEM_TYPE_FIFO, 0U,
-            fifo_status.num, &message);
+            fifo_status.num, &record.message);
+        record.received_ms = gUptimeMs;
         DL_MCAN_writeRxFIFOAck(
             MCAN0_INST, fifo_status.num, fifo_status.getIdx);
         ++gNodeRuntimeInfo.can_rx_frames;
-        process_can_message(&message);
+        (void) bodaqs_record_queue_push(&gCanReceiveQueue, &record);
         DL_MCAN_getRxFIFOStatus(MCAN0_INST, &fifo_status);
+    }
+}
+
+/* One record per turn leaves time for SPI, announcements and recovery. */
+static void service_can_receive(void)
+{
+    CanReceiveRecord record;
+    if (take_record(&gCanReceiveQueue, &record)) {
+        process_can_message(&record.message, record.received_ms);
     }
 }
 
@@ -335,16 +468,40 @@ int main(void)
 
     normalize_retained_clocks();
     SYSCFG_DL_init();
+    gCanLinkReady = bodaqs_can_link_apply(MCAN0_INST, BODAQS_CAN_LINK_PROFILE);
     memset((void *) &gNodeRuntimeInfo, 0, sizeof(gNodeRuntimeInfo));
     gNodeRuntimeInfo.reset_cause = reset_cause;
+    gNodeRuntimeInfo.can_link_profile = gCanLinkReady ? BODAQS_CAN_LINK_PROFILE : BODAQS_CAN_LINK_UNKNOWN;
     gNodeRuntimeInfo.hardware_uid = read_hardware_uid();
     gNodeRuntimeInfo.boot_id = read_boot_id(gNodeRuntimeInfo.hardware_uid);
     gNodeRuntimeInfo.node_address = read_node_address();
+    memset(&gControlNode, 0, sizeof(gControlNode));
+    bodaqs_control_authority_init(&gControlAuthority);
+    memset(&gControlSnapshot, 0, sizeof(gControlSnapshot));
+    gControlSnapshot.capture = capture_endpoint_descriptor;
+    DL_TRNG_enablePower(TRNG);
+    gControlNode.boot_id = gNodeRuntimeInfo.boot_id;
+    gControlNode.endpoint_mask = NODE_ENDPOINT_MASK;
+    gControlNode.endpoint_epoch[0] = 1U;
+    bodaqs_imu_disabled_init(&gImuDisabled, bodaqs_node_imu_register, bodaqs_node_imu_cancel, NULL);
+    bodaqs_control_apply_init(&gControlApply, &gControlAuthority, &gControlNode, &gImuDisabled);
+    bodaqs_node_capture_init();
+    bodaqs_node_acquisition_init(gNodeRuntimeInfo.boot_id, gNodeRuntimeInfo.node_address,
+        &gImuDisabled, send_can_frame, can_transmit_idle);
+    bodaqs_control_acquisition_init(&gAcquisition, &gControlAuthority, &gControlNode,
+        gControlApply.effective, bodaqs_node_acquisition_backend, NULL);
+    (void)bodaqs_control_acquisition_set_clock(&gAcquisition, bodaqs_node_capture_clock, NULL);
+    gControlSnapshot.capture_acquisition = bodaqs_control_acquisition_capture;
+    gControlSnapshot.acquisition_context = &gAcquisition;
     gUptimeMs = 0U;
+    bodaqs_record_queue_init(&gCanReceiveQueue, gCanReceiveStorage,
+        sizeof(gCanReceiveStorage[0]), CAN_RX_CAPACITY);
+    gHealthDue = true;
     gCanRecoveryDue = false;
     gCanWasBusOff = false;
 
-    DL_GPIO_clearPins(GPIO_NODE_PORT, GPIO_NODE_CAN_STANDBY_PIN);
+    if (gCanLinkReady) DL_GPIO_clearPins(GPIO_NODE_PORT, GPIO_NODE_CAN_STANDBY_PIN);
+    else DL_GPIO_setPins(GPIO_NODE_PORT, GPIO_NODE_CAN_STANDBY_PIN);
     gAnnounceTransaction = 0U;
     gAnnounceDueMs = 100U;
     gAnnounceScheduled = true;
@@ -357,9 +514,27 @@ int main(void)
     DL_SYSTICK_enableInterrupt();
     DL_SYSTICK_enable();
     NVIC_EnableIRQ(MCAN0_INST_INT_IRQN);
+    NVIC_EnableIRQ(IMU_SPI_INST_INT_IRQN);
 
     while (1) {
         uint32_t now = gUptimeMs;
+        bodaqs_node_capture_supervise(now);
+        service_challenge_entropy();
+        /* Both services are main-loop owned; membership prohibits configuration
+         * admission. Never run two physical SPI state machines concurrently. */
+        if (!gAcquisition.recording) bodaqs_control_apply_tick(&gControlApply, now);
+        if (gNodeRuntimeInfo.can_bus_off) bodaqs_control_acquisition_exclude(&gAcquisition, 27);
+        bodaqs_control_acquisition_tick(&gAcquisition, now);
+        service_can_receive();
+        gNodeRuntimeInfo.can_rx_capacity = gCanReceiveQueue.capacity;
+        gNodeRuntimeInfo.can_rx_pending = gCanReceiveQueue.depth;
+        gNodeRuntimeInfo.can_rx_pending_high_water = gCanReceiveQueue.high_water;
+        gNodeRuntimeInfo.can_rx_dropped = gCanReceiveQueue.dropped;
+        if (gHealthDue) {
+            gHealthDue = false;
+            update_can_state();
+            update_tx_queue_state();
+        }
 
         if (gAnnounceScheduled && time_reached(now, gAnnounceDueMs)) {
             if (send_announcement()) {
@@ -385,7 +560,9 @@ int main(void)
             DL_MCAN_setOpMode(
                 MCAN0_INST, DL_MCAN_OPERATION_MODE_NORMAL);
         }
-        __WFE();
+        if (gCanReceiveQueue.depth == 0U && !gAcquisition.recording) {
+            __WFE();
+        }
     }
 }
 
@@ -397,19 +574,22 @@ void MCAN0_INST_IRQHandler(void)
         gNodeRuntimeInfo.can_last_interrupts = interrupt_status;
         DL_MCAN_clearIntrStatus(MCAN0_INST, interrupt_status,
             DL_MCAN_INTR_SRC_MCAN_LINE_1);
+        if ((interrupt_status & DL_MCAN_INTERRUPT_RF0L) != 0U) {
+            ++gNodeRuntimeInfo.can_rx_hardware_losses;
+        }
         if ((interrupt_status & gCanErrorInterruptMask) != 0U) {
             ++gNodeRuntimeInfo.can_error_events;
         }
         if ((interrupt_status & DL_MCAN_INTERRUPT_TC) != 0U) {
             ++gNodeRuntimeInfo.can_tx_frames;
-            update_tx_queue_state();
+            gHealthDue = true;
         }
         if ((interrupt_status & (DL_MCAN_INTERRUPT_RF0N |
                 DL_MCAN_INTERRUPT_RF0W |
                 DL_MCAN_INTERRUPT_RF0F)) != 0U) {
-            drain_can_receive_fifo();
+            capture_can_receive_fifo();
         }
-        update_can_state();
+        gHealthDue = true;
     }
 }
 
@@ -419,6 +599,7 @@ void SysTick_Handler(void)
     static uint8_t health_ticks;
 
     ++gUptimeMs;
+    bodaqs_node_capture_supervise_interrupt(gUptimeMs);
     gNodeRuntimeInfo.uptime_ms = gUptimeMs;
     ++heartbeat_ticks;
     if (heartbeat_ticks >= 500U) {
@@ -428,6 +609,9 @@ void SysTick_Handler(void)
     ++health_ticks;
     if (health_ticks >= 100U) {
         health_ticks = 0U;
-        update_can_state();
+        gHealthDue = true;
     }
 }
+
+void ACQ_CAPTURE_INST_IRQHandler(void) { bodaqs_node_capture_irq(); }
+void IMU_SPI_INST_IRQHandler(void) { bodaqs_node_imu_spi_irq(); }

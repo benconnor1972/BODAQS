@@ -259,6 +259,7 @@ def _bdq_v2_bytes(
     *,
     bad_stream_id: int | None = None,
     metadata: dict | None = None,
+    catalog: dict | None = None,
     primary_records: list[bytes] | None = None,
     imu_1_records: list[bytes] | None = None,
     imu_1_observations: list[bytes] | None = None,
@@ -268,7 +269,7 @@ def _bdq_v2_bytes(
     )
     chunks = [
         _json_chunk(1, 0, metadata if metadata is not None else _metadata()),
-        _json_chunk(2, 1, _catalog()),
+        _json_chunk(2, 1, catalog if catalog is not None else _catalog()),
         _chunk(
             3,
             2,
@@ -608,3 +609,141 @@ def test_v2_accepts_observation_only_stream_data_chunk(tmp_path: Path) -> None:
     assert info.stream_data_chunks[0].record_count == 0
     assert info.stream_data_chunks[0].observations[0].related_sequence == 0xFFFFFFFF
     assert info.detected_errors == ()
+
+
+def _count_recording(tmp_path, *, calibrated=True, invert=False, incomplete=False, status=0):
+    metadata = _metadata()
+    metadata["recording_configuration"] = {
+        "schema": "bodaqs.recording_configuration.v1",
+        "local_row_rate_hz": 200,
+        "sensors": [{
+            "sensor_id": "fork_pot", "sensor_type": "analog_pot",
+            "stream_key": "primary", "raw_fields": ["suspension_raw"],
+            "count_domain": {"id": "adc_u12_clamped_v1", "minimum": 0, "maximum": 4095},
+            "assignment": {"kind": "external_adc", "adc": 0, "channel": 0},
+            "parameters": {"sensor_full_travel_mm": "100"},
+            "calibration": {"model": "analog_geometry_v1", "available": calibrated,
+                "output_unit": "mm", "installed_zero_count": 100,
+                "sensor_zero_count": 100, "sensor_full_count": 1100,
+                "sensor_full_travel": 100, "invert": invert},
+        }],
+    }
+    catalog = _catalog()
+    channel = catalog["streams"][0]["channels"][-1]
+    channel.update(storage_type="uint16", sensor="fork_pot")
+    content = _bdq_v2_bytes(metadata=metadata, catalog=catalog, primary_records=[
+        _primary_record(0, 100_000, 200, status),
+        _primary_record(2, 110_000, 300),
+    ])
+    if incomplete:
+        # Drop the final summary as an interrupted write would, retaining valid chunks.
+        final = list(_iter_fixture_chunks(content))[-1]
+        content = content[:final]
+    path = tmp_path / "counts.bdq"
+    path.write_bytes(content)
+    return path, metadata, catalog
+
+
+def _iter_fixture_chunks(content):
+    offset = FILE_HEADER.size
+    while offset + CHUNK_HEADER.size <= len(content):
+        yield offset
+        size = CHUNK_HEADER.unpack_from(content, offset)[4]
+        offset += CHUNK_HEADER.size + size
+
+
+def test_normal_import_reconstructs_only_recorded_analog_calibration(tmp_path):
+    path, metadata, _ = _count_recording(tmp_path)
+    session = load_bdq_session(path)
+    derived = session["stream_dfs"]["analog_engineering"]
+    assert derived["fork_pot_engineering [mm]"].tolist() == pytest.approx([10, 20])
+    assert derived["sequence"].tolist() == [0, 2]  # no invented row across a gap
+    assert derived["time_s"].tolist() == pytest.approx([0, .01])
+    assert session["df_raw"]["suspension_raw_dom_suspension [count]"].tolist() == [200, 300]
+    # Configuration left on disk or an editor's later state cannot affect this file.
+    metadata["recording_configuration"]["sensors"][0]["calibration"]["sensor_full_travel"] = 999
+    assert load_bdq_session(path)["stream_dfs"]["analog_engineering"].equals(derived)
+    provenance = session["meta"]["secondary_streams"]["analog_engineering"]
+    assert provenance["derived"] is True and provenance["source_stream"] == "primary"
+
+
+def test_uncalibrated_analog_recording_imports_raw_without_invented_units(tmp_path):
+    path, _, _ = _count_recording(tmp_path, calibrated=False)
+    session = load_bdq_session(path)
+    assert "analog_engineering" not in session["stream_dfs"]
+    assert session["df_raw"]["suspension_raw_dom_suspension [count]"].tolist() == [200, 300]
+
+
+def test_recorded_analog_polarity_and_clamped_error_are_honest(tmp_path):
+    path, _, _ = _count_recording(tmp_path, invert=True, status=0x20)
+    derived = load_bdq_session(path)["stream_dfs"]["analog_engineering"]
+    assert pd.isna(derived["fork_pot_engineering [mm]"].iloc[0])
+    assert derived["fork_pot_engineering [mm]"].iloc[1] == pytest.approx(-20)
+
+
+def test_declared_missing_count_preserves_healthy_sensor_during_adc_timeout(tmp_path):
+    import copy
+    path, metadata, catalog = _count_recording(tmp_path)
+    healthy = copy.deepcopy(metadata['recording_configuration']['sensors'][0])
+    healthy.update(sensor_id='shock_pot', raw_fields=['shock_raw'])
+    metadata['recording_configuration']['sensors'].append(healthy)
+    descriptor = catalog['streams'][0]
+    channel = copy.deepcopy(descriptor['channels'][-1])
+    channel.update(field='shock_raw', sensor='shock_pot', byte_offset=14)
+    descriptor['channels'].append(channel)
+    descriptor['acquisition'] = {'count_validity': {
+        'schema': 'bodaqs.adc_count_validity.v1', 'valid_minimum': 0,
+        'valid_maximum': 4095, 'missing_count': 65535,
+        'sensor_error_scope': 'per_field_missing_count'}}
+    records = [STREAM_RECORD_PREFIX_STRUCT.pack(i, 100000+i*5000, 0x1020, 0)
+               + struct.pack('<HH', 65535, value) for i, value in enumerate((200, 300))]
+    path.write_bytes(_bdq_v2_bytes(metadata=metadata, catalog=catalog, primary_records=records))
+    session = load_bdq_session(path)
+    derived = session['stream_dfs']['analog_engineering']
+    assert derived['fork_pot_engineering [mm]'].isna().all()
+    assert derived['shock_pot_engineering [mm]'].tolist() == pytest.approx([10, 20])
+    assert session['df_raw']['suspension_raw_dom_suspension [count]'].tolist() == [65535, 65535]
+    # Unknown policy must preserve the older conservative row-wide error rule.
+    descriptor['acquisition']['count_validity']['schema'] = 'future_unknown'
+    path.write_bytes(_bdq_v2_bytes(metadata=metadata, catalog=catalog, primary_records=records))
+    assert load_bdq_session(path)['stream_dfs']['analog_engineering']['shock_pot_engineering [mm]'].isna().all()
+
+
+def test_incomplete_counts_recording_retains_raw_and_reconstruction(tmp_path):
+    path, _, _ = _count_recording(tmp_path, incomplete=True)
+    session = load_bdq_session(path)
+    assert len(session["df_raw"]) == 2
+    assert session["stream_dfs"]["analog_engineering"]["fork_pot_engineering [mm]"].tolist() == pytest.approx([10, 20])
+    assert read_bdq(path).final_summary == {}
+    stats = bdq_to_log_metadata(read_bdq(path))["qc"]["run_stats"]
+    assert stats["bdq_finalization"] == {
+        "footer_present": False, "file_status": "recoverable_prefix",
+        "tail_status": "unknown", "delivery_scope": "retained_records_only",
+    }
+    assert "bdq_missing_final_summary:tail_unknown" in bdq_to_log_metadata(read_bdq(path))["qc"]["warnings"]
+
+
+def test_unknown_count_domain_cannot_be_calibrated_as_u12(tmp_path):
+    path, metadata, catalog = _count_recording(tmp_path)
+    metadata["recording_configuration"]["sensors"][0]["count_domain"]["id"] = "future_adc"
+    path.write_bytes(_bdq_v2_bytes(metadata=metadata, catalog=catalog))
+    assert "analog_engineering" not in load_bdq_session(path)["stream_dfs"]
+
+
+@pytest.mark.parametrize("defect", ["duplicate_identity", "degenerate_span", "identity_mismatch", "huge_number"])
+def test_ambiguous_or_invalid_calibration_stays_raw(tmp_path, defect):
+    import copy
+    path, metadata, catalog = _count_recording(tmp_path)
+    sensor = metadata["recording_configuration"]["sensors"][0]
+    if defect == "duplicate_identity":
+        metadata["recording_configuration"]["sensors"].append(copy.deepcopy(sensor))
+    elif defect == "degenerate_span":
+        sensor["calibration"]["sensor_full_count"] = sensor["calibration"]["sensor_zero_count"]
+    elif defect == "huge_number":
+        sensor["calibration"]["sensor_full_travel"] = 10 ** 400
+    else:
+        catalog["streams"][0]["channels"][-1]["sensor"] = "another_sensor"
+    path.write_bytes(_bdq_v2_bytes(metadata=metadata, catalog=catalog))
+    session = load_bdq_session(path)
+    assert "analog_engineering" not in session["stream_dfs"]
+    assert len(session["df_raw"]) == 2

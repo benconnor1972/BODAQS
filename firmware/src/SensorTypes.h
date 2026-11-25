@@ -14,6 +14,7 @@ enum class SensorType : uint8_t {
   AS5600AngleI2C         = 5,
   DANF10NGps             = 6,
   BMI270ImuI2C           = 7,
+  LSM6DSO32XImu           = 8,
   // StrainGauge = 2,
 };
 

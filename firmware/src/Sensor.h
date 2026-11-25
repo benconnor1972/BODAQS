@@ -1,4 +1,5 @@
 #pragma once
+#include "RecordingFeatures.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "Calibration.h"
@@ -9,6 +10,7 @@
 
 class TransformRegistry;
 struct BdqV2StreamDescriptor;
+struct LocalAdcSnapshot;
 
 using CalMask = CalModeMask;
 
@@ -257,12 +259,26 @@ public:
       uint16_t,
       char*,
       size_t) const { return true; }
+  // Idle readiness observation must not prepare a session, read hardware or
+  // change an acquisition plan. Existing observational validators remain valid.
+  virtual bool observeLoggingReadiness(
+      const LoggerConfig& config,
+      uint16_t effectiveRateHz,
+      char* error,
+      size_t errorCapacity) const {
+    return validateLoggingStart(config,effectiveRateHz,error,errorCapacity);
+  }
   virtual bool startLoggingSession(char*, size_t) { onLoggingStart(); return true; }
   virtual size_t pendingLoggingRows() const { return 0; }
   virtual bool describeBdqV2Stream(
       uint16_t,
       BdqV2StreamDescriptor&) { return false; }
   virtual bool usesBdqV2NativeStream() const { return false; }
+  // Acquisition-owner publication; observers must not trigger another read.
+  virtual void publishAcquiredCounts(int32_t, uint32_t, uint16_t) {}
+  virtual void publishAcquisitionCounts(int32_t counts,uint32_t tick,uint16_t status,uint32_t) {
+    publishAcquiredCounts(counts,tick,status);
+  }
 
   // ----- Runtime muting -----
   virtual bool muted() const = 0;
@@ -280,6 +296,11 @@ public:
   virtual uint8_t columnCount() const = 0;
   virtual void getColumnName(uint8_t idx, char* out, size_t cap) const = 0;
   virtual void sampleValues(float* out, uint8_t max) = 0;
+  // Synchronous row-owner call. The borrowed snapshot never escapes this call.
+  // Sensors without a specialized reader retain the ordinary sampling path.
+  virtual void sampleRowValues(float* out, uint8_t max, const LocalAdcSnapshot&) {
+    sampleValues(out, max);
+  }
   virtual bool describeColumn(uint8_t idx, SensorColumnDescriptor& out) const;
   virtual bool describeSensorMetadata(SensorMetadataDescriptor& out) const;
   virtual bool describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out) const {
@@ -365,7 +386,11 @@ public:
 protected:
   // Derived classes call this right before publishing/logging (normalized space ok)
   float applyTransform(float x) const {
+#if BODAQS_PRODUCTION_RECORDING
+    return x; // Recorded calibration/engineering previews retain their own processing.
+#else
     return m_transform ? m_transform->apply(x) : x;
+#endif
   }
 
   // Hook points for derived classes

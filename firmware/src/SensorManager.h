@@ -46,11 +46,12 @@ namespace SensorManager {
   bool requiresBdqV2(const LoggerConfig& cfg);
   bool validateLoggingStart(const LoggerConfig& cfg, uint16_t effectiveRateHz, char* error, size_t errorCapacity);
   bool onLoggingStart(char* error = nullptr, size_t errorCapacity = 0);
-  void startLoggingAcquisition();
+  bool startLoggingAcquisition();
   void onLoggingStop();
   void onLoggingFinalized();
   const SensorDiagnosticList& sessionDiagnostics();
   uint8_t sessionExcludedCount();
+  uint32_t sessionParticipantMask();
   void discoverHardware(DiscoveryReason reason);
   const SensorInventory& inventory();
   uint32_t discoverySequence();
@@ -63,8 +64,9 @@ namespace SensorManager {
   // registry / access
   void    registerSensor(Sensor* s);
   uint8_t count();
-  uint8_t activeCount();
+  uint8_t activeCount(); // Local participants plus unmuted remote endpoint assignments.
   Sensor* at(uint8_t i);     // alias to get(i)
+  Sensor* getConfiguredSensor(uint8_t configuredIndex); // configuration slot; preserves CAN/absent holes
   Sensor* get(uint8_t i);
 
   // per-sensor state
@@ -81,6 +83,13 @@ namespace SensorManager {
       uint16_t maxOut,
       uint16_t& written,
       bool excludeBdqV2NativeStreams = false);
+  // Prepared at session start; sampling methods/transforms and muted checks remain.
+  uint16_t recordingColumnCapacity(bool excludeBdqV2NativeStreams);
+  bool recordingSamplingPlanReady();
+  // Cold exact-scope guard for the raw trial; ordinary transforms stay intact.
+  bool rawAdcPairEligible();
+  void sampleRowValues(float* out, uint16_t maxOut, uint16_t& written,
+                       bool excludeBdqV2NativeStreams, const LocalAdcSnapshot& snapshot);
   uint16_t describeSensorColumns(
       SensorColumnDescriptor* out,
       uint16_t maxOut,

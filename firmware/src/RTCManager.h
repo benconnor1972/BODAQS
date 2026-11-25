@@ -12,7 +12,7 @@ enum RTCSource {
 };
 
 // Invalidate ESP32 internal time so next boot forces SNTP/NTP to repopulate it.
-// Does not touch any external RTC (not implemented / not in use).
+// Does not touch the external RTC.
 void RTCManager_invalidateInternalTime();
 
 // Initialize RTC system
@@ -46,6 +46,7 @@ void RTCManager_sync();
 bool RTCManager_hasValidTime();
 bool RTCManager_usingExternalRtc();
 bool RTCManager_externalRtcLastReadOk();
+// Loss-of-time flag: RV3028 PORF or ISL1208 RTCF (existing API name retained).
 bool RTCManager_externalRtcPorf();
 const char* RTCManager_sourceLabel();
 

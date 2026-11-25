@@ -88,11 +88,12 @@ uint8_t s_nextTieStart[kMaxBuses] {};
 
 #if defined(ESP32)
 TaskHandle_t s_tasks[kMaxBuses] = { nullptr, nullptr };
-volatile bool s_run[kMaxBuses] = { false, false };
+std::atomic<bool> s_run[kMaxBuses] { false, false };
+std::atomic<bool> s_retired[kMaxBuses] { true, true };
 
 bool schedulerTasksActive_() {
   for (uint8_t bus = 0; bus < kMaxBuses; ++bus) {
-    if (s_tasks[bus] != nullptr) return true;
+    if (!s_retired[bus].load(std::memory_order_acquire)) return true;
   }
   return false;
 }
@@ -552,6 +553,7 @@ void taskFn_(void* arg) {
     }
     if (periodUs > 0 && nextDue <= afterUs) {
       const uint64_t missed = ((afterUs - nextDue) / periodUs) + 1ULL;
+      client->asyncMissedServiceSlots(missed);
       if (bus < kMaxBuses) {
         s_lastServiceMissUs[bus].store(micros(), std::memory_order_release);
       }
@@ -599,6 +601,7 @@ void taskFn_(void* arg) {
   if (bus < kMaxBuses) {
     s_run[bus] = false;
     s_tasks[bus] = nullptr;
+    s_retired[bus].store(true, std::memory_order_release);
   }
   I2CSCHED_LOGI("bus%u scheduler stopped\n", (unsigned)bus);
   vTaskDelete(nullptr);
@@ -650,16 +653,21 @@ const I2CBusSchedulerTimingStats& timingStats() {
   return s_timingSnapshot;
 }
 
-void start() {
+bool start() {
 #if defined(ESP32)
+  bool ready = true;
   if (!schedulerTasksActive_()) {
     s_sessionStartUs = static_cast<uint64_t>(esp_timer_get_time());
     s_sessionEndUs = 0;
   }
   for (uint8_t bus = 0; bus < kMaxBuses; ++bus) {
-    if (s_tasks[bus]) continue;
     if (!busHasActiveClients_(bus)) continue;
+    if (s_tasks[bus]) {
+      if (!s_run[bus].load(std::memory_order_acquire)) ready = false;
+      continue;
+    }
 
+    s_retired[bus].store(false, std::memory_order_release);
     s_run[bus] = true;
     const BaseType_t ok = xTaskCreatePinnedToCore(
       taskFn_,
@@ -671,26 +679,43 @@ void start() {
       kTaskCore);
 
     if (ok != pdPASS) {
+      ready = false;
       s_tasks[bus] = nullptr;
       s_run[bus] = false;
+      s_retired[bus].store(true, std::memory_order_release);
       I2CSCHED_LOGW("failed to start bus%u scheduler\n", (unsigned)bus);
     }
   }
+  return ready;
+#else
+  return true;
+#endif
+}
+
+void requestStop() {
+#if defined(ESP32)
+  for (uint8_t bus = 0; bus < kMaxBuses; ++bus) s_run[bus].store(false, std::memory_order_release);
+#endif
+}
+
+bool stopped() {
+#if defined(ESP32)
+  return !schedulerTasksActive_();
+#else
+  return true;
 #endif
 }
 
 void stop() {
 #if defined(ESP32)
-  for (uint8_t bus = 0; bus < kMaxBuses; ++bus) {
-    s_run[bus] = false;
-  }
+  requestStop();
 
   const uint32_t t0 = millis();
   bool any = true;
   while (any && (uint32_t)(millis() - t0) < kStopWaitMs) {
     any = false;
     for (uint8_t bus = 0; bus < kMaxBuses; ++bus) {
-      if (s_tasks[bus]) {
+      if (!s_retired[bus].load(std::memory_order_acquire)) {
         any = true;
         break;
       }

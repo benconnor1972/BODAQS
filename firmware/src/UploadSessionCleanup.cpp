@@ -1,6 +1,6 @@
 #include "UploadSessionCleanup.h"
 
-#include "SD_MMC.h"
+#include "StorageFilesystem.h"
 
 namespace UploadSessionCleanup {
 namespace {
@@ -43,7 +43,7 @@ static void setCommonResult_(const UploadSessionScanner::SessionInfo& session,
 
 static bool fileExists_(const String& path) {
   if (!path.length()) return false;
-  File f = SD_MMC.open(path.c_str(), FILE_READ);
+  File f = StorageFilesystem::card().open(path.c_str(), FILE_READ);
   if (!f) return false;
   const bool ok = !f.isDirectory();
   f.close();
@@ -68,14 +68,14 @@ static bool preflightSources_(const UploadSessionScanner::SessionInfo& session,
 }
 
 static bool preflightMoveTargets_(CleanupResult& result) {
-  if (!SD_MMC.exists(kUploadedDir)) {
-    if (!SD_MMC.mkdir(kUploadedDir)) {
+  if (!StorageFilesystem::card().exists(kUploadedDir)) {
+    if (!StorageFilesystem::card().mkdir(kUploadedDir)) {
       result.error = String(F("could not create uploaded directory: ")) + kUploadedDir;
       return false;
     }
   }
 
-  File dir = SD_MMC.open(kUploadedDir);
+  File dir = StorageFilesystem::card().open(kUploadedDir);
   if (!dir || !dir.isDirectory()) {
     if (dir) dir.close();
     result.error = String(F("uploaded path is not a directory: ")) + kUploadedDir;
@@ -83,19 +83,19 @@ static bool preflightMoveTargets_(CleanupResult& result) {
   }
   dir.close();
 
-  if (result.csvTargetPath.length() && SD_MMC.exists(result.csvTargetPath.c_str())) {
+  if (result.csvTargetPath.length() && StorageFilesystem::card().exists(result.csvTargetPath.c_str())) {
     result.error = String(F("target exists: ")) + result.csvTargetPath;
     return false;
   }
-  if (result.jsonTargetPath.length() && SD_MMC.exists(result.jsonTargetPath.c_str())) {
+  if (result.jsonTargetPath.length() && StorageFilesystem::card().exists(result.jsonTargetPath.c_str())) {
     result.error = String(F("target exists: ")) + result.jsonTargetPath;
     return false;
   }
-  if (result.archiveTargetPath.length() && SD_MMC.exists(result.archiveTargetPath.c_str())) {
+  if (result.archiveTargetPath.length() && StorageFilesystem::card().exists(result.archiveTargetPath.c_str())) {
     result.error = String(F("target exists: ")) + result.archiveTargetPath;
     return false;
   }
-  if (result.dataTargetPath.length() && SD_MMC.exists(result.dataTargetPath.c_str())) {
+  if (result.dataTargetPath.length() && StorageFilesystem::card().exists(result.dataTargetPath.c_str())) {
     result.error = String(F("target exists: ")) + result.dataTargetPath;
     return false;
   }
@@ -104,7 +104,7 @@ static bool preflightMoveTargets_(CleanupResult& result) {
 }
 
 static bool moveOne_(const String& from, const String& to, bool& flag, CleanupResult& result) {
-  flag = SD_MMC.rename(from.c_str(), to.c_str());
+  flag = StorageFilesystem::card().rename(from.c_str(), to.c_str());
   if (!flag && !result.error.length()) {
     result.error = String(F("move failed: ")) + from + F(" -> ") + to;
   }
@@ -120,7 +120,7 @@ static bool moveOptional_(const String& from, const String& to, bool& flag, Clea
 }
 
 static bool deleteOne_(const String& path, bool& flag, CleanupResult& result) {
-  flag = SD_MMC.remove(path.c_str());
+  flag = StorageFilesystem::card().remove(path.c_str());
   if (!flag && !result.error.length()) {
     result.error = String(F("delete failed: ")) + path;
   }
@@ -167,7 +167,7 @@ bool cleanupSession(const UploadSessionScanner::SessionInfo& session,
                     CleanupResult& result) {
   setCommonResult_(session, mode, result);
 
-  if (SD_MMC.cardType() == CARD_NONE) {
+  if (StorageFilesystem::card().cardType() == CARD_NONE) {
     result.error = F("SD storage unavailable");
     return false;
   }

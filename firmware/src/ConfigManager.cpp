@@ -1,4 +1,12 @@
 #include "ConfigManager.h"
+#include "ProductionConfigMigration.h"
+#include "StorageFilesystem.h"
+#include <vector>
+#include "SensorConfigEdit.h"
+#include "SensorManager.h"
+#include "LoggingManager.h"
+#include "UploadModeManager.h"
+#include <new>
 #include "SensorParams.h"
 #include "SensorTypes.h"
 #include "Rates.h"
@@ -26,10 +34,12 @@ namespace {
 
   static char       g_cfgName[32] = "loggercfg";
   static SensorSpec g_specs[MAX_SENSORS];
+  static std::vector<String> g_typeTokens(MAX_SENSORS); // idle config text; keep out of constrained static DRAM
   static ParamStore g_stores[MAX_SENSORS];
   static uint8_t    g_specCount = 0;
   static uint8_t    g_expectedCount = 0;
   static LoggerConfig s_cfg;
+  static ProductionConfigMigration s_migration;
   static Calibration g_cals[MAX_SENSORS];   // NEW: per-sensor calibration cache
   constexpr uint8_t kCalSlots = uint8_t(sizeof(g_cals) / sizeof(g_cals[0]));
   static CalModeMask g_calAllowed[MAX_SENSORS];  // 0xFF = inherit type defaults
@@ -211,6 +221,7 @@ namespace {
         !strcasecmp(v, "gps_uart") || !strcasecmp(v, "gps")) {
       return SensorType::DANF10NGps;
     }
+    if (!strcasecmp(v, "lsm6dso32x_imu")) return SensorType::LSM6DSO32XImu;
     if (!strcasecmp(v, "bmi270_imu_i2c")) return SensorType::BMI270ImuI2C;
     return SensorType::Unknown;
   }
@@ -383,6 +394,83 @@ namespace {
 
 } // namespace
 
+// Sensor edits are synchronous on the logger loop. Snapshot on the heap: the
+// 32 compact ParamStores are too large for the task stack. Do not reload the
+// file to roll back: storage may still be unavailable after a failed write.
+struct SensorConfigEdit::State {
+  LoggerConfig config;
+  SensorSpec specs[MAX_SENSORS];
+  ParamStore stores[MAX_SENSORS];
+  String typeTokens[MAX_SENSORS];
+  Calibration calibrations[MAX_SENSORS];
+  CalModeMask allowed[MAX_SENSORS];
+  uint8_t count;
+  bool haveRuntimeMute[MAX_SENSORS] = {};
+  bool runtimeMuted[MAX_SENSORS] = {};
+};
+
+SensorConfigEdit::SensorConfigEdit() {
+  if (LoggingManager::configurationLocked() || UploadModeManager::isActive()) return;
+  state_ = new (std::nothrow) State;
+  if (!state_) return;
+  state_->config = s_cfg;
+  state_->count = g_specCount;
+  for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
+    state_->specs[i] = g_specs[i];
+    state_->stores[i] = g_stores[i];
+    state_->typeTokens[i] = g_typeTokens[i];
+    state_->calibrations[i] = g_cals[i];
+    state_->allowed[i] = g_calAllowed[i];
+    if (i >= g_specCount) continue;
+    String provider;
+    g_specs[i].params.get("provider", provider);
+    if (provider.length() && !provider.equalsIgnoreCase("local")) continue;
+    for (uint8_t j = 0; j < SensorManager::count(); ++j) {
+      Sensor* live = SensorManager::get(j);
+      if (live && !strcasecmp(live->name(), g_specs[i].name)) {
+        state_->haveRuntimeMute[i] = true;
+        state_->runtimeMuted[i] = live->muted();
+        break;
+      }
+    }
+  }
+}
+
+void SensorConfigEdit::restoreLocalRuntimeMutes_() {
+  for (uint8_t i = 0; i < state_->count; ++i) {
+    if (!state_->haveRuntimeMute[i]) continue;
+    const SensorSpec& previous = state_->specs[i];
+    const int8_t index = s_cfg.findSensorByName(previous.name);
+    if (index < 0) continue;
+    const SensorSpec& current = s_cfg.sensors[index];
+    String provider;
+    current.params.get("provider", provider);
+    if ((provider.length() && !provider.equalsIgnoreCase("local")) ||
+        current.type != previous.type || current.mutedDefault != previous.mutedDefault) continue;
+    for (uint8_t j = 0; j < SensorManager::count(); ++j) {
+      Sensor* live = SensorManager::get(j);
+      if (live && !strcasecmp(live->name(), current.name)) live->setMuted(state_->runtimeMuted[i]);
+    }
+  }
+}
+
+SensorConfigEdit::~SensorConfigEdit() {
+  if (!state_) return;
+  if (!saved_) {
+    s_cfg = state_->config;
+    g_cfg = s_cfg;
+    g_specCount = state_->count;
+    for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
+      g_specs[i] = state_->specs[i];
+      g_stores[i] = state_->stores[i];
+      g_typeTokens[i] = state_->typeTokens[i];
+      g_cals[i] = state_->calibrations[i];
+      g_calAllowed[i] = state_->allowed[i];
+    }
+  }
+  delete state_;
+}
+
 const LoggerConfig& ConfigManager::get() {
     return s_cfg;
 }
@@ -443,6 +531,7 @@ void ConfigManager::begin(const char* filename) {
   if (filename && *filename) copyStrBounded(filename, g_cfgName, sizeof(g_cfgName));
 
   s_cfg = LoggerConfig{};
+  s_migration.inspect("",false);
   applyDefaultButtonBindings_(s_cfg);
 
   g_specCount = 0;
@@ -450,6 +539,7 @@ void ConfigManager::begin(const char* filename) {
 
   for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
     g_stores[i].clear();
+    g_typeTokens[i]="";
     g_specs[i].params.bind(&g_stores[i]);
     g_cals[i] = Calibration{};
     g_calAllowed[i] = 0xFF;
@@ -460,6 +550,86 @@ void ConfigManager::begin(const char* filename) {
   for (uint8_t i = 0; i < MAX_BUTTON_BINDINGS; ++i) g_bindingDefs[i] = ButtonBindingDef{};
 }
 
+
+
+String ConfigManager::configurationBlocker() {
+#if BODAQS_PRODUCTION_RECORDING
+  if(migrationPending()) return "Review and accept production migration";
+  for(uint8_t index=0;index<g_specCount;++index) {
+    if(g_specs[index].type==SensorType::Unknown) return String("Unsupported sensor type: ")+sensorTypeKey(index);
+    String mode;
+    if(g_specs[index].params.get("output_mode",mode)) {
+      mode.trim();mode.toUpperCase();
+      if(mode!="RAW" && mode!="LINEAR" && mode!="0" && mode!="1") return String("Unsupported output_mode for ")+g_specs[index].name;
+    }
+  }
+#endif
+  return "";
+}
+bool ConfigManager::configurationMutable() {
+  return !LoggingManager::configurationLocked() && !UploadModeManager::isActive() && !migrationPending();
+}
+bool ConfigManager::migrationPending() {
+#if BODAQS_PRODUCTION_RECORDING
+  return s_migration.pending();
+#else
+  return false;
+#endif
+}
+String ConfigManager::migrationRevision() { return s_migration.revision().c_str(); }
+String ConfigManager::migrationChanges() { return s_migration.changes().c_str(); }
+String ConfigManager::migrationProposedText() { return s_migration.proposed().c_str(); }
+String ConfigManager::sensorTypeKey(uint8_t index) {
+  if(index>=g_specCount) return "unknown";
+  if(g_specs[index].type!=SensorType::Unknown) return typeKeyForSave(g_specs[index].type);
+  return g_typeTokens[index].length()?g_typeTokens[index]:String("unknown");
+}
+ConfigManager::MigrationAcceptance ConfigManager::acceptMigrationConfiguration(const char* revision,char* error,size_t capacity) {
+  auto fail=[&](const char* detail) { if(error && capacity) snprintf(error,capacity,"%s",detail); return MigrationAcceptance::Rejected; };
+  if(LoggingManager::configurationLocked() || UploadModeManager::isActive()) return fail("Recording or upload owns configuration");
+#if !BODAQS_PRODUCTION_RECORDING
+  (void)revision; return fail("No migration pending");
+#else
+  if(!migrationPending()) return fail("No migration pending");
+  if(!revision || s_migration.revision()!=revision) return fail("Migration preview changed; reload it");
+  String current;
+  if(!loadConfigText_(current) || s_migration.original()!=current.c_str()) return fail("Original configuration changed; reload it");
+  const String backup=String(g_cfgName)+".original-"+revision;
+  String existing;
+  if(StorageManager_loadTextFile(backup.c_str(),existing)) {
+    if(existing!=current) return fail("Original backup differs; nothing saved");
+  } else {
+    String absolute=backup.startsWith("/")?backup:String("/")+backup;
+    if(StorageFilesystem::card().exists(absolute.c_str()) || !StorageManager_saveTextFile(backup.c_str(),current)) return fail("Original backup failed; nothing saved");
+    if(!StorageManager_loadTextFile(backup.c_str(),existing) || existing!=current) return fail("Original backup verification failed");
+  }
+  const String proposed=s_migration.proposed().c_str();
+  if(!StorageManager_saveTextFile(g_cfgName,proposed)) return fail("Migration save failed; original retained");
+  if(!reload()) {
+    fail("Migration saved but reload failed; restart required");
+    return MigrationAcceptance::SavedNotApplied;
+  }
+  if(error && capacity) error[0]='\0';
+  return MigrationAcceptance::Loaded;
+#endif
+}
+bool ConfigManager::acceptMigration(const char* revision,char* error,size_t capacity) {
+  return acceptMigrationConfiguration(revision,error,capacity)==MigrationAcceptance::Loaded;
+}
+bool ConfigManager::saveSensorParamsByName(const char* sensorName,
+    const char* const* keys,const String* values,size_t count) {
+  if(LoggingManager::configurationLocked() || UploadModeManager::isActive() || migrationPending() || !sensorName || !*sensorName || !keys || !values || !count) return false;
+  const int8_t index=findSensorByName(sensorName);
+  if(index<0) return false;
+  const ParamStore previous=g_stores[index];
+  for(size_t i=0;i<count;++i) {
+    if(!keys[i] || !*keys[i] || !g_stores[index].set(keys[i],values[i].c_str())) {
+      g_stores[index]=previous; return false;
+    }
+  }
+  if(!save(get())) { g_stores[index]=previous; return false; }
+  return true;
+}
 
 void ConfigManager::trimInPlace(char* s) {
   if (!s) return;
@@ -700,6 +870,7 @@ bool ConfigManager::parseCanMasterMode(const char* text, CanMasterMode& out) {
 
 
 void ConfigManager::setSampleRateHz(uint16_t hz, bool persist) {
+  if (LoggingManager::configurationLocked() || migrationPending()) return;
   hz = Rates::nearest(hz);
 
   LoggerConfig cfg = ConfigManager::get();     // ← copy existing
@@ -715,6 +886,12 @@ void ConfigManager::setSampleRateHz(uint16_t hz, bool persist) {
 }
 
 bool ConfigManager::setLogFormat(LogFormat format, bool persist) {
+#if BODAQS_PRODUCTION_RECORDING
+  if (LoggingManager::configurationLocked() || migrationPending()) return false;
+#endif
+#if BODAQS_PRODUCTION_RECORDING
+  if(format != LogFormat::BodaqsMultiStreamBinary) return false;
+#endif
   LoggerConfig cfg = ConfigManager::get();
   if (cfg.logFormat == format) return true;
   cfg.logFormat = format;
@@ -729,6 +906,7 @@ bool ConfigManager::setLogFormat(LogFormat format, bool persist) {
 }
 
 void ConfigManager::setWifiMode(WiFiMode mode, bool persist) {
+  if (LoggingManager::configurationLocked() || migrationPending()) return;
   LoggerConfig cfg = ConfigManager::get();
   if (cfg.wifiMode == mode) return;
   cfg.wifiMode = mode;
@@ -776,7 +954,17 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
     SensorSpec* sp = ensureSpec((uint8_t)idx);
     if (!sp) return true;
 
-    if (!strcasecmp(sub, "type"))  { sp->type = strToSensorType(val); return true; }
+    if (!strcasecmp(sub, "type")) {
+      sp->type = strToSensorType(val);
+      g_typeTokens[idx]=val;
+#if BODAQS_PRODUCTION_RECORDING
+      if(sp->type==SensorType::Unknown) {
+        const auto original=s_migration.originalValue("sensor"+std::to_string(idx)+".type");
+        if(!original.empty())g_typeTokens[idx]=original.c_str();
+      }
+#endif
+      return true;
+    }
     if (!strcasecmp(sub, "name"))  {
       CFG_LOGD("set name for sensor%ld = '%s'\n", idx, val);
       copyStrBounded(val, sp->name, sizeof(sp->name)); 
@@ -793,11 +981,11 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
       g_calAllowed[idx] = parseCalAllowedCSV(val);
       return true;
     }
-    //if (!strcasecmp(sub, "cal_mode")) {
-    //  long v = strtol(val, nullptr, 10);
-    //  g_cals[idx].mode = (v == 2) ? CalMode::RANGE : (v == 1 ? CalMode::ZERO : CalMode::NONE);
-    //  return true;
-    //}
+    if (!strcasecmp(sub, "cal_mode")) {
+      const long mode = strtol(val, nullptr, 10);
+      g_cals[idx].mode = mode == 2 ? CalMode::RANGE : mode == 1 ? CalMode::ZERO : CalMode::NONE;
+      return true;
+    }
     if (!strcasecmp(sub, "r0_raw"))         { g_cals[idx].r0_raw = (float)strtod(val,nullptr); return true; }
     if (!strcasecmp(sub, "r1_raw"))         { g_cals[idx].r1_raw = (float)strtod(val,nullptr); return true; }
     if (!strcasecmp(sub, "capture_avg_ms")) { long v=strtol(val,nullptr,10); if (v>=0 && v<=65535) g_cals[idx].capture_avg_ms=(uint16_t)v; return true; }
@@ -815,6 +1003,7 @@ bool ConfigManager::parseLine(char* line, LoggerConfig& cfg) {
   // ---- globals ----
   if (keyEquals(key, "logger_name"))    { copyStrBounded(val, cfg.loggerName, sizeof(cfg.loggerName)); return true; }
   if (keyEquals(key, "sample_rate_hz")) { long v=strtol(val,nullptr,10); if (v>=1 && v<=2000) cfg.sampleRateHz=Rates::nearest((uint16_t)v); return true; }
+  if (keyEquals(key,"recording_best_effort")) { bool b; if(parseBool(String(val),b))cfg.recordingBestEffort=b; return true; }
   if (keyEquals(key, "log_format")) { LogFormat f; if (ConfigManager::parseLogFormat(val, f)) cfg.logFormat = f; return true; }
   if (keyEquals(key, "omit_metadata")) { bool b; if (ConfigManager::parseBool(String(val), b)) cfg.omitMetadata = b; return true; }
   if (keyEquals(key, "startup_log_to_sd")) { bool b; if (ConfigManager::parseBool(String(val), b)) cfg.startupLogToSd = b; return true; }
@@ -1000,6 +1189,9 @@ bool ConfigManager::load(LoggerConfig& cfg) {
     return false;
   }
 
+#if BODAQS_PRODUCTION_RECORDING
+  s_migration.inspect(content.c_str(),true);
+#endif
   // ---- Reset parser scratch state ----
   g_specCount     = 0;
   g_expectedCount = 0;
@@ -1010,6 +1202,9 @@ bool ConfigManager::load(LoggerConfig& cfg) {
   // Reset scratch ParamStores and make each scratch spec's ParamPack point at its store
   for (uint8_t i = 0; i < MAX_SENSORS; ++i) {
     g_stores[i].clear();
+    g_typeTokens[i]="";
+    g_cals[i]=Calibration{};
+    g_calAllowed[i]=0xFF;
     g_specs[i].params.bind(&g_stores[i]);
   }
 
@@ -1156,6 +1351,7 @@ bool ConfigManager::load(LoggerConfig& cfg) {
 }
 
 bool ConfigManager::reload() {
+  if (LoggingManager::configurationLocked()) return false;
   LoggerConfig loaded = s_cfg;
   if (!load(loaded)) return false;
   s_cfg = loaded;
@@ -1164,6 +1360,12 @@ bool ConfigManager::reload() {
 }
 
 bool ConfigManager::save(const LoggerConfig& cfg) {
+#if BODAQS_PRODUCTION_RECORDING
+  if (LoggingManager::configurationLocked() || migrationPending()) return false;
+#endif
+#if BODAQS_PRODUCTION_RECORDING
+  if(cfg.logFormat!=LogFormat::BodaqsMultiStreamBinary) return false;
+#endif
   CFG_LOGI("save: starting\n");
 
   String out;
@@ -1249,7 +1451,11 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
   line("# global");
   kv("logger_name", cfg.loggerName);
   kv_u("sample_rate_hz", (unsigned)cfg.sampleRateHz);
+  kv_bool("recording_best_effort",cfg.recordingBestEffort);
   kv("log_format", ConfigManager::logFormatKey(cfg.logFormat));
+#if BODAQS_PRODUCTION_RECORDING
+  kv("production_config_revision", "1");
+#endif
   kv_bool("omit_metadata", cfg.omitMetadata);
   kv_bool("startup_log_to_sd", cfg.startupLogToSd);
   kv("can_master_mode", ConfigManager::canMasterModeKey(cfg.canMasterMode));
@@ -1349,10 +1555,24 @@ auto kv_indexed_i = [&](const char* prefix, unsigned idx, const char* key, int v
   for (uint8_t i = 0; i < n; ++i) {
     const SensorSpec& sp = cfg.sensors[i];
 
-    String typeKey = typeKeyForSave(sp.type);
+    String typeKey = sp.type == SensorType::Unknown ? sensorTypeKey(i) : typeKeyForSave(sp.type);
     kv_indexed("sensor", i, "type", typeKey.c_str());
     kv_indexed("sensor", i, "name",  NZ(sp.name));
     kv_indexed_bool("sensor", i, "muted", sp.mutedDefault);
+
+    const Calibration& captured=g_cals[i];
+    kv_indexed_bool("sensor",i,"cal_enabled",captured.enabled);
+    kv_indexed_i("sensor",i,"cal_mode",static_cast<int>(captured.mode));
+    char calibrationNumber[32];
+    snprintf(calibrationNumber,sizeof(calibrationNumber),"%.9g",static_cast<double>(captured.r0_raw));
+    kv_indexed("sensor",i,"r0_raw",calibrationNumber);
+    snprintf(calibrationNumber,sizeof(calibrationNumber),"%.9g",static_cast<double>(captured.r1_raw));
+    kv_indexed("sensor",i,"r1_raw",calibrationNumber);
+    kv_indexed_i("sensor",i,"capture_avg_ms",captured.capture_avg_ms);
+    kv_indexed_i("sensor",i,"capture_n",captured.capture_n);
+    snprintf(calibrationNumber,sizeof(calibrationNumber),"%llu",static_cast<unsigned long long>(captured.ts_epoch_ms));
+    kv_indexed("sensor",i,"ts_epoch_ms",calibrationNumber);
+    if(g_calAllowed[i]!=0xFF) kv_indexed("sensor",i,"cal_allowed",calMaskToStr(g_calAllowed[i]).c_str());
 
     const ParamStore& st = g_stores[i];
     for (uint8_t k = 0; k < st.size(); ++k) {
@@ -1546,6 +1766,7 @@ bool ConfigManager::saveSensorParamByName(const char* sensorName, const char* ke
 
 
 bool ConfigManager::saveSensorParamByIndex(uint8_t index, const char* key, const String& value) {
+  if (LoggingManager::configurationLocked() || migrationPending()) return false;
   if (!key || !*key) return false;
   if (index >= g_specCount) return false;
 
@@ -1574,6 +1795,7 @@ bool ConfigManager::saveSensorParamByIndex(uint8_t index, const char* key, const
 
 
 bool ConfigManager::saveCalibration(const char* sensorName, const Calibration& cal) {
+  if (LoggingManager::configurationLocked() || migrationPending()) return false;
   if (!sensorName || !*sensorName) return false;
 
   // Locate index by name so we can write keys as "sensorN.xxx"
@@ -1715,6 +1937,7 @@ CalMode ConfigManager::loadCalModeByIndex(uint8_t index) {
   return g_cals[index].mode;
 }
 void ConfigManager::setCalAllowedByIndex(uint8_t index, CalModeMask m) {
+  if (LoggingManager::configurationLocked() || migrationPending()) return;
   if (index >= MAX_SENSORS) return;
   g_calAllowed[index] = m;
   // Optionally write-through to file here by upserting sensorN.cal_allowed line
@@ -1722,6 +1945,7 @@ void ConfigManager::setCalAllowedByIndex(uint8_t index, CalModeMask m) {
 }
 
 bool ConfigManager::setSensorHeaderByIndex(uint8_t index, const SensorSpec& sp) {
+  if (LoggingManager::configurationLocked() || migrationPending()) return false;
   if (index >= g_specCount) return false;
   g_specs[index].type = sp.type;
   // copy name safely
@@ -1731,6 +1955,7 @@ bool ConfigManager::setSensorHeaderByIndex(uint8_t index, const SensorSpec& sp) 
 }
 
 bool ConfigManager::appendSensor(SensorType type, const char* name) {
+  if (LoggingManager::configurationLocked() || migrationPending()) return false;
   if (g_specCount >= MAX_SENSORS) return false;
   if (!SensorRegistry::lookup(type)) return false;
 
@@ -1741,6 +1966,7 @@ bool ConfigManager::appendSensor(SensorType type, const char* name) {
   sp.mutedDefault = false;
   copyStrBounded((name && *name) ? name : "sensor", sp.name, sizeof(sp.name));
   seedParamDefaults_(type, g_stores[idx]);
+  g_typeTokens[idx]="";
   sp.params.bind(&g_stores[idx]);
   g_cals[idx] = Calibration{};
   g_calAllowed[idx] = 0xFF;
@@ -1750,11 +1976,13 @@ bool ConfigManager::appendSensor(SensorType type, const char* name) {
 }
 
 bool ConfigManager::deleteSensorByIndex(uint8_t index) {
+  if (LoggingManager::configurationLocked() || migrationPending()) return false;
   if (index >= g_specCount) return false;
 
   for (uint8_t i = index; i + 1 < g_specCount; ++i) {
     g_specs[i] = g_specs[i + 1];
     g_stores[i] = g_stores[i + 1];
+    g_typeTokens[i] = g_typeTokens[i + 1];
     g_cals[i] = g_cals[i + 1];
     g_calAllowed[i] = g_calAllowed[i + 1];
     g_specs[i].params.bind(&g_stores[i]);
@@ -1764,6 +1992,7 @@ bool ConfigManager::deleteSensorByIndex(uint8_t index) {
   if (g_specCount < MAX_SENSORS) {
     g_specs[g_specCount] = SensorSpec{};
     g_stores[g_specCount].clear();
+    g_typeTokens[g_specCount]="";
     g_specs[g_specCount].params.bind(&g_stores[g_specCount]);
     g_cals[g_specCount] = Calibration{};
     g_calAllowed[g_specCount] = 0xFF;

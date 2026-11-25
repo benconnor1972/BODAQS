@@ -1,13 +1,100 @@
 #pragma once
+#include "RecordingFeatures.h"
 
 #include <Arduino.h>
 #include <stdint.h>
 #include "BoardProfile.h"
 #include "TimingStats.h"
+#include "LocalRowHandoff.h"
+#include "RawAdcRecording.h"
+
+#ifndef BODAQS_ADC_ROW_HANDOFF
+#define BODAQS_ADC_ROW_HANDOFF 0
+#endif
+#ifndef BODAQS_ADC_COMBINED_CAPTURE
+#define BODAQS_ADC_COMBINED_CAPTURE 0
+#endif
+#if BODAQS_ADC_COMBINED_CAPTURE && !BODAQS_ADC_ROW_HANDOFF
+#error "Combined capture requires the immutable row handoff"
+#endif
+#if BODAQS_ADC_ROW_HANDOFF && (!BODAQS_SCANNED_ADC_ACQUISITION || !BODAQS_ADC_SCAN_PIPELINE)
+#error "Row handoff requires the verified concentrated pipeline bench"
+#endif
 
 struct LoggerConfig;
 
+#ifndef BODAQS_ADC_ROW_PACING
+#define BODAQS_ADC_ROW_PACING 0
+#endif
+#if BODAQS_ADC_ROW_PACING != 0 && BODAQS_ADC_ROW_PACING != 1
+#error "ADC row pacing must be 0 or 1"
+#endif
+#ifndef BODAQS_ADC_CONTINUOUS_LATEST
+#define BODAQS_ADC_CONTINUOUS_LATEST 0
+#endif
+#if BODAQS_ADC_CONTINUOUS_LATEST != 0 && BODAQS_ADC_CONTINUOUS_LATEST != 1
+#error "Continuous latest flag must be 0 or 1"
+#endif
+#if BODAQS_ADC_CONTINUOUS_LATEST && BODAQS_ADC_ROW_PACING
+#error "Continuous latest and row-paced conversion are mutually exclusive"
+#endif
+#ifndef BODAQS_ADC_SCAN_ROW_PHASE
+#define BODAQS_ADC_SCAN_ROW_PHASE 0
+#endif
+#if BODAQS_ADC_SCAN_ROW_PHASE && !BODAQS_ADC_SCAN_PIPELINE
+#error "Row phase requires pipeline"
+#endif
 namespace AnalogInputManager {
+#if BODAQS_PRODUCTION_RECORDING
+  using CountPublisher = void (*)(uint8_t sensorIndex, int32_t counts, uint32_t tickUs, uint16_t status, uint32_t sequence);
+  bool setRecordingPlan(const LocalAnalogRecordingPlan& plan, CountPublisher publisher=nullptr);
+  // Publish/unpark only after the lifecycle owner has entered Recording.
+  bool activateRecordingPlan();
+  unsigned rawRecordingColumns();
+  // Called only inside the ADC owner's inline row-capture callback.
+  bool recordingRowTiming(uint32_t& sequence, uint32_t& missed, uint64_t& deadlineUs);
+#endif
+#if BODAQS_ADC_COMBINED_CAPTURE
+  // Idle START only; immutable until scan retirement. Called by the scan owner
+  // after all selected channels on both ADCs verify; never STOP/wait on its owner.
+  bool scanRowCaptureEligible();
+  bool setScanRowCapture(bool (*capture)());
+  // STOP: retire the producer but retain cache/snapshot session until rows drain.
+  bool retireScanRowCapture();
+#endif
+#if BODAQS_ADC_ROW_HANDOFF
+  bool rowHandoffActive();
+  bool captureRowSnapshot(LocalAdcSnapshot& snapshot);
+#if BODAQS_RAW_COUNT_RECORDING
+  // ADC owner only: configured count fields, with no engineering transformations.
+  bool captureRawPair(RawAdcRecord& record,uint64_t& capturedUs);
+#endif
+  // Consumer task only; caller retains snapshot through sampleValues and clears
+  // before returning. Other tasks continue to see the ordinary live cache.
+  void useRowSnapshot(const LocalAdcSnapshot* snapshot);
+  // Row owner only: same freshness accounting, with an explicitly borrowed view.
+  // Preview tasks must continue using readCounts().
+  bool readSnapshotCounts(uint8_t ain, int32_t& counts, const LocalAdcSnapshot& snapshot);
+#endif
+#if BODAQS_ADC_SCAN_ROW_PHASE
+  bool scanRowPhaseActive();
+  // Pending until the first validated pipeline publication; no hardware access.
+  bool scanRowDeadline(int64_t nowUs,int64_t& deadline);
+#endif
+#if BODAQS_SCANNED_ADC_ACQUISITION
+  // Idle startup only, after configureFromConfig and Wi-Fi shutdown, before
+  // recording buffers/SD I/O. No-op outside the explicitly selected bench scope.
+  // Retains one parked worker across recordings; never starts ADC acquisition.
+  bool reserveScanTask();
+#endif
+#if BODAQS_ADC_CONTINUOUS_LATEST
+  bool continuousHealthy();
+#endif
+#if BODAQS_ADC_ROW_PACING
+  // Startup only. Returns first row deadline, or zero if resources/scope failed.
+  int64_t beginRowPacing();
+#endif
+
 
   void begin(const board::BoardProfile& board);
 
@@ -26,6 +113,9 @@ namespace AnalogInputManager {
   uint16_t configuredDataRateSps(uint8_t externalAdcIndex);
   void resetTimingStats();
   const ExternalAdcTimingStats& timingStats();
+  // Finalization only, after the row producer stops. Null while an ADC worker
+  // can still mutate timing totals; a non-null result remains valid until start.
+  const ExternalAdcTimingStats* stoppedTimingStats();
   void onLoggingStart();
   void onLoggingStop();
 

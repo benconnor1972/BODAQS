@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <limits.h>         // for INT32_MAX / INT32_MIN
+#include "PublishedSensorCounts.h"
 
 class AnalogPotSensor : public Sensor {
 public:
@@ -39,16 +40,20 @@ public:
 
   // ---------- Sensor interface ----------
   void begin() override;
-  void loop() override {}
+  void loop() override;
+  void publishAcquiredCounts(int32_t counts, uint32_t tickUs, uint16_t status) override;
 
   void applyConfig(const LoggerConfig&) override; // currently no-op
 
   bool muted() const override { return m_muted; }
   void setMuted(bool m) override { m_muted = m; }
 
+  void onLoggingStart() override;
+  void onLoggingFinalized() override;
   uint8_t columnCount() const override;
   void getColumnName(uint8_t idx, char* out, size_t cap) const override;
   void sampleValues(float* out, uint8_t max) override;
+  void sampleRowValues(float* out, uint8_t max, const LocalAdcSnapshot& snapshot) override;
   bool describeColumn(uint8_t idx, SensorColumnDescriptor& out) const override;
   bool describeSensorMetadata(SensorMetadataDescriptor& out) const override;
   int32_t installedZeroCount() const { return installed_zero_count_; }
@@ -70,7 +75,7 @@ public:
   bool      finishCalibration(bool persist) override;
   CalPhase  currentCalPhase() const override { return cal_.phase; }
 
-  bool      hasRawCounts() const override { return true; }
+  bool      hasRawCounts() const override;
   int32_t   currentRawCounts() const override;      // pre-EMA preferred for calibration
   bool      readPreviewValue(OutputMode mode, float& value, char* unit, size_t unitCap) override;
   float     installedRange() const override { return m_installedRange; }
@@ -92,9 +97,14 @@ public:
   static Sensor*         create(const char* instanceName, const ParamPack& params, bool mutedDefault);
 
 private:
+  PublishedSensorCounts m_publishedCounts;
+  uint32_t m_nextIdleSampleMs=0;
+  bool m_recordRaw = false;
   void  applyParams(const Params& p);
-  int   readOnce() const;
+  int   readOnce(const LocalAdcSnapshot* snapshot = nullptr, bool* valid=nullptr) const;
   void  sample(float& selectedOut, int& rawOut);
+  void  sample_(float& selectedOut, int& rawOut, const LocalAdcSnapshot* snapshot);
+  void  sampleValues_(float* out, uint8_t max, const LocalAdcSnapshot* snapshot);
   float normalize_(int counts) const;   // 0..1 after zero/full + invert + clamp
   float applyTransform_(float xNorm) const; // identity / LUT / POLY (all expect 0..1)
 

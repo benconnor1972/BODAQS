@@ -3,6 +3,7 @@
 #include "ConfigManager.h"
 #include "TimingStats.h"
 #include "LoggingStartStatus.h"
+#include "RecordingLifecycle.h"
 
 class AnalogPotSensor; // fwd
 
@@ -15,6 +16,8 @@ namespace LoggingManager {
     SdCardRemoved,
     StartFailure,
     Unspecified,
+    StorageFailure,
+    StorageUnresponsive,
   };
 
   struct StopContext {
@@ -46,7 +49,16 @@ namespace LoggingManager {
   };
 
   void begin(const LoggerConfig* cfg);
+  // start() returns true only once acquisition has actually started.
   bool start();
+  enum class StartResult : uint8_t { Failed, Pending, Started };
+  StartResult requestStart();
+  bool isStarting();
+  void cancelStart();
+  using LifecycleState = RecordingLifecycle::State;
+  LifecycleState lifecycleState();
+  const char* lifecycleStateName();
+  bool configurationLocked();
   void refreshConfigurationStatus();
   LoggingConfigIssue configurationIssue();
   const char* configurationDetail();
@@ -58,6 +70,8 @@ namespace LoggingManager {
   StopContext stopContext();
   bool isRunning();
   void loop();
+  void completeStorageStart();
+  void finishStorageStop();
   void setSampleRateHz(uint16_t hz);
   RuntimeStats runtimeStats();
 

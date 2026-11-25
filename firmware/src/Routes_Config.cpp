@@ -7,10 +7,13 @@
 
 #include "HtmlUtil.h"
 #include "ConfigManager.h"
+#include "ProductionConfigMigrationApply.h"
+#include "SensorConfigEdit.h"
 #include "SensorManager.h"
 #include "SensorAssignment.h"
 #include "AnalogInputManager.h"
 #include "CanMasterManager.h"
+#include "ImuAdmission.h"
 #include "LoggingManager.h"
 #include "SensorRegistry.h"
 #include "RTCManager.h"
@@ -29,8 +32,21 @@
 #define WEB_LOGW(...) LOGW_TAG("WEB", __VA_ARGS__)
 
 // ---- Helpers (file scope) ----
+static String productionMigrationHtml_() {
+  String migration;
+  if(ConfigManager::migrationPending()) {
+    migration=F("<div class='alert-warn'><strong>Review production configuration migration</strong><pre>");
+    migration+=HtmlUtil::htmlEscape(ConfigManager::migrationChanges());
+    migration+=F("</pre><form method='POST' action='/config/migration'><input type='hidden' name='revision' value='");
+    migration+=HtmlUtil::htmlEscape(ConfigManager::migrationRevision());
+    migration+=F("'><button type='submit' name='acknowledge' value='yes'>Accept these changes and preserve original</button></form></div>");
+  }
+  return migration;
+}
+
 static String configurationNotice_(bool outOfBand = false) {
   LoggingManager::refreshConfigurationStatus();
+  const String migration=productionMigrationHtml_();
   String html = outOfBand ? F("<div id='logging-config-notice' hx-swap-oob='outerHTML'>")
       : F("<div id='logging-config-notice'>");
   const auto issue = LoggingManager::configurationIssue();
@@ -38,13 +54,19 @@ static String configurationNotice_(bool outOfBand = false) {
       SensorManager::configurationDiagnostics(ConfigManager::get());
   if (CanMasterManager::requiredAndUnavailable() && !LoggingManager::isRunning()) {
     html += F("<div class='alert-warn'><strong>CAN-FD master required but unavailable.</strong><br>");
-    html += F("Check the daughterboard, SPI connection, and master firmware. Healthy local sensors can still log.</div>");
+    html += F("Check the daughterboard, SPI connection, and master firmware. Strict START requires all requested sensors; best-effort exclusions must be explicit.</div>");
   }
   if ((issue != LoggingConfigIssue::None || diagnostics.count() != 0) &&
       !LoggingManager::isRunning()) {
     String title = issue == LoggingConfigIssue::RestartRequired ? F("Restart required - press Enter on the home screen.")
         : (issue == LoggingConfigIssue::Conflict ? F("Config conflict - affected sensors will be skipped.")
                                                  : F("Sensor configuration - affected sensors will be skipped."));
+#if BODAQS_PRODUCTION_RECORDING
+    if(issue==LoggingConfigIssue::PreparingParticipants) title=F("Preparing requested participants; see node readiness below.");
+    else if(issue==LoggingConfigIssue::Unqualified) title=F("This configuration requires qualification before production recording.");
+    else if(issue==LoggingConfigIssue::IntegrationCandidate) title=F("Unqualified integration candidate: test recording only.");
+    else if(!ConfigManager::get().recordingBestEffort) title=F("Strict recording requires every requested participant; review blockers below.");
+#endif
     html += String(F("<div class='alert-warn'><strong>")) + title + F("</strong>");
     if (LoggingManager::configurationDetail()[0]) {
       html += F("<br>");
@@ -73,6 +95,9 @@ static String configurationNotice_(bool outOfBand = false) {
         case SensorIssueCode::CapabilityMismatch:
           action = "Reduce the requested rate/features or select compatible hardware.";
           break;
+        case SensorIssueCode::AcquisitionUnavailable:
+          action = "Remote acquisition is not implemented yet. Configuration can be verified; restarting will not enable samples.";
+          break;
         case SensorIssueCode::DuplicateSensorName:
         case SensorIssueCode::DuplicateSensorIdentity:
           action = "Give each configured sensor a unique logical identity.";
@@ -96,7 +121,7 @@ static String configurationNotice_(bool outOfBand = false) {
     }
     html += F("</ul>Healthy, independent sensors can still log.</div>");
   }
-  return html + F("</div>");
+  return html + migration + F("</div>");
 }
 
 static String fmtIPv4(const uint8_t a[4]) {
@@ -136,8 +161,8 @@ static void noteHttpActivity_() {
 }
 
 static bool configEditLocked_(String* reason = nullptr) {
-  if (!WebServerManager::canStart()) {
-    if (reason) *reason = F("logging is active");
+  if (ConfigManager::migrationPending() || LoggingManager::configurationLocked() || !WebServerManager::canStart()) {
+    if (reason) *reason = F("recording starts, runs, or stops; stop recording, then retry. Nothing was changed");
     return true;
   }
   if (UploadModeManager::isActive()) {
@@ -164,24 +189,21 @@ static bool rejectConfigEditLocked_(WebServer& srv) {
   return true;
 }
 
-static bool rebuildSavedSensorConfiguration_(String& error) {
-  char detail[160] = {0};
-  const LoggerConfig& cfg = ConfigManager::get();
-  if (!SensorManager::rebuildFromConfig(cfg, detail, sizeof(detail))) {
-    error = detail[0] ? String(detail) : F("Could not apply the sensor configuration");
-    return false;
+static bool commitSensorEdit_(WebServer& srv, SensorConfigEdit& edit, const LoggerConfig& cfg) {
+  char detail[160] = {};
+  const auto result = edit.commit(cfg, detail, sizeof(detail));
+  if (result == SensorConfigEdit::Result::Applied) return true;
+  const int status = result == SensorConfigEdit::Result::Invalid ? 400
+      : result == SensorConfigEdit::Result::Locked ? 423 : 500;
+  String message = result == SensorConfigEdit::Result::SavedNotApplied
+      ? String(F("Saved, but runtime rebuild failed: ")) + detail : String(detail);
+  if (HtmlUtil::isHtmxRequest(srv)) {
+    HttpFileSender::sendText(srv, 200, F("text/html"),
+        String(F("<div class='alert-err'>")) + HtmlUtil::htmlEscape(message) + F("</div>"), F("no-store"));
+  } else {
+    srv.send(status, F("text/plain"), message);
   }
-  const uint16_t effectiveRate =
-      AnalogInputManager::configureFromConfig(cfg, cfg.sampleRateHz);
-  StorageManager_setSampleRate(effectiveRate);
-  LoggingManager::refreshConfigurationStatus();
-  return true;
-}
-
-static void restoreConfigurationAfterSaveFailure_() {
-  if (!ConfigManager::reload()) {
-    WEB_LOGW("could not reload persisted configuration after save failure\n");
-  }
+  return false;
 }
 
 static void applyLogSettingsLive_(const LoggerConfig& cfg) {
@@ -243,6 +265,7 @@ static bool parseSensorTypeKey_(String text, SensorType& out) {
     out = SensorType::DANF10NGps;
     return true;
   }
+  if (text.equalsIgnoreCase("lsm6dso32x_imu")) { out=SensorType::LSM6DSO32XImu; return true; }
   if (text.equalsIgnoreCase("bmi270_imu_i2c")) {
     out = SensorType::BMI270ImuI2C;
     return true;
@@ -258,6 +281,7 @@ static const char* defaultNamePrefix_(SensorType type) {
     case SensorType::AS5048BAngleI2C: return "as5048";
     case SensorType::AS5600AngleI2C: return "as5600r";
     case SensorType::DANF10NGps: return "gps";
+    case SensorType::LSM6DSO32XImu:
     case SensorType::BMI270ImuI2C: return "imu";
     default: return "sensor";
   }
@@ -354,6 +378,7 @@ static const SensorType kEditableSensorTypes_[] = {
   SensorType::AS5600AngleI2C,
   SensorType::DANF10NGps,
   SensorType::BMI270ImuI2C,
+  SensorType::LSM6DSO32XImu,
 };
 
 static void emitSensorTypeOptions_(ChunkedHtmlResponse& html, SensorType selected) {
@@ -634,6 +659,7 @@ static void emitProviderEndpointRows_(ChunkedHtmlResponse& html,
     html += F("</option>");
   };
   switch (sp.type) {
+    case SensorType::LSM6DSO32XImu:
     case SensorType::BMI270ImuI2C:
       option("imu", "On-node IMU");
       break;
@@ -670,7 +696,7 @@ static void emitOutputModeRow_(ChunkedHtmlResponse& html, uint8_t idx, const Sen
   html += F(">RAW</option><option value='1'");
   if (mode == OutputMode::LINEAR) html += F(" selected");
   html += F(">LINEAR</option></select>");
-  html += F("<small>Complex transforms are applied downstream during import/analysis.");
+  html += F("<small>Recording stores counts/native evidence. RAW/LINEAR choose idle preview units; calibrated units are reconstructed during import.");
   if (stored == (long)OutputMode::POLY || stored == (long)OutputMode::LUT) {
     html += F(" Legacy POLY/LUT config will be saved back as LINEAR.");
   }
@@ -760,9 +786,20 @@ static void emitSensorEditor_(ChunkedHtmlResponse& html,
   html += F("'><legend>");
   html += htmlEscape(String(dispName));
   html += F(" - ");
+  if(sp.type==SensorType::Unknown) { html+=htmlEscape(ConfigManager::sensorTypeKey(idx)); html+=F(" (unsupported; START blocked) "); }
   html += htmlEscape(String(typeLbl ? typeLbl : "Unknown Sensor"));
   html += F("</legend>");
 
+#if BODAQS_PRODUCTION_RECORDING
+  html+=F("<p>Recording retains raw counts/native evidence. Calibration affects idle previews and offline reconstruction.</p>");
+  if(sp.type==SensorType::AnalogPot || sp.type==SensorType::AS5600StringPotAnalog || sp.type==SensorType::AS5600StringPotI2C) {
+    double travel=0;long zero=0,full=0;
+    const bool calibrated=sp.params.getFloat("sensor_full_travel_mm",travel) && travel>0 &&
+        sp.params.getInt("sensor_zero_count",zero) && sp.params.getInt("sensor_full_count",full) && zero!=full;
+    html+=calibrated?F("<p>Calibration: saved count anchors and travel; original count domain retained.</p>"):
+        F("<p>Calibration unavailable: raw recording is supported; unsupported displacement values remain unavailable.</p>");
+  }
+#endif
   html += F("<h4>Basic</h4>");
   html += F("<div class='row'><label>Name</label><input type='text' name='s");
   html += String(idx);
@@ -784,7 +821,50 @@ static void emitSensorEditor_(ChunkedHtmlResponse& html,
   if (locked) html += F(" disabled");
   html += F(">Apply Type</button><small>Rebuilds fields and applies the saved sensor configuration immediately.</small></div>");
 
+  if (SensorConfigEdit::isLegacyRemoteImu(sp)) {
+    html += F("<div class='alert'>Unresolved legacy remote BMI270 placeholder. It cannot record. BMI profiles are not translated. Explicitly select the LSM type and supported profile, then migrate; saved installation and calibration data are retained.</div>");
+    html += F("<div class='row'><label>Migration type</label><select name='s");
+    html += String(idx);
+    html += F(".migration_type'"); html += dis;
+    html += F("><option value=''>Choose replacement type</option><option value='lsm6dso32x_imu'>LSM6DSO32X IMU (CAN)</option></select></div>");
+    html += F("<div class='row'><label>Migration profile</label><select name='s");
+    html += String(idx);
+    html += F(".migration_profile'"); html += dis;
+    html += F("><option value=''>Choose supported profile</option><option value='imu6_3333_32g_2000dps_v1'>IMU6 3333 Hz / 32 g / 2000 dps v1</option><option value='imu6_1667_32g_2000dps_v1'>IMU6 1667 Hz / 32 g / 2000 dps v1</option><option value='imu6_833_32g_2000dps_v1'>IMU6 833 Hz / 32 g / 2000 dps v1</option></select></div><button type='submit' name='migrate_legacy_idx' value='");
+    html += String(idx); html += F("'"); html += dis;
+    html += F(">Migrate saved assignment</button><small>Migration saves only the selected replacement, preserving the existing name, calibration, mounting and provider/endpoint. Save other edits separately. Configuration support does not enable sample recording.</small>");
+  }
   emitProviderEndpointRows_(html, idx, sp, locked);
+  if (sp.type == SensorType::LSM6DSO32XImu) {
+    const auto assignment = sensorAssignment(sp, board::gBoard);
+    html += F("<p>Configuration only: sensing engines run while stopped. Sample acquisition and assisted orientation capture are unavailable.</p>");
+    if (assignment.provider.kind == SensorProviderKind::CanNode) {
+      const auto address=assignment.provider.index;
+      const auto& status=CanMasterManager::diagnostics();
+      const auto& operation=status.apply.nodes[address];
+      const auto& endpoint=status.control.nodes[address].endpoints[0];
+      html += F("<p>Saved desired profile: "); String profile; sp.params.get("profile",profile); html+=htmlEscape(profile);
+      html += F("; remote apply: ");
+      if(status.apply.phase && status.apply.current.node_address==address && (!operation.valid || operation.kind==2)) html+=F("pending");
+      else if(operation.valid) { html+= operation.kind==3 ? F("accepted") : operation.kind==4 ? F("adjusted") : operation.kind==5 ? F("rejected") : F("outcome unknown");
+        html+=F(" ("); html+=bodaqs_control_reason_key(operation.reason); html+=F(")"); }
+      else html+=F("awaiting reconciliation");
+      html+=F("; effective: ");
+      if(!endpoint.current || !endpoint.effective_valid) html+=F("unavailable");
+      else { const uint8_t* d=endpoint.effective;
+        html+=d[4]==2 ? F("verified enabled") : d[4]==1 ? F("verified disabled") : F("current unknown");
+        if(bodaqs_control_get_u32(d+16)) html+=F("; prior settings retained as historical evidence");
+        html+=F("; health flags "); html+=String(bodaqs_control_get_u32(d+20)); }
+      html+=CanMasterManager::configurationReconciled(address) ? F("; desired agreement verified") : F("; desired agreement unverified");
+      html+=F(". Acquisition readiness: false. Timing, settling and measured performance: unknown.</p>");
+      if(ImuAdmission::bulkMixedAdcBenchBuild())
+        html+=F("<p><strong>UNQUALIFIED MIXED-LOAD TEST.</strong> Four CAN IMUs plus RAW analog inputs0 and4 at500Hz, or the matching ADC-only control. Other inputs remain muted.</p>");
+      else if(ImuAdmission::sampleUnitBenchBuild())
+        html+=F("<p><strong>UNQUALIFIED ONE/TWO-NODE V3 BENCH BUILD.</strong> Enable one or two CAN IMUs at 500 Hz primary rate. Mute ADCs and all other sensors.</p>");
+      else if(ImuAdmission::singleNodeSmokeBuild())
+        html+=F("<p><strong>UNQUALIFIED SINGLE-NODE IMU SMOKE BUILD.</strong> Mute every other sensor. Multiple IMUs and ADC acquisition are not enabled by this test build.</p>");
+    }
+  }
   emitParamRow_(html, idx, sp, defs, defCount, "i2c_bus", "I2C bus", locked);
   emitParamRow_(html, idx, sp, defs, defCount, "i2c_addr", "I2C address", locked);
   emitAnalogInputRow_(html, idx, sp, defs, defCount, locked);
@@ -859,7 +939,7 @@ static void emitSensorEditor_(ChunkedHtmlResponse& html,
   if (findParamDef_(defs, defCount, "output_mode")) {
     html += F("<h4>Output</h4>");
     emitOutputModeRow_(html, idx, sp, locked);
-    emitParamRow_(html, idx, sp, defs, defCount, "include_raw", "Include raw column", locked);
+    emitParamRow_(html, idx, sp, defs, defCount, "include_raw", "Legacy extra raw preference (v2 retains counts)", locked);
     emitParamRow_(html, idx, sp, defs, defCount, "sensor_full_travel_mm", "Sensor full travel (mm)", locked);
     emitParamRow_(html, idx, sp, defs, defCount, "installed_range", "Installed range", locked);
   }
@@ -916,10 +996,27 @@ static void emitSensorEditor_(ChunkedHtmlResponse& html,
   html += F("</fieldset>");
 }
 
+static void handleProductionMigrationWeb_(WebServer& srv) {
+  if(!srv.hasArg("acknowledge") || srv.arg("acknowledge")!="yes") {
+    srv.send(409,"text/plain","Explicit acknowledgement required");return;
+  }
+  char error[128]{};
+  const auto result=ProductionConfigMigrationApply::accept(srv.arg("revision").c_str(),error,sizeof(error));
+  if(result==ProductionConfigMigrationApply::Result::Rejected) {
+    srv.send(409,"text/plain",error);return;
+  }
+  if(result==ProductionConfigMigrationApply::Result::SavedNotApplied) {
+    srv.send(500,"text/plain",String("Migration saved; not applied: ")+error);return;
+  }
+  srv.sendHeader("Location","/config");
+  srv.send(303,"text/plain","Migration accepted; original preserved");
+}
+
 void registerConfigRoutes(WebServer& srv) {
   WebServer* S = &srv;
 
   // -------------------- GET /config --------------------
+  S->on("/config/migration", HTTP_POST, [S]() { handleProductionMigrationWeb_(*S); });
   S->on("/config", HTTP_GET, [S](){
     auto& srv = *S;
     noteHttpActivity_();
@@ -994,16 +1091,21 @@ void registerConfigRoutes(WebServer& srv) {
     }
     html += F("</select><br>");
 
+    html += F("<label>Recording membership: </label><select name='recording_best_effort'"); html+=dis; html+=F(">");
+    html+=F("<option value='false'"); if(!cfg.recordingBestEffort)html+=F(" selected"); html+=F(">Require all requested participants</option>");
+    html+=F("<option value='true'"); if(cfg.recordingBestEffort)html+=F(" selected"); html+=F(">Best effort; record explicit exclusions</option></select><br>");
     html += F("<label>Log format: </label>");
+#if !BODAQS_PRODUCTION_RECORDING
     html += F("<label><input type='radio' name='log_format' value='bodaqs_standard'");
     if (cfg.logFormat == LogFormat::BodaqsStandard) html += F(" checked");
     html += dis; html += F("> BODAQS CSV</label> ");
     html += F("<label><input type='radio' name='log_format' value='bodaqs_compact_binary'");
     if (cfg.logFormat == LogFormat::BodaqsCompactBinary) html += F(" checked");
     html += dis; html += F("> BODAQS compact binary</label> ");
+#endif
     html += F("<label><input type='radio' name='log_format' value='bodaqs_multi_stream_binary'");
     if (cfg.logFormat == LogFormat::BodaqsMultiStreamBinary) html += F(" checked");
-    html += dis; html += F("> BODAQS multi-stream binary (experimental)</label><br>");
+    html += dis; html += F("> BODAQS multi-stream binary (counts/native streams)</label><br>");
 
     html += F("<label><input type='checkbox' name='omit_metadata' value='true'");
     if (cfg.omitMetadata) html += F(" checked");
@@ -1287,6 +1389,18 @@ void registerConfigRoutes(WebServer& srv) {
     html += F("<div class='row'><label>Name</label><input type='text' name='add_sensor_name' maxlength='15' placeholder='optional'");
     html += dis;
     html += F("><small>Leave blank to auto-name.</small></div>");
+    html += F("<div class='row'><label>CAN node for LSM6DSO32X</label><select name='add_sensor_can_node'");
+    html += dis;
+    html += F("><option value=''>-- choose node --</option>");
+    for (uint8_t node = 0; node < MAX_CAN_SENSOR_NODES; ++node) {
+      html += F("<option value='");
+      html += String((int)node);
+      html += F("'>CAN node ");
+      html += String((int)node);
+      html += F("</option>");
+    }
+    html += F("</select><small>Required for an LSM6DSO32X IMU. Choose its hardware strap address; the on-node IMU and supported profile are assigned automatically.</small></div>");
+    html += F("<p>Unassigned or muted CAN IMU endpoints are automatically reconciled to disabled while idle. There is no separate automatic-disable setting.</p>");
     html += F("<p><button type='submit' name='add_sensor' value='1'");
     html += dis;
     html += F(">Add Sensor</button></p></fieldset></form>");
@@ -1447,7 +1561,32 @@ void registerConfigRoutes(WebServer& srv) {
 
     if (rejectConfigEditLocked_(srv)) return;
 
+    SensorConfigEdit edit;
+    if (!edit.ready()) { srv.send(503, F("text/plain"), F("Sensor editor unavailable")); return; }
     LoggerConfig tmp = ConfigManager::get();
+
+    if (srv.hasArg("migrate_legacy_idx")) {
+      const String indexText = srv.arg("migrate_legacy_idx");
+      char* end = nullptr;
+      const long index = strtol(indexText.c_str(), &end, 10);
+      SensorSpec sp;
+      char error[160] = {};
+      const String prefix = String("s") + String(index) + ".";
+      if (!indexText.length() || *end || index < 0 || index >= tmp.sensorCount() ||
+          !tmp.getSensorSpec((uint8_t)index, sp) ||
+          !SensorConfigEdit::migrateLegacyRemoteImu(sp,
+              srv.arg(prefix + "migration_type").c_str(),
+              srv.arg(prefix + "migration_profile").c_str(), error, sizeof(error))) {
+        srv.send(400, F("text/plain"), error[0] ? error : "Invalid migration sensor");
+        return;
+      }
+      tmp.sensors[index] = sp;
+      ConfigManager::setSensorHeaderByIndex((uint8_t)index, sp);
+      if (!commitSensorEdit_(srv, edit, tmp)) return;
+      srv.sendHeader("Location", String("/config/sensor?id=") + String(index) + "&ok=1");
+      srv.send(303, F("text/plain"), F("Legacy remote assignment migrated"));
+      return;
+    }
 
     if (srv.hasArg("delete_sensor_idx")) {
       const int idx = srv.arg("delete_sensor_idx").toInt();
@@ -1455,28 +1594,8 @@ void registerConfigRoutes(WebServer& srv) {
         srv.send(400, F("text/plain"), F("Invalid sensor index"));
         return;
       }
-      if (!ConfigManager::deleteSensorByIndex((uint8_t)idx) ||
-          !ConfigManager::save(ConfigManager::get())) {
-        restoreConfigurationAfterSaveFailure_();
-        if (isHtmxRequest(srv)) {
-          HttpFileSender::sendText(srv, 200, F("text/html"),
-            F("<div class='alert-err'>Failed to delete sensor</div>"), F("no-store"));
-        } else {
-          srv.send(500, F("text/plain"), F("Failed to delete sensor"));
-        }
-        return;
-      }
-      String applyError;
-      if (!rebuildSavedSensorConfiguration_(applyError)) {
-        if (isHtmxRequest(srv)) {
-          HttpFileSender::sendText(srv, 200, F("text/html"),
-            String(F("<div class='alert-err'>Saved, but could not apply without a restart: ")) +
-              HtmlUtil::htmlEscape(applyError) + F("</div>"), F("no-store"));
-        } else {
-          srv.send(500, F("text/plain"), String(F("Saved, but not applied: ")) + applyError);
-        }
-        return;
-      }
+      if (!ConfigManager::deleteSensorByIndex((uint8_t)idx)) return;
+      if (!commitSensorEdit_(srv, edit, ConfigManager::get())) return;
       if (isHtmxRequest(srv)) {
         srv.sendHeader(F("HX-Redirect"), F("/config/sensors?ok=1"));
         HttpFileSender::sendText(srv, 200, F("text/html"), F(""), F("no-store"));
@@ -1490,40 +1609,46 @@ void registerConfigRoutes(WebServer& srv) {
     if (srv.hasArg("add_sensor")) {
       SensorType newType = SensorType::AnalogPot;
       if (srv.hasArg("add_sensor_type")) {
-        (void)parseSensorTypeKey_(srv.arg("add_sensor_type"), newType);
+        if (!parseSensorTypeKey_(srv.arg("add_sensor_type"), newType)) {
+          srv.send(400, F("text/plain"), F("Invalid sensor type")); return;
+        }
+      }
+      String canProvider;
+      if (newType == SensorType::LSM6DSO32XImu) {
+        String selected = srv.arg("add_sensor_can_node");
+        selected.trim();
+        char* end = nullptr;
+        const long node = strtol(selected.c_str(), &end, 10);
+        if (!selected.length() || *end || node < 0 || node >= MAX_CAN_SENSOR_NODES) {
+          srv.send(400, F("text/plain"), F("Choose a CAN node address for the LSM6DSO32X IMU"));
+          return;
+        }
+        canProvider = String("can:") + String(node);
       }
       const String uniqueName = uniqueSensorName_(newType, srv.hasArg("add_sensor_name") ? srv.arg("add_sensor_name") : String());
-      if (!ConfigManager::appendSensor(newType, uniqueName.c_str()) ||
-          !ConfigManager::save(ConfigManager::get())) {
-        restoreConfigurationAfterSaveFailure_();
-        if (isHtmxRequest(srv)) {
-          HttpFileSender::sendText(srv, 200, F("text/html"),
-            F("<div class='alert-err'>Failed to add sensor</div>"), F("no-store"));
-        } else {
-          srv.send(500, F("text/plain"), F("Failed to add sensor"));
-        }
+      if (!ConfigManager::appendSensor(newType, uniqueName.c_str())) {
+        srv.send(400, F("text/plain"), F("Could not add sensor"));
         return;
       }
-      String applyError;
-      if (!rebuildSavedSensorConfiguration_(applyError)) {
-        if (isHtmxRequest(srv)) {
-          HttpFileSender::sendText(srv, 200, F("text/html"),
-            String(F("<div class='alert-err'>Saved, but could not apply without a restart: ")) +
-              HtmlUtil::htmlEscape(applyError) + F("</div>"), F("no-store"));
-        } else {
-          srv.send(500, F("text/plain"), String(F("Saved, but not applied: ")) + applyError);
+      if (newType == SensorType::LSM6DSO32XImu) {
+        SensorSpec sp;
+        if (!ConfigManager::getSensorSpec(ConfigManager::sensorCount() - 1, sp) ||
+            !sp.params.set("provider", canProvider) || !sp.params.set("endpoint", "imu")) {
+          srv.send(500, F("text/plain"), F("Could not assign the new CAN IMU"));
+          return;
         }
-        return;
       }
+      if (!commitSensorEdit_(srv, edit, ConfigManager::get())) return;
       const int newIdx = (int)ConfigManager::sensorCount() - 1;
+      const String redirect = newType == SensorType::LSM6DSO32XImu
+          ? String("/config/sensor?id=") + String(newIdx) + "&ok=1"
+          : String("/config/sensors?ok=1#sensor-") + String(newIdx);
       if (isHtmxRequest(srv)) {
-        String redirect = F("/config/sensors?ok=1#sensor-");
-        redirect += String(newIdx);
         srv.sendHeader(F("HX-Redirect"), redirect);
         HttpFileSender::sendText(srv, 200, F("text/html"), F(""), F("no-store"));
         return;
       }
-      srv.sendHeader("Location", "/config/sensors?ok=1#sensor-" + String(newIdx));
+      srv.sendHeader("Location", redirect);
       srv.send(303, F("text/plain"), F("Sensor added"));
       return;
     }
@@ -1538,12 +1663,13 @@ void registerConfigRoutes(WebServer& srv) {
     const LoggerConfig& current = ConfigManager::get();  // read-only view for enumeration
     const uint8_t count = current.sensorCount();
     int orientationChangedIdx = -1;
+    bool invalidInput = false;
 
     for (uint8_t idx = 0; idx < count; ++idx) {
       SensorSpec sp;
       if (!current.getSensorSpec(idx, sp)) continue;
 
-      const String pfx = String("s") + idx + ".";
+      const String pfx = String("s") + String(idx) + ".";
 
       auto getArgLast = [&](const char* key, String& out) -> bool {
         const String full = pfx + key;
@@ -1555,7 +1681,8 @@ void registerConfigRoutes(WebServer& srv) {
       };
       auto getBoolLast = [&](const char* key, bool& out)->bool{
         String v; if (!getArgLast(key, v)) return false; v.trim(); v.toLowerCase();
-        out = (v=="true"||v=="1"||v=="on"); return true;
+        if (!ConfigManager::parseBool(v, out)) invalidInput = true;
+        return true;
       };
 
       bool typeChanged = false;
@@ -1567,7 +1694,16 @@ void registerConfigRoutes(WebServer& srv) {
         if (getArgLast("type", v)) {
           v.trim();
           if (v.length()) {
-            (void)parseSensorTypeKey_(v, sp.type);
+            if (!parseSensorTypeKey_(v, sp.type)) {
+              srv.send(400, F("text/plain"), F("Invalid sensor type")); return;
+            }
+          }
+        }
+        if (oldType == SensorType::BMI270ImuI2C && sp.type == SensorType::LSM6DSO32XImu) {
+          SensorSpec previous = sp; previous.type = oldType;
+          if (SensorConfigEdit::isLegacyRemoteImu(previous)) {
+            srv.send(400, F("text/plain"), F("Use Migrate saved assignment and explicitly select its LSM type and profile to preserve installation data"));
+            return;
           }
         }
         typeChanged = (sp.type != oldType);
@@ -1586,7 +1722,12 @@ void registerConfigRoutes(WebServer& srv) {
             }
           }
 
+          String provider, endpoint;
+          const bool haveProvider = sp.params.get("provider", provider);
+          const bool haveEndpoint = sp.params.get("endpoint", endpoint);
           sp.params.clear();
+          if (haveProvider) sp.params.set("provider", provider);
+          if (haveEndpoint) sp.params.set("endpoint", endpoint);
 
           if (newDefs) {
             const size_t seedCount = (newDefCount < ParamStore::MAX) ? newDefCount : ParamStore::MAX;
@@ -1624,7 +1765,6 @@ void registerConfigRoutes(WebServer& srv) {
             valid = v == String("can:") + node || v == String("can") + node;
           }
           if (!valid || !sp.params.set("provider", v)) {
-            restoreConfigurationAfterSaveFailure_();
             srv.send(400, F("text/plain"), F("Invalid sensor provider"));
             return;
           }
@@ -1633,18 +1773,17 @@ void registerConfigRoutes(WebServer& srv) {
           v.trim();
           v.toLowerCase();
           if (!sp.params.set("endpoint", v)) {
-            restoreConfigurationAfterSaveFailure_();
             srv.send(400, F("text/plain"), F("Could not store sensor endpoint"));
             return;
           }
         }
         if (getArgLast("i2c_bus", v)) {
           v.trim();
-          sp.params.setInt("i2c_bus", v.toInt());
+          sp.params.set("i2c_bus", v);
         }
         if (getArgLast("i2c_addr", v)) {
           v.trim();
-          sp.params.setInt("i2c_addr", v.toInt());
+          sp.params.set("i2c_addr", v);
         }
         if (getArgLast("ain", v)) {
           v.trim();
@@ -1660,7 +1799,6 @@ void registerConfigRoutes(WebServer& srv) {
           }
 
           if (!ok) {
-            restoreConfigurationAfterSaveFailure_();
             // Redirect back with error details
             srv.sendHeader("Location",
               "/config?err=invalid_ain&sensor=" + String((int)idx) + "&ain=" + String((int)ain));
@@ -1668,7 +1806,7 @@ void registerConfigRoutes(WebServer& srv) {
             return;
           }
 
-          sp.params.setInt("ain", ain);
+          sp.params.set("ain", v);
         }
       }
 
@@ -1680,6 +1818,7 @@ void registerConfigRoutes(WebServer& srv) {
         long newOm = oldOm; bool omChanged = false;
 
         if (getArgLast("output_mode", v)) {
+          if (!v.equalsIgnoreCase("RAW") && !v.equalsIgnoreCase("LINEAR") && v != "0" && v != "1") invalidInput = true;
           const OutputMode parsed = parseLoggerOutputMode_(v, loggerSupportedOutputMode_(oldOm));
           newOm = (long)parsed;
           if (newOm != oldOm) omChanged = true;
@@ -1696,8 +1835,8 @@ void registerConfigRoutes(WebServer& srv) {
         }
 
         { bool inc = false; if (getBoolLast("include_raw", inc)) sp.params.setBool("include_raw", inc); }
-        if (getArgLast("sensor_full_travel_mm", v)) { double f = v.toFloat(); sp.params.setFloat("sensor_full_travel_mm", (float)f); }
-        if (getArgLast("installed_range", v)) { double f = v.toFloat(); sp.params.setFloat("installed_range", (float)f); }
+        if (getArgLast("sensor_full_travel_mm", v)) { sp.params.set("sensor_full_travel_mm", v); }
+        if (getArgLast("installed_range", v)) { sp.params.set("installed_range", v); }
         if (getArgLast("end", v)) { v.trim(); sp.params.set("end", v); }
         if (getArgLast("primary_domain", v)) { v.trim(); sp.params.set("primary_domain", v); }
         if (getArgLast("primary_quantity", v)) { v.trim(); sp.params.set("primary_quantity", v); }
@@ -1710,17 +1849,17 @@ void registerConfigRoutes(WebServer& srv) {
       // Calibration
       {
         String v;
-        if (getArgLast("sensor_zero_count", v)) { long vi = v.toInt(); sp.params.setInt("sensor_zero_count", vi); }
-        if (getArgLast("sensor_full_count", v)) { long vi = v.toInt(); sp.params.setInt("sensor_full_count", vi); }
-        if (getArgLast("installed_zero_count", v)) { long vi = v.toInt(); sp.params.setInt("installed_zero_count", vi); }
-        if (getArgLast("zero_count", v)) { long vi = v.toInt(); sp.params.setInt("zero_count", vi); }
+        if (getArgLast("sensor_zero_count", v)) { sp.params.set("sensor_zero_count", v); }
+        if (getArgLast("sensor_full_count", v)) { sp.params.set("sensor_full_count", v); }
+        if (getArgLast("installed_zero_count", v)) { sp.params.set("installed_zero_count", v); }
+        if (getArgLast("zero_count", v)) { sp.params.set("zero_count", v); }
       }
 
       // Wrapping
       {
         String v;
-        if (getArgLast("counts_per_turn", v))       { long vi = v.toInt(); sp.params.setInt("counts_per_turn", vi); }
-        if (getArgLast("wrap_threshold_counts", v)) { long vi = v.toInt(); sp.params.setInt("wrap_threshold_counts", vi); }
+        if (getArgLast("counts_per_turn", v))       { sp.params.set("counts_per_turn", v); }
+        if (getArgLast("wrap_threshold_counts", v)) { sp.params.set("wrap_threshold_counts", v); }
         { bool assume = false; if (getBoolLast("assume_turn0_at_start", assume)) sp.params.setBool("assume_turn0_at_start", assume); }
       }
 
@@ -1730,7 +1869,6 @@ void registerConfigRoutes(WebServer& srv) {
         const bool hasPlane = getArgLast("orient_plane", planeText);
         const bool hasSign = getArgLast("orient_normal_sign", signText);
         if (hasPlane != hasSign) {
-          restoreConfigurationAfterSaveFailure_();
           srv.send(400, F("text/plain"), F("Incomplete IMU installation orientation"));
           return;
         }
@@ -1738,7 +1876,6 @@ void registerConfigRoutes(WebServer& srv) {
           ImuInstallationPlane plane;
           if (!ImuOrientation::parsePlane(planeText.c_str(), plane) ||
               (signText != "1" && signText != "-1")) {
-            restoreConfigurationAfterSaveFailure_();
             srv.send(400, F("text/plain"), F("Invalid IMU installation orientation"));
             return;
           }
@@ -1756,7 +1893,6 @@ void registerConfigRoutes(WebServer& srv) {
           if ((changed && !sp.params.setBool("orient_valid", false)) ||
               !sp.params.set("orient_plane", planeText) ||
               !sp.params.setInt("orient_normal_sign", selectedSign)) {
-            restoreConfigurationAfterSaveFailure_();
             srv.send(500, F("text/plain"), F("Could not store IMU installation orientation"));
             return;
           }
@@ -1809,12 +1945,12 @@ void registerConfigRoutes(WebServer& srv) {
 
         bool ok = true;
         switch (def->type) {
-          case ParamType::Bool:  ok = sp.params.setBool (pkey.c_str(), (val=="true"||val=="on"||val=="1")); break;
-          case ParamType::Int:   ok = sp.params.setInt  (pkey.c_str(), val.toInt());                         break;
-          case ParamType::Float: ok = sp.params.setFloat(pkey.c_str(), (float)val.toFloat());               break;
+          case ParamType::Bool:  ok = sp.params.set(pkey.c_str(), val); break;
+          case ParamType::Int:   ok = sp.params.set     (pkey.c_str(), val);                         break;
+          case ParamType::Float: ok = sp.params.set     (pkey.c_str(), val);               break;
           default:               ok = sp.params.set     (pkey.c_str(), val);                                break;
         }
-        if (!ok) WEB_LOGW("set param failed: s%u.%s\n", (unsigned)idx, pkey.c_str());
+        if (!ok) { srv.send(400, F("text/plain"), F("Could not store sensor parameter")); return; }
       }
 
       // Commit all param changes into tmp so ConfigManager::save(tmp) persists them
@@ -1825,27 +1961,8 @@ void registerConfigRoutes(WebServer& srv) {
 
     }
 
-    if (!ConfigManager::save(tmp)) {
-      restoreConfigurationAfterSaveFailure_();
-      if (isHtmxRequest(srv)) {
-        HttpFileSender::sendText(srv, 200, F("text/html"),
-          F("<div class='alert-err'>Failed to save config</div>"), F("no-store"));
-      } else {
-        srv.send(500, F("text/plain"), F("Failed to save config"));
-      }
-      return;
-    }
-    String applyError;
-    if (!rebuildSavedSensorConfiguration_(applyError)) {
-      if (isHtmxRequest(srv)) {
-        HttpFileSender::sendText(srv, 200, F("text/html"),
-          String(F("<div class='alert-err'>Saved, but could not apply without a restart: ")) +
-            HtmlUtil::htmlEscape(applyError) + F("</div>"), F("no-store"));
-      } else {
-        srv.send(500, F("text/plain"), String(F("Saved, but not applied: ")) + applyError);
-      }
-      return;
-    }
+    if (invalidInput) { srv.send(400, F("text/plain"), F("Invalid sensor value")); return; }
+    if (!commitSensorEdit_(srv, edit, tmp)) return;
     if (isHtmxRequest(srv)) {
       if (applyTypeIdx >= 0 || orientationChangedIdx >= 0) {
         // "Apply Type" was clicked — redirect to rebuild the editor with the new sensor-type fields
@@ -1896,6 +2013,7 @@ void registerConfigRoutes(WebServer& srv) {
     LoggerConfig tmp = ConfigManager::get();
 
     // ---------- GLOBALS ----------
+    if(srv.hasArg("recording_best_effort")) { bool value; if(!ConfigManager::parseBool(srv.arg("recording_best_effort"),value)) {srv.send(400,"text/plain","Invalid membership mode");return;} tmp.recordingBestEffort=value; }
     if (srv.hasArg("logger_name")) {
       String loggerName = srv.arg("logger_name");
       loggerName.trim();

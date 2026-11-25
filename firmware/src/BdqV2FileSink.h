@@ -29,6 +29,7 @@ struct BdqV2FileSinkStats {
 using BdqV2FileSinkObserver = void (*)(
     void* context,
     BdqV2FileSinkOperation operation,
+    uint32_t startedUs,
     uint32_t durationUs,
     size_t bytes);
 
@@ -100,7 +101,7 @@ public:
     if (durationUs > stats_.flushTimeMaximumUs) {
       stats_.flushTimeMaximumUs = durationUs;
     }
-    observe_(BdqV2FileSinkOperation::FileFlush, durationUs, 0);
+    observe_(BdqV2FileSinkOperation::FileFlush, startedUs, durationUs, 0);
     return true;
   }
 
@@ -118,7 +119,7 @@ private:
     if (durationUs > stats_.writeTimeMaximumUs) {
       stats_.writeTimeMaximumUs = durationUs;
     }
-    observe_(BdqV2FileSinkOperation::BufferedWrite, durationUs, length);
+    observe_(BdqV2FileSinkOperation::BufferedWrite, startedUs, durationUs, length);
     return written == length;
   }
 
@@ -133,9 +134,10 @@ private:
 
   void observe_(
       BdqV2FileSinkOperation operation,
+      uint32_t startedUs,
       uint32_t durationUs,
       size_t bytes) {
-    if (observer_) observer_(observerContext_, operation, durationUs, bytes);
+    if (observer_) observer_(observerContext_, operation, startedUs, durationUs, bytes);
   }
 
   File& file_;

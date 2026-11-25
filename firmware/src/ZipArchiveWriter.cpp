@@ -1,7 +1,7 @@
 #include "ZipArchiveWriter.h"
 
 #include <time.h>
-#include "SD_MMC.h"
+#include "StorageFilesystem.h"
 
 namespace {
 
@@ -133,7 +133,7 @@ bool ZipArchiveWriter_createStoreOnly(const char* destinationPath,
     setError_(error, F("too many entries"));
     return false;
   }
-  if (SD_MMC.exists(dest.c_str())) {
+  if (StorageFilesystem::card().exists(dest.c_str())) {
     setError_(error, String(F("destination already exists: ")) + dest);
     return false;
   }
@@ -142,7 +142,7 @@ bool ZipArchiveWriter_createStoreOnly(const char* destinationPath,
   for (uint8_t i = 0; i < entryCount; ++i) {
     if (!validateEntry_(entries[i], error)) return false;
     const String source = normalizeAbsPath_(entries[i].sourcePath);
-    File f = SD_MMC.open(source.c_str(), FILE_READ);
+    File f = StorageFilesystem::card().open(source.c_str(), FILE_READ);
     if (!f) {
       setError_(error, String(F("source open failed: ")) + source);
       return false;
@@ -161,7 +161,7 @@ bool ZipArchiveWriter_createStoreOnly(const char* destinationPath,
     f.close();
   }
 
-  File out = SD_MMC.open(dest.c_str(), FILE_WRITE);
+  File out = StorageFilesystem::card().open(dest.c_str(), FILE_WRITE);
   if (!out) {
     setError_(error, String(F("destination open failed: ")) + dest);
     return false;
@@ -204,7 +204,7 @@ bool ZipArchiveWriter_createStoreOnly(const char* destinationPath,
 
     uint32_t crc = 0;
     uint32_t size = 0;
-    File in = SD_MMC.open(source.c_str(), FILE_READ);
+    File in = StorageFilesystem::card().open(source.c_str(), FILE_READ);
     if (!in) {
       out.close();
       setError_(error, String(F("source reopen failed: ")) + source);

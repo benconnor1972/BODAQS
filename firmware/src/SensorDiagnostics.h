@@ -46,6 +46,7 @@ enum class SensorIssueCode : uint16_t {
   QueueLoss,
   BusOff,
   PowerFault,
+  AcquisitionUnavailable,
 };
 
 struct SensorDiagnosticIssue {

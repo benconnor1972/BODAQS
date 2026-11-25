@@ -27,7 +27,10 @@ enum class StorageType : uint8_t { None, SDMMC };
 enum class DisplayType : uint8_t { None, OLED_SSD1306 };
 enum class FuelGaugeType : uint8_t { None, MAX17048, Other };
 enum class AdcAttenuation : uint8_t { Db0 = 0, Db2p5, Db6, Db11 };
-enum class RtcType : uint8_t { None, RV3028 };
+enum class RtcType : uint8_t { None, RV3028, ISL1208, Auto };
+
+static constexpr uint8_t RTC_RV3028_ADDRESS = 0x52;
+static constexpr uint8_t RTC_ISL1208_ADDRESS = 0x6F;
 enum class ExternalAdcType : uint8_t { None, ADS1220 };
 enum class AdcReferenceType : uint8_t { Default, Internal, ExternalRef0, ExternalRef1, AnalogSupply };
 enum class AnalogSourceType : uint8_t { None, InternalGpio, ExternalAdc };
@@ -100,13 +103,20 @@ struct FuelGaugeProfile {
 
 struct RtcProfile {
   RtcType type = RtcType::None;
-  uint8_t i2c_addr = 0x52;         // RV3028 default
+  uint8_t i2c_addr = RTC_RV3028_ADDRESS; // ignored for Auto (fixed candidate addresses)
   uint8_t bus_index = 0;
 
   // Optional interrupt pin for future alarm/timer support.
   int8_t interrupt_pin = -1;
   bool interrupt_active_low = true;
   bool interrupt_use_internal_pullup = true;
+
+  bool reservesAddress(uint8_t address) const {
+    if (type == RtcType::Auto) {
+      return address == RTC_RV3028_ADDRESS || address == RTC_ISL1208_ADDRESS;
+    }
+    return type != RtcType::None && address == i2c_addr;
+  }
 };
 
 struct I2CProfile {

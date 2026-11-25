@@ -119,6 +119,21 @@ BodaqsMasterDecodeResult bodaqs_master_decode_slot(const uint8_t *input,
         return BODAQS_MASTER_DECODE_BAD_CRC;
     }
 
+    /* New typed records have strict reserved fields. Bootstrap compatibility
+     * remains unchanged for older deployed logger/master pairs. */
+    if (((input[5] >= 5U) && (input[5] <= 10U)) ||
+        ((input[5] >= 0x85U) && (input[5] <= 0x8aU))) {
+        size_t index;
+        if (input[6] || input[7] || input[14] || input[15]) {
+            return BODAQS_MASTER_DECODE_INVALID_ARGUMENT;
+        }
+        for (index = payload_length; index < BODAQS_MASTER_PAYLOAD_BYTES; ++index) {
+            if (input[BODAQS_MASTER_HEADER_BYTES + index]) {
+                return BODAQS_MASTER_DECODE_INVALID_ARGUMENT;
+            }
+        }
+    }
+
     output->type = (BodaqsMasterMessageType) input[5];
     output->flags = get_u16(input + 6);
     output->sequence = get_u32(input + 8);

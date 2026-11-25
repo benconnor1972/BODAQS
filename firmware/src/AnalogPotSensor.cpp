@@ -111,6 +111,7 @@ bool AnalogPotSensor::reconfigureFromSpec(const SensorSpec& spec) {
 
 // Convert user Params -> internal state
 void AnalogPotSensor::applyParams(const Params& p) {
+  m_publishedCounts.invalidate();
   if (p.name && p.name[0]) {
     strncpy(m_name, p.name, sizeof(m_name)-1);
     m_name[sizeof(m_name)-1] = '\0';
@@ -156,16 +157,25 @@ void AnalogPotSensor::applyParams(const Params& p) {
 }
 
 // ---------- RAW helpers ----------
-int AnalogPotSensor::readOnce() const {
+int AnalogPotSensor::readOnce(const LocalAdcSnapshot* snapshot, bool* valid) const {
+  if(valid) *valid=false;
   if (m_ain >= 0) {
     int32_t counts = 0;
-    if (AnalogInputManager::readCounts((uint8_t)m_ain, counts)) {
+    bool ok = false;
+#if BODAQS_ADC_ROW_HANDOFF
+    if (snapshot) ok = AnalogInputManager::readSnapshotCounts((uint8_t)m_ain, counts, *snapshot);
+    else
+#endif
+      ok = AnalogInputManager::readCounts((uint8_t)m_ain, counts);
+    if (ok) {
+      if(valid) *valid=true;
       return (int)counts;
     }
     return 0;
   }
 
   int raw = analogRead(m_pin);
+  if(valid) *valid=true;
   return raw;
 }
 
@@ -178,10 +188,14 @@ static inline float lin_from_counts(int x, int zero, float invSpan, float fullMm
 }
 
 void AnalogPotSensor::sample(float& selectedOut, int& rawOut) {
+  sample_(selectedOut, rawOut, nullptr);
+}
+
+void AnalogPotSensor::sample_(float& selectedOut, int& rawOut, const LocalAdcSnapshot* snapshot) {
   if (m_muted) { selectedOut = 0.0f; rawOut = 0; return; }
 
   // 1) read raw counts directly. Sample-time smoothing has been retired.
-  const int raw = readOnce();
+  const int raw = readOnce(snapshot);
   rawOut = raw;
 
   // 2) RAW path
@@ -253,6 +267,7 @@ bool AnalogPotSensor::setCalibration(const CalibrationState& state) {
 
 
 bool AnalogPotSensor::beginCalibration(CalMode mode) {
+  if(!ConfigManager::configurationMutable()) return false;
   if (mode == CalMode::NONE) return false;
 
   cal_ = CalState{}; // reset everything
@@ -263,6 +278,7 @@ bool AnalogPotSensor::beginCalibration(CalMode mode) {
 }
 
 bool AnalogPotSensor::updateCalibration(int32_t latestCounts) {
+  if(!ConfigManager::configurationMutable()) return false;
   if (cal_.phase != CalPhase::ACTIVE) return false;
 
   ++cal_.samples;
@@ -285,16 +301,15 @@ bool AnalogPotSensor::updateCalibration(int32_t latestCounts) {
 }
 
 bool AnalogPotSensor::finishCalibration(bool persist) {
+  if(!ConfigManager::configurationMutable()) return false;
   if (cal_.phase != CalPhase::ACTIVE) return false;
 
   if (cal_.mode == CalMode::ZERO) {
     const int32_t now = currentRawCounts();
+    if(persist) { const char* keys[]={"installed_zero_count"}; const String values[]={String(now)};
+      if(!ConfigManager::saveSensorParamsByName(name(),keys,values,1)) return false; }
     installed_zero_count_ = now;
 
-    if (persist) {
-      const char* sname = this->name();
-      ConfigManager::saveSensorParamByName(sname, "installed_zero_count", String(installed_zero_count_));
-    }
   } else if (cal_.mode == CalMode::RANGE) {
     const bool haveMin = (cal_.min_counts != INT32_MAX);
     const bool haveMax = (cal_.max_counts != INT32_MIN);
@@ -303,6 +318,9 @@ bool AnalogPotSensor::finishCalibration(bool persist) {
       cal_.mode  = CalMode::NONE;
       return false;
     }
+    if(persist) { const char* keys[]={"sensor_zero_count","sensor_full_count"};
+      const String values[]={String(cal_.min_counts),String(cal_.max_counts)};
+      if(!ConfigManager::saveSensorParamsByName(name(),keys,values,2)) return false; }
     sensor_zero_count_ = cal_.min_counts;
     sensor_full_count_ = cal_.max_counts;
 
@@ -327,12 +345,7 @@ bool AnalogPotSensor::finishCalibration(bool persist) {
       counts_per_mm_ = 0.0;  // invalid; sampling will output a safe 0
     }
 
-    if (persist) {
-      const char* sname = this->name();
-      ConfigManager::saveSensorParamByName(sname, "sensor_zero_count", String(sensor_zero_count_));
-      ConfigManager::saveSensorParamByName(sname, "sensor_full_count", String(sensor_full_count_));
 
-    }
   }
 
   // Recompute linear scale if you still call this, or update counts_per_mm_ inline
@@ -361,7 +374,15 @@ CalibrationState AnalogPotSensor::calibration() const {
   return cs;
 }
 
+void AnalogPotSensor::onLoggingStart() {
+#if BODAQS_PRODUCTION_RECORDING
+  m_recordRaw = true;
+#endif
+}
+void AnalogPotSensor::onLoggingFinalized() { m_recordRaw = false; }
+
 uint8_t AnalogPotSensor::columnCount() const {
+  if (m_recordRaw) return 1;
   // Primary output + optional raw counts column
   return m_includeRaw ? 2 : 1;
 }
@@ -370,6 +391,10 @@ void AnalogPotSensor::getColumnName(uint8_t col, char* out, size_t cap) const {
   if (!out || cap < 2) return;
   out[0] = '\0';
 
+  if (m_recordRaw) {
+    if (!col) writeColumnLabel_(name(), "counts", out, cap);
+    return;
+  }
   if (col == 0) {
     // Primary column per mode
     switch (m_mode) {
@@ -406,12 +431,13 @@ bool AnalogPotSensor::describeColumn(uint8_t idx, SensorColumnDescriptor& out) c
   if (!Sensor::describeColumn(idx, out)) return false;
 
   copyField_(out.sensorName, sizeof(out.sensorName), name());
-  out.outputMode = m_mode;
+  const auto recordingMode = m_recordRaw ? OutputMode::RAW : m_mode;
+  out.outputMode = recordingMode;
   out.required = true;
   out.primary = (idx == 0);
-  out.raw = (m_mode == OutputMode::RAW) || (idx == 1 && m_includeRaw);
-  out.calibrated = !out.raw || (idx == 0 && m_mode != OutputMode::RAW);
-  out.transformed = (idx == 0 && (m_mode == OutputMode::POLY || m_mode == OutputMode::LUT));
+  out.raw = (recordingMode == OutputMode::RAW) || (idx == 1 && m_includeRaw);
+  out.calibrated = !out.raw;
+  out.transformed = !m_recordRaw && (idx == 0 && (m_mode == OutputMode::POLY || m_mode == OutputMode::LUT));
 
   copyField_(out.end, sizeof(out.end), m_semanticEnd);
   copyField_(out.domain, sizeof(out.domain), out.raw ? m_rawDomain : m_primaryDomain);
@@ -433,7 +459,9 @@ bool AnalogPotSensor::describeColumn(uint8_t idx, SensorColumnDescriptor& out) c
     selectedTransformId().toCharArray(out.transformChain, sizeof(out.transformChain));
   }
 
-  if (out.end[0] && out.domain[0] && out.quantity[0]) {
+  if (m_recordRaw) {
+    snprintf(out.columnId, sizeof(out.columnId), "%s_raw", name());
+  } else if (out.end[0] && out.domain[0] && out.quantity[0]) {
     snprintf(out.columnId, sizeof(out.columnId), "%s_%s_%s",
              out.end, out.domain, out.quantity);
   } else if (out.quantity[0]) {
@@ -466,18 +494,28 @@ bool AnalogPotSensor::describeSensorMetadata(SensorMetadataDescriptor& out) cons
   out.sensorFullCount = sensor_full_count_;
   out.sensorFullTravel = sensor_full_travel_mm_;
   out.invert = m_invert;
-  out.hasCalibration = true;
+  out.hasCalibration = sensor_full_count_ != sensor_zero_count_ &&
+      isfinite(sensor_full_travel_mm_) && sensor_full_travel_mm_ > 0;
   return true;
 }
 
 
 
 void AnalogPotSensor::sampleValues(float* out, uint8_t max) {
+  sampleValues_(out, max, nullptr);
+}
+
+void AnalogPotSensor::sampleRowValues(float* out, uint8_t max, const LocalAdcSnapshot& snapshot) {
+  sampleValues_(out, max, &snapshot);
+}
+
+void AnalogPotSensor::sampleValues_(float* out, uint8_t max, const LocalAdcSnapshot* snapshot) {
   if (!out || max == 0 || m_muted) return;
+  if (m_recordRaw) { out[0] = float(readOnce(snapshot)); return; }
 
   float selected = 0.0f;
   int   counts   = 0;
-  sample(selected, counts);                 // <-- uses the pipeline above
+  sample_(selected, counts, snapshot);
 
   uint8_t w = 0;
   out[w++] = selected;                      // primary column (counts if RAW, units if LINEAR/transform)
@@ -532,11 +570,52 @@ static bool _reg_pot =
     /*supportedCalMask*/ (CalModeMask)(CAL_ZERO | CAL_RANGE)
   );
 
+void AnalogPotSensor::loop() {
+#if BODAQS_PRODUCTION_RECORDING
+  if(m_recordRaw || m_muted) return;
+  const uint32_t now=millis();
+  if(m_nextIdleSampleMs && static_cast<int32_t>(now-m_nextIdleSampleMs)<0) return;
+  m_nextIdleSampleMs=now+20;
+  bool valid=false;
+  const auto counts=readOnce(nullptr,&valid);
+  publishAcquiredCounts(counts,micros(),valid?0:0x20);
+#endif
+}
+
+void AnalogPotSensor::publishAcquiredCounts(int32_t counts,uint32_t tickUs,uint16_t status) {
+  m_publishedCounts.publish(counts,tickUs,status);
+}
+
+bool AnalogPotSensor::hasRawCounts() const {
+#if BODAQS_PRODUCTION_RECORDING
+  PublishedSensorCounts::Value sample;
+  return m_publishedCounts.read(sample) && !(sample.status&0x20);
+#else
+  return true;
+#endif
+}
+
 int32_t AnalogPotSensor::currentRawCounts() const {
+#if BODAQS_PRODUCTION_RECORDING
+  PublishedSensorCounts::Value sample;
+  return m_publishedCounts.read(sample)?sample.counts:0;
+#else
   return static_cast<int32_t>(readOnce());
+#endif
 }
 
 bool AnalogPotSensor::readPreviewValue(OutputMode mode, float& value, char* unit, size_t unitCap) {
+#if BODAQS_PRODUCTION_RECORDING
+  PublishedSensorCounts::Value sample;
+  if(m_muted || !m_publishedCounts.read(sample) || (sample.status&0x20)) return false;
+  if(mode==OutputMode::RAW) {
+    value=float(sample.counts); copyField_(unit,unitCap,"counts"); return true;
+  }
+  if(mode!=OutputMode::LINEAR || counts_per_mm_<=0) return false;
+  value=float((double(sample.counts)-installed_zero_count_)/counts_per_mm_)*(m_invert?-1.0f:1.0f);
+  copyField_(unit,unitCap,m_outputUnitsLabel[0]?m_outputUnitsLabel:"mm");
+  return true;
+#else
   if (mode == OutputMode::RAW) return Sensor::readPreviewValue(mode, value, unit, unitCap);
   if (mode != OutputMode::LINEAR || m_mode != OutputMode::LINEAR || m_muted) return false;
 
@@ -547,6 +626,7 @@ bool AnalogPotSensor::readPreviewValue(OutputMode mode, float& value, char* unit
   value = selected;
   copyField_(unit, unitCap, m_outputUnitsLabel[0] ? m_outputUnitsLabel : "mm");
   return true;
+#endif
 }
 
 void AnalogPotSensor::applyLinearScalePrecompute() {

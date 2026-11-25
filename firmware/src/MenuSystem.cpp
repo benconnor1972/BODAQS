@@ -2,6 +2,7 @@
 #include "MenuSystem.h"
 #include "UI.h"
 #include "ConfigManager.h"
+#include "ProductionConfigMigrationApply.h"
 #include "SensorManager.h"
 #include "WebServerManager.h"
 #include "DisplayManager.h"
@@ -15,6 +16,9 @@
 #include "ButtonActions.h"
 #include "WiFiManager.h"
 #include "UploadModeManager.h"
+#if defined(BODAQS_USB_DIAGNOSTICS)
+#include "UsbDriveManager.h"
+#endif
 #include "UploadSessionScanner.h"
 #include "FirmwareInfo.h"
 #include "StorageManager.h"
@@ -120,11 +124,12 @@ namespace {
   enum class SettingsItem : uint8_t {
     WiFiMode = 0,
     LogFormat,
+    RecordingMembership,
     ResetTime,
     Health,
     About
   };
-  static inline uint8_t settingsItemCount_() { return 5; }
+  static inline uint8_t settingsItemCount_() { return 6; }
 
   static State   s_state       = State::Inactive;
   static uint8_t s_mainSel     = 0;
@@ -270,6 +275,8 @@ namespace {
       case SettingsItem::WiFiMode:
         return String("WiFi mode: ") +
                (ConfigManager::get().wifiMode == WiFiMode::AccessPoint ? "AP" : "STA");
+      case SettingsItem::RecordingMembership:
+        return ConfigManager::get().recordingBestEffort?"Membership: best effort":"Membership: strict";
       case SettingsItem::LogFormat:
         return "Log format";
       case SettingsItem::ResetTime:
@@ -346,6 +353,11 @@ namespace {
         break;
       }
 
+      case SettingsItem::RecordingMembership: {
+        LoggerConfig updated=ConfigManager::get(); updated.recordingBestEffort=!updated.recordingBestEffort;
+        if(!ConfigManager::save(updated)) UI::toastModal("Not saved; locked or SD failure",2000,1);
+        drawSettings_(); break;
+      }
       case SettingsItem::LogFormat: {
         s_swallowEnterRelease = true;
         guardEnterRight();
@@ -357,7 +369,7 @@ namespace {
         s_swallowEnterRelease = true;
         guardEnterRight();
 
-        if (LoggingManager::isRunning()) {
+        if (LoggingManager::configurationLocked()) {
           UI::toastModal("Stop logging first", 1200, 1);
           deferUiFor(1200);
           drawSettings_();
@@ -473,7 +485,7 @@ namespace {
       case MainItem::SagHelper: {
         s_swallowEnterRelease = true;
         guardEnterRight();
-        if (LoggingManager::isRunning()) {
+        if (LoggingManager::configurationLocked()) {
           UI::toastModal("Stop log first", 1500, 1);
           deferUiFor(1500);
           drawMain_();
@@ -491,7 +503,7 @@ namespace {
         s_swallowEnterRelease = true;
         guardEnterRight();
 
-        if (LoggingManager::isRunning()) {
+        if (LoggingManager::configurationLocked()) {
           UI::toastModal("Stop logging first", 1200, 1);
           deferUiFor(1200);
           drawMain_();
@@ -922,7 +934,8 @@ namespace {
 
     const String sd =
         !StorageManager_cardDetected() ? "absent" :
-        StorageManager_isMounted() ? "ready" : "not ready";
+        StorageManager_isMounted() ? "ready" :
+        (strcmp(UploadModeManager::usbStateKey(), "shared") == 0 ? "USB active" : "not ready");
     UI::oledText(0, 12, truncateForOled_(String("SD: ") + sd, 21));
 
     String batt = "Batt: --";
@@ -955,10 +968,11 @@ namespace {
     }
     const uint8_t issues =
         SensorManager::configurationDiagnostics(ConfigManager::get()).count();
-    String sensors = String("Sensors: ") + present + "/" +
+    String sensors = String("S:") + present + "/" +
         ConfigManager::get().sensorCount();
     if (issues) sensors += String(" !") + issues;
-    sensors += String(" ") + CanMasterManager::shortStatus();
+    sensors += String(" ") + CanMasterManager::shortStatus() + " " +
+        CanMasterManager::controlShortStatus();
     UI::oledText(0, 54, truncateForOled_(sensors, 21));
     DisplayManager::present();
   }
@@ -984,9 +998,20 @@ namespace {
     const bool uploadMode = UploadModeManager::isActive();
 
     UI::clear(UI::TARGET_OLED);
+#if defined(BODAQS_USB_DIAGNOSTICS)
+    UI::oledText(0, 0, "USB reconnect v1");
+#else
     UI::oledText(0, 0, "Upload mode");
-    UI::oledText(0, 12, String("State: ") + (uploadMode ? "ON" : "OFF"));
+#endif
+    UI::oledText(0, 12, UploadModeManager::usbEnabled()
+        ? UploadModeManager::shortTransferLabel()
+        : String("State: ") + (uploadMode ? "ON" : "OFF"));
 
+#if defined(BODAQS_USB_DIAGNOSTICS)
+    for (uint8_t row = 0; row < 4; ++row) {
+      UI::oledText(0, 22 + 10 * row, truncateForOled_(UsbDriveManager::diagnosticLine(row), 21));
+    }
+#else
     String network = st.networkUp ? st.ssid : String("off");
     if (!network.length()) network = ConfigManager::wifiModeLabel(st.mode);
     UI::oledText(0, 22, truncateForOled_(String("WiFi: ") + network, 21));
@@ -1001,12 +1026,24 @@ namespace {
     if (LoggingManager::isRunning() && !uploadMode) {
       UI::oledText(0, 54, "Stop log first");
     } else {
-      UI::oledText(0, 54, "Enter toggle");
+      UI::oledText(0, 54, UploadModeManager::exitPending() ? "Enter cancel exit" :
+          (strcmp(UploadModeManager::usbStateKey(), "error") == 0 ? "Enter retry storage" : "Enter toggle"));
     }
+#endif
     DisplayManager::present();
   }
 
   static void toggleUploadModeFromMenu_() {
+    if (UploadModeManager::exitPending()) {
+      UploadModeManager::cancelExit();
+      drawUploadStatus_();
+      return;
+    }
+    if (strcmp(UploadModeManager::usbStateKey(), "error") == 0) {
+      UploadModeManager::retryStorage();
+      drawUploadStatus_();
+      return;
+    }
     if (UploadModeManager::isActive()) {
       UploadModeManager::exit();
       deferUiFor(1200);
@@ -1097,6 +1134,9 @@ namespace {
         return true;
 
       case State::CalibDetail: {
+        if(LoggingManager::configurationLocked() || ConfigManager::migrationPending()) {
+          UI::toastModal("Configuration locked",1500,1);return true;
+        }
         Sensor* s = SensorManager::at(s_calSel);
         if (!s) {
           s_state = State::CalibSensors;
@@ -1277,7 +1317,7 @@ namespace {
               drawCalibDetail_();
               return true;
             }
-            if (LoggingManager::isRunning()) {
+            if (LoggingManager::configurationLocked() || ConfigManager::migrationPending()) {
               UI::toastModal("Stop logging first", 2000, 1);
               deferUiFor(2000);
               return true;
@@ -1353,7 +1393,11 @@ namespace {
     const uint8_t sel = s_sensorSel;
     bool m = false;
     if (!SensorManager::getMuted(sel, m)) return;
-    SensorManager::setMuted(sel, !m);
+    if (!SensorManager::setMuted(sel, !m)) {
+      UI::toastModal(LoggingManager::configurationLocked()
+          ? "Recording locked\nStop, then retry" : "Mute unavailable", 2000, 1);
+      return;
+    }
 
     MLOG("[MENU] toggle sensor %u -> %s\n", (unsigned)sel, (!m ? "Muted" : "Unmuted"));
 
@@ -1365,10 +1409,18 @@ namespace {
   static uint8_t  s_rateIdx = 0;   // selection within Rates::kList
   static uint8_t  s_logFormatIdx = 0;
   static uint8_t  s_wifiModeIdx = 0;
+  static String s_migrationReview,s_migrationRevision;
+  static uint16_t s_migrationPage=0;
+#if BODAQS_PRODUCTION_RECORDING
+  static constexpr uint8_t kLogFormatCount = 1;
+#else
   static constexpr uint8_t kLogFormatCount = 3;
+#endif
   static constexpr LogFormat kLogFormatOptions[kLogFormatCount] = {
+#if !BODAQS_PRODUCTION_RECORDING
     LogFormat::BodaqsStandard,
     LogFormat::BodaqsCompactBinary,
+#endif
     LogFormat::BodaqsMultiStreamBinary
   };
   static constexpr uint8_t kWiFiModeCount = 2;
@@ -1424,7 +1476,7 @@ namespace {
   }
 
   static void applyRate_() {
-    if (LoggingManager::isRunning()) {
+    if (LoggingManager::configurationLocked()) {
       UI::toastModal("Stop log", 2000, 1);
       deferUiFor(2000);
       return;
@@ -1432,6 +1484,7 @@ namespace {
 
     uint16_t hz = Rates::kList[s_rateIdx];
     LoggingManager::setSampleRateHz(hz);
+    if(ConfigManager::get().sampleRateHz!=hz) {UI::toastModal("Rate not saved",2000,1);return;}
     UI::toastModal(String("Rate: ") + hz + " Hz", 2000, 1);
     deferUiFor(2000);
     s_state = State::Main;
@@ -1441,7 +1494,15 @@ namespace {
   static void drawLogFormatPicker_() {
     if ((long)(s_deferUiUntilMs - millis()) > 0) return;
     UI::clear(UI::TARGET_OLED);
-    drawHeader_("Log Format");
+    drawHeader_(ConfigManager::migrationPending()?"Review migration":"Log Format");
+    if(ConfigManager::migrationPending()) {
+      for(uint8_t row=0;row<3;++row) {
+        const unsigned start=s_migrationPage*63u+row*21u;
+        UI::oledText(0,12+row*12,s_migrationReview.substring(start,start+21));
+      }
+      UI::oledText(0,52,(s_migrationPage+1u)*63u>=s_migrationReview.length()?"Enter accept / Left cancel":"Down review / Left cancel");
+      DisplayManager::present(); return;
+    }
 
     const LogFormat active = ConfigManager::get().logFormat;
 
@@ -1466,6 +1527,8 @@ namespace {
   }
 
   static void enterLogFormatPicker_() {
+    s_migrationPage=0; s_migrationRevision=ConfigManager::migrationRevision();
+    s_migrationReview=ConfigManager::migrationChanges(); s_migrationReview.replace("\n"," | ");
     const LogFormat cur = ConfigManager::get().logFormat;
     s_logFormatIdx = 0;
     for (uint8_t i = 0; i < kLogFormatCount; ++i) {
@@ -1479,14 +1542,23 @@ namespace {
   }
 
   static void applyLogFormat_() {
-    if (LoggingManager::isRunning()) {
+    if (LoggingManager::configurationLocked()) {
       UI::toastModal("Stop log", 2000, 1);
       deferUiFor(2000);
       return;
     }
 
+    if(ConfigManager::migrationPending()) {
+      if((s_migrationPage+1u)*63u<s_migrationReview.length()) { UI::toastModal("Review all changes",1500,1); return; }
+      char error[128]{};
+      const auto result=ProductionConfigMigrationApply::accept(s_migrationRevision.c_str(),error,sizeof(error));
+      if(result==ProductionConfigMigrationApply::Result::Rejected) {UI::toastModal(error,2500,1);return;}
+      const bool applied=result==ProductionConfigMigrationApply::Result::Applied;
+      UI::toastModal(applied?"Migration accepted":"Saved; restart to apply",2000,1);
+      s_state=State::Settings; drawSettings_();return;
+    }
     const LogFormat format = kLogFormatOptions[s_logFormatIdx];
-    ConfigManager::setLogFormat(format);
+    if(!ConfigManager::setLogFormat(format)) {UI::toastModal("Format not saved",2000,1);return;}
     UI::toastModal(String("Format: ") + ConfigManager::logFormatLabel(format), 2000, 1);
     deferUiFor(2000);
     s_state = State::Settings;
@@ -1534,7 +1606,7 @@ namespace {
   }
 
   static void applyWiFiMode_() {
-    if (LoggingManager::isRunning()) {
+    if (LoggingManager::configurationLocked()) {
       UI::toastModal("Stop log", 2000, 1);
       deferUiFor(2000);
       return;
@@ -1546,6 +1618,7 @@ namespace {
     const bool serverWasRunning = WebServerManager::isRunning();
 
     ConfigManager::setWifiMode(mode);
+    if(ConfigManager::get().wifiMode!=mode) {UI::toastModal("WiFi mode not saved",2000,1);return;}
 
     if (changed && wifiWasActive) {
       WebServerManager::stop();
@@ -1861,6 +1934,10 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
     }
 
     case State::LogFormatPicker: {
+      if(ConfigManager::migrationPending() && ev==BUTTON_PRESSED) {
+        if(d==Dir::Up && s_migrationPage) {--s_migrationPage;drawLogFormatPicker_();return;}
+        if(d==Dir::Down && (s_migrationPage+1u)*63u<s_migrationReview.length()) {++s_migrationPage;drawLogFormatPicker_();return;}
+      }
       if (d == Dir::Left && (ev == BUTTON_PRESSED || ev == BUTTON_RELEASED)) {
         s_state = State::Settings;
         drawSettings_();
@@ -1930,7 +2007,7 @@ void MenuSystem::onNav(Dir d, ButtonEvent ev) {
     }
 
     case State::SagHelper: {
-      if (LoggingManager::isRunning()) {
+      if (LoggingManager::configurationLocked()) {
         s_sagFrozen = false;
         s_state = State::Main;
         UI::toastModal("Logging active", 1500, 1);
@@ -2063,6 +2140,19 @@ void MenuSystem::select()   { onNav(Dir::Enter, BUTTON_PRESSED); }
 
 void MenuSystem::loop() {
   if (s_state == State::Inactive) return;
+  if (s_state == State::UploadStatus && UploadModeManager::usbEnabled()) {
+#if defined(BODAQS_USB_DIAGNOSTICS)
+    static uint32_t lastProbeDrawMs = 0;
+    if (uint32_t(millis() - lastProbeDrawMs) >= 1000) {
+      lastProbeDrawMs = millis();
+      drawUploadStatus_();
+    }
+#else
+    static uint8_t previousUsbPhase = 255;
+    const uint8_t phase = UploadModeManager::usbPhase();
+    if (phase != previousUsbPhase) { previousUsbPhase = phase; drawUploadStatus_(); }
+#endif
+  }
 
   tickActiveRangeCalibration_();
 
@@ -2077,7 +2167,7 @@ void MenuSystem::loop() {
   }
 
   if (s_state == State::SagHelper) {
-    if (LoggingManager::isRunning()) {
+    if (LoggingManager::configurationLocked()) {
       s_sagFrozen = false;
       s_state = State::Main;
       UI::toastModal("Logging active", 1500, 1);

@@ -75,6 +75,7 @@ struct Filesystem {
     return {path, files.count(path) != 0};
   }
 } SD_MMC;
+namespace StorageFilesystem { auto& card() { return SD_MMC; } }
 namespace LoggingManager { bool running = false; bool isRunning() { return running; } }
 namespace I2CBusScheduler { bool running = false; bool isRunning() { return running; } }
 bool s_sdMounted = true;

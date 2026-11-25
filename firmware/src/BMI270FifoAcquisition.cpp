@@ -265,6 +265,8 @@ void BMI270FifoAcquisition::shutdown() {
     registered_ = false;
   }
   device_.shutdown();
+  publishedSample_.invalidate();
+  publishedIocOffset_.invalidate();
   initialized_ = false;
 }
 
@@ -277,6 +279,8 @@ bool BMI270FifoAcquisition::startSession(
   ScopedOledTransferDeferral deferOled(device_.busIndex());
   if (!initialized_ && !begin()) return false;
   if (sessionActive()) return true;
+  publishedSample_.invalidate();
+  publishedIocOffset_.invalidate();
 
   if (device_.state() == BMI270DeviceState::Ready && !device_.suspend()) return false;
 
@@ -1131,6 +1135,7 @@ void BMI270FifoAcquisition::enqueueParsed_(
     if (outputDecimationFactor_ > 1) {
       sample.statusFlags |= BMI270ImuStatus::kOutputDecimated;
     }
+    publishedSample_.publish(sample);
     size_t depth = 0;
     if (queue_.push(sample, &depth)) {
       addCounter_(diagnostics_.samplesEnqueued);
@@ -1171,6 +1176,7 @@ void BMI270FifoAcquisition::maybeCaptureIocOffsetSnapshot_(uint64_t nowUs) {
   snapshot.y = axes.y;
   snapshot.z = axes.z;
   snapshot.nativeSequence = nextSequence_;
+  publishedIocOffset_.publish(snapshot);
   if (!iocOffsetSnapshots_.push(snapshot)) {
     addCounter_(diagnostics_.iocOffsetSnapshotDrops);
   }

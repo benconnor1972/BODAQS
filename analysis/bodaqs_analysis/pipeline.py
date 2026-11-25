@@ -11,6 +11,12 @@ import re
 import time
 
 from .io_logger import load_logger_csv_with_log_metadata, parse_run_stats_footer
+from .analog_counts import reconstruct_recorded_analog
+from .can_imu import decode_can_imu_streams
+from .string_pot_counts import reconstruct_string_pots
+from .rotary_counts import reconstruct_rotary_counts
+from .recording_membership import recording_membership
+from .gps_native import reconstruct_gps
 from .io_bdq import (
     bdq_primary_dataframe_from_streams,
     bdq_to_dataframe,
@@ -976,6 +982,17 @@ def load_bdq_session(
         for error in info.detected_errors:
             _append_qc_warning(session, f"bdq_parser_warning:{error}")
     if info.header.format_major == 2:
+        can_frames, can_metadata, can_warnings = decode_can_imu_streams(p, info.stream_catalog)
+        native_frames.update(can_frames)
+        string_frames, string_metadata, string_warnings = reconstruct_string_pots(info.metadata, info.stream_catalog, native_frames)
+        native_frames.update(string_frames)
+        rotary_frames, rotary_metadata, rotary_warnings = reconstruct_rotary_counts(info.stream_catalog, native_frames)
+        native_frames.update(rotary_frames)
+        gps_frames, gps_metadata, gps_warnings = reconstruct_gps(info.stream_catalog, native_frames)
+        native_frames.update(gps_frames)
+        analog = reconstruct_recorded_analog(info.metadata, info.stream_catalog, native_frames)
+        if analog.frame is not None:
+            native_frames["analog_engineering"] = analog.frame
         native_frames.pop("primary", None)
         session["stream_dfs"] = native_frames
         secondary = log_metadata.get("secondary_streams")
@@ -992,6 +1009,30 @@ def load_bdq_session(
                     stream_metadata["primary_interval_trim"] = copy.deepcopy(
                         dict(interval_trim)
                     )
+        session.setdefault("meta", {}).setdefault("secondary_streams", {}).update(can_metadata)
+        secondary_metadata = session["meta"]["secondary_streams"]
+        for stream_key, details in string_metadata.items():
+            secondary_metadata.setdefault(stream_key, {}).update(details)
+        secondary_metadata.update(rotary_metadata)
+        secondary_metadata.update(gps_metadata)
+        for warning in can_warnings + string_warnings + rotary_warnings + gps_warnings:
+            _append_qc_warning(session, warning)
+        if analog.frame is not None:
+            session.setdefault("meta", {}).setdefault("secondary_streams", {})["analog_engineering"] = {
+                "derived": True, "source_stream": "primary",
+                "calibration_source": "embedded_recording_configuration",
+                "channels": copy.deepcopy(analog.channels),
+            }
+        snapshot = info.metadata.get("recording_configuration")
+        if isinstance(snapshot, Mapping):
+            session.setdefault("meta", {})["recording_configuration"] = copy.deepcopy(dict(snapshot))
+        membership, membership_warnings = recording_membership(info.metadata, info.final_summary)
+        if membership:
+            session.setdefault("meta", {})["recording_membership"] = membership
+        for warning in membership_warnings:
+            _append_qc_warning(session, warning)
+        for warning in analog.warnings:
+            _append_qc_warning(session, warning)
         session.setdefault("meta", {})["bdq_events"] = [dict(event) for event in info.events]
         timing_observations: Dict[str, Any] = {}
         catalog_streams = info.stream_catalog.get("streams")
@@ -1019,7 +1060,7 @@ def load_bdq_session(
         session.setdefault("meta", {})["bdq_timing_observations"] = timing_observations
         parse["bdq_stream_count"] = info.stream_count
         parse["bdq_event_count"] = len(info.events)
-        return session
+        return build_imu_streams(session, strict=False)
     return build_imu_streams(session, strict=False)
 
 

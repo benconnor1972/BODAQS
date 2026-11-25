@@ -1,8 +1,11 @@
 #pragma once
+#include "RecordingFeatures.h"
 
 #include <Arduino.h>
 #include <stdint.h>
 #include "SensorTypes.h"
+#include "SpiTransferTiming.h"
+#include "AdcConcentratedScan.h"
 
 #ifndef BODAQS_TIMING_INSTRUMENTATION
 #define BODAQS_TIMING_INSTRUMENTATION 1
@@ -40,10 +43,60 @@ struct ExternalAdcChannelTimingStats {
 };
 
 struct ExternalAdcTimingStats {
+#if BODAQS_VARIABLE_ADC_SCAN
+  // One shared owner, reset after retirement with the session statistics.
+  struct AppointmentWait {
+    uint32_t episodes=0,armAttempts=0,armFailures=0,elapsedBeforeArm=0;
+    uint32_t earlyWakes=0,dueWakes=0,cancelledWakes=0;
+    uint64_t totalUs=0;
+    uint32_t maxUs=0;
+  } scanAppointmentWait;
+#endif
+  #if BODAQS_ADC_ROW_PACING || BODAQS_ADC_CONTINUOUS_LATEST
+  static constexpr uint8_t kMaxAdcs = 2; // Exact two-ADC bench; retain hot counters internally.
+#else
   static constexpr uint8_t kMaxAdcs = 4;
+#endif
   static constexpr uint8_t kMaxChannels = 4;
+#if BODAQS_ADC_SPI_PHASE_TIMING
+  struct SpiPhases {
+    uint32_t completed = 0;
+    uint32_t failed = 0;
+    uint64_t totalUs[4] = {};
+    uint32_t maxUs[4] = {};
+    uint64_t failedWaitUs = 0;
+  };
+#endif
 
   struct AdcStats {
+#if BODAQS_SCANNED_ADC_ACQUISITION
+    bool concentratedScan=false;
+    uint32_t scanStarts=0,scanMissedAppointments=0,scanMaximumLagTicks=0;
+#if BODAQS_VARIABLE_ADC_SCAN
+    uint32_t scanRowPeriodUs=0,scanMaximumLagUs=0;
+#endif
+    uint32_t scanReads=0,scanReadFailures=0,scanConfigFaults=0,scanWaitTimeouts=0;
+#if BODAQS_PRODUCTION_RECORDING
+    bool sourceTimedOut=false;
+    uint8_t failedChannelMask=0;
+    uint32_t firstTimeoutTickUs=0;
+#endif
+#if BODAQS_ADC_SCAN_PIPELINE
+    uint32_t scanCombinedCalls=0;
+#if BODAQS_ADC_SCAN_ROW_PHASE
+    TimingSummary scanRowPhaseUs;
+#endif
+#endif
+#endif
+#if BODAQS_ADC_CONTINUOUS_LATEST
+    bool continuousRunning=false;
+    uint32_t continuousPolls=0,continuousNoNew=0,continuousReads=0;
+    uint32_t continuousConfigFaults=0,continuousReadFailures=0,continuousStalls=0,continuousStopFailures=0;
+#endif
+#if BODAQS_ADC_ROW_PACING
+    uint32_t rowPacingStarts=0,rowPacingMissed=0,rowPacingOverruns=0;
+    TimingSummary rowDispatchLagUs;
+#endif
     bool present = false;
     bool asyncRunning = false;
     uint8_t activeChannels = 0;
@@ -56,6 +109,10 @@ struct ExternalAdcTimingStats {
     TimingSummary readUs;
     uint32_t waitTimeouts = 0;
     uint32_t drdyAlreadyReady = 0;
+#if BODAQS_ADC_SPI_PHASE_TIMING
+    SpiPhases setupSpi;
+    SpiPhases readSpi;
+#endif
     ExternalAdcChannelTimingStats channel[kMaxChannels];
   };
 
@@ -89,6 +146,9 @@ struct SensorTimingStats {
   static constexpr uint8_t kMaxSensors = MAX_SENSORS;
 
   struct SensorStats {
+#if BODAQS_ADC_ROW_PACING
+    uint32_t rowPacingStarts=0,rowPacingMissed=0,rowPacingOverruns=0;
+#endif
     bool present = false;
     bool muted = false;
     bool synchronous = true;
@@ -107,6 +167,9 @@ struct I2CBusSchedulerTimingStats {
   static constexpr uint8_t kMaxClients = MAX_SENSORS;
 
   struct BusStats {
+#if BODAQS_ADC_ROW_PACING
+    uint32_t rowPacingStarts=0,rowPacingMissed=0,rowPacingOverruns=0;
+#endif
     bool present = false;
     bool running = false;
     uint8_t clientCount = 0;
@@ -126,6 +189,9 @@ struct I2CBusSchedulerTimingStats {
   };
 
   struct ClientStats {
+#if BODAQS_ADC_ROW_PACING
+    uint32_t rowPacingStarts=0,rowPacingMissed=0,rowPacingOverruns=0;
+#endif
     bool present = false;
     bool active = false;
     char name[16] = {0};

@@ -14,6 +14,7 @@
 #include "DebugLog.h"
 #include "HomeRestartGesture.h"
 #include "DeviceRestart.h"
+#include "RemoteImuRecording.h"
 
 #define BLOG(...) LOGD_TAG("BTN", __VA_ARGS__)
 
@@ -311,20 +312,26 @@ void ButtonActions::invoke(ActionId action, ButtonEvent ev) {
 void ButtonActions::onToggleLogging(ButtonEvent event) {
   (void)event; // if unused
 
-  if (!LoggingManager::isRunning()) {
-    if (LoggingManager::start()) {
+  if (LoggingManager::isStarting()) {
+    LoggingManager::stop(LoggingManager::StopReason::UserRequest, evName(event));
+    UI::status("Cancelling recording");
+  } else if (LoggingManager::configurationLocked() && !LoggingManager::isRunning()) {
+    UI::status("Finalizing recording");
+  } else if (!LoggingManager::isRunning()) {
+    const auto result = LoggingManager::requestStart();
+    if (result == LoggingManager::StartResult::Started) {
       ButtonManager_setPollingEnabled(false);   // suspend nav polling
       UI::println("Logging started with RTC time.", "", UI::TARGET_SERIAL, UI::LVL_INFO);
       UI::status("Logging");
-    } else {
+    } else if (result == LoggingManager::StartResult::Failed) {
       UI::println("Failed to start logging.", "", UI::TARGET_SERIAL, UI::LVL_ERROR);
       // start() owns specific failure feedback. Persistent configuration
       // prompts must survive; do not replace them with a generic failure toast.
     }
   } else {
-    UI::println("Logging stopped.", "", UI::TARGET_SERIAL, UI::LVL_INFO);
+    UI::println("Logging stop requested.", "", UI::TARGET_SERIAL, UI::LVL_INFO);
     UI::toast("Log stop", 1500, 2);
-    UI::status("Ready");
+    UI::status("Stopping recording");
     UI::loop();  // Paint the stop message before queue drain / file close / metadata write.
     LoggingManager::stop(
         LoggingManager::StopReason::UserRequest,
@@ -371,6 +378,7 @@ void ButtonActions::onWebServerToggle(ButtonEvent event) {
 
   // If we can't start (e.g. logging active), don't touch WiFi.
   if (!WebServerManager::canStart()) {
+    RemoteImuRecording::logDiagnostics();
     UI::println("Cannot start server while logging active.", "Busy", UI::TARGET_BOTH, UI::LVL_WARN, 2000, 2);
     return;
   }

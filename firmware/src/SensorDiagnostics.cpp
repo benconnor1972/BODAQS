@@ -64,6 +64,7 @@ const char* sensorIssueCodeKey(SensorIssueCode code) {
     case SensorIssueCode::QueueLoss: return "queue_loss";
     case SensorIssueCode::BusOff: return "bus_off";
     case SensorIssueCode::PowerFault: return "power_fault";
+    case SensorIssueCode::AcquisitionUnavailable: return "acquisition_unavailable";
     case SensorIssueCode::None:
     default: return "none";
   }

@@ -5,6 +5,7 @@
 #include "SensorTypes.h"
 #include "I2CBusScheduler.h"
 #include <limits.h>
+#include "RotaryCountStream.h"
 
 class TwoWire;
 
@@ -36,11 +37,22 @@ public:
 
   void begin() override;
   bool shutdown() override;
-  void loop() override {}
+  void loop() override;
   void applyConfig(const LoggerConfig&) override {}
+  bool startLoggingSession(char*, size_t) override;
+  bool validateLoggingStart(const LoggerConfig&,uint16_t,char*,size_t) const override;
+  bool usesBdqV2NativeStream() const override {
+#if BODAQS_PRODUCTION_RECORDING
+    return true;
+#else
+    return false;
+#endif
+  }
   void onLoggingStart() override;
   void onLoggingStop() override;
   void onLoggingFinalized() override;
+  size_t pendingLoggingRows() const override;
+  bool describeBdqV2Stream(uint16_t,BdqV2StreamDescriptor&) override;
 
   bool muted() const override { return m_muted; }
   void setMuted(bool m) override { m_muted = m; }
@@ -90,6 +102,7 @@ public:
   uint16_t asyncTargetRateHz() const override;
   bool asyncMuted() const override { return m_muted; }
   bool asyncAcquire() override;
+  void asyncMissedServiceSlots(uint64_t skipped) override;
   void asyncSchedulerStarting() override;
   void asyncSchedulerStopped() override;
 
@@ -124,6 +137,8 @@ private:
     uint16_t magnitude = 0;
     uint32_t rawReadFailures = 0;
     uint32_t diagnosticReadFailures = 0;
+    int32_t calibrationCounts=0;
+    uint32_t calibrationEpoch=0;
     uint32_t seq = 0;
     uint64_t acquiredUs = 0;
   };
@@ -207,8 +222,13 @@ private:
   mutable bool m_runtimeReadFailureActive = false;
   bool m_deferredRecoveryPending = false;
 
+  uint32_t m_calibrationEpoch=0;
   mutable bool m_calUnwrapInit = false;
   mutable int32_t m_calLastUnwrapped = 0;
+  mutable RotaryCountStream m_countStream;
+  char m_countProvenance[384]{};
+  bool m_recordingOwned=false;
+  uint32_t m_nextIdleReadMs=0;
   mutable bool m_asyncLoggingActive = false;
   mutable uint32_t m_asyncNextSeq = 0;
   mutable uint32_t m_asyncLastLoggedSeq = 0;

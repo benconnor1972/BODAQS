@@ -13,14 +13,26 @@
 
 namespace DynamicSpscQueueDetail {
 
+#if defined(BODAQS_QUEUE_ALLOCATION_TEST)
+inline int allocationsBeforeFailure=-1;
+inline size_t liveAllocations=0;
+#endif
 inline void* allocateBytes(size_t bytes) {
+#if defined(BODAQS_QUEUE_ALLOCATION_TEST)
+  if(allocationsBeforeFailure==0) return nullptr;
+  if(allocationsBeforeFailure>0) --allocationsBeforeFailure;
+#endif
   if (bytes == 0) return nullptr;
 #if defined(ESP32)
   void* memory = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (!memory) memory = heap_caps_malloc(bytes, MALLOC_CAP_8BIT);
   return memory;
 #else
-  return malloc(bytes);
+  void* memory=malloc(bytes);
+#if defined(BODAQS_QUEUE_ALLOCATION_TEST)
+  if(memory) ++liveAllocations;
+#endif
+  return memory;
 #endif
 }
 
@@ -29,6 +41,9 @@ inline void releaseBytes(void* memory) {
 #if defined(ESP32)
   heap_caps_free(memory);
 #else
+#if defined(BODAQS_QUEUE_ALLOCATION_TEST)
+  --liveAllocations;
+#endif
   free(memory);
 #endif
 }

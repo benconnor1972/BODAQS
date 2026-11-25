@@ -18,6 +18,7 @@ namespace {
       case SensorType::AS5600AngleI2C:        return "as5600_angle_i2c";
       case SensorType::DANF10NGps:            return "dan_f10n_gps_uart";
       case SensorType::BMI270ImuI2C:          return "bmi270_imu_i2c";
+      case SensorType::LSM6DSO32XImu: return "lsm6dso32x_imu";
       case SensorType::Unknown:
       default:                    return "unknown";
     }
@@ -31,6 +32,7 @@ namespace {
       case SensorType::AS5600AngleI2C:        return "AS5600 Angle (I2C)";
       case SensorType::DANF10NGps:            return "DAN-F10N GPS (UART)";
       case SensorType::BMI270ImuI2C:          return "BMI270 IMU (I2C)";
+      case SensorType::LSM6DSO32XImu: return "LSM6DSO32X IMU (CAN)";
       case SensorType::Unknown:
       default:                    return "Unknown Sensor";
     }

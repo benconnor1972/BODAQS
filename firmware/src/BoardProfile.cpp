@@ -1,6 +1,11 @@
 #include <Arduino.h>
 #include "BoardProfile.h"
+#include "../can-fd/common/transport/bodaqs_spi_bench.h"
 #include <string.h>
+
+#if BODAQS_CAN_SPI_BENCH_MODE && (!defined(BODAQS_SINGLE_NODE_IMU_ADC_SMOKE) || !BODAQS_SINGLE_NODE_IMU_ADC_SMOKE)
+#error "CAN SPI mode1 requires the explicit mixed bench logger"
+#endif
 
 namespace board {
 
@@ -260,8 +265,8 @@ static const BoardProfile A8_PROFILE = {
   },
 
   .rtc = {
-    .type = RtcType::RV3028,
-    .i2c_addr = 0x52,
+    .type = RtcType::Auto,
+    .i2c_addr = 0, // resolved by RTCManager at startup
     .bus_index = 0,
     .interrupt_pin = -1,
     .interrupt_active_low = true,
@@ -369,7 +374,7 @@ static const BoardProfile A8_PROFILE = {
     .irq_active_low = true,
     .irq_use_internal_pullup = true,
     .spi_hz = 4000000,
-    .spi_mode = 0,
+    .spi_mode = BODAQS_CAN_SPI_BENCH_MODE,
   },
 
   .indicators = {
@@ -399,6 +404,8 @@ static const BoardProfile A8_PROFILE = {
 static const BoardProfile V1RC3_PROFILE = [] {
   BoardProfile p = A8_PROFILE;
   p.name = "BODAQS V1RC3";
+  p.rtc.type = RtcType::RV3028;
+  p.rtc.i2c_addr = RTC_RV3028_ADDRESS;
   p.buttons.binding_preset = ButtonBindingPreset::BodaqsRc3;
   p.supports_user_sleep = true;
   return p;

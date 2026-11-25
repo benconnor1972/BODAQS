@@ -30,6 +30,11 @@ const char* outputModeName_(OutputMode m) {
 } // namespace
 
 void Sensor::attachTransform(const TransformRegistry& reg) {
+#if BODAQS_PRODUCTION_RECORDING
+  (void)reg;
+  m_transform = nullptr;
+  m_selectedTransformId = "identity";
+#else
   const String sensorId = String(name()); // folder key: /cal/<name>/
   const bool selectedIsIdentity = (m_selectedTransformId == "identity");
 
@@ -83,6 +88,7 @@ void Sensor::attachTransform(const TransformRegistry& reg) {
              (int)triedSelected,
              (int)usedIdentityFallback,
              (m_transform ? m_transform->meta.id.c_str() : "(null)"));
+#endif
 }
 
 

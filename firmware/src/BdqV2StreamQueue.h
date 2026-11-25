@@ -107,6 +107,7 @@ public:
     out.recordSizeBytes = static_cast<uint16_t>(RecordBytes);
     out.nativeTickModulus = nativeTickModulus_;
     out.context = this;
+    out.snapshotPendingSafe = true;
     out.pendingRecords = &pendingRecordsThunk_;
     out.pendingObservations = &pendingObservationsThunk_;
     out.popRecord = &popRecordThunk_;

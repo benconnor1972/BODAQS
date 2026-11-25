@@ -7,6 +7,7 @@
 #include "StorageManager.h"
 #include "SensorManager.h"
 #include "DebugLog.h"
+#include "LoggingManager.h"
 #include <WiFi.h>   // for WiFi.SSID() and WiFi.localIP()
 #include <time.h>
 
@@ -87,7 +88,10 @@ static bool makeBoardWarning_(String& out) {
     out = "SD: missing";
     return true;
   }
-  if (!StorageManager_isMounted()) {
+  const auto storageOwner = StorageFilesystem::ownership().state();
+  const bool storageHandoff = storageOwner == StorageOwnership::State::External ||
+                              storageOwner == StorageOwnership::State::Reclaiming;
+  if (!StorageManager_isMounted() && !storageHandoff) {
     out = "SD: not ready";
     return true;
   }
@@ -190,7 +194,10 @@ void UI::loop() {
     String now;
     String boardWarn;
     String lowBattery;
-    if (makeBoardWarning_(boardWarn) && ((millis() / 1000UL) & 0x1UL) == 0) {
+    if (LoggingManager::configurationLocked() ||
+        LoggingManager::lifecycleState() == LoggingManager::LifecycleState::Failed) {
+      now = String("Recording: ") + LoggingManager::lifecycleStateName();
+    } else if (makeBoardWarning_(boardWarn) && ((millis() / 1000UL) & 0x1UL) == 0) {
       now = boardWarn;
     } else if (makeLowBatteryWarning_(lowBattery) && ((millis() / 1000UL) & 0x1UL) == 0) {
       now = lowBattery;

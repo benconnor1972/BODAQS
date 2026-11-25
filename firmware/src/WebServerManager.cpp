@@ -1,3 +1,5 @@
+#include "LoggingManager.h"
+#include "StorageManager.h"
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Arduino.h>
@@ -6,7 +8,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <sys/stat.h>
-#include "SD_MMC.h"
+#include "StorageFilesystem.h"
 #include "WebServerManager.h"
 #include "ConfigManager.h"
 #include "SensorManager.h"
@@ -119,7 +121,8 @@ void WebServerManager::setStaConfig(const String& ssid, const String& password) 
 } //no-op. legacy
 
 bool WebServerManager::canStart() {
-  // Only block while logging; storage is owned by StorageManager.
+  if (LoggingManager::configurationLocked() || StorageManager_recordingIoPending()) return false;
+  // Storage remains owned through finalization.
   if (g_isLogging && g_isLogging()) {
     return false;
   }
@@ -266,20 +269,23 @@ void WebServerManager::setupRoutes() {
     out += F(",\"batterySocPct\":"); out += String(PowerManager::batterySocPercent(), 1);
     out += F(",\"batteryLow\":"); out += PowerManager::batteryLow() ? F("true") : F("false");
     out += F(",\"analogRailEnabled\":"); out += PowerManager::analogRailEnabled() ? F("true") : F("false");
-    const uint8_t sdCardType = SD_MMC.cardType();
+    const uint8_t sdCardType = StorageFilesystem::card().cardType();
     out += F(",\"sdmmc\":"); out += (sdCardType != CARD_NONE ? F("true") : F("false"));
     out += F(",\"sdCardType\":"); out += String((unsigned)sdCardType);
     if (sdCardType != CARD_NONE) {
-      out += F(",\"sdSizeMB\":"); out += String((unsigned long long)(SD_MMC.cardSize() / (1024ULL * 1024ULL)));
-      out += F(",\"sdTotalMB\":"); out += String((unsigned long long)(SD_MMC.totalBytes() / (1024ULL * 1024ULL)));
-      out += F(",\"sdUsedMB\":"); out += String((unsigned long long)(SD_MMC.usedBytes() / (1024ULL * 1024ULL)));
+      out += F(",\"sdSizeMB\":"); out += String((unsigned long long)(StorageFilesystem::card().cardSize() / (1024ULL * 1024ULL)));
+      out += F(",\"sdTotalMB\":"); out += String((unsigned long long)(StorageFilesystem::card().totalBytes() / (1024ULL * 1024ULL)));
+      out += F(",\"sdUsedMB\":"); out += String((unsigned long long)(StorageFilesystem::card().usedBytes() / (1024ULL * 1024ULL)));
     }
-    File sdRoot = SD_MMC.open("/");
+    File sdRoot = StorageFilesystem::card().open("/");
     out += F(",\"sdRootOpen\":"); out += sdRoot ? F("true") : F("false");
     out += F(",\"sdRootDir\":"); out += (sdRoot && sdRoot.isDirectory()) ? F("true") : F("false");
     if (sdRoot) sdRoot.close();
-    appendVfsProbe_(out, "sdcard", "/sdcard");
-    appendVfsProbe_(out, "sdcardSlash", "/sdcard/");
+    auto storageProbe = StorageFilesystem::ownership().acquireLocal();
+    if (storageProbe) {
+      appendVfsProbe_(out, "sdcard", "/sdcard");
+      appendVfsProbe_(out, "sdcardSlash", "/sdcard/");
+    }
   #ifdef ESP32
     out += F(",\"heap\":"); out += String((int)ESP.getFreeHeap());
   #endif

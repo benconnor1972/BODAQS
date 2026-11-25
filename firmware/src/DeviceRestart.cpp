@@ -1,13 +1,18 @@
 #include "DeviceRestart.h"
 #include "LoggingManager.h"
+#include "StorageFilesystem.h"
 #include "DisplayManager.h"
 #include "RTCManager.h"
 #include "UI.h"
 #include <esp_system.h>
 
 void DeviceRestart::restart() {
-  if (LoggingManager::isRunning()) {
+  if (LoggingManager::configurationLocked()) {
     UI::toast("Stop logging first", 1200, 1);
+    return;
+  }
+  if (!StorageFilesystem::ownership().localAvailable()) {
+    UI::toast("Exit upload first", 1500, 1);
     return;
   }
   UI::toastModal("Restarting...", 800, 1);

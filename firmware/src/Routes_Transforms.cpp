@@ -1,11 +1,14 @@
+#include "RecordingFeatures.h"
 #include "Routes_Transforms.h"
+#if !BODAQS_PRODUCTION_RECORDING
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include "SD_MMC.h"   // for SD_MMC backend
+#include "StorageFilesystem.h"   // for SD_MMC backend
 
 #include "HtmlUtil.h"
 #include "WebServerManager.h"
 #include "ConfigManager.h"
+#include "LoggingManager.h"
 #include "SensorManager.h"
 #include "TransformRegistry.h"
 #include "PowerManager.h"
@@ -41,7 +44,7 @@ static String baseName_(const String& path) {
 }
 
 static void addTransformsFromDirMMC_(const char* dirPath, JsonArray outArr) {
-  File dir = SD_MMC.open(dirPath);
+  File dir = StorageFilesystem::card().open(dirPath);
   if (!dir || !dir.isDirectory()) {
     if (dir) dir.close();
     return;
@@ -144,6 +147,12 @@ S->on("/api/transforms/list", HTTP_GET, [S](){
   S->on("/api/transforms/select", HTTP_POST, [S](){
     auto& srv = *S;
     noteHttpActivity_();
+#if BODAQS_PRODUCTION_RECORDING
+    srv.send(410,"application/json","{\"error\":\"on_device_transforms_retired\"}"); return;
+#else
+    if(LoggingManager::configurationLocked()) { srv.send(423,"application/json","{\"error\":\"configuration_locked\"}"); return; }
+#endif
+
 
     if (!srv.hasArg("sensor") || !srv.hasArg("id")) {
       srv.send(400, F("application/json"), F("{\"error\":\"sensor and id required\"}"));
@@ -193,6 +202,12 @@ S->on("/api/transforms/list", HTTP_GET, [S](){
   S->on("/api/transforms/reload", HTTP_POST, [S](){
     auto& srv = *S;
     noteHttpActivity_();
+#if BODAQS_PRODUCTION_RECORDING
+    srv.send(410,"application/json","{\"error\":\"on_device_transforms_retired\"}"); return;
+#else
+    if(LoggingManager::configurationLocked()) { srv.send(423,"application/json","{\"error\":\"configuration_locked\"}"); return; }
+#endif
+
 
     if (!srv.hasArg("sensor")) {
       srv.send(400, F("application/json"), F("{\"error\":\"sensor required\"}"));
@@ -200,7 +215,7 @@ S->on("/api/transforms/list", HTTP_GET, [S](){
     }
 
     const String sensor = srv.arg("sensor");
-    const bool ok = (SD_MMC.cardType() != CARD_NONE) && gTransforms.reload(sensor, SD_MMC);
+    const bool ok = (StorageFilesystem::card().cardType() != CARD_NONE) && gTransforms.reload(sensor, StorageFilesystem::card());
 
     srv.sendHeader("Cache-Control", "no-store");
     srv.send(ok ? 200 : 500,
@@ -208,3 +223,7 @@ S->on("/api/transforms/list", HTTP_GET, [S](){
              ok ? F("{\"ok\":true}") : F("{\"ok\":false}"));
   });
 }
+
+#else
+void registerTransformRoutes(WebServer&) {}
+#endif

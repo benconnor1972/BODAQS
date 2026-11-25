@@ -11,6 +11,8 @@ const SPI = scripting.addModule("/ti/driverlib/SPI", {}, false);
 const SPI1 = SPI.addInstance();
 const MCAN = scripting.addModule("/ti/driverlib/MCAN", {}, false);
 const MCAN1 = MCAN.addInstance();
+const TRNG = scripting.addModule("/ti/driverlib/TRNG");
+TRNG.clockDivider = "DL_TRNG_CLOCK_DIVIDE_4";
 const SYSCTL = scripting.addModule("/ti/driverlib/SYSCTL");
 
 GPIO1.$name = "GPIO_BOARD";
@@ -66,6 +68,8 @@ MCAN1.rrfe = true;
 MCAN1.rrfs = true;
 MCAN1.anfe = "0";
 MCAN1.anfs = "0";
+// Generated startup defaults preserve bring-up. The shared verified startup
+// adapter applies the explicit CAN_LINK_PROFILE build selector before TX.
 MCAN1.desiredNomRate = 500;
 MCAN1.desiredDataRate = 2;
 MCAN1.spPercent = 80;

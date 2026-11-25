@@ -43,6 +43,7 @@ public:
   uint16_t asyncTargetRateHz() const override;
   bool asyncMuted() const override { return muted(); }
   bool asyncAcquire() override;
+  void asyncMissedServiceSlots(uint64_t) override;
   bool asyncLatencySensitive() const override { return true; }
   uint32_t asyncEstimatedAcquireUs() const override { return 2000u; }
   void asyncSchedulerStarting() override;
@@ -53,6 +54,9 @@ public:
 
 protected:
   int readWrappedCountsOnce() const override;
+  bool readWrappedObservation(int32_t&) const override;
+  uint16_t countRecordingRateHz(uint16_t) const override {return asyncTargetRateHz();}
+  bool hasCountAuxiliary() const override {return true;}
 
 private:
   void beginImpl_(bool allowBusRecovery);

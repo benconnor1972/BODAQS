@@ -2,7 +2,7 @@
 
 #include <ctype.h>
 #include "ConfigManager.h"
-#include "SD_MMC.h"
+#include "StorageFilesystem.h"
 #include "UploadAckIndex.h"
 
 namespace UploadSessionScanner {
@@ -225,12 +225,12 @@ uint16_t scan(const char* directory,
     s_candidates[i].clear();
   }
 
-  if (summary) summary->storageAvailable = (SD_MMC.cardType() != CARD_NONE);
-  if (SD_MMC.cardType() == CARD_NONE) return 0;
+  if (summary) summary->storageAvailable = (StorageFilesystem::card().cardType() != CARD_NONE);
+  if (StorageFilesystem::card().cardType() == CARD_NONE) return 0;
 
   const String dir = normalizeDir_(directory);
   const String openDir = dirOpenPath_(dir);
-  File d = SD_MMC.open(openDir.c_str());
+  File d = StorageFilesystem::card().open(openDir.c_str());
   if (!d || !d.isDirectory()) {
     if (d) d.close();
     return 0;

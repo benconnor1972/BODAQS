@@ -18,8 +18,10 @@ int runRateTests() {
 
     check(Rates::isSupported(700) && Rates::nearest(700) == 700,
           "700 Hz is accepted and preserved when loading configuration");
-    check(Rates::nearest(650) == 700 && Rates::nearest(850) == 700,
-          "configuration rounding includes 700 Hz and keeps the lower rate on ties");
+    check(Rates::isSupported(650) && Rates::nearest(650) == 650,
+          "650 Hz is accepted and preserved when loading configuration");
+    check(Rates::nearest(675) == 650 && Rates::nearest(850) == 700,
+          "configuration rounding keeps the lower supported rate on ties");
     check(!Rates::isSupported(701),
           "rates outside the permitted list remain unsupported");
     check(Rates::periodUs(700) == 1428,

@@ -9,6 +9,7 @@
 #include "BMI270FifoReadPlan.h"
 #include "BMI270ImuSample.h"
 #include "BMI270QueuePlan.h"
+#include "BMI270PublishedSnapshot.h"
 #include "BMI270ProgressWatchdog.h"
 #include "BMI270SessionQuality.h"
 #include "DynamicSpscQueue.h"
@@ -207,6 +208,10 @@ public:
   bool stopSession();
   size_t discardQueuedSamples();
 
+  bool latestSample(BMI270ImuSample& sample) const { return publishedSample_.read(sample); }
+  bool latestIocOffsetSnapshot(BMI270IocOffsetSnapshot& snapshot) const {
+    return publishedIocOffset_.read(snapshot);
+  }
   bool pop(BMI270ImuSample& sample);
   bool popIocOffsetSnapshot(BMI270IocOffsetSnapshot& snapshot);
   bool popClockObservation(BMI270ClockObservation& observation) {
@@ -293,6 +298,8 @@ private:
   char name_[32] = "bmi270";
   BMI270Device device_;
   DynamicSpscQueue<BMI270ImuSample> queue_;
+  BMI270PublishedSnapshot<BMI270ImuSample> publishedSample_;
+  BMI270PublishedSnapshot<BMI270IocOffsetSnapshot> publishedIocOffset_;
   FixedSpscQueue<BMI270IocOffsetSnapshot, 8> iocOffsetSnapshots_;
   FixedSpscQueue<BMI270ClockObservation, 32> clockObservations_;
   BMI270FifoDiagnostics diagnostics_;

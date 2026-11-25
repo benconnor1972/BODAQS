@@ -46,6 +46,8 @@ int runAdcReadyWaitTests();
 int runStringPotWrapTests();
 int runI2CTransferPriorityTests();
 int runSensorArchitectureTests();
+int runStorageOwnershipTests();
+int runUsbUploadSessionTests();
 
 static int tests_passed = 0;
 static int tests_failed = 0;
@@ -61,6 +63,8 @@ static int tests_failed = 0;
     } while (0)
 
 int main() {
+    if (runStorageOwnershipTests()) return 1;
+    if (runUsbUploadSessionTests()) return 1;
     printf("Running stub tests...\n\n");
 
     // ── T2: String operations ──

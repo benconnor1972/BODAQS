@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "ConfigManager.h"
+#include "BdqV2Catalog.h"
 
 namespace {
 
@@ -72,7 +73,20 @@ void AS5600StringPotSensorBase::applyBaseParams(const BaseParams& p) {
 
   recomputeScale();
   resetTrackingState(m_assumeTurn0AtStart);
+#if BODAQS_PRODUCTION_RECORDING
+  (void)m_countStream.configure(countConfiguration_());
+#endif
 }
+
+#if BODAQS_PRODUCTION_RECORDING
+StringPotCountStream::Configuration AS5600StringPotSensorBase::countConfiguration_() const {
+  StringPotCountStream::Configuration config;
+  config.countsPerTurn=m_countsPerTurn;config.threshold=m_wrapThreshold;
+  config.installedZero=installed_zero_count_;config.assumeTurnZero=m_assumeTurn0AtStart;
+  config.analogSettling=hasAnalogWrapSettling();config.recordAuxiliary=hasCountAuxiliary();
+  return config;
+}
+#endif
 
 void AS5600StringPotSensorBase::resetTrackingState(bool assumeTurnZero) {
   m_trackingInit = false;
@@ -80,8 +94,8 @@ void AS5600StringPotSensorBase::resetTrackingState(bool assumeTurnZero) {
 }
 
 void AS5600StringPotSensorBase::recomputeScale() {
-  const int32_t span = sensor_full_count_ - sensor_zero_count_;
-  const int32_t spanAbs = (span >= 0) ? span : -span;
+  const int64_t span = int64_t(sensor_full_count_) - sensor_zero_count_;
+  const int64_t spanAbs = (span >= 0) ? span : -span;
   if (sensor_full_travel_mm_ > 0.0f && spanAbs != 0) {
     counts_per_mm_ = double(spanAbs) / double(sensor_full_travel_mm_);
   } else {
@@ -91,9 +105,170 @@ void AS5600StringPotSensorBase::recomputeScale() {
 
 void AS5600StringPotSensorBase::onLoggingStart() {
   resetTrackingState(m_assumeTurn0AtStart);
+#if BODAQS_PRODUCTION_RECORDING
+  m_sessionFrozen=m_countStream.active();
+  if(!m_sessionFrozen) {
+    (void)m_countStream.configure(countConfiguration_());m_idleSequence=0;
+  }
+#endif
 }
 
 void AS5600StringPotSensorBase::onLoggingStop() {
+#if BODAQS_PRODUCTION_RECORDING
+  m_countStream.stop();
+#endif
+}
+
+void AS5600StringPotSensorBase::onLoggingFinalized() {
+#if BODAQS_PRODUCTION_RECORDING
+  (void)m_countStream.finalizeSession();
+  m_sessionFrozen=false;
+#endif
+}
+
+void AS5600StringPotSensorBase::loop() {
+#if BODAQS_PRODUCTION_RECORDING
+  if(m_sessionFrozen || m_muted) return;
+  const uint32_t now=millis();
+  if(m_nextIdleSampleMs && static_cast<int32_t>(now-m_nextIdleSampleMs)<0) return;
+  m_nextIdleSampleMs=now+20;
+  int32_t counts=0;const bool valid=readWrappedObservation(counts);
+  publishCountObservation(counts,micros(),valid?0:0x20,m_idleSequence++);
+#endif
+}
+
+bool AS5600StringPotSensorBase::prepareLoggingStart(const LoggerConfig&,uint16_t rate,char*,size_t) {
+#if BODAQS_PRODUCTION_RECORDING
+  m_nativeRateHz=countRecordingRateHz(rate);
+  return m_nativeRateHz!=0;
+#else
+  (void)rate;return true;
+#endif
+}
+
+bool AS5600StringPotSensorBase::startLoggingSession(char* error,size_t capacity) {
+#if BODAQS_PRODUCTION_RECORDING
+  if(!m_nativeRateHz || !m_countStream.configure(countConfiguration_()) || !m_countStream.begin()) {
+    if(error && capacity) snprintf(error,capacity,"string-pot recording reservation failed");
+    return false;
+  }
+  const int provenanceBytes=snprintf(m_countProvenance,sizeof m_countProvenance,
+      "\"counts_per_turn\":%u,\"wrap_threshold_counts\":%u,\"assume_turn0_at_start\":%s,"
+      "\"sequence_basis\":\"scheduled_acquisition_slots\","
+      "\"unwrapped_interpretation\":\"firmware_estimate_not_proof_of_physical_turns\","
+      "\"quality_flags\":{\"assumed_origin\":1,\"settling_held\":2,\"observation_gap\":4,"
+      "\"uncertain\":8,\"invalid_input\":16,\"tracking_reset\":32,\"overflow\":64},"
+      "\"auxiliary_validity\":{\"raw_current\":1,\"angle_current\":2,\"diagnostics_available\":4,\"raw_reused\":8}",
+      unsigned(m_countsPerTurn),unsigned(m_wrapThreshold),m_assumeTurn0AtStart?"true":"false");
+  if(provenanceBytes<0 || size_t(provenanceBytes)>=sizeof m_countProvenance) {
+    m_countStream.stop();
+    if(error && capacity) snprintf(error,capacity,"string-pot provenance overflow");
+    return false;
+  }
+#else
+  (void)error;(void)capacity;
+#endif
+  onLoggingStart();return true;
+}
+
+bool AS5600StringPotSensorBase::usesBdqV2NativeStream() const {
+#if BODAQS_PRODUCTION_RECORDING
+  return true;
+#else
+  return false;
+#endif
+}
+
+size_t AS5600StringPotSensorBase::pendingLoggingRows() const {
+#if BODAQS_PRODUCTION_RECORDING
+  return m_countStream.pending();
+#else
+  return 0;
+#endif
+}
+
+void AS5600StringPotSensorBase::appendCountRecordingDiagnostics(SensorRuntimeDiagnostics& out) const {
+#if BODAQS_PRODUCTION_RECORDING
+  const auto stats=m_countStream.stats();
+  out.hasBdqV2Stream=true;
+  out.bdqV2RecordsEnqueued=stats.recordsEnqueued;out.bdqV2RecordsDequeued=stats.recordsDequeued;
+  out.bdqV2RecordsDropped=stats.recordsDropped;out.bdqV2RecordsRejected=stats.recordsRejected;
+  out.bdqV2QueueCapacity=m_countStream.capacity();out.bdqV2QueueHighWater=stats.recordQueueHighWater;
+  out.bdqV2FinalQueueDepth=m_countStream.pending();out.bdqV2NominalRateHz=m_nativeRateHz;
+#else
+  (void)out;
+#endif
+}
+
+bool AS5600StringPotSensorBase::describeRuntimeDiagnostics(SensorRuntimeDiagnostics& out) const {
+#if BODAQS_PRODUCTION_RECORDING
+  out=SensorRuntimeDiagnostics{};out.present=true;
+  copyField_(out.sensorName,sizeof out.sensorName,name());copyField_(out.kind,sizeof out.kind,"string_pot_counts");
+  appendCountRecordingDiagnostics(out);return true;
+#else
+  (void)out;return false;
+#endif
+}
+
+void AS5600StringPotSensorBase::publishAcquisitionCounts(int32_t counts,uint32_t tick,uint16_t status,uint32_t sequence) {
+  publishCountObservation(counts,tick,status,sequence);
+}
+
+void AS5600StringPotSensorBase::publishCountObservation(int32_t counts,uint32_t tick,uint16_t status,uint32_t sequence) const {
+#if BODAQS_PRODUCTION_RECORDING
+  m_countStream.observe(counts,sequence,tick,status);
+#else
+  (void)counts;(void)tick;(void)status;(void)sequence;
+#endif
+}
+
+void AS5600StringPotSensorBase::markCountObservationGap() {
+#if BODAQS_PRODUCTION_RECORDING
+  m_countStream.markObservationGap();
+#endif
+}
+#if BODAQS_PRODUCTION_RECORDING
+void AS5600StringPotSensorBase::publishI2CCountObservation(int32_t counts,uint32_t tick,uint16_t status,uint32_t sequence,const StringPotCountStream::Auxiliary& auxiliary) const {
+  m_countStream.observe(counts,sequence,tick,status,auxiliary);
+}
+#endif
+
+bool AS5600StringPotSensorBase::describeBdqV2Stream(uint16_t id,BdqV2StreamDescriptor& out) {
+#if BODAQS_PRODUCTION_RECORDING
+  if(m_muted || !id || !m_nativeRateHz) return false;
+  static const BdqV2CatalogChannel channels[]={
+    {"sequence","sample_sequence","count","uint32",0,"diagnostic"},
+    {"native_tick","sensor_time","us","uint32",4,"diagnostic"},
+    {"status_flags","status","bitfield","uint16",8,"diagnostic"},
+    {"wrapped_count","wrapped_raw","count","uint16",12,"signal"},
+    {"tracking_quality","tracking_quality","bitfield","uint16",14,"diagnostic"},
+    {"unwrapped_count","unwrapped_raw","count","int32",16,"signal"},
+    {"tracking_epoch","tracking_epoch","count","uint32",20,"diagnostic"},
+    {"angle_count","angle","count","uint16",24,"signal"},
+    {"device_status","device_status","bitfield","uint8",26,"diagnostic"},
+    {"agc","agc","count","uint8",27,"diagnostic"},
+    {"magnitude","magnitude","count","uint16",28,"diagnostic"},
+    {"auxiliary_validity","auxiliary_validity","bitfield","uint16",30,"diagnostic"},
+    {"read_failures","read_failures","count","uint32",32,"diagnostic"},
+    {"diagnostic_failures","diagnostic_failures","count","uint32",36,"diagnostic"}};
+  static const BdqV2CatalogStatusFlag flags[]={
+    {"discontinuity_before",1},{"producer_queue_drop_before",2},{"timing_degraded",8},{"sensor_error",32}};
+  out=BdqV2StreamDescriptor{};out.source=m_countStream.source(id);
+  snprintf(out.streamKey,sizeof out.streamKey,"%s_counts",name());
+  copyField_(out.sensorId,sizeof out.sensorId,name());
+  copyField_(out.transport,sizeof out.transport,hasAnalogWrapSettling()?"local_adc":"i2c_direct");
+  copyField_(out.clockId,sizeof out.clockId,"logger_monotonic");
+  copyField_(out.clockRelation,sizeof out.clockRelation,"logger_monotonic");
+  copyField_(out.requestedProfile,sizeof out.requestedProfile,"string_pot_counts_v1");
+  copyField_(out.payloadSchema,sizeof out.payloadSchema,"bodaqs.string_pot_counts.v1");
+  out.acquisitionDetailsJson=m_countProvenance;
+  out.nominalSampleRateNumeratorHz=m_nativeRateHz;
+  out.channels=channels;out.channelCount=hasCountAuxiliary()?sizeof channels/sizeof channels[0]:7;
+  out.statusFlags=flags;out.statusFlagCount=sizeof flags/sizeof flags[0];
+  return out.valid();
+#else
+  (void)id;(void)out;return false;
+#endif
 }
 
 int AS5600StringPotSensorBase::normalizeWrapped_(int wrapped) const {
@@ -134,8 +309,13 @@ int32_t AS5600StringPotSensorBase::updateUnwrappedFromWrapped_(int wrapped) cons
 
 AS5600StringPotSensorBase::SampleState AS5600StringPotSensorBase::captureSample_() const {
   SampleState s;
+#if BODAQS_PRODUCTION_RECORDING
+  StringPotCountStream::Sample observation;
+  if(m_countStream.snapshot(observation)) {s.wrappedRaw=observation.wrapped;s.unwrappedRaw=observation.unwrapped;}
+#else
   s.wrappedRaw = normalizeWrapped_(readWrappedCountsOnce());
   s.unwrappedRaw = updateUnwrappedFromWrapped_(s.wrappedRaw);
+#endif
   return s;
 }
 
@@ -274,7 +454,7 @@ bool AS5600StringPotSensorBase::describeSensorMetadata(SensorMetadataDescriptor&
   out.sensorFullCount = sensor_full_count_;
   out.sensorFullTravel = sensor_full_travel_mm_;
   out.invert = m_invert;
-  out.hasCalibration = true;
+  out.hasCalibration = counts_per_mm_>0 && isfinite(counts_per_mm_);
   out.hasTracking = true;
   out.countsPerTurn = m_countsPerTurn;
   out.wrapThresholdCounts = m_wrapThreshold;
@@ -335,6 +515,7 @@ void AS5600StringPotSensorBase::setOutputMode(OutputMode m) {
 }
 
 bool AS5600StringPotSensorBase::beginCalibration(CalMode mode) {
+  if(!ConfigManager::configurationMutable()) return false;
   if (mode == CalMode::NONE) return false;
   cal_ = CalState{};
   cal_.mode = mode;
@@ -345,6 +526,7 @@ bool AS5600StringPotSensorBase::beginCalibration(CalMode mode) {
 }
 
 bool AS5600StringPotSensorBase::updateCalibration(int32_t latestCounts) {
+  if(!ConfigManager::configurationMutable()) return false;
   if (cal_.phase != CalPhase::ACTIVE) return false;
   ++cal_.samples;
 
@@ -361,15 +543,15 @@ bool AS5600StringPotSensorBase::updateCalibration(int32_t latestCounts) {
 }
 
 bool AS5600StringPotSensorBase::finishCalibration(bool persist) {
+  if(!ConfigManager::configurationMutable()) return false;
   if (cal_.phase != CalPhase::ACTIVE) return false;
 
   if (cal_.mode == CalMode::ZERO) {
     const bool haveZero = (cal_.first_counts != INT32_MAX);
-    installed_zero_count_ = haveZero ? cal_.first_counts : currentRawCounts();
-    if (persist) {
-      const char* sname = name();
-      ConfigManager::saveSensorParamByName(sname, "installed_zero_count", String(installed_zero_count_));
-    }
+    const int32_t zero=haveZero ? cal_.first_counts : currentRawCounts();
+    if(persist) { const char* keys[]={"installed_zero_count"};const String values[]={String(zero)};
+      if(!ConfigManager::saveSensorParamsByName(name(),keys,values,1))return false; }
+    installed_zero_count_=zero;
   } else if (cal_.mode == CalMode::RANGE) {
     const bool haveFirst = (cal_.first_counts != INT32_MAX);
     const bool haveSecond = (cal_.second_counts != INT32_MIN);
@@ -379,16 +561,15 @@ bool AS5600StringPotSensorBase::finishCalibration(bool persist) {
       return false;
     }
 
+    if(persist) { const char* keys[]={"sensor_zero_count","sensor_full_count"};
+      const String values[]={String(cal_.first_counts),String(cal_.second_counts)};
+      if(!ConfigManager::saveSensorParamsByName(name(),keys,values,2))return false; }
     sensor_zero_count_ = cal_.first_counts;
     sensor_full_count_ = cal_.second_counts;
     m_invert = (sensor_full_count_ < sensor_zero_count_);
     recomputeScale();
 
-    if (persist) {
-      const char* sname = name();
-      ConfigManager::saveSensorParamByName(sname, "sensor_zero_count", String(sensor_zero_count_));
-      ConfigManager::saveSensorParamByName(sname, "sensor_full_count", String(sensor_full_count_));
-    }
+
   }
 
   cal_.phase = CalPhase::COMPLETE;
@@ -400,7 +581,25 @@ int32_t AS5600StringPotSensorBase::currentRawCounts() const {
   return captureSample_().unwrappedRaw;
 }
 
+bool AS5600StringPotSensorBase::hasRawCounts() const {
+#if BODAQS_PRODUCTION_RECORDING
+  StringPotCountStream::Sample sample;
+  return m_countStream.snapshot(sample) && !(sample.quality&(StringPotCountStream::InvalidInput|
+      StringPotCountStream::Uncertain|StringPotCountStream::SettlingHeld|StringPotCountStream::Overflow));
+#else
+  return true;
+#endif
+}
+
 bool AS5600StringPotSensorBase::readPreviewValue(OutputMode mode, float& value, char* unit, size_t unitCap) {
+#if BODAQS_PRODUCTION_RECORDING
+  StringPotCountStream::Sample sample;
+  if(m_muted || !m_countStream.snapshot(sample) || (sample.quality&StringPotCountStream::InvalidInput)) return false;
+  if(mode==OutputMode::RAW) {value=float(sample.unwrapped);copyField_(unit,unitCap,"counts");return true;}
+  if(mode!=OutputMode::LINEAR || counts_per_mm_<=0 ||
+     (sample.quality&(StringPotCountStream::Uncertain|StringPotCountStream::SettlingHeld))) return false;
+  value=countsToMm_(sample.unwrapped);copyField_(unit,unitCap,linearUnit_(m_unitsLabel));return true;
+#else
   if (mode == OutputMode::RAW) return Sensor::readPreviewValue(mode, value, unit, unitCap);
   if (mode != OutputMode::LINEAR || m_mode != OutputMode::LINEAR || m_muted) return false;
 
@@ -409,6 +608,7 @@ bool AS5600StringPotSensorBase::readPreviewValue(OutputMode mode, float& value, 
   value = out[0];
   copyField_(unit, unitCap, m_outputUnitsLabel[0] ? m_outputUnitsLabel : "mm");
   return true;
+#endif
 }
 
 CalibrationState AS5600StringPotSensorBase::calibration() const {

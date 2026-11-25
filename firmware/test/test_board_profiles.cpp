@@ -16,6 +16,15 @@ int runBoardProfileTests() {
 
     const auto& a8 = board::GetBoardProfile(board::BoardID::BODAQS_A8);
     const auto& rc3 = board::GetBoardProfile(board::BoardID::BODAQS_V1RC3);
+    check(a8.rtc.type == board::RtcType::Auto &&
+              a8.rtc.reservesAddress(0x52) && a8.rtc.reservesAddress(0x6F) &&
+              !a8.rtc.reservesAddress(0x36),
+          "A8 auto-detect reserves both RTC addresses only");
+    check(rc3.rtc.type == board::RtcType::RV3028 && rc3.rtc.i2c_addr == 0x52 &&
+              rc3.rtc.reservesAddress(0x52) && !rc3.rtc.reservesAddress(0x6F),
+          "RC3 retains its fixed RV3028 profile");
+    check(!board::RtcProfile{}.reservesAddress(0x52),
+          "disabled RTC does not reserve an I2C address");
     check(&a8 != &rc3 && std::strcmp(a8.name, rc3.name) != 0,
           "A8 and RC3 resolve to distinct named profiles");
     check(!a8.supports_user_sleep &&

@@ -15,6 +15,9 @@ public:
   virtual uint16_t asyncTargetRateHz() const = 0;
   virtual bool asyncMuted() const = 0;
   virtual bool asyncAcquire() = 0;
+  // Called by this acquisition owner when it skips appointments, before the
+  // next acquisition. Stateful unbuffered sensors retain the resulting gap.
+  virtual void asyncMissedServiceSlots(uint64_t) {}
 
   // Latency-sensitive clients have no device-side FIFO and benefit from being
   // sampled immediately before a long, non-preemptible buffered transfer.
@@ -52,8 +55,12 @@ namespace I2CBusScheduler {
   void resetTimingStats();
   const I2CBusSchedulerTimingStats& timingStats();
 
-  void start();
+  // True only when every active bus has a running acquisition owner.
+  bool start();
   void stop();
+  // Nonblocking control-owner retirement. No sensor/queue cleanup until stopped().
+  void requestStop();
+  bool stopped();
   bool isRunning();
   // Transfer boosts apply only to acquisition workers.
   bool isCurrentTask();

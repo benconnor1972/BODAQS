@@ -1,4 +1,4 @@
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Makefile for host-based tests
 #
 # Compiles stubs + production source + test files with host g++.
@@ -7,7 +7,7 @@
 # Usage:
 #   make -C test test     # build and run tests
 #   make -C test clean    # remove build artifacts
-# ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 CXX      = g++
 PYTHON   ?= python
@@ -15,7 +15,7 @@ CXXFLAGS = -std=gnu++2a -I stubs -I ../src -Wall -Wno-unused
 CXXFLAGS += '-DBODAQS_FW_VERSION="0.4.1"' '-DBODAQS_FW_NAME="BODAQS"'
 
 # Production source files to compile (extend as more files are tested)
-PROD_SRCS = ../src/HtmlUtil.cpp ../src/Routes_Static.cpp ../src/BMI270FifoParser.cpp ../src/BdqV2Catalog.cpp ../src/BdqV2PrimaryStream.cpp ../src/BdqV2Writer.cpp ../src/BoardProfile.cpp ../src/CanMasterProtocol.cpp ../src/SensorParams.cpp ../src/SensorAssignment.cpp ../src/SensorDiagnostics.cpp ../src/SensorInventory.cpp
+PROD_SRCS = ../src/HtmlUtil.cpp ../src/Routes_Static.cpp ../src/BMI270FifoParser.cpp ../src/BdqV2Catalog.cpp ../src/BdqV2PrimaryStream.cpp ../src/BdqV2Writer.cpp ../src/BoardProfile.cpp ../src/CanMasterProtocol.cpp ../src/SensorParams.cpp ../src/SensorAssignment.cpp ../src/SensorDiagnostics.cpp ../src/SensorInventory.cpp ../src/UsbUploadSession.cpp
 
 # Stub source files
 STUB_SRCS = stubs/mocks.cpp stubs/HttpFileSender_stub.cpp
@@ -24,22 +24,134 @@ STUB_SRCS = stubs/mocks.cpp stubs/HttpFileSender_stub.cpp
 TEST_SRCS = $(wildcard test_*.cpp)
 
 # Test binary
-TEST_BIN = test_runner
+BUILD_DIR ?= .build
+TEST_BIN = $(BUILD_DIR)/test_runner.exe
 
 .PHONY: test clean
 
 test: $(TEST_BIN)
 	@echo "Running tests..."
-	./$(TEST_BIN)
+	"$(TEST_BIN)"
+	$(PYTHON) ../tools/test_production_package.py
+	$(PYTHON) ../tools/test_adc_setup_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_adc_acquisition_plan_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_production_adc_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_published_sensor_counts_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_string_pot_counts_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_bmi270_preview_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_bmi270_readiness_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_admitted_local_plan_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_production_config_migration_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_analog_calibration_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_recording_readiness_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_recording_membership_import_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_operational_finalization_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_rotary_calibration_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_rotary_counts_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_gps_native_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_raw_recording_queue_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_adc_setup_runtime.py --spi-phase-timing --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_adc_setup_runtime.py --spi-phase-timing --adc-task-priority 3 --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_spi_buffer_bounds_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_bdq_adc_footer_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_recording_pressure_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_storage_timeline_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_storage_timeline_parser.py
+	$(PYTHON) ../tools/test_sample_buffer_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_control_poll_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_control_poll_parser.py
+	$(PYTHON) ../tools/test_ordinary_fetch_runtime.py --control-state --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_window_reclamation_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_evidence_margin_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_storage_timeline_runtime.py --control-state --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_bdq_adc_footer_runtime.py --spi-phase-timing --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_i2c_schedule_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_acquisition_start_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_usb_recording_ownership_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_storage_filesystem_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_rtc_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_i2c_startup_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_startup_log_runtime.py --compiler "$(CXX)"
 	$(PYTHON) ../tools/test_logging_start_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_logging_start_runtime.py --production-readiness --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_logging_start_runtime.py --async-storage --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_storage_worker_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_recording_storage_path_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_recording_configuration_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_storage_task_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_sensor_config_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_control_recovery_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_remote_mute_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_control_recording_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_master_timing_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_measurement_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_measurement_runtime.py --reply-capture --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_measurement_runtime.py --reply-capture --boundary-trace --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_window_ack_fairness_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_measurement_reply_replay.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_measurement_decode_runtime.py --compiler "$(CXX)"
+	$(PYTHON) -m unittest discover -s ../tools -p test_bench_tools.py
+	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --cs-setup --capture-disabled --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --cs-setup --pipeline-trace --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --cs-setup --pipeline-trace --capture-disabled --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_pipeline_serial_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_acquisition_control_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_idle_control_fetch_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_ordinary_fetch_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_acquisition_control_runtime.py --idle-control-fetch --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --ack-sweep --pipeline-trace --idle-control-fetch --start-spacing-us 600 --reply-capture --cs-setup-us 5 --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_imu_admission_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_imu_admission_runtime.py --channel-rate --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_imu_admission_runtime.py --scaling --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_imu_admission_runtime.py --multi-node --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_imu_admission_runtime.py --sample-units-two-node --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_imu_admission_runtime.py --sample-units-four-node --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --smoke --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --smoke --v2 --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_measurement_v2_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_measurement_v2_runtime.py --ack-sweep --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_pipeline_trace_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_measurement_v2_runtime.py --ack-sweep --pipeline-trace --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --ack-sweep --pipeline-trace --start-spacing-us 600 --reply-capture --cs-setup-us 5 --compiler "$(CXX)"
+	$(PYTHON) -m unittest discover -s ../tools -p test_pipeline_tools.py
+	$(PYTHON) ../tools/test_ack_fetch_sweep_runtime.py --compiler "$(CXX)"
+	$(PYTHON) -m unittest discover -s ../tools -p test_imu_optimization_tools.py
+	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --ack-sweep --start-spacing-us 600 --reply-capture --cs-setup-us 5 --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_master_phase_timing_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_bulk_codec_runtime.py --ram-table --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_ackfetch_direct_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_master_hardware_crc_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --phase-timing --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --boundary-trace --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_spi_start_spacing_runtime.py --cs-setup --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --smoke --v2 --start-spacing-us 500 --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --smoke --v2 --start-spacing-us 500 --flow-diagnostics --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --mixed --start-spacing-us 500 --flow-diagnostics --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --mixed --start-spacing-us 500 --reply-capture --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --mixed --start-spacing-us 500 --reply-capture --cs-setup-us 5 --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --channel-rate --start-spacing-us 500 --reply-capture --cs-setup-us 5 --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --scaling --start-spacing-us 500 --reply-capture --cs-setup-us 5 --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --multi-node --start-spacing-us 500 --reply-capture --cs-setup-us 5 --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_remote_imu_lifecycle_runtime.py --ack-sweep --start-spacing-us 500 --reply-capture --cs-setup-us 5 --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_imu_flow_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_remote_imu_stream_contract.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_remote_imu_recording_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_remote_imu_loss_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_node_master_bdq_runtime.py --compiler "$(CXX)" --cc "$(CC)"
+	$(PYTHON) ../tools/test_node_master_bdq_runtime.py --v2 --compiler "$(CXX)" --cc "$(CC)"
+	$(PYTHON) ../tools/test_integrated_imu_recording_runtime.py --compiler "$(CXX)"
+	$(PYTHON) ../tools/test_integrated_imu_recording_runtime.py --first-recording --compiler "$(CXX)" --cc "$(CC)"
+	$(PYTHON) ../tools/test_integrated_imu_recording_runtime.py --first-recording --flow-diagnostics --compiler "$(CXX)" --cc "$(CC)"
 	@echo "All tests passed."
 
-$(TEST_BIN): $(PROD_SRCS) $(STUB_SRCS) $(TEST_SRCS)
+$(TEST_BIN): $(PROD_SRCS) $(STUB_SRCS) $(TEST_SRCS) | $(BUILD_DIR)
 	@echo "Compiling test binary..."
 	$(CXX) $(CXXFLAGS) -o $@ $(PROD_SRCS) $(STUB_SRCS) $(TEST_SRCS)
 
 clean:
-	rm -f $(TEST_BIN)
+	$(PYTHON) -c "from pathlib import Path; Path('$(TEST_BIN)').unlink(missing_ok=True)"
+
+$(BUILD_DIR):
+	$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_DIR)').mkdir(parents=True, exist_ok=True)"
