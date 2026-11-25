@@ -460,7 +460,11 @@ int main(int argc, char **argv) {
         fifo_drained = false;
         bool recovery_failed=false;
         unsigned failure_reason=0;
-        if(selected_fault==11) bodaqs_node_capture_supervise(sim_tick/1000+65);
+        if(selected_fault==11) {
+            /* SysTick runs while capture IRQ servicing is deliberately absent. */
+            for(unsigned ms=0;ms<=68;++ms)
+                bodaqs_node_capture_supervise_interrupt(sim_tick/1000+ms);
+        }
         uint32_t next_fault=sim_tick+1000;
         for (uint32_t us = sim_tick + 100; us < start + (selected_fault==10?90000000:250000); us += 100) {
             if(selected_fault==10 && us>=next_fault) {fault_mode=6;fifo_drained=false;next_fault+=350000;}

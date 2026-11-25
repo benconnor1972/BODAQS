@@ -599,6 +599,7 @@ void SysTick_Handler(void)
     static uint8_t health_ticks;
 
     ++gUptimeMs;
+    bodaqs_node_capture_supervise_interrupt(gUptimeMs);
     gNodeRuntimeInfo.uptime_ms = gUptimeMs;
     ++heartbeat_ticks;
     if (heartbeat_ticks >= 500U) {

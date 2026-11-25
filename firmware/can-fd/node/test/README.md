@@ -9,7 +9,9 @@ register/driverlib boundary. They do not replace acquisition with a state model.
   timeout/cancel disables both channels; stale IRQ cannot finish another block.
 - `test_capture`: literal CC2/ZERO inputs in both edge orders, native epoch retained;
   trigger overflow is a fault rather than a rollover; bounded ring exhaustion;
-  a service blackout spanning possible multiple wraps is untrusted.
+  foreground stalls remain trusted with serviced ZERO interrupts; SysTick-side
+  rollover-service loss is untrusted even when the foreground cannot run;
+  pending-ZERO ordering, sticky fault diagnosis and uptime rollover are covered.
 - `test_acquisition`: literal gyro/acceleration/timestamp words and signed axes
   (-32768, 32767, -1), modulo-four slot counters and a synthetic raw sensor-tick
   wrap; actual GPIO-CS/register/DMA and ISR capture ingress; observed 70 ms plus

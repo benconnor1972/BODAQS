@@ -8,6 +8,21 @@ typedef struct {
 void bodaqs_node_capture_init(void);
 void bodaqs_node_capture_irq(void);
 void bodaqs_node_capture_supervise(uint32_t milliseconds);
+/* Call once per SysTick, independently of foreground acquisition progress. */
+void bodaqs_node_capture_supervise_interrupt(uint32_t milliseconds);
+enum {
+    BODAQS_CAPTURE_CLOCK_FAULT_NONE = 0,
+    BODAQS_CAPTURE_CLOCK_FAULT_ROLLOVER_TIMEOUT = 1,
+    BODAQS_CAPTURE_CLOCK_FAULT_LOSS_COUNTER_EXHAUSTED = 2
+};
+/* Read-only debugger diagnostics. No protocol or recording-format extension. */
+typedef struct {
+    uint32_t version;
+    uint32_t first_fault_reason, first_fault_ms;
+    uint32_t maximum_foreground_gap_ms, maximum_rollover_age_ms;
+    uint32_t rollovers_serviced, supervisor_ticks;
+} BodaqsNodeCaptureClockInfo;
+extern volatile BodaqsNodeCaptureClockInfo gNodeCaptureClockInfo;
 uint32_t bodaqs_node_capture_clock(void *, uint32_t *epoch);
 bool bodaqs_node_capture_take(BodaqsNodeCapture *);
 void bodaqs_node_capture_discard(void);

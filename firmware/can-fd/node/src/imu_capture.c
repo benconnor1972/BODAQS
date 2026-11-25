@@ -13,8 +13,30 @@ static BodaqsNodeCapture sync_observations[8];
 static volatile unsigned sync_head, sync_tail;
 static volatile uint32_t sync_dropped;
 static uint32_t sync_ordinal, last_service_ms;
+static uint32_t observed_high, rollover_observed_ms;
+static volatile uint32_t last_interrupt_ms;
+volatile BodaqsNodeCaptureClockInfo gNodeCaptureClockInfo;
+
+/* Native ZERO period is 65.536 ms. Allow two rounded SysTicks of observation
+ * margin, but detect absent servicing before two uncounted periods can pass.
+ * This is an IRQ-progress deadline, not a foreground scheduling deadline. */
+#define ROLLOVER_SERVICE_DEADLINE_MS 68U
+
+static void clock_failure(uint32_t reason, uint32_t milliseconds) {
+    uint32_t mask = __get_PRIMASK();
+    __disable_irq();
+    if (!clock_untrusted) {
+        gNodeCaptureClockInfo.first_fault_reason = reason;
+        gNodeCaptureClockInfo.first_fault_ms = milliseconds;
+    }
+    clock_untrusted = true;
+    fault = true;
+    __set_PRIMASK(mask);
+}
 void bodaqs_node_capture_init(void) {
     last_service_ms = 0;
+    observed_high = rollover_observed_ms = last_interrupt_ms = 0;
+    gNodeCaptureClockInfo = (BodaqsNodeCaptureClockInfo){.version = 1};
     high = ordinal = sync_ordinal = 0;
     sync_pending = false;sync_head=sync_tail=0;sync_dropped=0;
     head = tail = 0;
@@ -30,8 +52,11 @@ void bodaqs_node_capture_init(void) {
 void bodaqs_node_capture_irq(void) {
     uint32_t raw = DL_TimerA_getRawInterruptStatus(ACQ_CAPTURE_INST, ~0U);
     uint32_t now = DL_TimerA_getTimerCount(ACQ_CAPTURE_INST), base = high;
-    if (raw & DL_TIMER_INTERRUPT_ZERO_EVENT)
+    if (raw & DL_TIMER_INTERRUPT_ZERO_EVENT) {
         high += 65536U;
+        if (gNodeCaptureClockInfo.rollovers_serviced != UINT32_MAX)
+            ++gNodeCaptureClockInfo.rollovers_serviced;
+    }
     if (raw & DL_TIMER_INTERRUPT_CC2_UP_EVENT) {
         uint32_t low = DL_TimerA_getCaptureCompareValue(ACQ_CAPTURE_INST, DL_TIMER_CC_2_INDEX);
         uint32_t epoch = base;
@@ -42,7 +67,7 @@ void bodaqs_node_capture_irq(void) {
         if (next == tail) {
             fault = true;
             if(dropped!=UINT32_MAX) ++dropped;
-            else clock_untrusted=true;
+            else clock_failure(BODAQS_CAPTURE_CLOCK_FAULT_LOSS_COUNTER_EXHAUSTED, last_interrupt_ms);
         }
         else {
             captures[head].tick = epoch + low;
@@ -142,15 +167,32 @@ bool bodaqs_node_capture_sync_take(BodaqsNodeCapture *c) {
 }
 
 void bodaqs_node_capture_supervise(uint32_t milliseconds) {
-    /* A single pending ZERO cannot prove the number of wraps across a long
-     * service blackout. Milliseconds only detect this failure; they are never
-     * substituted for captured evidence. Debugger-halt continuity is unqualified.
-     */
-    if ((uint32_t)(milliseconds - last_service_ms) >= 65U) {
-        fault = true;
-        clock_untrusted=true;
-    }
+    const uint32_t gap = milliseconds - last_service_ms;
+    if (gap > gNodeCaptureClockInfo.maximum_foreground_gap_ms)
+        gNodeCaptureClockInfo.maximum_foreground_gap_ms = gap;
     last_service_ms = milliseconds;
+}
+
+void bodaqs_node_capture_supervise_interrupt(uint32_t milliseconds) {
+    /* SysTick and the capture IRQ continue while the foreground is delayed.
+     * Observe the software high word, not a pending ZERO: a pending bit cannot
+     * prove that every rollover was serviced. Never reconstruct ticks from ms.
+     * A halt/global IRQ blackout can also lose SysTicks; continuity across that
+     * condition remains unqualified, as it was with foreground supervision. */
+    const uint32_t current_high = high;
+    last_interrupt_ms = milliseconds;
+    if (gNodeCaptureClockInfo.supervisor_ticks != UINT32_MAX)
+        ++gNodeCaptureClockInfo.supervisor_ticks;
+    const uint32_t age = milliseconds - rollover_observed_ms;
+    if (age > gNodeCaptureClockInfo.maximum_rollover_age_ms)
+        gNodeCaptureClockInfo.maximum_rollover_age_ms = age;
+    if (current_high != observed_high) {
+        observed_high = current_high;
+        rollover_observed_ms = milliseconds;
+        return;
+    }
+    if (age >= ROLLOVER_SERVICE_DEADLINE_MS)
+        clock_failure(BODAQS_CAPTURE_CLOCK_FAULT_ROLLOVER_TIMEOUT, milliseconds);
 }
 
 void bodaqs_node_sync_marker(uint32_t sequence,uint32_t master_tick) {

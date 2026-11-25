@@ -57,9 +57,10 @@ int main(void) {
     assert(bodaqs_node_capture_loss_take()==0);
     bodaqs_node_capture_init();
     bodaqs_node_capture_supervise(140);
-    assert(bodaqs_node_capture_fault());
+    /* Foreground delay alone says nothing about timer IRQ continuity. */
+    assert(!bodaqs_node_capture_fault());
     bodaqs_node_capture_discard();
-    assert(!bodaqs_node_capture_clock_trusted());
+    assert(bodaqs_node_capture_clock_trusted());
     bodaqs_node_capture_init();
     raw=8;count=100;cc[3]=100;bodaqs_node_capture_irq();
     bodaqs_node_sync_marker(41,900000);
@@ -96,9 +97,71 @@ int main(void) {
     assert(bodaqs_node_capture_sync_observation(&c) && c.tick==304 && c.ordinal==244);
     for(unsigned i=0;i<10;++i) {raw=8;count=310+i;cc[3]=count;bodaqs_node_capture_irq();}
     assert(bodaqs_node_capture_sync_loss_take()==3); /* Live losses still counted. */
-    bodaqs_node_capture_supervise(100);assert(!bodaqs_node_capture_clock_trusted());
+    bodaqs_node_capture_supervise(100);assert(bodaqs_node_capture_clock_trusted());
+    for (unsigned ms=1;ms<=68;++ms) bodaqs_node_capture_supervise_interrupt(ms);
+    assert(!bodaqs_node_capture_clock_trusted());
     bodaqs_node_capture_sync_discard();assert(!bodaqs_node_capture_clock_trusted());
     test_irq_mask=1;bodaqs_node_capture_sync_discard();
     assert(test_irq_mask==1 && test_last_clear_irq_mask==1);test_irq_mask=0;
+
+    /* Half a second without foreground service is healthy when ZERO IRQs
+     * continue. Inputs independently model a 1 MHz, 16-bit capture timer. */
+    for (unsigned systick_first=0;systick_first<2;++systick_first) {
+        bodaqs_node_capture_init();
+        for (uint32_t ms=1;ms<=500;++ms) {
+            const bool rollover=(ms*1000U >> 16) != ((ms-1)*1000U >> 16);
+            if (rollover) {raw=1;count=(ms*1000U)&65535U;}
+            if (rollover && !systick_first) bodaqs_node_capture_irq();
+            bodaqs_node_capture_supervise_interrupt(ms);
+            if (rollover && systick_first) bodaqs_node_capture_irq();
+        }
+        bodaqs_node_capture_supervise(500);
+        assert(bodaqs_node_capture_clock_trusted() && !bodaqs_node_capture_fault());
+        assert(gNodeCaptureClockInfo.maximum_foreground_gap_ms==500);
+        assert(gNodeCaptureClockInfo.rollovers_serviced==7);
+        assert(gNodeCaptureClockInfo.supervisor_ticks==500);
+        assert(gNodeCaptureClockInfo.maximum_rollover_age_ms>=65);
+        assert(gNodeCaptureClockInfo.maximum_rollover_age_ms<=67);
+        assert(gNodeCaptureClockInfo.first_fault_reason==BODAQS_CAPTURE_CLOCK_FAULT_NONE);
+    }
+
+    /* A pending ZERO can briefly precede its ISR. Reading it must not count
+     * as serviced progress, nor may the watchdog consume the interrupt. */
+    bodaqs_node_capture_init();
+    for (uint32_t ms=1;ms<=67;++ms) {
+        if(ms==66) {raw=1;count=464;}
+        bodaqs_node_capture_supervise_interrupt(ms);
+    }
+    assert(raw==1 && bodaqs_node_capture_clock_trusted());
+    assert(bodaqs_node_capture_clock(0,&e)==66000 && e==1);
+    bodaqs_node_capture_irq();
+    bodaqs_node_capture_supervise_interrupt(68);
+    assert(bodaqs_node_capture_clock_trusted());
+
+    /* Capture IRQ disabled, but SysTick alive: fail even with no foreground
+     * call. Recovery/discard must not erase the first diagnosis or continuity. */
+    bodaqs_node_capture_init();
+    for (uint32_t ms=1;ms<=68;++ms) {
+        if(ms==66) {raw=1;count=464;}
+        bodaqs_node_capture_supervise_interrupt(ms);
+    }
+    assert(!bodaqs_node_capture_clock_trusted() && bodaqs_node_capture_fault());
+    assert(gNodeCaptureClockInfo.first_fault_reason==BODAQS_CAPTURE_CLOCK_FAULT_ROLLOVER_TIMEOUT);
+    assert(gNodeCaptureClockInfo.first_fault_ms==68);
+    assert(gNodeCaptureClockInfo.maximum_rollover_age_ms==68);
+    bodaqs_node_capture_irq();
+    bodaqs_node_capture_discard();
+    bodaqs_node_capture_supervise_interrupt(69);
+    assert(!bodaqs_node_capture_clock_trusted());
+    assert(gNodeCaptureClockInfo.first_fault_ms==68);
+
+    /* Unsigned uptime rollover retains the deadline semantics. */
+    bodaqs_node_capture_init();raw=1;bodaqs_node_capture_irq();
+    bodaqs_node_capture_supervise_interrupt(UINT32_MAX-40);
+    bodaqs_node_capture_supervise_interrupt(26);
+    assert(bodaqs_node_capture_clock_trusted());
+    bodaqs_node_capture_supervise_interrupt(27);
+    assert(!bodaqs_node_capture_clock_trusted());
+    assert(gNodeCaptureClockInfo.first_fault_ms==27);
     return 0;
 }
