@@ -2,8 +2,10 @@
 
 This is the remaining acceptance plan for #230, against the confirmed Q1–Q32
 scope. It is not a qualification result. Software evidence and physical evidence
-must remain separate. The destination remains `feat-CAN-firmware`; final
-integration follows review and the representative checks below.
+must remain separate. On 25 November 2026 the user authorized development
+integration onto `feat-CAN-firmware` while keeping outstanding checks explicit.
+The representative checks below remain release-qualification gates; merging
+the development branch does not establish their completion.
 
 ## Candidate and evidence ownership
 

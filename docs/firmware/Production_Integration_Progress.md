@@ -1,6 +1,9 @@
 # Production integration progress
 
 Destination: `feat-CAN-firmware`; work branch: `integration/logger-production`.
+On 25 November 2026 the user authorized merging this development integration
+onto the destination and pushing it, with remaining qualification work retained.
+This is not a qualified release or authorization to close the outstanding issues.
 Requirements checkpoint: `c11cc31e`. Issues remain open on GitHub; this local
 ledger records code dependencies without implicitly closing tracker items.
 
