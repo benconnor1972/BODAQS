@@ -85,3 +85,27 @@ the reserved 2,048-byte stack. `gNodeCaptureClockInfo` is present in the image a
 `0x20202b1c`; use symbols rather than assuming that address in later builds.
 These are build measurements. Physical IRQ latency and the combined-device
 START/STOP tests remain pending; no node was flashed during implementation.
+
+## First physical follow-up, 25 November 2026
+
+The user installed the new nodes and supplied two successive recordings,
+`LOG0041.bdq` and `LOG0042.bdq`. Complete card-reader copies passed CRC/structure
+checks and strict source-bounded delivery assessment for all four 3333 Hz IMUs:
+960,853 and 219,567 samples respectively, with zero missing/duplicate samples.
+The two 1000 Hz ADC columns had 74,969 and 16,866 continuous rows, no missing
+counts and no reported source failures or drops. Identical master/node boot
+identities and recording IDs 1 then 2 establish repeat recording without their
+restart. No reason-35 rejection or shared master-identity fault occurred.
+
+Both sessions finalized with observed terminal source boundaries and released
+control ownership. The second had fence/control timeouts during cleanup after
+the source tail windows closed; cleanup completed and no sample tail was
+discarded. Preserve this warning rather than claiming warning-free STOP.
+Watchdog diagnostics and forced foreground stalls were not captured, so the
+former reason-35 trigger and physical blackout continuity remain unproven.
+
+Detailed evidence is in
+`C:/Users/benco/dev/BODAQS-worktrees/node-clock-supervision-01/Results/ASSESSMENT.md`.
+The spontaneous USB disappearance during the first file copy remains a separate
+unresolved fault; complete SD recordings were intact. ADC freshness beyond
+retained row/count validity and sustained capacity remain unqualified.
